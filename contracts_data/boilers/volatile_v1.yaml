@@ -1,0 +1,27 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.boiler
+id: boiler.volatile.v1
+display_name: Volatile Burst Boiler Mk.I
+
+# Huge burst capacity, rapid pressure spikes, ambush role.
+# High rupture risk, unstable, vulnerable to heat weapons.
+# Aggressive / burst playstyle.
+pressure_capacity: 75
+regen_per_tick: 6
+heat_capacity: 100
+heat_multiplier: 1.4  # heat spikes fast under load
+
+vent_rate: 3           # slow vent — dangerous if heat spikes
+
+redline_threshold: 60  # fires redline early; tolerance is the skill
+rupture_threshold: 85  # tight band — rewards aggressive-but-precise pilots
+
+instability_curve: exponential  # heat probability rises sharply near redline
+repairability: none             # destroyed when ruptured; no field repair
+mass: 18
+
+compatibility:
+  compatible_chassis_classes:
+    - light
+    - medium
+    - heavy

@@ -1,0 +1,23 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.boiler
+id: boiler.compact.v1
+display_name: Compact Boiler Mk.I
+
+# Fast regen, fast venting, low rupture ceiling — ideal for scouts / light skirmishers.
+pressure_capacity: 50
+regen_per_tick: 8
+heat_capacity: 80
+heat_multiplier: 1.0
+vent_rate: 6
+
+redline_threshold: 65  # triggers early — keeps pilots cautious
+rupture_threshold: 80  # low ceiling; punishing if redline is ignored
+
+instability_curve: linear
+repairability: partial
+mass: 10
+
+compatibility:
+  compatible_chassis_classes:
+    - light
+    - medium

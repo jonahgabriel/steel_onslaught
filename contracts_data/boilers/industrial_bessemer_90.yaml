@@ -1,0 +1,25 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.boiler
+id: boiler.industrial.bessemer_90
+display_name: Industrial Bessemer-90
+
+# High capacity, heavy weapon support, sustained output.
+# Matches design §10.3 example: pressure_capacity=90, vent_rate=4, regeneration_per_tick=5.
+# Slow venting, slow recovery, poor emergency response — artillery/siege role.
+pressure_capacity: 90
+regen_per_tick: 5
+heat_capacity: 120
+heat_multiplier: 1.15
+vent_rate: 4
+
+redline_threshold: 80   # §10.3: heat.redline_threshold = 80
+rupture_threshold: 100  # §10.3: heat.rupture_threshold = 100
+
+instability_curve: quadratic
+repairability: partial
+mass: 30
+
+compatibility:
+  compatible_chassis_classes:
+    - medium
+    - heavy
