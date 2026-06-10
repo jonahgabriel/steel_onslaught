@@ -1,0 +1,27 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.chassis"
+id: "chassis.light.scout_mk1"
+display_name: "Light Scout Mk1"
+chassis_class: "light"
+constraints:
+  max_mass: 60
+  max_module_slots: 4
+  max_boiler_volume: 40
+  base_speed: 6
+  base_turn_rate: 5
+  base_signature: 30
+  base_vent_rate: 2
+compatibility:
+  weapon_classes:
+    - "light"
+    - "medium"
+  boiler_classes:
+    - "compact"
+    - "volatile"
+  mobility_classes:
+    - "wheeled"
+    - "legged"
+penalties:
+  mode_switch_latency_modifier: 1.0
+  sensor_lock_penalty: 1.2
+  heat_weapon_vulnerability: 1.1

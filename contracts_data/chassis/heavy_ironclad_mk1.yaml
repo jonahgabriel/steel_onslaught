@@ -1,0 +1,29 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.chassis"
+id: "chassis.heavy.ironclad_mk1"
+display_name: "Heavy Ironclad Mk1"
+chassis_class: "heavy"
+constraints:
+  max_mass: 160
+  max_module_slots: 8
+  max_boiler_volume: 90
+  base_speed: 2
+  base_turn_rate: 2
+  base_signature: 80
+  base_vent_rate: 5
+compatibility:
+  weapon_classes:
+    - "light"
+    - "medium"
+    - "heavy"
+    - "siege"
+  boiler_classes:
+    - "industrial"
+    - "volatile"
+  mobility_classes:
+    - "tracked"
+    - "walker"
+penalties:
+  mode_switch_latency_modifier: 1.5
+  sensor_lock_penalty: 1.0
+  heat_weapon_vulnerability: 1.3
