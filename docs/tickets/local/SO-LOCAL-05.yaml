@@ -1,4 +1,4 @@
 id: SO-LOCAL-05
 title: "EventBus protocol + in-process implementation"
 phase: A
-status: pending
+status: done
