@@ -1,0 +1,15 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.mode_transition
+from_mode: assault
+to_mode: evasion
+costs:
+  pressure: 10
+  heat: 5
+  transition_ticks: 3
+restrictions:
+  minimum_lock_ticks_after_switch: 5
+  cannot_switch_if_heat_above: 80
+  cannot_switch_if_boiler_disabled: true
+vulnerability:
+  evasion_penalty_during_transition: 0.5
+  sensor_dropout_ticks: 2

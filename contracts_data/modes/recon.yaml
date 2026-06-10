@@ -1,0 +1,16 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.mode
+id: mode.recon
+display_name: Recon
+active_systems:
+  - sensor
+  - mobility
+passive_modifiers:
+  sensor_range_multiplier: 1.4
+  signature_reduction: 0.8
+  weapon_damage_multiplier: 0.75
+  speed_multiplier: 1.2
+default_priorities:
+  - observe
+  - position
+  - evade

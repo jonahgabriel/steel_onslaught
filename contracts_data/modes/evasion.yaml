@@ -1,0 +1,17 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.mode
+id: mode.evasion
+display_name: Evasion
+active_systems:
+  - mobility
+  - boiler
+passive_modifiers:
+  evasion_bonus: 0.4
+  speed_multiplier: 1.35
+  sensor_range_multiplier: 0.6
+  weapon_damage_multiplier: 0.5
+  signature_reduction: 0.6
+default_priorities:
+  - evade
+  - disengage
+  - vent
