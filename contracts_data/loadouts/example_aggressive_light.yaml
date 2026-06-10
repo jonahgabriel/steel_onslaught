@@ -1,0 +1,29 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.example.aggressive_light
+
+chassis_id: chassis.light.scout_mk1
+boiler_id: boiler.compact.v1
+pilot_id: pilot.example.aggressive_v1
+
+modules:
+  weapons:
+    - weapon.light.machine_gun
+    - weapon.light.shrapnel_thrower
+  sensors:
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.control.targeting_assist
+
+# Declared estimates; authoritative numbers come from validate_loadout_budgets.
+budgets:
+  points_used: 38
+  points_max: 100
+  mass_used: 41
+  mass_max: 60
+  slots_used: 4
+  slots_max: 4
+  expected_heat_peak: 9
+  expected_signature: 34

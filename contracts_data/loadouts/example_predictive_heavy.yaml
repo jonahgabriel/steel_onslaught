@@ -1,0 +1,31 @@
+# Heavy artillery loadout mirroring design §15.3, using real contracts_data ids.
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.example.predictive_heavy
+
+chassis_id: chassis.heavy.ironclad_mk1
+boiler_id: boiler.industrial.bessemer_90
+pilot_id: pilot.example.predictive_v1
+
+modules:
+  weapons:
+    - weapon.siege.artillery_mortar
+    - weapon.heavy.harpoon_gun
+  sensors:
+    - sensor.long_range_radar
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.cooling.emergency_condenser
+
+# Declared estimates; authoritative numbers come from validate_loadout_budgets.
+budgets:
+  points_used: 98
+  points_max: 100
+  mass_used: 108
+  mass_max: 160
+  slots_used: 7
+  slots_max: 8
+  expected_heat_peak: 22
+  expected_signature: 88
