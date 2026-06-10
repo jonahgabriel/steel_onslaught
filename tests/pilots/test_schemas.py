@@ -162,7 +162,7 @@ def test_observation_constructs_with_sensor_readings() -> None:
 def test_observation_is_frozen() -> None:
     obs = _observation()
     with pytest.raises(ValidationError):
-        obs.tick = 6  # type: ignore[misc]
+        obs.tick = 6
 
 
 @pytest.mark.unit
