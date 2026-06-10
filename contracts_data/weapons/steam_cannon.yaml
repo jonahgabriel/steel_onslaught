@@ -1,0 +1,27 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.weapon
+id: weapon.medium.steam_cannon
+display_name: "Steam Cannon"
+weapon_class: medium
+range: 25
+damage: 20
+pressure_cost: 10
+heat_generated: 8
+cooldown_ticks: 3
+accuracy_curve:
+  - range: 0
+    hit_probability: 0.90
+  - range: 10
+    hit_probability: 0.78
+  - range: 20
+    hit_probability: 0.60
+  - range: 25
+    hit_probability: 0.45
+target_class_effectiveness:
+  light: 1.0
+  medium: 1.1
+  heavy: 0.9
+compatibility:
+  compatible_chassis_classes:
+    - medium
+    - heavy
