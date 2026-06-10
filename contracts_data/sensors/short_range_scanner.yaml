@@ -1,0 +1,11 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.sensor"
+id: "sensor.short_range_scanner"
+display_name: "Short-Range Precision Scanner"
+range: 15
+precision: 0.9
+latency_ticks: 0
+pressure_draw_per_tick: 2.0
+heat_per_tick: 0.5
+signature_impact: 4.0
+jamming_vulnerability_score: 0.3

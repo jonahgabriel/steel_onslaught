@@ -1,0 +1,11 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.sensor"
+id: "sensor.long_range_radar"
+display_name: "Long-Range Radar Array"
+range: 40
+precision: 0.6
+latency_ticks: 1
+pressure_draw_per_tick: 3.0
+heat_per_tick: 1.0
+signature_impact: 8.0
+jamming_vulnerability_score: 0.6
