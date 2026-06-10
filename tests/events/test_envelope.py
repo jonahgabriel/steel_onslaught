@@ -1,13 +1,15 @@
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
 
 
-def _base_kwargs(**overrides):  # type: ignore[no-untyped-def]
+def _base_kwargs(**overrides: Any) -> dict[str, Any]:
     """Return a valid set of kwargs for ModelSOEventEnvelope with optional overrides."""
     # ULID is 26 chars (10-char timestamp + 16-char random, Crockford base32)
-    base = {
+    base: dict[str, Any] = {
         "event_id": "01JABCDE0123456789ABCDEFGX",  # 26 chars
         "match_id": "match.2026-04-30.001",
         "tick": 42,
@@ -42,7 +44,7 @@ def test_envelope_rejects_negative_tick() -> None:
             sequence_in_tick=0,
             event_type=SOEventType.MATCH_STARTED,
             producer_node="p",
-            subject={"mech_id": "m", "player_id": "p"},
+            subject=ModelSOEventSubject(mech_id="m", player_id="p"),
             payload={},
             emitted_at="2026-04-30T16:00:00Z",
         )
@@ -148,7 +150,7 @@ def test_two_envelopes_same_tick_seq_different_event_id_both_accepted() -> None:
 def test_envelope_is_frozen() -> None:
     env = ModelSOEventEnvelope(**_base_kwargs())
     with pytest.raises((TypeError, ValidationError)):
-        env.tick = 99  # type: ignore[misc]
+        env.tick = 99
 
 
 @pytest.mark.unit
