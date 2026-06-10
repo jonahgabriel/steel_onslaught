@@ -1,0 +1,24 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.gizmo
+id: gizmo.amplifier.burst_amplifier
+display_name: "Burst Amplifier"
+category: amplifier
+
+constraints:
+  mass: 6
+  slots: 1
+  compatible_chassis: [medium, heavy]
+
+effects:
+  on_weapon_fire:
+    damage_multiplier: 1.4
+    duration_ticks: 1
+    pressure_cost: 12
+    cooldown_ticks: 15
+
+tradeoffs:
+  heat_generated_bonus: 8
+  cooldown_ticks_penalty: 2
+
+forbidden_stacking:
+  - gizmo.amplifier.overcharge_coil

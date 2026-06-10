@@ -1,0 +1,24 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.gizmo
+id: gizmo.cooling.emergency_condenser
+display_name: "Emergency Condenser"
+category: safety
+
+constraints:
+  mass: 8
+  slots: 1
+  compatible_chassis: [medium, heavy]
+
+effects:
+  on_redline:
+    vent_bonus: 12
+    duration_ticks: 2
+    pressure_cost: 18
+    cooldown_ticks: 25
+
+tradeoffs:
+  max_pressure_penalty: 5
+  mode_switch_latency_delta: 0.1
+
+forbidden_stacking:
+  - gizmo.cooling.pressure_dump_valve
