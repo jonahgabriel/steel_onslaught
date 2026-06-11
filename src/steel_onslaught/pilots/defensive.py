@@ -1,23 +1,28 @@
-"""Defensive pilot heuristic archetype — Task 16.
+"""Defensive pilot heuristic archetype — Task 16 / tunable-pilots Task 3.
 
 Decision tree (highest priority first):
 
-1. If heat >= redline_threshold - 8 → VENT.
+1. If heat >= redline_threshold - vent_headroom_below_redline → VENT.
 2. Else if not in evasion mode AND under sensor lock AND mode_lock_expired
    AND pressure available → SWITCH_MODE evasion.
-3. Else if enemy in range AND high-confidence target (confidence >= 0.7)
-   AND pressure available AND heat headroom >= 12 → FIRE.
-4. Else if hp_percent < 30 → DISENGAGE (move away).
+3. Else if enemy in range AND high-confidence target (confidence >= fire_confidence_floor)
+   AND pressure available AND heat headroom >= fire_heat_headroom → FIRE.
+4. Else if hp_percent < disengage_hp_pct → DISENGAGE (move away).
 5. Else → MOVE to maintain optimal range.
 
 All decisions are deterministic (no random tiebreakers).  Multiple weapons
 ready in rule 3: deterministically pick the weapon whose effective range is
 closest to the optimal stand-off (longest-range weapon available in range),
 breaking ties alphabetically by weapon_id.
+
+The four tunable constants (rule 1, 3 confidence, 3 headroom, rule 4) come
+from a ``ModelSOPilotSpec`` with archetype ``defensive``.  Rule 2 has no
+tunable constant and is structurally unchanged.
 """
 
 from __future__ import annotations
 
+from steel_onslaught.contracts.pilot import ModelSODefensivePilotParams, ModelSOPilotSpec
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPilotDecision,
@@ -29,11 +34,37 @@ from steel_onslaught.pilots.schemas import (
     SOPilotReasonCode,
 )
 
-# Threshold constants for the defensive heuristic.
-_HEAT_VENT_MARGIN: int = 8  # Vent when heat >= redline - this value
-_HIGH_CONFIDENCE_THRESHOLD: float = 0.7  # Minimum confidence to fire
-_FIRE_HEAT_HEADROOM: int = 12  # Minimum heat headroom (redline - heat) required to fire
-_LOW_HP_THRESHOLD: float = 30.0  # Disengage below this hp_percent
+
+def _load_template_spec() -> ModelSOPilotSpec:
+    """Load the canonical template_defensive.yaml spec (MVP fallback path)."""
+    from pathlib import Path
+
+    import yaml  # type: ignore[import-untyped]
+
+    template_path = (
+        Path(__file__).parent.parent.parent.parent
+        / "contracts_data"
+        / "pilots"
+        / "template_defensive.yaml"
+    )
+    return ModelSOPilotSpec.model_validate(yaml.safe_load(template_path.read_text()))
+
+
+def _template_params() -> ModelSODefensivePilotParams:
+    spec = _load_template_spec()
+    assert isinstance(spec.parameters, ModelSODefensivePilotParams)
+    return spec.parameters
+
+
+# ---------------------------------------------------------------------------
+# Module-level constants exported for backward compatibility with test_pilot_spec.py
+# (Task 1 invariant: "imported, not retyped — the test breaks if either side drifts").
+# These are derived from the canonical template spec, not hardcoded.
+# ---------------------------------------------------------------------------
+_HEAT_VENT_MARGIN: int = _template_params().vent_headroom_below_redline
+_HIGH_CONFIDENCE_THRESHOLD: float = _template_params().fire_confidence_floor
+_FIRE_HEAT_HEADROOM: int = _template_params().fire_heat_headroom
+_LOW_HP_THRESHOLD: float = float(_template_params().disengage_hp_pct)
 
 
 def _best_ready_weapon_in_range(
@@ -81,10 +112,29 @@ class DefensivePilot:
     when HP is critically low.
 
     Implements ``PilotProtocol`` — fully deterministic, no I/O.
+
+    Parameters
+    ----------
+    spec:
+        A ``ModelSOPilotSpec`` with ``archetype == "defensive"``.  Raises
+        ``ValueError`` at construction if the archetype does not match.
+        When omitted the canonical template spec is loaded from
+        ``contracts_data/pilots/template_defensive.yaml`` (MVP fallback).
     """
+
+    def __init__(self, spec: ModelSOPilotSpec | None = None) -> None:
+        if spec is None:
+            spec = _load_template_spec()
+        if spec.archetype != "defensive":
+            raise ValueError(
+                f"DefensivePilot requires archetype='defensive', got {spec.archetype!r}"
+            )
+        assert isinstance(spec.parameters, ModelSODefensivePilotParams)
+        self._params: ModelSODefensivePilotParams = spec.parameters
 
     def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
         """Apply the defensive decision tree and return the chosen action."""
+        params = self._params
         boiler = observation.boiler
         redline = boiler.heat_redline_threshold
         heat = boiler.heat_current
@@ -92,9 +142,9 @@ class DefensivePilot:
         considered: list[ModelSOConsideredAction] = []
 
         # ------------------------------------------------------------------
-        # Rule 1: Heat emergency — vent whenever heat >= redline - 8.
+        # Rule 1: Heat emergency — vent when heat >= redline - vent_headroom_below_redline.
         # ------------------------------------------------------------------
-        if heat >= redline - _HEAT_VENT_MARGIN:
+        if heat >= redline - params.vent_headroom_below_redline:
             considered.extend(
                 [
                     ModelSOConsideredAction(action=SOPilotAction.VENT, score=1.0),
@@ -113,6 +163,7 @@ class DefensivePilot:
         # Rule 2: Break sensor lock via evasion mode.
         # Requires: not already in evasion, mode lock expired,
         # under sensor lock, and enough pressure for the mode switch.
+        # (No tunable constant — structurally unchanged from MVP.)
         # ------------------------------------------------------------------
         if (
             observation.current_mode != "evasion"
@@ -136,15 +187,16 @@ class DefensivePilot:
 
         # ------------------------------------------------------------------
         # Rule 3: Fire — only when all defensive conditions are met.
-        # Requires: enemy reading with confidence >= 0.7 and enemy in range,
-        # a ready weapon the boiler can afford, and heat headroom >= 12.
+        # Requires: enemy reading with confidence >= fire_confidence_floor
+        # and enemy in range, a ready weapon the boiler can afford, and
+        # heat headroom (redline - heat) >= fire_heat_headroom.
         # ------------------------------------------------------------------
         enemy = _best_enemy_reading(obs=observation)
         heat_headroom = redline - heat
 
-        if enemy is not None and enemy.confidence >= _HIGH_CONFIDENCE_THRESHOLD:
+        if enemy is not None and enemy.confidence >= params.fire_confidence_floor:
             weapon = _best_ready_weapon_in_range(observation, enemy.distance_estimate)
-            if weapon is not None and heat_headroom >= _FIRE_HEAT_HEADROOM:
+            if weapon is not None and heat_headroom >= params.fire_heat_headroom:
                 considered.extend(
                     [
                         ModelSOConsideredAction(action=SOPilotAction.FIRE_WEAPON, score=0.8),
@@ -165,7 +217,7 @@ class DefensivePilot:
         # ------------------------------------------------------------------
         # Rule 4: Critically low HP — disengage (move away from enemy).
         # ------------------------------------------------------------------
-        if observation.hp_percent < _LOW_HP_THRESHOLD:
+        if observation.hp_percent < params.disengage_hp_pct:
             considered.extend(
                 [
                     ModelSOConsideredAction(action=SOPilotAction.DISENGAGE, score=0.85),
