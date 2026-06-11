@@ -26,7 +26,11 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
-from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
+from steel_onslaught.match.state import (
+    ModelSOMatchState,
+    ModelSOMechRuntimeState,
+    SOMatchStatus,
+)
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPilotDecision,
@@ -117,7 +121,7 @@ def _match_state(
     return ModelSOMatchState(
         match_id=MATCH_ID,
         tick=tick,
-        status="running",
+        status=SOMatchStatus.RUNNING,
         seed=42,
         max_ticks=200,
         mech_states={m.mech_id: m for m in mech_list},

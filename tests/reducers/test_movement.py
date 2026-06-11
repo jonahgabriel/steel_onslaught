@@ -21,7 +21,11 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
-from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
+from steel_onslaught.match.state import (
+    ModelSOMatchState,
+    ModelSOMechRuntimeState,
+    SOMatchStatus,
+)
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.movement import ReducerMovement
@@ -91,7 +95,7 @@ def _match_state(mech: ModelSOMechRuntimeState | None = None) -> ModelSOMatchSta
     return ModelSOMatchState(
         match_id=MATCH_ID,
         tick=1,
-        status="running",
+        status=SOMatchStatus.RUNNING,
         seed=42,
         max_ticks=200,
         mech_states={m.mech_id: m},
@@ -289,7 +293,7 @@ def test_siege_mode_subtracts_one_from_effective_speed() -> None:
     state = ModelSOMatchState(
         match_id=MATCH_ID,
         tick=1,
-        status="running",
+        status=SOMatchStatus.RUNNING,
         seed=42,
         max_ticks=200,
         mech_states={mech_siege.mech_id: mech_siege},

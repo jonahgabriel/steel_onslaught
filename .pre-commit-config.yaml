@@ -13,5 +13,6 @@ repos:
       - id: mypy
         # pyyaml (not types-PyYAML) + pytest: mirror the project env so the
         # same `# type: ignore[import-untyped]` comments are needed in both.
-        additional_dependencies: [pydantic>=2.6, pyyaml, pytest]
+        # ulid-py ships py.typed; click is typed — both are imported from src.
+        additional_dependencies: [pydantic>=2.6, pyyaml, pytest, ulid-py, click>=8.1]
         args: [--strict]
