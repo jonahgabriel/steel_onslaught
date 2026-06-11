@@ -38,6 +38,7 @@ from typing import Any
 
 import ulid
 
+from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -64,26 +65,28 @@ def _build_observation(
     mech: ModelSOMechRuntimeState,
     state: ModelSOMatchState,
     sensor_events: list[ModelSOEventEnvelope],
+    weapon_specs: dict[str, ModelSOWeaponSpec],
 ) -> ModelSOPilotObservation:
     """Build the observation passed to a pilot for one tick."""
     # Weapon views — empty if no weapon_cooldowns recorded on the mech.
     # The cooldowns dict maps weapon_id -> remaining ticks.
     # We expose the weapons the mech *has cooldown entries for*; the pilot
     # only needs to know about weapons the match runner has registered.
-    weapon_views: list[ModelSOPilotWeaponView] = [
-        ModelSOPilotWeaponView(
-            weapon_id=weapon_id,
-            # Damage/range/costs are not yet carried on the runtime state in
-            # Task 21 scope; expose safe defaults (0) so downstream reducers
-            # that own those fields can validate properly.
-            damage=0,
-            range=0,
-            pressure_cost=0,
-            heat_generated=0,
-            cooldown_remaining_ticks=cooldown,
+    # Stats come from the weapon contract index (Task 34); a weapon with no
+    # spec entry falls back to zeros (the Task 21 scope behavior).
+    weapon_views: list[ModelSOPilotWeaponView] = []
+    for weapon_id, cooldown in mech.weapon_cooldowns.items():
+        spec = weapon_specs.get(weapon_id)
+        weapon_views.append(
+            ModelSOPilotWeaponView(
+                weapon_id=weapon_id,
+                damage=spec.damage if spec is not None else 0,
+                range=spec.range if spec is not None else 0,
+                pressure_cost=spec.pressure_cost if spec is not None else 0,
+                heat_generated=spec.heat_generated if spec is not None else 0,
+                cooldown_remaining_ticks=cooldown,
+            )
         )
-        for weapon_id, cooldown in mech.weapon_cooldowns.items()
-    ]
 
     # Sensor readings — filter to events whose subject is this mech.
     enemy_readings: list[ModelSOSensorReading] = []
@@ -179,12 +182,14 @@ class ReducerPilotTick:
         pilots: dict[str, PilotProtocol],
         sensor_events: list[ModelSOEventEnvelope],
         emit: Callable[[ModelSOEventEnvelope], None],
+        weapon_specs: dict[str, ModelSOWeaponSpec] | None = None,
     ) -> None:
         self._match_id = match_id
         self._state = state
         self._pilots = pilots
         self._sensor_events = sensor_events
         self._emit = emit
+        self._weapon_specs = weapon_specs if weapon_specs is not None else {}
 
     @property
     def state(self) -> ModelSOMatchState:
@@ -225,7 +230,7 @@ class ReducerPilotTick:
         mech: ModelSOMechRuntimeState,
         state: ModelSOMatchState,
     ) -> None:
-        observation = _build_observation(mech, state, self._sensor_events)
+        observation = _build_observation(mech, state, self._sensor_events, self._weapon_specs)
         decision = pilot.decide(observation)
 
         subject = ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id)

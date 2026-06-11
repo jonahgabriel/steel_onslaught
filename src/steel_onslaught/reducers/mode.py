@@ -38,6 +38,108 @@ from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeSta
 _PRODUCER_NODE = "node.reducer.mode"
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers (Task 34) — shared by ReducerModeTransition (legacy
+# in-place reducer), the live intent resolver in match/runner.py, and the
+# canonical state fold in match/fold.py.  MODE_TRANSITION_STARTED envelopes
+# are built ONLY here (enforced by the static scan in tests/reducers/test_mode.py).
+# ---------------------------------------------------------------------------
+
+
+def validate_mode_switch(
+    mech: ModelSOMechRuntimeState,
+    transition: ModelSOModeTransition,
+    from_mode: str,
+    current_tick: int,
+) -> bool:
+    """Return True iff every mode-switch validation check passes."""
+    # from_mode must match the mech's actual current mode.
+    if mech.current_mode != from_mode:
+        return False
+
+    # Mode lock must have expired.
+    if current_tick < mech.mode_lock_until:
+        return False
+
+    # Mode switching must not be disabled (e.g. due to overload).
+    if current_tick < mech.mode_switch_disabled_until:
+        return False
+
+    # Sufficient pressure.
+    if mech.boiler.pressure_current < transition.costs.pressure:
+        return False
+
+    # Heat guard (strict inequality: heat must be < limit, not ==).
+    heat_limit = transition.restrictions.cannot_switch_if_heat_above
+    if heat_limit is not None and mech.boiler.heat_current >= heat_limit:
+        return False
+
+    # Boiler disabled guard.
+    if transition.restrictions.cannot_switch_if_boiler_disabled and mech.boiler.status_disabled:
+        return False
+
+    return True
+
+
+def build_mode_transition_started_event(
+    *,
+    match_id: str,
+    tick: int,
+    mech: ModelSOMechRuntimeState,
+    transition: ModelSOModeTransition,
+) -> ModelSOEventEnvelope:
+    """Build the canonical MODE_TRANSITION_STARTED envelope for *mech*."""
+    return ModelSOEventEnvelope(
+        event_id=ulid.new().str,
+        match_id=match_id,
+        tick=tick,
+        sequence_in_tick=0,  # bus re-stamps
+        event_type=SOEventType.MODE_TRANSITION_STARTED,
+        producer_node=_PRODUCER_NODE,
+        subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
+        payload={
+            "from_mode": transition.from_mode,
+            "to_mode": transition.to_mode,
+            "costs": {
+                "pressure": transition.costs.pressure,
+                "heat": transition.costs.heat,
+                "transition_ticks": transition.costs.transition_ticks,
+            },
+            "sensor_dropout_ticks": transition.vulnerability.sensor_dropout_ticks,
+            "evasion_penalty": transition.vulnerability.evasion_penalty_during_transition,
+        },
+        emitted_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def build_mode_transition_completed_event(
+    *,
+    match_id: str,
+    tick: int,
+    mech_id: str,
+    player_id: str,
+    from_mode: str,
+    new_mode: str,
+    mode_lock_until: int,
+) -> ModelSOEventEnvelope:
+    """Build the canonical MODE_TRANSITION_COMPLETED envelope."""
+    return ModelSOEventEnvelope(
+        event_id=ulid.new().str,
+        match_id=match_id,
+        tick=tick,
+        sequence_in_tick=0,  # bus re-stamps
+        event_type=SOEventType.MODE_TRANSITION_COMPLETED,
+        producer_node=_PRODUCER_NODE,
+        subject=ModelSOEventSubject(mech_id=mech_id, player_id=player_id),
+        payload={
+            "from_mode": from_mode,
+            "new_mode": new_mode,
+            "mode_lock_until": mode_lock_until,
+        },
+        emitted_at=datetime.now(UTC).isoformat(),
+    )
+
+
 class ReducerModeTransition:
     """Per-match mode-transition reducer.
 
@@ -187,32 +289,7 @@ class ReducerModeTransition:
         from_mode: str,
     ) -> bool:
         """Return True iff all validation checks pass for the given intent."""
-        # from_mode must match mech's actual current mode.
-        if mech.current_mode != from_mode:
-            return False
-
-        # Mode lock must have expired.
-        if self._current_tick < mech.mode_lock_until:
-            return False
-
-        # Mode switching must not be disabled (e.g. due to overload).
-        if self._current_tick < mech.mode_switch_disabled_until:
-            return False
-
-        # Sufficient pressure.
-        if mech.boiler.pressure_current < transition.costs.pressure:
-            return False
-
-        # Heat guard (strict inequality: heat must be < limit, not ==).
-        heat_limit = transition.restrictions.cannot_switch_if_heat_above
-        if heat_limit is not None and mech.boiler.heat_current >= heat_limit:
-            return False
-
-        # Boiler disabled guard.
-        if transition.restrictions.cannot_switch_if_boiler_disabled and mech.boiler.status_disabled:
-            return False
-
-        return True
+        return validate_mode_switch(mech, transition, from_mode, self._current_tick)
 
     # ------------------------------------------------------------------
     # Per-tick countdown

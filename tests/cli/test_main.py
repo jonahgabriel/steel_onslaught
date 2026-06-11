@@ -132,8 +132,10 @@ def test_replay_tick_window_filters_lines(tmp_path: Path) -> None:
     assert replayed.exit_code == 0
     lines = replayed.stdout.splitlines()
     assert lines, "tick window 3-5 should render at least one line"
+    ansi_sgr = re.compile(r"\x1b\[[0-9;]*m")
     for line in lines:
-        tick_match = re.match(r"^\[Tick (\d+)\]", line)
+        plain = ansi_sgr.sub("", line)  # combat lines are color-painted
+        tick_match = re.match(r"^\[Tick (\d+)\]", plain)
         assert tick_match is not None, f"unexpected line format: {line!r}"
         assert 3 <= int(tick_match.group(1)) <= 5
 

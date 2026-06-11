@@ -46,12 +46,18 @@ _MODE_SPEED_DELTA: dict[str, int] = {
 _MIN_EFFECTIVE_SPEED = 1
 
 
-def _effective_speed(mech: ModelSOMechRuntimeState) -> int:
-    delta = _MODE_SPEED_DELTA.get(mech.current_mode, 0)
-    return max(_MIN_EFFECTIVE_SPEED, mech.base_speed + delta)
+def mode_effective_speed(base_speed: int, mode: str) -> int:
+    """Effective speed for *base_speed* in *mode* (floored at 1)."""
+    return max(_MIN_EFFECTIVE_SPEED, base_speed + _MODE_SPEED_DELTA.get(mode, 0))
 
 
-def _chebyshev(a: ModelSOPosition, b: ModelSOPosition) -> int:
+def effective_speed(mech: ModelSOMechRuntimeState) -> int:
+    """Effective speed of *mech* given its current mode."""
+    return mode_effective_speed(mech.base_speed, mech.current_mode)
+
+
+def chebyshev(a: ModelSOPosition, b: ModelSOPosition) -> int:
+    """Chebyshev (king-move) distance between two grid positions."""
     return max(abs(b.x - a.x), abs(b.y - a.y))
 
 
@@ -164,7 +170,7 @@ class ReducerMovement:
             )
 
         # 2. Pressure cost must equal Chebyshev distance (1 per cell).
-        distance = _chebyshev(from_pos, to_pos)
+        distance = chebyshev(from_pos, to_pos)
         if pressure_consumed != distance:
             raise ReducerError(
                 f"pressure_cost_mismatch: Chebyshev distance is {distance}, "
@@ -172,7 +178,7 @@ class ReducerMovement:
             )
 
         # 3. Speed limit: distance <= effective_speed * ticks_consumed.
-        speed = _effective_speed(mech)
+        speed = effective_speed(mech)
         max_cells = speed * ticks_consumed
         if distance > max_cells:
             raise ReducerError(

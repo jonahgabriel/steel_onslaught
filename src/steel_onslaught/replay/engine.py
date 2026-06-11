@@ -1,21 +1,15 @@
-"""Replay engine — Task 27.
+"""Replay engine — Tasks 27 + 34.
 
 Reads events from a ``SQLiteLedger`` in canonical order
-``(tick ASC, sequence_in_tick ASC, event_id ASC)`` and folds them through the
-same reducer stack used during live play, producing a ``ModelSOMatchState``
-that is ``==`` to the live final state.
+``(tick ASC, sequence_in_tick ASC, event_id ASC)`` and folds them through
+``MatchStateFold`` — the SAME fold the live match runner subscribes to the
+bus — producing a ``ModelSOMatchState`` that is ``==`` to the live final
+state by construction (R9 / Architectural Decision #6).
 
-Reducers used during live play (see ``match/runner.py``):
-  - ``ReducerMatchLifecycle`` — authoritative status / winner / end_reason /
-    initial mech_states.  Bus is passed as ``None`` so the replay path
-    produces no side-effect emissions.
-  - ``ReducerBoiler`` per mech — folds MATCH_TICK, WEAPON_FIRED, and
-    MODE_TRANSITION_STARTED into each mech's boiler sub-state.
-
-Other reducers (movement, sensors, mode, pilot_tick, weapons, damage, failure)
-do not mutate persisted canonical state in the current runner; their emissions
-are re-read from the ledger and folded only through the two reducers above,
-matching the runner's fold exactly.
+The fold consumes only canonical resolved events; intent / telemetry events
+in the ledger pass through it as no-ops, and fold-internal emissions are
+suppressed on the replay path (``bus=None``) because the live copies of those
+events arrive from the ledger as idempotent re-statements.
 
 API
 ---
@@ -33,15 +27,12 @@ Usage::
 
 from __future__ import annotations
 
-from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from pathlib import Path
+
+from steel_onslaught.events.envelope import ModelSOEventEnvelope
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.state import ModelSOMatchState
-from steel_onslaught.reducers.boiler import ReducerBoiler
-from steel_onslaught.reducers.lifecycle import ReducerMatchLifecycle
-
-
-def _noop_emit(_event: ModelSOEventEnvelope) -> None:
-    """No-op emit callback for replay reducers — no side effects wanted."""
 
 
 class ReplayEngine:
@@ -50,6 +41,9 @@ class ReplayEngine:
     Args:
         ledger:   Open ``SQLiteLedger`` holding the target match's events.
         match_id: The match identifier whose events are replayed.
+        contracts_data_dir: Optional override for the static contract catalog
+                  the fold needs (mode transitions, weapon cooldowns, safety
+                  gizmos).  Defaults to the package-relative contracts_data/.
 
     The engine caches the full ordered event list on first construction to
     avoid repeated ledger scans.  The ledger is expected to be complete
@@ -57,9 +51,16 @@ class ReplayEngine:
     for running matches are supported.
     """
 
-    def __init__(self, ledger: SQLiteLedger, match_id: str) -> None:
+    def __init__(
+        self,
+        ledger: SQLiteLedger,
+        match_id: str,
+        *,
+        contracts_data_dir: Path | None = None,
+    ) -> None:
         self._ledger = ledger
         self._match_id = match_id
+        self._catalog = MatchContractCatalog.load(contracts_data_dir)
         # Cache the full canonical event list once.
         self._events: list[ModelSOEventEnvelope] = list(ledger.read_all(match_id))
         # Current cursor position — updated by reconstruct_at_tick / step_*.
@@ -136,82 +137,14 @@ class ReplayEngine:
     # ------------------------------------------------------------------
 
     def _fold_up_to(self, target_tick: int) -> ModelSOMatchState:
-        """Fold events with tick <= *target_tick* through the reducer stack.
+        """Fold events with tick <= *target_tick* through ``MatchStateFold``.
 
-        Mirrors the runner's composition exactly:
-        1. ``ReducerMatchLifecycle`` (bus=None) handles MATCH_STARTED,
-           MATCH_TICK, VICTORY_DECLARED, MATCH_ENDED, and owns the
-           authoritative match status / winner / end_reason / mech_states seed.
-        2. ``ReducerBoiler`` (per mech, no-op emit) handles MATCH_TICK,
-           WEAPON_FIRED, and MODE_TRANSITION_STARTED, updating each mech's
-           boiler sub-state in the running ``state`` variable.
-
-        Runner behaviour preserved here:
-        - After ``MATCH_STARTED``, the runner initialises ``state`` and boiler
-          reducers from ``lifecycle.state``.
-        - On each ``MATCH_TICK``, the runner folds the lifecycle reducer first;
-          if the match is still RUNNING, it then applies the boiler reducers.
-          If the tick terminates the match (lifecycle transitions to ENDED),
-          the runner breaks *before* calling the boiler reducers — so the
-          boiler reducers are NOT applied for the terminal tick.  This replay
-          engine replicates that skip.
-
-        Returns ``lifecycle.state.model_copy(update={"mech_states": state.mech_states})``,
-        which is the exact expression used by ``MatchRunner.run()``.
+        A fresh fold per call keeps reconstruction stateless and exact: the
+        result is a pure function of the canonical event prefix.
         """
-        from steel_onslaught.match.state import SOMatchStatus
-
-        lifecycle = ReducerMatchLifecycle(self._match_id, bus=None)
-
-        # State variable mirrors the runner's local ``state`` — starts as
-        # uninitialized; filled once MATCH_STARTED is folded.
-        state: ModelSOMatchState | None = None
-        # Boiler reducers are keyed by mech_id; created after MATCH_STARTED
-        # populates mech_states so we can read the initial boiler status.
-        boiler_reducers: dict[str, ReducerBoiler] = {}
-
+        fold = MatchStateFold(self._match_id, bus=None, catalog=self._catalog)
         for event in self._events:
             if event.tick > target_tick:
                 break
-
-            # 1. Fold through lifecycle reducer.
-            lifecycle.apply(event)
-
-            # 2. After MATCH_STARTED, bootstrap the runner-equivalent state
-            #    and build per-mech boiler reducers from it.
-            if event.event_type is SOEventType.MATCH_STARTED and state is None:
-                state = lifecycle.state
-                boiler_reducers = {
-                    mech_id: ReducerBoiler(mech_id, state, emit=_noop_emit)
-                    for mech_id in state.mech_states
-                }
-                continue  # MATCH_STARTED itself carries no boiler delta
-
-            # 3. For MATCH_TICK events, the runner applies boiler reducers only
-            #    when the match is still RUNNING after the lifecycle fold.
-            #    On the terminal tick the lifecycle transitions to ENDED, and the
-            #    runner breaks *before* the boiler loop — so we replicate that skip.
-            if event.event_type is SOEventType.MATCH_TICK:
-                if lifecycle.state.status is not SOMatchStatus.RUNNING:
-                    break  # terminal tick reached; boiler NOT applied (matches runner)
-                if state is not None:
-                    state = state.model_copy(update={"tick": event.tick})
-                    for reducer in boiler_reducers.values():
-                        state = reducer.apply(event, state)
-                continue
-
-            # 4. Non-MATCH_TICK, non-MATCH_STARTED events (WEAPON_FIRED, etc.)
-            #    are folded through the boiler reducers just like the runner does
-            #    (runner publishes to bus; boiler reducers subscribed to bus).
-            if state is not None:
-                for reducer in boiler_reducers.values():
-                    state = reducer.apply(event, state)
-
-        # If we never saw MATCH_STARTED, return whatever the lifecycle has
-        # (will be the PENDING initial state).
-        if state is None:
-            return lifecycle.state
-
-        # Mirror exactly: lifecycle owns status/winner/end_reason;
-        # state.mech_states has the boiler-updated mech detail.
-        return lifecycle.state.model_copy(update={"mech_states": state.mech_states})
+            fold.apply(event)
+        return fold.state

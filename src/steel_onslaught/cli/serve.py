@@ -10,9 +10,8 @@ declaration field order, no whitespace normalization — the same form
 ``JSON.stringify`` produces after a lossless parse on the TS side.
 
 The ``so serve`` command replays a recorded match from a SQLite ledger:
-it starts the bridge (default port 8765), waits for the first client, then
-publishes every ledger event for the match onto a fresh bus, streaming the
-match to all connected clients.
+it binds a WebSocket server (default port 8765) and streams the full match —
+frame-for-frame in canonical ledger order — to every client that connects.
 
 REST endpoint (Task 33)
 -----------------------
@@ -257,24 +256,33 @@ async def _serve_replay(
     host: str,
     port: int,
 ) -> None:
-    """Start the bridge, wait for the first client, stream *events*, idle."""
-    # Local import: the bus protocol lives in steel_onslaught.bus.protocol;
-    # the concrete in-process bus is only needed by this CLI entry point.
-    from steel_onslaught.bus.in_process import InProcessEventBus
+    """Stream the recorded match to EVERY client that connects, then idle.
 
-    bus = InProcessEventBus()
-    bridge = WebSocketBridge(bus, host=host, port=port)
-    await bridge.start()
-    click.echo(f"serving on ws://{bridge.host}:{bridge.port} — waiting for a client", err=True)
+    Per-client streaming (rather than a single broadcast to the first client)
+    makes the replay robust to client churn — e.g. React StrictMode's
+    mount/unmount/mount cycle opens two sockets in quick succession, and both
+    must receive the full match (Task 34 Proof of Life).
+    """
+    frames = [WebSocketBridge.serialize(event) for event in events]
+
+    async def _stream_to_client(connection: ServerConnection) -> None:
+        for frame in frames:
+            await connection.send(frame)
+        await connection.wait_closed()
+
+    server = await serve(_stream_to_client, host, port)
     try:
-        await bridge.wait_for_client()
-        for event in events:
-            bus.publish(event)
-            await asyncio.sleep(0)  # let the loop flush frames between events
-        click.echo(f"streamed {len(events)} events; Ctrl+C to exit", err=True)
+        sockets = list(server.sockets)
+        bound_port = sockets[0].getsockname()[1] if sockets else port
+        click.echo(
+            f"serving on ws://{host}:{bound_port} — streaming {len(frames)} events "
+            "to each client; Ctrl+C to exit",
+            err=True,
+        )
         await asyncio.Event().wait()  # serve until interrupted
     finally:
-        await bridge.stop()
+        server.close()
+        await server.wait_closed()
 
 
 @click.command(name="serve")
