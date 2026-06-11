@@ -71,6 +71,14 @@ class ModelSOLoadout(BaseModel):
     chassis_id: str = Field(pattern=r"^chassis\.")
     boiler_id: str = Field(pattern=r"^boiler\.")
     pilot_id: str = Field(pattern=r"^pilot\.")
+    pilot_spec_path: str | None = Field(
+        default=None,
+        description=(
+            "Optional player-supplied pilot spec YAML, resolved relative to the "
+            "loadout file's directory (tunable-pilots addendum §7 rule 1). The "
+            "spec's id must equal pilot_id and must name a non-null lineage.parent."
+        ),
+    )
     modules: ModelSOLoadoutModules
     budgets: ModelSOLoadoutBudgets
 

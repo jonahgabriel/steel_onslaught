@@ -41,6 +41,7 @@ from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loado
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
+from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -118,24 +119,15 @@ def load_loadout(path: Path) -> ModelSOLoadout:
     return ModelSOLoadout.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 
-_PILOTS_DIR = Path(__file__).parent.parent.parent.parent / "contracts_data" / "pilots"
-
-
-def _load_template_spec(archetype: str) -> ModelSOPilotSpec:
-    """Load the canonical template spec YAML for one archetype."""
-    raw = yaml.safe_load((_PILOTS_DIR / f"template_{archetype}.yaml").read_text(encoding="utf-8"))
-    return ModelSOPilotSpec.model_validate(raw)
-
-
-def _pilot_for(pilot_id: str) -> PilotProtocol:
-    """Map a loadout ``pilot_id`` to its archetype implementation (template spec)."""
-    if "aggressive" in pilot_id:
-        return AggressivePilot(spec=_load_template_spec("aggressive"))
-    if "defensive" in pilot_id:
-        return DefensivePilot(spec=_load_template_spec("defensive"))
-    if "predictive" in pilot_id:
-        return PredictivePilot(spec=_load_template_spec("predictive"))
-    raise ValueError(f"unknown pilot archetype in pilot_id {pilot_id!r}")
+def _pilot_from_spec(spec: ModelSOPilotSpec) -> PilotProtocol:
+    """Construct the archetype implementation a resolved pilot spec drives."""
+    match spec.archetype:
+        case "aggressive":
+            return AggressivePilot(spec=spec)
+        case "defensive":
+            return DefensivePilot(spec=spec)
+        case "predictive":
+            return PredictivePilot(spec=spec)
 
 
 def _clamp(value: int, magnitude: int) -> int:
@@ -156,6 +148,9 @@ class MatchRunner:
         max_ticks: int = 200,
         contracts_data_dir: Path | None = None,
         catalog: MatchContractCatalog | None = None,
+        pilot_registry: PilotSpecRegistry | None = None,
+        loadout_dir_a: Path | None = None,
+        loadout_dir_b: Path | None = None,
         side_a: str = "a",
         side_b: str = "b",
         spawn_a: ModelSOPosition = _SPAWN_A,
@@ -181,6 +176,15 @@ class MatchRunner:
         self._catalog = (
             catalog if catalog is not None else MatchContractCatalog.load(contracts_data_dir)
         )
+        self._pilot_registry = (
+            pilot_registry
+            if pilot_registry is not None
+            else PilotSpecRegistry.load(
+                contracts_data_dir / "pilots" if contracts_data_dir is not None else None
+            )
+        )
+        self._loadout_dir_a = loadout_dir_a
+        self._loadout_dir_b = loadout_dir_b
 
         # Canonical state fold — the same fold the replay engine uses.
         # Subscribed at construction time so callers can order later
@@ -218,7 +222,12 @@ class MatchRunner:
         )
         mechs = (mech_a, mech_b)
         pilots: dict[str, PilotProtocol] = {
-            mech.mech_id: _pilot_for(mech.pilot_id) for mech in mechs
+            mech_a.mech_id: _pilot_from_spec(
+                self._pilot_registry.resolve(self._loadout_a, base_dir=self._loadout_dir_a)
+            ),
+            mech_b.mech_id: _pilot_from_spec(
+                self._pilot_registry.resolve(self._loadout_b, base_dir=self._loadout_dir_b)
+            ),
         }
 
         self._bus.publish(
@@ -720,8 +729,13 @@ def run_match(
     scoring, then the leaderboard projection.
     """
     catalog = MatchContractCatalog.load(contracts_data_dir)
-    red = load_loadout(Path(red_loadout))
-    blue = load_loadout(Path(blue_loadout))
+    pilot_registry = PilotSpecRegistry.load(
+        contracts_data_dir / "pilots" if contracts_data_dir is not None else None
+    )
+    red_path = Path(red_loadout)
+    blue_path = Path(blue_loadout)
+    red = load_loadout(red_path)
+    blue = load_loadout(blue_path)
     _require_valid_budgets(red, catalog)
     _require_valid_budgets(blue, catalog)
 
@@ -738,6 +752,9 @@ def run_match(
         bus=bus,
         max_ticks=max_ticks,
         catalog=catalog,
+        pilot_registry=pilot_registry,
+        loadout_dir_a=red_path.parent,
+        loadout_dir_b=blue_path.parent,
         side_a="red",
         side_b="blue",
         spawn_a=ModelSOPosition(x=5, y=5),
