@@ -1,4 +1,4 @@
-"""WebSocket bridge — Task 31.
+"""WebSocket bridge and REST replay API — Tasks 31 and 33.
 
 ``WebSocketBridge`` subscribes to the in-process event bus and broadcasts
 each published envelope as JSON to every connected WebSocket client.
@@ -13,22 +13,148 @@ The ``so serve`` command replays a recorded match from a SQLite ledger:
 it starts the bridge (default port 8765), waits for the first client, then
 publishes every ledger event for the match onto a fresh bus, streaming the
 match to all connected clients.
+
+REST endpoint (Task 33)
+-----------------------
+``create_replay_http_handler(ledger_dir)`` returns an
+``http.server.BaseHTTPRequestHandler`` subclass that serves:
+
+  GET /api/replay/{match_id}/tick/{tick}
+
+  200  JSON array of PILOT_DECISION_MADE envelopes for that tick (may be [])
+  400  {"error": "invalid_tick"}  when tick < 0
+  404  {"error": "match_not_found"}  when no ledger in *ledger_dir* contains
+       any event with the requested match_id
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+import sqlite3
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from typing import Any
 
 import click
 from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 
 from steel_onslaught.bus.protocol import EventBus, HandlerToken
-from steel_onslaught.events.envelope import ModelSOEventEnvelope
+from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 
 DEFAULT_WS_HOST = "127.0.0.1"
 DEFAULT_WS_PORT = 8765
+
+# ---------------------------------------------------------------------------
+# REST endpoint: GET /api/replay/{match_id}/tick/{tick}  (Task 33)
+# ---------------------------------------------------------------------------
+
+_REPLAY_RE = re.compile(r"^/api/replay/([^/]+)/tick/(-?\d+)$")
+
+_SELECT_DECISIONS_SQL = """
+SELECT event_id, match_id, tick, sequence_in_tick, event_type,
+       correlation_id, causation_id, producer_node,
+       subject_json, payload_json, emitted_at, schema_version
+  FROM events
+ WHERE match_id = ?
+   AND tick = ?
+   AND event_type = ?
+ ORDER BY sequence_in_tick ASC, event_id ASC
+"""
+
+_CHECK_MATCH_SQL = "SELECT 1 FROM events WHERE match_id = ? LIMIT 1"
+
+
+def _find_ledger_for_match(ledger_dir: Path, match_id: str) -> Path | None:
+    """Return the first ``*.sqlite`` file under *ledger_dir* that contains
+    at least one event row for *match_id*, or ``None`` if none exists."""
+    for db_path in sorted(ledger_dir.glob("*.sqlite")):
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(_CHECK_MATCH_SQL, (match_id,)).fetchone()
+                if row is not None:
+                    return db_path
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError:
+            continue
+    return None
+
+
+def _query_pilot_decisions(db_path: Path, match_id: str, tick: int) -> list[dict[str, Any]]:
+    """Return serialised PILOT_DECISION_MADE envelopes for (*match_id*, *tick*)."""
+    from steel_onslaught.ledger.sqlite_ledger import _row_to_envelope
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            _SELECT_DECISIONS_SQL,
+            (match_id, tick, SOEventType.PILOT_DECISION_MADE.value),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        env = _row_to_envelope(row)
+        result.append(json.loads(env.model_dump_json()))
+    return result
+
+
+def create_replay_http_handler(ledger_dir: Path) -> type[BaseHTTPRequestHandler]:
+    """Return an HTTP handler class that serves the replay REST API.
+
+    The returned class reads from ``*.sqlite`` files under *ledger_dir*.
+    Each handler instance is stateless; *ledger_dir* is captured by closure.
+
+    Endpoint:
+        GET /api/replay/{match_id}/tick/{tick}
+
+    Responses:
+        200  list of PILOT_DECISION_MADE envelopes (may be [])
+        400  {"error": "invalid_tick"}      — tick < 0
+        404  {"error": "match_not_found"}   — no ledger contains match_id
+    """
+
+    class _ReplayHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            m = _REPLAY_RE.match(self.path)
+            if m is None:
+                self._respond(404, {"error": "not_found"})
+                return
+
+            match_id_param = m.group(1)
+            tick_str = m.group(2)
+            tick_val = int(tick_str)
+
+            if tick_val < 0:
+                self._respond(400, {"error": "invalid_tick"})
+                return
+
+            db_path = _find_ledger_for_match(ledger_dir, match_id_param)
+            if db_path is None:
+                self._respond(404, {"error": "match_not_found"})
+                return
+
+            decisions = _query_pilot_decisions(db_path, match_id_param, tick_val)
+            self._respond(200, decisions)
+
+        def _respond(self, status: int, body: Any) -> None:
+            payload = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            # Suppress default stderr logging during tests.
+            pass
+
+    return _ReplayHandler
 
 
 class WebSocketBridge:
