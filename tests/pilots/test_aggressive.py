@@ -452,8 +452,8 @@ def test_wrong_archetype_raises_at_construction() -> None:
 def test_tuned_vent_margin_2_fires_at_heat_96() -> None:
     """With vent_at_heat_margin=2, pilot fires at heat 96/rupture 100 (template would vent).
 
-    Template: rupture − 5 = 95 → heat 96 >= 95 → VENT.
-    Tuned:    rupture − 2 = 98 → heat 96 < 98  → allowed to fire.
+    Template: rupture - 5 = 95 → heat 96 >= 95 → VENT.
+    Tuned:    rupture - 2 = 98 → heat 96 < 98  → allowed to fire.
     """
     spec = _make_spec(vent_at_heat_margin=2)
     pilot = AggressivePilot(spec=spec)
@@ -468,7 +468,7 @@ def test_tuned_vent_margin_2_fires_at_heat_96() -> None:
 
 @pytest.mark.unit
 def test_tuned_vent_margin_2_vents_at_heat_99() -> None:
-    """With vent_at_heat_margin=2, pilot vents at heat 99/rupture 100 (rupture − 2 = 98)."""
+    """With vent_at_heat_margin=2, pilot vents at heat 99/rupture 100 (rupture - 2 = 98)."""
     spec = _make_spec(vent_at_heat_margin=2)
     pilot = AggressivePilot(spec=spec)
     obs = _observation(

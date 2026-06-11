@@ -187,7 +187,7 @@ def test_defensive_pilot_satisfies_protocol() -> None:
 @pytest.mark.unit
 def test_vents_when_heat_near_redline() -> None:
     """heat=73, redline=80 → 73 >= 80-8=72 → VENT."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=73, redline=80, rupture=100),
         # Even with enemy in range and weapon ready, heat-first rule wins.
@@ -200,7 +200,7 @@ def test_vents_when_heat_near_redline() -> None:
 @pytest.mark.unit
 def test_vents_exactly_at_redline_minus_8() -> None:
     """heat=72, redline=80 → 72 >= 72 → VENT (boundary inclusive)."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(boiler=_boiler_state(heat=72, redline=80, rupture=100))
     decision = pilot.decide(obs)
     assert decision.action is SOPilotAction.VENT
@@ -209,7 +209,7 @@ def test_vents_exactly_at_redline_minus_8() -> None:
 @pytest.mark.unit
 def test_does_not_vent_when_heat_well_below_redline() -> None:
     """heat=50, redline=80 → 50 < 72 → NOT VENT from heat rule."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     # With hp_percent=100, no enemy threat → should MOVE (rule 5)
     obs = _observation(
         boiler=_boiler_state(heat=50, redline=80, rupture=100),
@@ -222,7 +222,7 @@ def test_does_not_vent_when_heat_well_below_redline() -> None:
 @pytest.mark.unit
 def test_vents_when_heat_above_redline() -> None:
     """heat=85, redline=80 → 85 >= 72 → VENT (deep into redline zone)."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(boiler=_boiler_state(heat=85, redline=80, rupture=100))
     decision = pilot.decide(obs)
     assert decision.action is SOPilotAction.VENT
@@ -236,7 +236,7 @@ def test_vents_when_heat_above_redline() -> None:
 @pytest.mark.unit
 def test_switches_to_evasion_when_under_sensor_lock() -> None:
     """Not in evasion mode + under_sensor_lock + pressure available → SWITCH_MODE."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=30, pressure=30),
         under_sensor_lock=True,
@@ -251,7 +251,7 @@ def test_switches_to_evasion_when_under_sensor_lock() -> None:
 @pytest.mark.unit
 def test_does_not_switch_to_evasion_when_already_in_evasion() -> None:
     """Already in evasion mode → rule 2 skipped."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=30, pressure=30),
         under_sensor_lock=True,
@@ -268,7 +268,7 @@ def test_does_not_switch_to_evasion_when_already_in_evasion() -> None:
 @pytest.mark.unit
 def test_does_not_switch_to_evasion_when_mode_locked() -> None:
     """Mode lock not expired → SWITCH_MODE not available; skip rule 2."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=30, pressure=30),
         under_sensor_lock=True,
@@ -289,7 +289,7 @@ def test_does_not_switch_to_evasion_when_mode_locked() -> None:
 @pytest.mark.unit
 def test_fires_when_high_confidence_and_heat_headroom_ok() -> None:
     """confidence=0.8, heat headroom=80-20=60 >= 12, pressure=40 → FIRE."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=20, redline=80, rupture=100, pressure=40),
         weapons=[_weapon(cooldown=0, pressure_cost=8, range=10)],
@@ -305,7 +305,7 @@ def test_fires_when_high_confidence_and_heat_headroom_ok() -> None:
 @pytest.mark.unit
 def test_does_not_fire_with_low_confidence() -> None:
     """confidence=0.4 (< 0.7 high-confidence threshold) → does not fire."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=20, redline=80, rupture=100, pressure=40),
         weapons=[_weapon(cooldown=0, pressure_cost=8, range=10)],
@@ -322,7 +322,7 @@ def test_does_not_fire_with_low_confidence() -> None:
 @pytest.mark.unit
 def test_does_not_fire_when_heat_headroom_insufficient() -> None:
     """confidence=0.8 but heat=69, redline=80 → headroom=11 < 12 → no fire."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=69, redline=80, rupture=100, pressure=40),
         weapons=[_weapon(cooldown=0, pressure_cost=8, range=10, heat_generated=10)],
@@ -339,7 +339,7 @@ def test_does_not_fire_when_heat_headroom_insufficient() -> None:
 @pytest.mark.unit
 def test_does_not_fire_when_enemy_out_of_range() -> None:
     """Enemy distance=20 > weapon range=10 → out of range → no fire."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=20, redline=80, rupture=100, pressure=40),
         weapons=[_weapon(cooldown=0, pressure_cost=8, range=10)],
@@ -356,7 +356,7 @@ def test_does_not_fire_when_enemy_out_of_range() -> None:
 @pytest.mark.unit
 def test_fires_exactly_at_confidence_threshold() -> None:
     """confidence=0.7 is the high-confidence boundary — fires."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=20, redline=80, rupture=100, pressure=40),
         weapons=[_weapon(cooldown=0, pressure_cost=8, range=10)],
@@ -372,7 +372,7 @@ def test_fires_exactly_at_confidence_threshold() -> None:
 @pytest.mark.unit
 def test_fires_exactly_at_heat_headroom_12() -> None:
     """heat=68, redline=80 → headroom=12 exactly → fires (boundary inclusive)."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=68, redline=80, rupture=100, pressure=40),
         weapons=[_weapon(cooldown=0, pressure_cost=8, range=10)],
@@ -393,7 +393,7 @@ def test_fires_exactly_at_heat_headroom_12() -> None:
 @pytest.mark.unit
 def test_disengages_when_low_hp() -> None:
     """hp_percent=25 < 30, no immediate threat → DISENGAGE."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=20, redline=80, rupture=100),
         hp_percent=25.0,
@@ -409,7 +409,7 @@ def test_disengages_when_low_hp() -> None:
 @pytest.mark.unit
 def test_does_not_disengage_at_hp_30() -> None:
     """hp_percent=30.0 is not strictly < 30 → rule 4 does not trigger."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=20, redline=80, rupture=100),
         hp_percent=30.0,
@@ -430,7 +430,7 @@ def test_does_not_disengage_at_hp_30() -> None:
 @pytest.mark.unit
 def test_moves_when_no_other_rule_applies() -> None:
     """No threats, no lock, full hp, cool boiler → MOVE (maintain range)."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=20, redline=80, rupture=100),
         hp_percent=100.0,
@@ -451,7 +451,7 @@ def test_moves_when_no_other_rule_applies() -> None:
 @pytest.mark.unit
 def test_decision_always_has_chosen_action_in_considered() -> None:
     """Every decision must satisfy the ModelSOPilotDecision invariant."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     scenarios = [
         _observation(boiler=_boiler_state(heat=73), enemy_observations=[]),  # vent
         _observation(hp_percent=25.0),  # disengage
@@ -473,7 +473,7 @@ def test_decision_always_has_chosen_action_in_considered() -> None:
 @pytest.mark.unit
 def test_decision_confidence_in_valid_range() -> None:
     """Confidence must be clamped to [0, 1] by the schema."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation()
     decision = pilot.decide(obs)
     assert 0.0 <= decision.confidence <= 1.0
@@ -482,7 +482,7 @@ def test_decision_confidence_in_valid_range() -> None:
 @pytest.mark.unit
 def test_decision_has_reason_code() -> None:
     """Every decision must carry a reason_code."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation()
     decision = pilot.decide(obs)
     assert decision.reason_code is not None
@@ -496,7 +496,7 @@ def test_decision_has_reason_code() -> None:
 @pytest.mark.unit
 def test_heat_rule_has_priority_over_fire_rule() -> None:
     """Even with high-confidence enemy in range, heat near redline → VENT first."""
-    pilot = DefensivePilot()
+    pilot = DefensivePilot(spec=_template_spec())
     obs = _observation(
         boiler=_boiler_state(heat=73, redline=80, rupture=100, pressure=40),
         weapons=[_weapon(cooldown=0, pressure_cost=8, range=10)],

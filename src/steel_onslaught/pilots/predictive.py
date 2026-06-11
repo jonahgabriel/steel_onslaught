@@ -24,10 +24,6 @@ Design invariants:
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import yaml
-
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec, ModelSOPredictivePilotParams
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
@@ -41,20 +37,6 @@ from steel_onslaught.pilots.schemas import (
 # The mode that grants weapon access; any other mode is considered to need a
 # switch before weapons become fully available to the predictive pilot.
 _WEAPON_MODE: str = "assault"
-
-# Path to the canonical template spec — resolved relative to this file so
-# it works in worktrees and canonical clones without hardcoded absolute paths.
-_TEMPLATE_SPEC_PATH: Path = (
-    Path(__file__).parent.parent.parent.parent.parent
-    / "contracts_data"
-    / "pilots"
-    / "template_predictive.yaml"
-)
-
-
-def _load_template_spec() -> ModelSOPilotSpec:
-    """Load the canonical predictive template spec from disk."""
-    return ModelSOPilotSpec.model_validate(yaml.safe_load(_TEMPLATE_SPEC_PATH.read_text()))
 
 
 # ---------------------------------------------------------------------------
@@ -141,9 +123,7 @@ class PredictivePilot:
     structural and not configurable via the spec.
     """
 
-    def __init__(self, spec: ModelSOPilotSpec | None = None) -> None:
-        if spec is None:
-            spec = _load_template_spec()
+    def __init__(self, spec: ModelSOPilotSpec) -> None:
         if spec.archetype != "predictive":
             raise ValueError(
                 f"PredictivePilot requires archetype='predictive', "

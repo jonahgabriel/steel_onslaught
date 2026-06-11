@@ -29,42 +29,9 @@ from steel_onslaught.pilots.schemas import (
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
     ModelSOSensorReading,
-    PilotProtocol,
     SOPilotAction,
     SOPilotReasonCode,
 )
-
-
-def _load_template_spec() -> ModelSOPilotSpec:
-    """Load the canonical template_defensive.yaml spec (MVP fallback path)."""
-    from pathlib import Path
-
-    import yaml  # type: ignore[import-untyped]
-
-    template_path = (
-        Path(__file__).parent.parent.parent.parent
-        / "contracts_data"
-        / "pilots"
-        / "template_defensive.yaml"
-    )
-    return ModelSOPilotSpec.model_validate(yaml.safe_load(template_path.read_text()))
-
-
-def _template_params() -> ModelSODefensivePilotParams:
-    spec = _load_template_spec()
-    assert isinstance(spec.parameters, ModelSODefensivePilotParams)
-    return spec.parameters
-
-
-# ---------------------------------------------------------------------------
-# Module-level constants exported for backward compatibility with test_pilot_spec.py
-# (Task 1 invariant: "imported, not retyped — the test breaks if either side drifts").
-# These are derived from the canonical template spec, not hardcoded.
-# ---------------------------------------------------------------------------
-_HEAT_VENT_MARGIN: int = _template_params().vent_headroom_below_redline
-_HIGH_CONFIDENCE_THRESHOLD: float = _template_params().fire_confidence_floor
-_FIRE_HEAT_HEADROOM: int = _template_params().fire_heat_headroom
-_LOW_HP_THRESHOLD: float = float(_template_params().disengage_hp_pct)
 
 
 def _best_ready_weapon_in_range(
@@ -118,13 +85,9 @@ class DefensivePilot:
     spec:
         A ``ModelSOPilotSpec`` with ``archetype == "defensive"``.  Raises
         ``ValueError`` at construction if the archetype does not match.
-        When omitted the canonical template spec is loaded from
-        ``contracts_data/pilots/template_defensive.yaml`` (MVP fallback).
     """
 
-    def __init__(self, spec: ModelSOPilotSpec | None = None) -> None:
-        if spec is None:
-            spec = _load_template_spec()
+    def __init__(self, spec: ModelSOPilotSpec) -> None:
         if spec.archetype != "defensive":
             raise ValueError(
                 f"DefensivePilot requires archetype='defensive', got {spec.archetype!r}"
@@ -243,7 +206,3 @@ class DefensivePilot:
             confidence=0.5,
             considered_actions=considered,
         )
-
-
-# Verify the class satisfies PilotProtocol at import time.
-_: PilotProtocol = DefensivePilot()

@@ -40,6 +40,7 @@ from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -120,23 +121,20 @@ def load_loadout(path: Path) -> ModelSOLoadout:
 _PILOTS_DIR = Path(__file__).parent.parent.parent.parent / "contracts_data" / "pilots"
 
 
-def _load_aggressive_template() -> AggressivePilot:
-    """Load the template aggressive spec and return a spec-driven pilot."""
-    from steel_onslaught.contracts.pilot import ModelSOPilotSpec
-
-    raw = yaml.safe_load((_PILOTS_DIR / "template_aggressive.yaml").read_text(encoding="utf-8"))
-    spec = ModelSOPilotSpec.model_validate(raw)
-    return AggressivePilot(spec=spec)
+def _load_template_spec(archetype: str) -> ModelSOPilotSpec:
+    """Load the canonical template spec YAML for one archetype."""
+    raw = yaml.safe_load((_PILOTS_DIR / f"template_{archetype}.yaml").read_text(encoding="utf-8"))
+    return ModelSOPilotSpec.model_validate(raw)
 
 
 def _pilot_for(pilot_id: str) -> PilotProtocol:
-    """Map a loadout ``pilot_id`` to its archetype implementation."""
+    """Map a loadout ``pilot_id`` to its archetype implementation (template spec)."""
     if "aggressive" in pilot_id:
-        return _load_aggressive_template()
+        return AggressivePilot(spec=_load_template_spec("aggressive"))
     if "defensive" in pilot_id:
-        return DefensivePilot()
+        return DefensivePilot(spec=_load_template_spec("defensive"))
     if "predictive" in pilot_id:
-        return PredictivePilot()
+        return PredictivePilot(spec=_load_template_spec("predictive"))
     raise ValueError(f"unknown pilot archetype in pilot_id {pilot_id!r}")
 
 

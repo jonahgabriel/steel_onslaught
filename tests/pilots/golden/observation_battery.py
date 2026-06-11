@@ -60,17 +60,17 @@ def _heat_values_for(spec: _BoilerSpec) -> list[int]:
         0,
         40,
         r - 13,
-        r - 12,  # defensive fire-headroom (redline − 12)
+        r - 12,  # defensive fire-headroom (redline - 12)
         r - 9,
-        r - 8,  # defensive vent (redline − 8)
+        r - 8,  # defensive vent (redline - 8)
         r - 6,
-        r - 5,  # predictive preemptive-vent (redline − 5)
+        r - 5,  # predictive preemptive-vent (redline - 5)
         79,
         80,  # aggressive mode-switch ceiling (fixed ≤80)
         89,
         90,  # aggressive idle-vent (fixed ≥90)
         u - 6,
-        u - 5,  # aggressive rupture-guard (rupture − 5)
+        u - 5,  # aggressive rupture-guard (rupture - 5)
         u,  # at rupture
     }
     return sorted(v for v in candidates if 0 <= v <= u)
@@ -176,7 +176,7 @@ def observation_battery() -> list[ModelSOPilotObservation]:
     Inner loop: cartesian product of all axis lists in declaration order.
     No set/dict/hash traversal.
 
-    Target size: ~3 × (14 heat) × 3 × 3 × 4 × 2 × 3 × 2 × 2 ≈ 18 000.
+    Target size: ~3 x (14 heat) x 3 x 3 x 4 x 2 x 3 x 2 x 2 ≈ 18 000.
     All decision boundaries in all three archetypes are straddled.
     """
     battery: list[ModelSOPilotObservation] = []

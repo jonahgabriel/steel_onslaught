@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +11,9 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec, SOWeaponPreference
-from steel_onslaught.pilots.defensive import _HIGH_CONFIDENCE_THRESHOLD
 
 PILOTS_DATA = Path(__file__).parent.parent.parent / "contracts_data" / "pilots"
+DEFENSIVE_GOLDEN = Path(__file__).parent.parent / "pilots" / "golden" / "defensive_golden.json"
 
 TEMPLATE_FILES = [
     "template_aggressive.yaml",
@@ -125,10 +126,16 @@ def test_template_predictive_values() -> None:
 
 @pytest.mark.unit
 def test_template_defensive_fire_confidence_floor_matches_landed_constant() -> None:
-    """The template carries the merged defensive.py constant verbatim (imported, not retyped)."""
+    """The template carries the pre-refactor defensive.py constant verbatim.
+
+    Post-refactor, defensive.py no longer exports the literal — the frozen
+    golden fixture metadata (generated against the hardcoded pilot at commit
+    748d499) is the non-circular source of the landed constant.
+    """
     spec = ModelSOPilotSpec.model_validate(_load("template_defensive.yaml"))
     assert spec.id == "pilot.template.defensive"
-    assert spec.parameters.fire_confidence_floor == _HIGH_CONFIDENCE_THRESHOLD  # type: ignore[union-attr]
+    golden_meta = json.loads(DEFENSIVE_GOLDEN.read_text())["_meta"]["constants"]
+    assert spec.parameters.fire_confidence_floor == golden_meta["HIGH_CONFIDENCE_THRESHOLD"]  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------

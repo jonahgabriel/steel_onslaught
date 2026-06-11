@@ -7,7 +7,7 @@ the HARDCODED (pre-refactor) AggressivePilot by running:
 
 It stores a root hash covering every decision in the battery.  The refactored
 spec-driven pilot must produce an identical root hash, proving decision-for-
-decision parity across all 199 680 observations.
+decision parity across all 32 832 observations.
 """
 
 from __future__ import annotations

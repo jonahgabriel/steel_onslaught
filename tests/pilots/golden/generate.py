@@ -1,34 +1,36 @@
-"""Golden fixture generator — run BEFORE refactoring any archetype.
+"""Golden fixture generator (root-hash format) for the shared observation battery.
 
 Usage:
     uv run --no-sync python -m tests.pilots.golden.generate aggressive
     uv run --no-sync python -m tests.pilots.golden.generate defensive
     uv run --no-sync python -m tests.pilots.golden.generate predictive
 
-Instantiates the CURRENT (hardcoded) archetype pilot, runs it over the shared
-observation battery, and writes:
+Instantiates the archetype pilot from its canonical template spec, runs it
+over the shared observation battery (32 832 observations), and writes:
     tests/pilots/golden/{archetype}_golden.json
-
-The JSON structure is compact — the battery is ~2.7 M observations which makes
-storing full decision dicts impractical (>1 GB).  Instead the fixture stores
-per-decision SHA-256 hashes and a single root hash that covers all of them:
 
     {
         "metadata": {
             "archetype": "<name>",
             "battery_size": <int>,
-            "generated_from": "hardcoded <archetype> pilot, pre-refactor"
+            "generated_from": "..."
         },
-        "decision_hashes": ["<hex32>", ...],   // one per observation, in order
-        "root_hash": "<hex64>"                  // sha256 of all hashes concatenated
+        "root_hash": "<hex64>"   // sha256 of all per-decision hashes concatenated
     }
-
-The root_hash is the primary oracle.  decision_hashes lets a failing test
-binary-search for the first divergent observation without re-running the
-generator.
 
 The per-decision hash is sha256(json.dumps(decision.model_dump(), sort_keys=True,
 separators=(',',':'))).hexdigest().
+
+PROVENANCE WARNING: the committed fixtures were generated from the PRE-REFACTOR
+hardcoded pilots (commit 748d499) and are the parity oracle for the spec-driven
+refactor.  Re-running this generator now uses the spec-driven pilots, so a
+regenerated fixture proves nothing about hardcoded parity — only regenerate
+when the battery itself changes deliberately, and say so in the commit.
+
+Note: defensive_golden.json and predictive_golden.json were frozen by their
+task implementers in a full-entry format ({"_meta": ..., "entries": [...]})
+rather than this root-hash format; their golden tests consume that format
+directly.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
 
+from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.pilots.schemas import ModelSOPilotDecision, PilotProtocol
 
 _GOLDEN_DIR = Path(__file__).parent
@@ -56,6 +59,17 @@ def _root_hash(hashes: list[str]) -> str:
     return hashlib.sha256("".join(hashes).encode()).hexdigest()
 
 
+def _template_spec(archetype: str) -> ModelSOPilotSpec:
+    """Load the canonical template spec YAML for one archetype."""
+    template = (
+        Path(__file__).parent.parent.parent.parent
+        / "contracts_data"
+        / "pilots"
+        / f"template_{archetype}.yaml"
+    )
+    return ModelSOPilotSpec.model_validate(yaml.safe_load(template.read_text()))
+
+
 def _generate(archetype: str) -> None:
     from tests.pilots.golden.observation_battery import observation_battery
 
@@ -63,25 +77,17 @@ def _generate(archetype: str) -> None:
 
     pilot: PilotProtocol
     if archetype == "aggressive":
-        from steel_onslaught.contracts.pilot import ModelSOPilotSpec
         from steel_onslaught.pilots.aggressive import AggressivePilot
 
-        _tmpl = (
-            Path(__file__).parent.parent.parent.parent
-            / "contracts_data"
-            / "pilots"
-            / "template_aggressive.yaml"
-        )
-        _spec = ModelSOPilotSpec.model_validate(yaml.safe_load(_tmpl.read_text()))
-        pilot = AggressivePilot(spec=_spec)
+        pilot = AggressivePilot(spec=_template_spec("aggressive"))
     elif archetype == "defensive":
         from steel_onslaught.pilots.defensive import DefensivePilot
 
-        pilot = DefensivePilot()
+        pilot = DefensivePilot(spec=_template_spec("defensive"))
     elif archetype == "predictive":
         from steel_onslaught.pilots.predictive import PredictivePilot
 
-        pilot = PredictivePilot()
+        pilot = PredictivePilot(spec=_template_spec("predictive"))
     else:
         raise ValueError(f"Unknown archetype: {archetype!r}")
 
@@ -89,16 +95,16 @@ def _generate(archetype: str) -> None:
 
     root = _root_hash(hashes)
 
-    # Store only the root hash + metadata — the per-decision hash list is too
-    # large to commit (~60 MB for 900 K observations).  The root hash is the
-    # single oracle; the test re-derives it from the refactored pilot and
-    # asserts equality.  If the root hash fails, re-run the generator against
-    # the OLD hardcoded pilot to reproduce per-decision hashes for debugging.
+    # Store only the root hash + metadata.  The root hash is the single
+    # oracle; the test re-derives it from the spec-driven pilot and asserts
+    # equality.  To locate a divergent observation, instantiate the OLD
+    # hardcoded pilot (git show 748d499:src/steel_onslaught/pilots/<a>.py)
+    # and diff per-decision hashes.
     output = {
         "metadata": {
             "archetype": archetype,
             "battery_size": len(battery),
-            "generated_from": f"hardcoded {archetype.capitalize()}Pilot, pre-refactor",
+            "generated_from": f"spec-driven {archetype.capitalize()}Pilot, template spec",
         },
         "root_hash": root,
     }
