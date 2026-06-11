@@ -20,6 +20,7 @@ import click
 import ulid
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.cli.serve import serve_command
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.runner import MatchRunner, load_loadout
 from steel_onslaught.projections.cli.renderer import CliTextRenderer
@@ -39,6 +40,9 @@ SELECT match_id, winner_player_id, winner_loadout_id, winner_score, duration_tic
 @click.group()
 def main() -> None:
     """Steel Onslaught — steampunk tactical mech duels."""
+
+
+main.add_command(serve_command)
 
 
 @main.command(name="run")

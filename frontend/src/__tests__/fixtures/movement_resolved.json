@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01MVEMENTRESVED00000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "movement_resolved",
+  "payload": {
+    "from": {
+      "x": 5,
+      "y": 5
+    },
+    "to": {
+      "x": 7,
+      "y": 6
+    },
+    "ticks_consumed": 1,
+    "pressure_consumed": 2
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}

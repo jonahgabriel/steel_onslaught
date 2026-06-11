@@ -14,5 +14,7 @@ repos:
         # pyyaml (not types-PyYAML) + pytest: mirror the project env so the
         # same `# type: ignore[import-untyped]` comments are needed in both.
         # ulid-py ships py.typed; click is typed — both are imported from src.
-        additional_dependencies: [pydantic>=2.6, pyyaml, pytest, ulid-py, click>=8.1]
+        # websockets is imported by src/steel_onslaught/cli/serve.py + its tests.
+        additional_dependencies:
+          [pydantic>=2.6, pyyaml, pytest, ulid-py, click>=8.1, websockets>=12.0]
         args: [--strict]

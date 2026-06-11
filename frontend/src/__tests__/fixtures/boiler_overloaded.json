@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01BERVERADED00000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "boiler_overloaded",
+  "payload": {
+    "heat": 78,
+    "redline_threshold": 70,
+    "redline_consecutive_ticks": 3,
+    "accuracy_penalty_next_fire": 0.25,
+    "mode_switch_disabled_until": 14
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}

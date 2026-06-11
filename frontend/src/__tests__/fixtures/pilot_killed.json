@@ -1,0 +1,22 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01PTKED0000000000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.b.01",
+    "player_id": "player.b"
+  },
+  "event_type": "pilot_killed",
+  "payload": {
+    "mech_id": "mech.b.01",
+    "survival_probability": 0.7,
+    "roll": 0.95,
+    "safety_gizmos_equipped": 1
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}

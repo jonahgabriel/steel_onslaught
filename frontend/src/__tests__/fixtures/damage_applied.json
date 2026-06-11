@@ -1,0 +1,24 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01DAMAGEAPPED0000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.b.01",
+    "player_id": "player.b"
+  },
+  "event_type": "damage_applied",
+  "payload": {
+    "target_id": "mech.b.01",
+    "damage": 8,
+    "cause": "weapon_hit",
+    "hp_after": 92,
+    "source_mech_id": "mech.a.01",
+    "radius_cells": 0
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}

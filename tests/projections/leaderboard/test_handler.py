@@ -301,4 +301,4 @@ def test_model_leaderboard_entry_fields() -> None:
     assert entry.is_draw is False
     # Frozen: mutation must raise ValidationError.
     with pytest.raises(ValidationError):
-        entry.match_id = "other"  # type: ignore[misc]
+        entry.match_id = "other"

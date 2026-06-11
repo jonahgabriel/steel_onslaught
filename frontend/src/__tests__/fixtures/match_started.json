@@ -1,0 +1,152 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01MATCHSTARTED000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 0,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "match_started",
+  "payload": {
+    "seed": 12345,
+    "max_ticks": 200,
+    "mechs": [
+      {
+        "schema_version": "0.1.0",
+        "kind": "steel_onslaught.mech_runtime_state",
+        "mech_id": "mech.a.01",
+        "player_id": "player.a",
+        "loadout_id": "loadout.fixture.alpha",
+        "pilot_id": "pilot.aggressive",
+        "chassis_id": "chassis.light_scout_mk1",
+        "chassis_class": "light",
+        "sensor_ids": [
+          "module.sensor.short_range_scanner"
+        ],
+        "gizmo_ids": [
+          "module.gizmo.targeting_assist"
+        ],
+        "base_speed": 3,
+        "position": {
+          "x": 5,
+          "y": 5
+        },
+        "facing": 90,
+        "speed": 3,
+        "hp": 100,
+        "hp_max": 100,
+        "armor_value": 10,
+        "alive": true,
+        "pilot_alive": true,
+        "current_mode": "recon",
+        "mode_lock_until": 0,
+        "transition_ticks_remaining": 0,
+        "transition_to_mode": null,
+        "sensor_dropout_ticks_remaining": 0,
+        "mode_switch_disabled_until": 0,
+        "weapon_cooldowns": {
+          "module.weapon.machine_gun": 0
+        },
+        "evasion": 0.0,
+        "accuracy_penalty_next_fire": 0.0,
+        "jamming_intensity": 0.0,
+        "under_sensor_lock": false,
+        "boiler": {
+          "schema_version": "0.1.0",
+          "kind": "steel_onslaught.boiler_state",
+          "match_id": "match.fixture.0001",
+          "mech_id": "mech.a.01",
+          "tick": 0,
+          "pressure_current": 45,
+          "pressure_maximum": 90,
+          "regeneration_per_tick": 5,
+          "heat_current": 0,
+          "heat_redline_threshold": 70,
+          "heat_rupture_threshold": 100,
+          "heat_vent_rate": 8,
+          "status_redline": false,
+          "status_rupture_warning": false,
+          "status_disabled": false,
+          "status_ruptured": false,
+          "modifier_heat_weapon_pressure": 1.0,
+          "modifier_venting_penalty": 0.0,
+          "modifier_mode_switch_heat_delta": 0
+        },
+        "redline_consecutive_ticks": 0,
+        "overloaded": false,
+        "overloaded_consecutive_ticks": 0
+      },
+      {
+        "schema_version": "0.1.0",
+        "kind": "steel_onslaught.mech_runtime_state",
+        "mech_id": "mech.b.01",
+        "player_id": "player.b",
+        "loadout_id": "loadout.fixture.alpha",
+        "pilot_id": "pilot.aggressive",
+        "chassis_id": "chassis.light_scout_mk1",
+        "chassis_class": "light",
+        "sensor_ids": [
+          "module.sensor.short_range_scanner"
+        ],
+        "gizmo_ids": [
+          "module.gizmo.targeting_assist"
+        ],
+        "base_speed": 3,
+        "position": {
+          "x": 35,
+          "y": 35
+        },
+        "facing": 270,
+        "speed": 3,
+        "hp": 100,
+        "hp_max": 100,
+        "armor_value": 10,
+        "alive": true,
+        "pilot_alive": true,
+        "current_mode": "recon",
+        "mode_lock_until": 0,
+        "transition_ticks_remaining": 0,
+        "transition_to_mode": null,
+        "sensor_dropout_ticks_remaining": 0,
+        "mode_switch_disabled_until": 0,
+        "weapon_cooldowns": {
+          "module.weapon.machine_gun": 0
+        },
+        "evasion": 0.0,
+        "accuracy_penalty_next_fire": 0.0,
+        "jamming_intensity": 0.0,
+        "under_sensor_lock": false,
+        "boiler": {
+          "schema_version": "0.1.0",
+          "kind": "steel_onslaught.boiler_state",
+          "match_id": "match.fixture.0001",
+          "mech_id": "mech.b.01",
+          "tick": 0,
+          "pressure_current": 45,
+          "pressure_maximum": 90,
+          "regeneration_per_tick": 5,
+          "heat_current": 0,
+          "heat_redline_threshold": 70,
+          "heat_rupture_threshold": 100,
+          "heat_vent_rate": 8,
+          "status_redline": false,
+          "status_rupture_warning": false,
+          "status_disabled": false,
+          "status_ruptured": false,
+          "modifier_heat_weapon_pressure": 1.0,
+          "modifier_venting_penalty": 0.0,
+          "modifier_mode_switch_heat_delta": 0
+        },
+        "redline_consecutive_ticks": 0,
+        "overloaded": false,
+        "overloaded_consecutive_ticks": 0
+      }
+    ]
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}
