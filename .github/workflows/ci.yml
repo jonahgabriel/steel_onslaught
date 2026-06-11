@@ -16,6 +16,16 @@ jobs:
         run: uv python install 3.13
       - name: Install
         run: uv sync --extra dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: frontend
+      - name: Install Playwright chromium
+        run: uv run playwright install --with-deps chromium
       - name: Lint
         run: |
           uv run ruff check src/ tests/
@@ -24,3 +34,9 @@ jobs:
         run: uv run mypy src/ tests/
       - name: Tests
         run: uv run pytest -m "unit or integration" -v
+      - name: Frontend tests
+        run: npm test
+        working-directory: frontend
+      - name: Frontend build
+        run: npm run build
+        working-directory: frontend
