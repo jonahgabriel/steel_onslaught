@@ -1,25 +1,29 @@
-"""Aggressive pilot heuristic — Task 15.
+"""Aggressive pilot heuristic — Task 15 (spec-driven refactor: Task 2).
 
 Deterministic decision tree implementing an aggressive combat archetype.
 No randomness, no LLM — pure Python conditionals that produce the same
 decision for the same observation every time.
 
 Decision priority (from the plan §Task 15):
-1. If heat >= rupture_threshold - 5 → VENT (near-rupture guard, highest priority).
-2. If enemy in weapon range AND any weapon ready AND pressure >= weapon_cost
-   AND heat < rupture_threshold - 5 → FIRE highest-damage weapon at enemy
-   (lowest weapon_id alphabetically on damage tie).
-3. Else if not in assault mode AND mode_lock_expired AND pressure >= 12
-   AND heat <= 80 → SWITCH_MODE assault.
-4. Else if heat >= 90 (just below redline) → VENT.
+1. If heat >= rupture_threshold - vent_at_heat_margin → VENT (near-rupture guard).
+2. If not in assault mode AND mode_lock_expired AND pressure >= mode_switch_pressure_floor
+   AND heat <= mode_switch_heat_ceiling → SWITCH_MODE assault.
+3. If enemy in weapon range AND any weapon ready AND pressure >= weapon_cost → FIRE weapon
+   selected by weapon_preference policy (lowest weapon_id tiebreak).
+4. Else if heat >= idle_vent_heat_threshold → VENT.
 5. Else → MOVE toward enemy at full speed.
 
-The plan also states "tolerates redline up to heat == rupture_threshold - 5":
-this means fire is allowed even at redline, as long as heat < rupture_threshold - 5.
+All decision thresholds come from the injected ``ModelSOPilotSpec``; no
+module-level integer literals survive as decision constants.
 """
 
 from __future__ import annotations
 
+from steel_onslaught.contracts.pilot import (
+    ModelSOAggressivePilotParams,
+    ModelSOPilotSpec,
+    SOWeaponPreference,
+)
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPilotDecision,
@@ -29,21 +33,19 @@ from steel_onslaught.pilots.schemas import (
     SOPilotReasonCode,
 )
 
-# Thresholds used by the heuristic.
-_MODE_SWITCH_PRESSURE_MINIMUM: int = 12
-_MODE_SWITCH_HEAT_MAXIMUM: int = 80
-_VENT_HEAT_THRESHOLD: int = 90  # Rule 4: vent if heat >= this
-# Rule 5 / Rule 2: tolerates redline up to rupture_threshold - 5; above that, vent.
-_RUPTURE_GUARD_OFFSET: int = 5
-
 
 def _best_weapon(
     observation: ModelSOPilotObservation,
     enemy_distance: float,
+    preference: SOWeaponPreference,
 ) -> ModelSOPilotWeaponView | None:
-    """Return the highest-damage ready weapon that can reach the enemy.
+    """Return the preferred ready weapon that can reach the enemy.
 
-    Tiebreaker: lowest weapon_id alphabetically (deterministic, no RNG).
+    Weapon selection policy (per addendum §5.1):
+    - ``HIGHEST_DAMAGE``: sort primary descending damage, secondary ascending weapon_id.
+    - ``LOWEST_HEAT``: sort primary ascending heat_generated, secondary ascending weapon_id.
+
+    The lowest-weapon_id tiebreak is fixed under both policies.
     Returns None if no eligible weapon exists.
     """
     candidates = [
@@ -57,8 +59,10 @@ def _best_weapon(
     ]
     if not candidates:
         return None
-    # Sort: primary descending damage, secondary ascending weapon_id.
-    candidates.sort(key=lambda w: (-w.damage, w.weapon_id))
+    if preference is SOWeaponPreference.HIGHEST_DAMAGE:
+        candidates.sort(key=lambda w: (-w.damage, w.weapon_id))
+    else:  # LOWEST_HEAT
+        candidates.sort(key=lambda w: (w.heat_generated, w.weapon_id))
     return candidates[0]
 
 
@@ -71,17 +75,31 @@ def _enemy_distance(observation: ModelSOPilotObservation) -> float:
 
 
 class AggressivePilot:
-    """Aggressive combat archetype — deterministic, heuristic-only.
+    """Aggressive combat archetype — spec-driven, deterministic, heuristic-only.
+
+    All decision thresholds are read from the injected ``ModelSOPilotSpec``.
+    The decision tree structure (rule order, scoring, action_params shape) is
+    fixed in code; only the constants are tunable.
 
     Priority:
-    1. Near-rupture guard: VENT when heat >= rupture_threshold - 5.
-    2. Fire the highest-damage weapon when enemy is in range and resources allow.
-    3. Switch to assault mode if not already there and conditions are met.
-    4. Vent if heat >= 90 (just-below-redline proactive cooling).
+    1. Near-rupture guard: VENT when heat >= rupture_threshold - vent_at_heat_margin.
+    2. Switch to assault mode when not there and conditions are met.
+    3. Fire the preferred weapon when enemy is in range and resources allow.
+    4. Vent if heat >= idle_vent_heat_threshold.
     5. Move toward enemy.
     """
 
+    def __init__(self, spec: ModelSOPilotSpec) -> None:
+        if spec.archetype != "aggressive":
+            raise ValueError(
+                f"AggressivePilot requires archetype='aggressive'; "
+                f"got archetype={spec.archetype!r} (spec id: {spec.id!r})"
+            )
+        assert isinstance(spec.parameters, ModelSOAggressivePilotParams)
+        self._params: ModelSOAggressivePilotParams = spec.parameters
+
     def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
+        params = self._params
         boiler = observation.boiler
         heat = boiler.heat_current
         rupture = boiler.heat_rupture_threshold
@@ -89,9 +107,10 @@ class AggressivePilot:
 
         # ---------------------------------------------------------------
         # Rule 1 (highest priority): near-rupture guard.
-        # heat >= rupture_threshold - 5 → VENT immediately.
+        # heat >= rupture_threshold - vent_at_heat_margin → VENT immediately.
+        # Strict >= semantics (addendum §5.1).
         # ---------------------------------------------------------------
-        near_rupture_guard = heat >= (rupture - _RUPTURE_GUARD_OFFSET)
+        near_rupture_guard = heat >= (rupture - params.vent_at_heat_margin)
         if near_rupture_guard:
             return ModelSOPilotDecision(
                 action=SOPilotAction.VENT,
@@ -107,18 +126,17 @@ class AggressivePilot:
         # ---------------------------------------------------------------
         # Rule 2: switch to assault mode if not there and conditions met.
         # Prioritised above firing so the pilot enters its optimal combat mode
-        # before expending resources. This matches the plan invariant: "Given
-        # mode=recon + assault available + enemy in range: switches to assault
-        # before firing."
-        # Conditions: not in assault mode, mode_lock_expired, pressure >= 12,
-        #             heat <= 80.
+        # before expending resources.
+        # Conditions: not in assault mode, mode_lock_expired,
+        #             pressure >= mode_switch_pressure_floor,
+        #             heat <= mode_switch_heat_ceiling.
         # ---------------------------------------------------------------
         not_in_assault = observation.current_mode != "assault"
         mode_conditions_met = (
             not_in_assault
             and observation.mode_lock_expired
-            and boiler.pressure_current >= _MODE_SWITCH_PRESSURE_MINIMUM
-            and heat <= _MODE_SWITCH_HEAT_MAXIMUM
+            and boiler.pressure_current >= params.mode_switch_pressure_floor
+            and heat <= params.mode_switch_heat_ceiling
         )
         if mode_conditions_met:
             return ModelSOPilotDecision(
@@ -134,10 +152,10 @@ class AggressivePilot:
 
         # ---------------------------------------------------------------
         # Rule 3: fire the best weapon if enemy in range and resources allow.
-        # Permitted even while at redline, provided heat < rupture_threshold - 5
-        # (already checked in Rule 1 above).
+        # Permitted even while at redline, provided heat < rupture_threshold -
+        # vent_at_heat_margin (already checked in Rule 1 above).
         # ---------------------------------------------------------------
-        best_weapon = _best_weapon(observation, distance)
+        best_weapon = _best_weapon(observation, distance, params.weapon_preference)
         if best_weapon is not None:
             return ModelSOPilotDecision(
                 action=SOPilotAction.FIRE_WEAPON,
@@ -151,11 +169,9 @@ class AggressivePilot:
             )
 
         # ---------------------------------------------------------------
-        # Rule 4: proactive vent at heat >= 90 (just below default redline of 80
-        # is not actually "just below redline" for all configs — the rule uses
-        # the fixed threshold 90 from the plan, not observation.boiler.heat_redline).
+        # Rule 4: proactive vent at heat >= idle_vent_heat_threshold.
         # ---------------------------------------------------------------
-        if heat >= _VENT_HEAT_THRESHOLD:
+        if heat >= params.idle_vent_heat_threshold:
             return ModelSOPilotDecision(
                 action=SOPilotAction.VENT,
                 action_params={},

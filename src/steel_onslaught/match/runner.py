@@ -117,10 +117,22 @@ def load_loadout(path: Path) -> ModelSOLoadout:
     return ModelSOLoadout.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 
+_PILOTS_DIR = Path(__file__).parent.parent.parent.parent / "contracts_data" / "pilots"
+
+
+def _load_aggressive_template() -> AggressivePilot:
+    """Load the template aggressive spec and return a spec-driven pilot."""
+    from steel_onslaught.contracts.pilot import ModelSOPilotSpec
+
+    raw = yaml.safe_load((_PILOTS_DIR / "template_aggressive.yaml").read_text(encoding="utf-8"))
+    spec = ModelSOPilotSpec.model_validate(raw)
+    return AggressivePilot(spec=spec)
+
+
 def _pilot_for(pilot_id: str) -> PilotProtocol:
     """Map a loadout ``pilot_id`` to its archetype implementation."""
     if "aggressive" in pilot_id:
-        return AggressivePilot()
+        return _load_aggressive_template()
     if "defensive" in pilot_id:
         return DefensivePilot()
     if "predictive" in pilot_id:
