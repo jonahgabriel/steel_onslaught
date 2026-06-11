@@ -1,4 +1,4 @@
-"""Tests for the aggressive pilot heuristic — Task 15.
+"""Tests for the aggressive pilot heuristic — Task 15 (updated for spec-driven: Task 2).
 
 Invariants (from the plan):
 1. Given enemy in range + ready weapon + pressure: returns FIRE_WEAPON with the
@@ -9,13 +9,22 @@ Invariants (from the plan):
    firing.
 5. Given multiple weapons of same damage: deterministically picks the lowest-id
    alphabetically (no random tiebreaker).
+
+All tests now construct AggressivePilot from the canonical template spec so the
+spec-wiring is exercised alongside every behavioural invariant.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.pilot import (
+    ModelSOPilotSpec,
+)
 from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotDecision,
@@ -25,6 +34,18 @@ from steel_onslaught.pilots.schemas import (
     ModelSOSensorReading,
     SOPilotAction,
 )
+
+_TEMPLATE_YAML = (
+    Path(__file__).parent.parent.parent / "contracts_data" / "pilots" / "template_aggressive.yaml"
+)
+
+
+def _load_template_spec() -> ModelSOPilotSpec:
+    return ModelSOPilotSpec.model_validate(yaml.safe_load(_TEMPLATE_YAML.read_text()))
+
+
+# Module-level spec for all existing tests (avoids repeating the load).
+_TEMPLATE_SPEC: ModelSOPilotSpec = _load_template_spec()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -132,7 +153,7 @@ def test_fires_highest_damage_weapon_when_enemy_in_range() -> None:
         current_mode="assault",
         enemy_distance=15.0,  # within range (both have rng=20)
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.FIRE_WEAPON
@@ -152,7 +173,7 @@ def test_still_fires_when_heat_at_redline_but_below_rupture_minus_5() -> None:
         current_mode="assault",
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.FIRE_WEAPON
@@ -167,7 +188,7 @@ def test_vents_when_heat_near_rupture_threshold() -> None:
         current_mode="assault",
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.VENT
@@ -182,7 +203,7 @@ def test_vents_when_heat_at_rupture_minus_5_boundary() -> None:
         current_mode="assault",
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.VENT
@@ -198,7 +219,7 @@ def test_switches_to_assault_before_firing_when_in_recon_mode() -> None:
         mode_lock_expired=True,
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.SWITCH_MODE
@@ -215,7 +236,7 @@ def test_does_not_switch_mode_when_lock_not_expired() -> None:
         mode_lock_expired=False,  # cannot switch
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     # Can't switch mode, enemy in range with ready weapon: fires
@@ -232,7 +253,7 @@ def test_does_not_switch_mode_when_pressure_too_low() -> None:
         mode_lock_expired=True,
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     # pressure < 12 → can't switch mode; but weapon pressure_cost=5 ≤ 11 → fires
@@ -253,7 +274,7 @@ def test_picks_alphabetically_lowest_id_on_damage_tie() -> None:
         current_mode="assault",
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.FIRE_WEAPON
@@ -272,7 +293,7 @@ def test_moves_toward_enemy_when_no_weapon_in_range() -> None:
         current_mode="assault",
         enemy_distance=50.0,  # far out of range (rng=10)
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.MOVE
@@ -290,7 +311,7 @@ def test_moves_when_no_weapons_ready() -> None:
         current_mode="assault",
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.MOVE
@@ -308,7 +329,7 @@ def test_moves_when_pressure_insufficient_for_any_weapon() -> None:
         current_mode="assault",
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.MOVE
@@ -326,7 +347,7 @@ def test_vents_when_heat_above_90_even_without_enemy() -> None:
         current_mode="assault",
         enemy_distance=100.0,  # out of range
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action == SOPilotAction.VENT
@@ -341,7 +362,7 @@ def test_decision_contains_chosen_action_in_considered() -> None:
         current_mode="assault",
         enemy_distance=10.0,
     )
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
 
     assert decision.action in {ca.action for ca in decision.considered_actions}
@@ -352,7 +373,7 @@ def test_is_protocol_compliant() -> None:
     """AggressivePilot must satisfy PilotProtocol (runtime_checkable)."""
     from steel_onslaught.pilots.schemas import PilotProtocol
 
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     assert isinstance(pilot, PilotProtocol)
 
 
@@ -360,6 +381,142 @@ def test_is_protocol_compliant() -> None:
 def test_returns_model_so_pilot_decision_type() -> None:
     """The return type is strictly ModelSOPilotDecision."""
     obs = _observation()
-    pilot = AggressivePilot()
+    pilot = AggressivePilot(spec=_TEMPLATE_SPEC)
     decision = pilot.decide(obs)
     assert isinstance(decision, ModelSOPilotDecision)
+
+
+# ---------------------------------------------------------------------------
+# Task 2 spec-driven invariants
+# ---------------------------------------------------------------------------
+
+
+def _make_spec(
+    vent_at_heat_margin: int = 5,
+    idle_vent_heat_threshold: int = 90,
+    mode_switch_pressure_floor: int = 12,
+    mode_switch_heat_ceiling: int = 80,
+    weapon_preference: str = "highest_damage",
+) -> ModelSOPilotSpec:
+    """Construct a custom aggressive spec for tuning tests."""
+    from steel_onslaught.contracts.pilot import (
+        ModelSOAggressivePilotParams,
+        ModelSOPilotLineage,
+        SOWeaponPreference,
+    )
+
+    return ModelSOPilotSpec(
+        schema_version="0.1.0",
+        kind="steel_onslaught.pilot",
+        id="pilot.test.aggressive",
+        display_name="Test Aggressive",
+        archetype="aggressive",
+        lineage=ModelSOPilotLineage(parent="pilot.template.aggressive"),
+        parameters=ModelSOAggressivePilotParams(
+            vent_at_heat_margin=vent_at_heat_margin,
+            idle_vent_heat_threshold=idle_vent_heat_threshold,
+            mode_switch_pressure_floor=mode_switch_pressure_floor,
+            mode_switch_heat_ceiling=mode_switch_heat_ceiling,
+            weapon_preference=SOWeaponPreference(weapon_preference),
+        ),
+    )
+
+
+@pytest.mark.unit
+def test_wrong_archetype_raises_at_construction() -> None:
+    """AggressivePilot(spec=<defensive spec>) must raise ValueError at construction."""
+    from steel_onslaught.contracts.pilot import (
+        ModelSODefensivePilotParams,
+        ModelSOPilotLineage,
+    )
+
+    defensive_spec = ModelSOPilotSpec(
+        schema_version="0.1.0",
+        kind="steel_onslaught.pilot",
+        id="pilot.test.defensive",
+        display_name="Test Defensive",
+        archetype="defensive",
+        lineage=ModelSOPilotLineage(parent=None),
+        parameters=ModelSODefensivePilotParams(
+            vent_headroom_below_redline=8,
+            fire_confidence_floor=0.7,
+            fire_heat_headroom=12,
+            disengage_hp_pct=30,
+        ),
+    )
+    with pytest.raises(ValueError, match="aggressive"):
+        AggressivePilot(spec=defensive_spec)
+
+
+@pytest.mark.unit
+def test_tuned_vent_margin_2_fires_at_heat_96() -> None:
+    """With vent_at_heat_margin=2, pilot fires at heat 96/rupture 100 (template would vent).
+
+    Template: rupture - 5 = 95 → heat 96 >= 95 → VENT.
+    Tuned:    rupture - 2 = 98 → heat 96 < 98  → allowed to fire.
+    """
+    spec = _make_spec(vent_at_heat_margin=2)
+    pilot = AggressivePilot(spec=spec)
+    obs = _observation(
+        boiler=_boiler(pressure=50, heat=96, redline=80, rupture=100),
+        weapons=[_weapon("weapon.cannon", damage=30, rng=20)],
+        current_mode="assault",
+        enemy_distance=10.0,
+    )
+    assert pilot.decide(obs).action == SOPilotAction.FIRE_WEAPON
+
+
+@pytest.mark.unit
+def test_tuned_vent_margin_2_vents_at_heat_99() -> None:
+    """With vent_at_heat_margin=2, pilot vents at heat 99/rupture 100 (rupture - 2 = 98)."""
+    spec = _make_spec(vent_at_heat_margin=2)
+    pilot = AggressivePilot(spec=spec)
+    obs = _observation(
+        boiler=_boiler(pressure=50, heat=99, redline=80, rupture=100),
+        weapons=[_weapon("weapon.cannon", damage=30, rng=20)],
+        current_mode="assault",
+        enemy_distance=10.0,
+    )
+    assert pilot.decide(obs).action == SOPilotAction.VENT
+
+
+@pytest.mark.unit
+def test_lowest_heat_preference_fires_cooler_weapon() -> None:
+    """With weapon_preference=lowest_heat, pilot fires the cooler weapon."""
+    spec = _make_spec(weapon_preference="lowest_heat")
+    pilot = AggressivePilot(spec=spec)
+    weapons = [
+        _weapon("weapon.alpha", damage=20, rng=20, pressure_cost=8, heat_generated=10),
+        _weapon("weapon.beta", damage=20, rng=20, pressure_cost=8, heat_generated=3),
+    ]
+    obs = _observation(
+        boiler=_boiler(pressure=50, heat=30),
+        weapons=weapons,
+        current_mode="assault",
+        enemy_distance=10.0,
+    )
+    decision = pilot.decide(obs)
+    assert decision.action == SOPilotAction.FIRE_WEAPON
+    # weapon.beta has lower heat_generated (3 < 10)
+    assert decision.action_params["weapon_id"] == "weapon.beta"
+
+
+@pytest.mark.unit
+def test_lowest_heat_preference_lowest_id_tiebreak() -> None:
+    """With weapon_preference=lowest_heat and equal heat, picks lowest weapon_id."""
+    spec = _make_spec(weapon_preference="lowest_heat")
+    pilot = AggressivePilot(spec=spec)
+    weapons = [
+        _weapon("weapon.zapper", damage=20, rng=20, pressure_cost=8, heat_generated=5),
+        _weapon("weapon.alpha", damage=20, rng=20, pressure_cost=8, heat_generated=5),
+    ]
+    obs = _observation(
+        boiler=_boiler(pressure=50, heat=30),
+        weapons=weapons,
+        current_mode="assault",
+        enemy_distance=10.0,
+    )
+    decision = pilot.decide(obs)
+    assert decision.action == SOPilotAction.FIRE_WEAPON
+    # Equal heat — tiebreak is lowest weapon_id alphabetically
+    assert decision.action_params["weapon_id"] == "weapon.alpha"

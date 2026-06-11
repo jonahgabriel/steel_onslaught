@@ -1,4 +1,4 @@
-"""Predictive pilot heuristic — Task 17.
+"""Predictive pilot heuristic — Task 17 (spec-driven, tunable-pilots Task 4).
 
 Anticipates enemy state via 1-tick lookahead using linear extrapolation of the
 last (up to) 3 sensor observations.
@@ -6,21 +6,25 @@ last (up to) 3 sensor observations.
 Decision tree:
 1. Estimate enemy distance next tick via linear extrapolation.
 2. If enemy will enter weapon range next tick AND a mode-switch is needed AND
-   mode_lock_expired → SWITCH_MODE this tick.
-3. Else if enemy in current optimal range AND lock_confidence >= 0.65 AND
-   predicted_hit_probability >= 0.55 → FIRE_WEAPON.
-4. Else if heat >= redline_threshold - 5 → VENT preemptively.
-5. Else if pressure < 30 AND no immediate threat → MOVE (defensive regen).
-6. Fallback → REMAIN.
+   mode_lock_expired -> SWITCH_MODE this tick.
+3. Else if enemy in current optimal range AND lock_confidence >= lock_confidence_floor AND
+   predicted_hit_probability >= predicted_hit_floor -> FIRE_WEAPON.
+4. Else if heat >= redline_threshold - preemptive_vent_headroom -> VENT preemptively.
+5. Else if pressure < regen_pressure_floor AND no immediate threat -> MOVE (defensive regen).
+6. Fallback -> REMAIN.
 
 Design invariants:
 - Linear extrapolation is deterministic: no smoothing, no randomness.
+  The 3-observation window is structural (NOT tunable) per addendum section 5.3.
 - The pilot never chooses SWITCH_MODE when mode_lock_expired is False.
 - Firing requires BOTH confidence and predicted hit probability thresholds.
+- All decision thresholds are read from ``spec.parameters``; no module-level
+  integer or float literals are used as decision constants.
 """
 
 from __future__ import annotations
 
+from steel_onslaught.contracts.pilot import ModelSOPilotSpec, ModelSOPredictivePilotParams
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPilotDecision,
@@ -29,15 +33,6 @@ from steel_onslaught.pilots.schemas import (
     SOPilotAction,
     SOPilotReasonCode,
 )
-
-# ---------------------------------------------------------------------------
-# Thresholds (plan §Task 17)
-# ---------------------------------------------------------------------------
-
-_FIRE_CONFIDENCE_THRESHOLD: float = 0.65
-_FIRE_HIT_PROBABILITY_THRESHOLD: float = 0.55
-_VENT_HEAT_MARGIN: int = 5  # vent if heat >= redline - 5
-_LOW_PRESSURE_THRESHOLD: int = 30
 
 # The mode that grants weapon access; any other mode is considered to need a
 # switch before weapons become fully available to the predictive pilot.
@@ -60,6 +55,7 @@ def _extrapolate_next_distance(observations: list[ModelSOSensorReading]) -> floa
     With 3 observations: mean of the last two first-order differences.
 
     The result is always deterministic (no smoothing or randomness).
+    The 3-observation window is structural and NOT tunable per addendum section 5.3.
     """
     if not observations:
         return None
@@ -118,10 +114,32 @@ def _latest_distance(observations: list[ModelSOSensorReading]) -> float | None:
 
 
 class PredictivePilot:
-    """Predictive archetype — 1-tick lookahead, deterministic decision tree."""
+    """Predictive archetype — 1-tick lookahead, spec-driven decision tree.
+
+    Constructed with a ``ModelSOPilotSpec`` whose archetype must be
+    ``"predictive"``.  The ``spec.parameters`` (a
+    ``ModelSOPredictivePilotParams``) supplies every decision threshold;
+    no thresholds are hardcoded.  The 3-observation lookahead window is
+    structural and not configurable via the spec.
+    """
+
+    def __init__(self, spec: ModelSOPilotSpec) -> None:
+        if spec.archetype != "predictive":
+            raise ValueError(
+                f"PredictivePilot requires archetype='predictive', "
+                f"got archetype={spec.archetype!r} (spec id={spec.id!r})"
+            )
+        if not isinstance(spec.parameters, ModelSOPredictivePilotParams):
+            raise ValueError(
+                f"spec.parameters must be ModelSOPredictivePilotParams, "
+                f"got {type(spec.parameters).__name__!r}"
+            )
+        self._spec = spec
+        self._params: ModelSOPredictivePilotParams = spec.parameters
 
     def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
         """Produce a deterministic decision for the given observation."""
+        params = self._params
         boiler = observation.boiler
         weapons = observation.weapons
         enemy_obs = list(observation.enemy_observations)
@@ -133,7 +151,7 @@ class PredictivePilot:
         predicted_distance = _extrapolate_next_distance(enemy_obs)
         lock_confidence = _best_confidence(enemy_obs)
 
-        # Best ready weapon (lowest pressure cost and on cooldown=0, highest damage).
+        # Best ready weapon (on cooldown=0, highest damage, sufficient pressure).
         ready_weapons = [
             w
             for w in weapons
@@ -169,7 +187,7 @@ class PredictivePilot:
         # ----------------------------------------------------------------
         considered: list[ModelSOConsideredAction] = []
 
-        # Rule 2: anticipated entry into range → pre-emptive mode switch
+        # Rule 2: anticipated entry into range -> pre-emptive mode switch
         if will_enter_range_next_tick and mode_switch_needed and observation.mode_lock_expired:
             considered.append(ModelSOConsideredAction(action=SOPilotAction.SWITCH_MODE, score=0.9))
             considered.append(ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=0.1))
@@ -182,10 +200,11 @@ class PredictivePilot:
             )
 
         # Rule 3: fire if in optimal range with sufficient confidence + hit probability
+        # Thresholds from spec: lock_confidence_floor, predicted_hit_floor
         if (
             in_weapon_range
-            and lock_confidence >= _FIRE_CONFIDENCE_THRESHOLD
-            and hit_prob >= _FIRE_HIT_PROBABILITY_THRESHOLD
+            and lock_confidence >= params.lock_confidence_floor
+            and hit_prob >= params.predicted_hit_floor
             and best_weapon is not None
         ):
             considered.append(ModelSOConsideredAction(action=SOPilotAction.FIRE_WEAPON, score=0.85))
@@ -198,8 +217,9 @@ class PredictivePilot:
                 considered_actions=considered,
             )
 
-        # Rule 4: preemptive vent when near redline
-        if boiler.heat_current >= boiler.heat_redline_threshold - _VENT_HEAT_MARGIN:
+        # Rule 4: preemptive vent when near redline.
+        # Threshold from spec: preemptive_vent_headroom
+        if boiler.heat_current >= boiler.heat_redline_threshold - params.preemptive_vent_headroom:
             considered.append(ModelSOConsideredAction(action=SOPilotAction.VENT, score=0.8))
             considered.append(ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=0.05))
             return ModelSOPilotDecision(
@@ -210,8 +230,9 @@ class PredictivePilot:
                 considered_actions=considered,
             )
 
-        # Rule 5: low pressure, no immediate threat → move to defensive regen position
-        if boiler.pressure_current < _LOW_PRESSURE_THRESHOLD and not immediate_threat:
+        # Rule 5: low pressure, no immediate threat -> move to defensive regen position.
+        # Threshold from spec: regen_pressure_floor
+        if boiler.pressure_current < params.regen_pressure_floor and not immediate_threat:
             considered.append(ModelSOConsideredAction(action=SOPilotAction.MOVE, score=0.7))
             considered.append(ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=0.2))
             return ModelSOPilotDecision(

@@ -1,0 +1,26 @@
+# Tuned aggressive fork — tunable-pilots Task 5 (e2e divergence proof).
+# Forked from the canonical aggressive template; the ONLY changed parameter is
+# mode_switch_pressure_floor (12 -> 50): the pilot waits for a 50-pressure
+# reserve before committing to assault mode.
+#
+# Parameter selection (plan Task 5 Step 3, empirical): the primary candidate
+# vent_at_heat_margin was traced over the template duel (seed 12345) and
+# blue's heat never exceeds 42 — it never enters the [rupture-5, rupture-2)
+# divergence window — so the plan's designated fallback parameter
+# mode_switch_pressure_floor is tuned instead.  The same trace shows blue's
+# rule-2 assault switch firing at tick 1 with pressure 43; any floor above 43
+# provably flips that decision.  (File/id name is pinned by the plan's Task 5
+# file list and predates the empirical parameter selection.)
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.tuned.aggressive_hot_v1
+display_name: "Tuned — Aggressive, Patient Assault v1"
+archetype: aggressive
+lineage:
+  parent: pilot.template.aggressive
+parameters:
+  vent_at_heat_margin: 5
+  idle_vent_heat_threshold: 90
+  mode_switch_pressure_floor: 50 # template: 12 — the single tuned parameter
+  mode_switch_heat_ceiling: 80
+  weapon_preference: highest_damage

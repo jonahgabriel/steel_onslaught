@@ -1,0 +1,117 @@
+"""Pilot spec contract models — tunable-pilots Task 1.
+
+New contract kind ``steel_onslaught.pilot`` (design addendum
+``docs/plans/2026-06-10-tunable-pilots-design-addendum.md`` §4-§5): every
+decision threshold of the three archetype heuristics becomes a bounded,
+validated field. The decision tree *structure* stays code-owned; only the
+constants are tunable. Bounds are the approval — an out-of-bounds value never
+constructs a spec.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Annotated, Literal, Self
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+
+PILOT_ID_PATTERN = r"^pilot\.[a-z0-9_]+\.[a-z0-9_]+$"
+
+PilotId = Annotated[str, StringConstraints(pattern=PILOT_ID_PATTERN)]
+
+
+class SOWeaponPreference(StrEnum):
+    """Primary weapon sort policy for the aggressive archetype (addendum §5.1).
+
+    The final equal-score tiebreak (lexicographically lowest weapon id) is
+    fixed and NOT tunable under either policy.
+    """
+
+    HIGHEST_DAMAGE = "highest_damage"
+    LOWEST_HEAT = "lowest_heat"
+
+
+class ModelSOPilotLineage(BaseModel):
+    """Fork ancestry pointer (addendum §8). Templates alone carry a null parent."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    parent: PilotId | None
+
+
+class ModelSOAggressivePilotParams(BaseModel):
+    """Tunable thresholds for the aggressive archetype (addendum §5.1)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    vent_at_heat_margin: int = Field(ge=2, le=20)
+    idle_vent_heat_threshold: int = Field(ge=40, le=96)
+    mode_switch_pressure_floor: int = Field(ge=0, le=60)
+    mode_switch_heat_ceiling: int = Field(ge=0, le=92)
+    weapon_preference: SOWeaponPreference
+
+
+class ModelSODefensivePilotParams(BaseModel):
+    """Tunable thresholds for the defensive archetype (addendum §5.2)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    vent_headroom_below_redline: int = Field(ge=0, le=40)
+    fire_confidence_floor: float = Field(ge=0.4, le=0.95)
+    fire_heat_headroom: int = Field(ge=0, le=40)
+    disengage_hp_pct: int = Field(ge=0, le=60)
+
+
+class ModelSOPredictivePilotParams(BaseModel):
+    """Tunable thresholds for the predictive archetype (addendum §5.3).
+
+    The 3-observation linear extrapolation window is structural and
+    deliberately NOT represented here.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    lock_confidence_floor: float = Field(ge=0.3, le=0.95)
+    predicted_hit_floor: float = Field(ge=0.2, le=0.95)
+    preemptive_vent_headroom: int = Field(ge=0, le=30)
+    regen_pressure_floor: int = Field(ge=0, le=60)
+
+
+_ARCHETYPE_PARAMS: dict[str, type[BaseModel]] = {
+    "aggressive": ModelSOAggressivePilotParams,
+    "defensive": ModelSODefensivePilotParams,
+    "predictive": ModelSOPredictivePilotParams,
+}
+
+
+class ModelSOPilotSpec(BaseModel):
+    """Pilot specification — contract kind ``steel_onslaught.pilot`` (addendum §4.1)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["0.1.0"] = "0.1.0"
+    kind: Literal["steel_onslaught.pilot"] = "steel_onslaught.pilot"
+
+    id: PilotId
+    display_name: str = Field(min_length=1)
+    archetype: Literal["aggressive", "defensive", "predictive"]
+    lineage: ModelSOPilotLineage
+    parameters: (
+        ModelSOAggressivePilotParams | ModelSODefensivePilotParams | ModelSOPredictivePilotParams
+    )
+
+    @model_validator(mode="after")
+    def _parameters_match_archetype(self) -> Self:
+        expected = _ARCHETYPE_PARAMS[self.archetype]
+        if type(self.parameters) is not expected:
+            raise ValueError(
+                f"parameters model {type(self.parameters).__name__} does not match "
+                f"archetype {self.archetype!r} (expected {expected.__name__})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _no_self_parent(self) -> Self:
+        if self.lineage.parent == self.id:
+            raise ValueError(f"lineage.parent must not equal the spec's own id ({self.id!r})")
+        return self

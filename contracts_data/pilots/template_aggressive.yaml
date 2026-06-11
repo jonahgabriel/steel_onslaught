@@ -1,0 +1,15 @@
+# Canonical aggressive template — parameter values are exactly the MVP
+# hardcoded constants from src/steel_onslaught/pilots/aggressive.py (MVP Task 15).
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.template.aggressive
+display_name: "Template — Aggressive"
+archetype: aggressive
+lineage:
+  parent: null
+parameters:
+  vent_at_heat_margin: 5
+  idle_vent_heat_threshold: 90
+  mode_switch_pressure_floor: 12
+  mode_switch_heat_ceiling: 80
+  weapon_preference: highest_damage

@@ -11,9 +11,13 @@ Invariants (from the plan):
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotDecision,
@@ -23,6 +27,15 @@ from steel_onslaught.pilots.schemas import (
     ModelSOSensorReading,
     SOPilotAction,
 )
+
+_TEMPLATE_PATH = (
+    Path(__file__).parent.parent.parent / "contracts_data" / "pilots" / "template_predictive.yaml"
+)
+
+
+def _template_spec() -> ModelSOPilotSpec:
+    return ModelSOPilotSpec.model_validate(yaml.safe_load(_TEMPLATE_PATH.read_text()))
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -126,14 +139,14 @@ def test_implements_pilot_protocol() -> None:
     """PredictivePilot satisfies PilotProtocol (duck-typing, not ABC)."""
     from steel_onslaught.pilots.schemas import PilotProtocol
 
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     assert isinstance(pilot, PilotProtocol)
 
 
 @pytest.mark.unit
 def test_decide_returns_pilot_decision() -> None:
     """decide() always returns a valid ModelSOPilotDecision."""
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     obs = _observation()
     decision = pilot.decide(obs)
     assert isinstance(decision, ModelSOPilotDecision)
@@ -165,7 +178,7 @@ def test_approaching_enemy_triggers_mode_switch() -> None:
         mode_lock_expired=True,
         tick=3,
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     assert decision.action == SOPilotAction.SWITCH_MODE
 
@@ -183,7 +196,7 @@ def test_low_confidence_holds_fire() -> None:
         boiler=_boiler(pressure=60, heat=20),
         weapons=[_weapon(range_=12)],
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     assert decision.action != SOPilotAction.FIRE_WEAPON
 
@@ -205,7 +218,7 @@ def test_high_confidence_and_high_predicted_hit_fires() -> None:
         boiler=_boiler(pressure=60, heat=20),
         weapons=[_weapon(range_=12)],
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     assert decision.action == SOPilotAction.FIRE_WEAPON
 
@@ -225,7 +238,7 @@ def test_preemptive_vent_when_heat_near_redline() -> None:
         boiler=_boiler(pressure=60, heat=76, redline=80, rupture=100),
         weapons=[_weapon(range_=12)],
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     assert decision.action == SOPilotAction.VENT
 
@@ -241,7 +254,7 @@ def test_low_pressure_no_threat_moves_to_regen() -> None:
         boiler=_boiler(pressure=25, heat=20),  # pressure=25 < 30
         weapons=[_weapon(range_=12, cooldown=3)],  # weapon on cooldown anyway
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     assert decision.action == SOPilotAction.MOVE
 
@@ -260,7 +273,7 @@ def test_linear_extrapolation_is_deterministic() -> None:
         mode_lock_expired=True,
         tick=3,
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision_a = pilot.decide(obs)
     decision_b = pilot.decide(obs)
     assert decision_a.action == decision_b.action
@@ -277,7 +290,7 @@ def test_no_enemy_observations_does_not_fire() -> None:
         boiler=_boiler(pressure=60, heat=20),
         weapons=[_weapon(range_=12)],
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     assert decision.action != SOPilotAction.FIRE_WEAPON
 
@@ -299,7 +312,7 @@ def test_mode_switch_requires_mode_lock_expired() -> None:
         mode_lock_expired=False,  # lock NOT expired — must not switch
         tick=3,
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     assert decision.action != SOPilotAction.SWITCH_MODE
 
@@ -320,7 +333,7 @@ def test_already_in_correct_mode_no_unnecessary_switch() -> None:
         weapons=[_weapon(range_=12, cooldown=0, pressure_cost=15)],
         boiler=_boiler(pressure=60, heat=20),
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     # Should not switch — already in the right mode.
     assert decision.action != SOPilotAction.SWITCH_MODE
@@ -337,7 +350,7 @@ def test_extrapolation_with_only_one_observation() -> None:
         boiler=_boiler(pressure=60, heat=20),
         weapons=[_weapon(range_=12)],
     )
-    pilot = PredictivePilot()
+    pilot = PredictivePilot(spec=_template_spec())
     decision = pilot.decide(obs)
     # Should still produce a valid decision (not crash).
     assert isinstance(decision, ModelSOPilotDecision)

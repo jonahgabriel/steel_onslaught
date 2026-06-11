@@ -1,0 +1,14 @@
+# Canonical predictive template — parameter values are exactly the MVP
+# hardcoded constants from src/steel_onslaught/pilots/predictive.py (MVP Task 17).
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.template.predictive
+display_name: "Template — Predictive"
+archetype: predictive
+lineage:
+  parent: null
+parameters:
+  lock_confidence_floor: 0.65
+  predicted_hit_floor: 0.55
+  preemptive_vent_headroom: 5
+  regen_pressure_floor: 30

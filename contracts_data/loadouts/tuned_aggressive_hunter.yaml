@@ -1,0 +1,35 @@
+# Tuned-duel blue side — tunable-pilots Task 5: the Proof-of-Life blue loadout
+# (proof_blue_aggressive_hunter.yaml) re-piloted with the tuned aggressive fork
+# pilot.tuned.aggressive_hot_v1 (registry-resolved).  Every module, chassis,
+# boiler, and budget line is identical to the PoL loadout by construction so
+# the only behavioral delta in the tuned duel is the pilot spec.
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.tuned.aggressive_hunter
+
+chassis_id: chassis.medium.hunter_mk1
+boiler_id: boiler.volatile.v1
+pilot_id: pilot.tuned.aggressive_hot_v1
+
+modules:
+  weapons:
+    - weapon.medium.steam_cannon
+    - weapon.light.machine_gun
+    - weapon.medium.heat_lance
+  sensors:
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.control.targeting_assist
+
+# Declared estimates; authoritative numbers come from validate_loadout_budgets.
+budgets:
+  points_used: 72
+  points_max: 100
+  mass_used: 58
+  mass_max: 100
+  slots_used: 5
+  slots_max: 6
+  expected_heat_peak: 29
+  expected_signature: 59

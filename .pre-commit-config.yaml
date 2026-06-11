@@ -15,6 +15,15 @@ repos:
         # same `# type: ignore[import-untyped]` comments are needed in both.
         # ulid-py ships py.typed; click is typed — both are imported from src.
         # websockets is imported by src/steel_onslaught/cli/serve.py + its tests.
+        # playwright is imported by tests/integration/test_proof_of_life.py.
         additional_dependencies:
-          [pydantic>=2.6, pyyaml, pytest, ulid-py, click>=8.1, websockets>=12.0]
+          [
+            pydantic>=2.6,
+            pyyaml,
+            pytest,
+            ulid-py,
+            click>=8.1,
+            websockets>=12.0,
+            playwright>=1.40,
+          ]
         args: [--strict]

@@ -1,0 +1,17 @@
+# Canonical defensive template — parameter values are exactly the MVP
+# hardcoded constants from src/steel_onslaught/pilots/defensive.py (MVP Task 16).
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.template.defensive
+display_name: "Template — Defensive"
+archetype: defensive
+lineage:
+  parent: null
+parameters:
+  vent_headroom_below_redline: 8
+  # Read-then-locked (plan Architectural Decision #6): copied verbatim from the
+  # landed constant _HIGH_CONFIDENCE_THRESHOLD = 0.7 at
+  # src/steel_onslaught/pilots/defensive.py line 34.
+  fire_confidence_floor: 0.7
+  fire_heat_headroom: 12
+  disengage_hp_pct: 30
