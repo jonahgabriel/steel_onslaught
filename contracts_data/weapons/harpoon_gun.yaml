@@ -1,0 +1,27 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.weapon
+id: weapon.heavy.harpoon_gun
+display_name: "Harpoon Gun"
+weapon_class: heavy
+range: 30
+damage: 28
+pressure_cost: 14
+heat_generated: 6
+cooldown_ticks: 4
+accuracy_curve:
+  - range: 0
+    hit_probability: 0.88
+  - range: 10
+    hit_probability: 0.78
+  - range: 20
+    hit_probability: 0.62
+  - range: 30
+    hit_probability: 0.45
+target_class_effectiveness:
+  light: 0.8
+  medium: 1.0
+  heavy: 1.2
+compatibility:
+  compatible_chassis_classes:
+    - medium
+    - heavy

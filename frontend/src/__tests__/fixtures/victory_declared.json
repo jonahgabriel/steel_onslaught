@@ -1,0 +1,20 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01VCTRYDECARED000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "victory_declared",
+  "payload": {
+    "winner_player_id": "player.a",
+    "reason": "last_mech_standing"
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}

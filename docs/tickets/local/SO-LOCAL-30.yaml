@@ -1,0 +1,4 @@
+id: SO-LOCAL-30
+title: "Leaderboard projection (SQLite materialized view)"
+phase: E
+status: done

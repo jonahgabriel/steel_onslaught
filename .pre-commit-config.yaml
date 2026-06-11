@@ -1,0 +1,20 @@
+# Hook revs are pinned to the same tool versions as the project venv (uv.lock)
+# so hook results match `uv run ruff` / `uv run mypy` exactly.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.16
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.1.0
+    hooks:
+      - id: mypy
+        # pyyaml (not types-PyYAML) + pytest: mirror the project env so the
+        # same `# type: ignore[import-untyped]` comments are needed in both.
+        # ulid-py ships py.typed; click is typed — both are imported from src.
+        # websockets is imported by src/steel_onslaught/cli/serve.py + its tests.
+        additional_dependencies:
+          [pydantic>=2.6, pyyaml, pytest, ulid-py, click>=8.1, websockets>=12.0]
+        args: [--strict]

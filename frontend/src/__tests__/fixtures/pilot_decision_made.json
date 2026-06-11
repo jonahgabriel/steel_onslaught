@@ -1,0 +1,34 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01PTDECSNMADE0000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "pilot_decision_made",
+  "payload": {
+    "action": "fire_weapon",
+    "action_params": {
+      "weapon_id": "module.weapon.machine_gun"
+    },
+    "reason_code": "target_in_range",
+    "confidence": 0.9,
+    "considered_actions": [
+      {
+        "action": "fire_weapon",
+        "score": 0.9
+      },
+      {
+        "action": "move",
+        "score": 0.4
+      }
+    ]
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}

@@ -1,0 +1,41 @@
+# Proof of Life — red side (Task 34): heavy ironclad, industrial boiler,
+# predictive pilot.  Long-range artillery doctrine.
+#
+# Module substitutions vs the plan's prose (documented in
+# tests/integration/test_proof_of_life.py):
+#   - weapon.light.machine_gun is NOT chassis-compatible with
+#     chassis.heavy.ironclad_mk1 (its contract allows light/medium only);
+#     weapon.heavy.harpoon_gun is fielded instead.
+#   - no auxiliary_vent gizmo contract exists in contracts_data/gizmos/;
+#     gizmo.efficiency.efficient_regulator is fielded instead.
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.proof.red_predictive_ironclad
+
+chassis_id: chassis.heavy.ironclad_mk1
+boiler_id: boiler.industrial.bessemer_90
+pilot_id: pilot.proof.predictive_v1
+
+modules:
+  weapons:
+    - weapon.siege.artillery_mortar
+    - weapon.heavy.harpoon_gun
+  sensors:
+    - sensor.long_range_radar
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.cooling.emergency_condenser
+    - gizmo.efficiency.efficient_regulator
+
+# Declared estimates; authoritative numbers come from validate_loadout_budgets.
+budgets:
+  points_used: 96
+  points_max: 100
+  mass_used: 112
+  mass_max: 160
+  slots_used: 6
+  slots_max: 8
+  expected_heat_peak: 22
+  expected_signature: 92

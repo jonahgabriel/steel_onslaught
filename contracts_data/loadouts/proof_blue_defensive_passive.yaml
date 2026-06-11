@@ -1,0 +1,28 @@
+# Proof of Life — draw-path blue side (Task 34): defensive pilot with NO
+# weapons and NO sensors (see proof_red_defensive_passive.yaml for the
+# structural-draw rationale).
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.proof.blue_defensive_passive
+
+chassis_id: chassis.light.scout_mk1
+boiler_id: boiler.compact.v1
+pilot_id: pilot.proof.defensive_v1
+
+modules:
+  weapons: []
+  sensors: []
+  cooling: []
+  armor: []
+  gizmos: []
+
+# Declared estimates; authoritative numbers come from validate_loadout_budgets.
+budgets:
+  points_used: 0
+  points_max: 100
+  mass_used: 0
+  mass_max: 60
+  slots_used: 0
+  slots_max: 4
+  expected_heat_peak: 0
+  expected_signature: 30

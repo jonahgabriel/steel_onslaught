@@ -1,0 +1,52 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01MATCHSCRED00000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "match_scored",
+  "payload": {
+    "kind": "steel_onslaught.match_scored",
+    "match_id": "match.fixture.0001",
+    "winner": {
+      "player_id": "player.a",
+      "mech_id": "mech.a.01"
+    },
+    "scores": {
+      "player.a": {
+        "victory": 1,
+        "damage_dealt": 120,
+        "damage_efficiency": 1.5,
+        "pressure_efficiency": 0.8,
+        "overload_penalty": 0,
+        "replay_validity": 1,
+        "final_score": 220
+      },
+      "player.b": {
+        "victory": 0,
+        "damage_dealt": 60,
+        "damage_efficiency": 0.75,
+        "pressure_efficiency": 0.6,
+        "overload_penalty": 10,
+        "replay_validity": 1,
+        "final_score": 95
+      }
+    },
+    "winner_player_id": "player.a",
+    "winner_loadout_id": "loadout.fixture.alpha",
+    "winner_score": 220,
+    "loser_player_id": "player.b",
+    "loser_score": 95,
+    "duration_ticks": 42,
+    "scored_at": "2026-04-30T00:00:00+00:00",
+    "is_draw": false
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}

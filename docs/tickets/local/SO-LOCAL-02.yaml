@@ -1,0 +1,4 @@
+id: SO-LOCAL-02
+title: "Configure tooling (pre-commit, mypy strict)"
+phase: A
+status: done

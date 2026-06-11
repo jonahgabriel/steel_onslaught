@@ -1,0 +1,30 @@
+# Proof of Life — draw-path red side (Task 34): defensive pilot with NO
+# weapons and NO sensors.  Structurally incapable of engaging: the defensive
+# decision tree can never fire (no weapons) and never sees the enemy (no
+# sensors), so the match is guaranteed to run to the max_ticks bound and end
+# with reason draw_max_ticks.
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.proof.red_defensive_passive
+
+chassis_id: chassis.light.scout_mk1
+boiler_id: boiler.compact.v1
+pilot_id: pilot.proof.defensive_v1
+
+modules:
+  weapons: []
+  sensors: []
+  cooling: []
+  armor: []
+  gizmos: []
+
+# Declared estimates; authoritative numbers come from validate_loadout_budgets.
+budgets:
+  points_used: 0
+  points_max: 100
+  mass_used: 0
+  mass_max: 60
+  slots_used: 0
+  slots_max: 4
+  expected_heat_peak: 0
+  expected_signature: 30

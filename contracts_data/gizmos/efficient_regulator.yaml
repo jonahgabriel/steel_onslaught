@@ -1,0 +1,20 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.gizmo
+id: gizmo.efficiency.efficient_regulator
+display_name: "Efficient Regulator"
+category: efficiency
+
+constraints:
+  mass: 4
+  slots: 1
+  compatible_chassis: [light, medium, heavy]
+
+effects:
+  on_tick:
+    pressure_regen_bonus: 2
+    heat_dissipation_bonus: 1
+
+tradeoffs:
+  max_pressure_reduction: 3
+
+forbidden_stacking: []

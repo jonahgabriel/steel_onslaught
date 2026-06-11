@@ -1,0 +1,12 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.sensor"
+id: "sensor.thermal_detector"
+display_name: "Thermal Signature Detector"
+# Specialized for detecting high-heat targets (boiler-heavy mechs)
+range: 25
+precision: 0.75
+latency_ticks: 0
+pressure_draw_per_tick: 1.5
+heat_per_tick: 0.5
+signature_impact: 3.0
+jamming_vulnerability_score: 0.2

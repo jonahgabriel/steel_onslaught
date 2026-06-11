@@ -1,0 +1,29 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.chassis"
+id: "chassis.medium.hunter_mk1"
+display_name: "Medium Hunter Mk1"
+chassis_class: "medium"
+constraints:
+  max_mass: 100
+  max_module_slots: 6
+  max_boiler_volume: 60
+  base_speed: 4
+  base_turn_rate: 3
+  base_signature: 50
+  base_vent_rate: 3
+compatibility:
+  weapon_classes:
+    - "light"
+    - "medium"
+    - "heavy"
+  boiler_classes:
+    - "compact"
+    - "industrial"
+    - "volatile"
+  mobility_classes:
+    - "tracked"
+    - "wheeled"
+penalties:
+  mode_switch_latency_modifier: 1.0
+  sensor_lock_penalty: 1.0
+  heat_weapon_vulnerability: 1.0

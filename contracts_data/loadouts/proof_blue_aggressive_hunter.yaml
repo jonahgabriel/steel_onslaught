@@ -1,0 +1,34 @@
+# Proof of Life — blue side (Task 34): medium hunter, volatile boiler,
+# aggressive pilot.  Close-range brawler doctrine (plan Task 34 scenario:
+# steam_cannon + machine_gun + heat_lance + short_range_scanner +
+# targeting_assist).
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.proof.blue_aggressive_hunter
+
+chassis_id: chassis.medium.hunter_mk1
+boiler_id: boiler.volatile.v1
+pilot_id: pilot.proof.aggressive_v1
+
+modules:
+  weapons:
+    - weapon.medium.steam_cannon
+    - weapon.light.machine_gun
+    - weapon.medium.heat_lance
+  sensors:
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.control.targeting_assist
+
+# Declared estimates; authoritative numbers come from validate_loadout_budgets.
+budgets:
+  points_used: 72
+  points_max: 100
+  mass_used: 58
+  mass_max: 100
+  slots_used: 5
+  slots_max: 6
+  expected_heat_peak: 29
+  expected_signature: 59

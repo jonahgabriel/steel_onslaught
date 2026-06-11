@@ -1,0 +1,17 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.mode
+id: mode.assault
+display_name: Assault
+active_systems:
+  - weapon
+  - boiler
+passive_modifiers:
+  weapon_damage_multiplier: 1.3
+  accuracy_bonus: 0.1
+  sensor_range_multiplier: 0.7
+  speed_multiplier: 0.9
+  heat_generation_multiplier: 1.2
+default_priorities:
+  - fire
+  - advance
+  - pressure_manage

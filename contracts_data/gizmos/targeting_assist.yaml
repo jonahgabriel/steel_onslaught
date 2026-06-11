@@ -1,0 +1,21 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.gizmo
+id: gizmo.control.targeting_assist
+display_name: "Targeting Assist"
+category: control
+
+constraints:
+  mass: 3
+  slots: 1
+  compatible_chassis: [light, medium, heavy]
+
+effects:
+  on_sensor_lock:
+    accuracy_bonus: 0.15
+    lock_time_reduction_ticks: 1
+
+tradeoffs:
+  signature_increase: 5
+
+forbidden_stacking:
+  - gizmo.control.precision_optics

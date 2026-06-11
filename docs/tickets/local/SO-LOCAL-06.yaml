@@ -1,0 +1,4 @@
+id: SO-LOCAL-06
+title: "Append-only SQLite event ledger + migrations"
+phase: A
+status: done

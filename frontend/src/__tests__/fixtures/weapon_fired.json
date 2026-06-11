@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01WEAPNFRED000000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "weapon_fired",
+  "payload": {
+    "weapon_id": "module.weapon.machine_gun",
+    "target_id": "mech.b.01",
+    "hit_probability": 0.65,
+    "pressure_cost": 4,
+    "heat_generated": 6
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}

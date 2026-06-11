@@ -1,0 +1,12 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.sensor"
+id: "sensor.acoustic_detector"
+display_name: "Acoustic Motion Detector"
+# Specialized for detecting fast-moving / high-vent targets
+range: 20
+precision: 0.7
+latency_ticks: 0
+pressure_draw_per_tick: 1.0
+heat_per_tick: 0.25
+signature_impact: 2.0
+jamming_vulnerability_score: 0.15

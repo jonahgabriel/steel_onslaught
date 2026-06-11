@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01SENSRBSERVATN00000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "correlation_id": null,
+  "causation_id": null,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "sensor_observation",
+  "payload": {
+    "enemy_mech_id": "mech.b.01",
+    "distance_estimate": 12.4,
+    "confidence": 0.85,
+    "heat_estimate": 55.0,
+    "mode_estimate": "assault"
+  },
+  "emitted_at": "2026-04-30T00:00:00+00:00"
+}
