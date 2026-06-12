@@ -24,15 +24,12 @@ import tempfile
 from pathlib import Path
 
 import click
-import ulid
 
-from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.match.duel import run_duel
 from steel_onslaught.match.fold import MatchContractCatalog
-from steel_onslaught.match.runner import ARENA_SIZE_CELLS, MatchRunner, load_loadout
-from steel_onslaught.pilots.schemas import ModelSOPosition
+from steel_onslaught.match.runner import load_loadout
 from steel_onslaught.projections.balance.matrix import (
     ModelSOBalanceMatrix,
     ModelSOBalancePairing,
@@ -46,10 +43,6 @@ _TEMPLATE_PILOT_IDS: tuple[str, ...] = (
     "pilot.template.defensive",
     "pilot.template.predictive",
 )
-
-# Standard duel geometry — identical to the Task 34 `run_match` entrypoint.
-_SPAWN_A = ModelSOPosition(x=5, y=5)
-_SPAWN_B = ModelSOPosition(x=35, y=35)  # Chebyshev 30 apart on a 40x40 grid
 
 _SIDE_A = "a"
 _SIDE_B = "b"
@@ -75,39 +68,6 @@ def _enumerate_configs(loadouts_dir: Path) -> list[tuple[str, ModelSOLoadout]]:
             configs.append((f"{base.id}+{pilot_id}", repiloted))
     configs.sort(key=lambda item: item[0])
     return configs
-
-
-def _run_duel(
-    *,
-    loadout_a: ModelSOLoadout,
-    loadout_b: ModelSOLoadout,
-    seed: int,
-    max_ticks: int,
-    catalog: MatchContractCatalog,
-    registry: PilotSpecRegistry,
-    ledger_path: Path,
-) -> str | None:
-    """Run one deterministic duel; return the winning player_id (None on draw)."""
-    bus = InProcessEventBus()
-    ledger = SQLiteLedger(ledger_path)
-    bus.subscribe(ledger.append)
-    runner = MatchRunner(
-        match_id=f"match.{ulid.new().str}",
-        seed=seed,
-        loadout_a=loadout_a,
-        loadout_b=loadout_b,
-        bus=bus,
-        max_ticks=max_ticks,
-        catalog=catalog,
-        pilot_registry=registry,
-        side_a=_SIDE_A,
-        side_b=_SIDE_B,
-        spawn_a=_SPAWN_A,
-        spawn_b=_SPAWN_B,
-        arena_size=ARENA_SIZE_CELLS,
-    )
-    final = runner.run()
-    return final.winner_id
 
 
 @click.command(name="balance")
@@ -155,7 +115,7 @@ def balance_command(
         for (config_a, loadout_a), (config_b, loadout_b) in itertools.combinations(configs, 2):
             wins_a = wins_b = draws = 0
             for seed in range(1, seed_count + 1):
-                winner_id = _run_duel(
+                final = run_duel(
                     loadout_a=loadout_a,
                     loadout_b=loadout_b,
                     seed=seed,
@@ -163,7 +123,10 @@ def balance_command(
                     catalog=catalog,
                     registry=registry,
                     ledger_path=ledger_path,
+                    side_a=_SIDE_A,
+                    side_b=_SIDE_B,
                 )
+                winner_id = final.winner_id
                 if winner_id is None:
                     draws += 1
                 elif winner_id == f"player.{_SIDE_A}":
