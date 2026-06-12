@@ -32,6 +32,7 @@ import asyncio
 import json
 import re
 import sqlite3
+from collections.abc import Awaitable, Callable, Sequence
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -250,24 +251,47 @@ class WebSocketBridge:
         broadcast(self._clients, message)
 
 
+async def _stream_match(
+    send: Callable[[str], Awaitable[None]],
+    paced_frames: Sequence[tuple[int, str]],
+    tick_delay: float,
+) -> None:
+    """Send every frame in ledger order, pausing at tick boundaries.
+
+    *paced_frames* is ``(tick, frame)`` pairs.  With ``tick_delay > 0`` the
+    coroutine sleeps *tick_delay* seconds whenever the next frame's tick
+    differs from the previous frame's tick; frames within a tick stream
+    back-to-back.  With ``tick_delay == 0`` no sleep is ever awaited — the
+    prior unpaced behavior.  Pacing never alters frame bytes or order.
+    """
+    previous_tick: int | None = None
+    for tick, frame in paced_frames:
+        if tick_delay > 0 and previous_tick is not None and tick != previous_tick:
+            await asyncio.sleep(tick_delay)
+        await send(frame)
+        previous_tick = tick
+
+
 async def _serve_replay(
     events: list[ModelSOEventEnvelope],
     *,
     host: str,
     port: int,
+    tick_delay: float = 0.0,
 ) -> None:
     """Stream the recorded match to EVERY client that connects, then idle.
 
     Per-client streaming (rather than a single broadcast to the first client)
     makes the replay robust to client churn — e.g. React StrictMode's
     mount/unmount/mount cycle opens two sockets in quick succession, and both
-    must receive the full match (Task 34 Proof of Life).
+    must receive the full match (Task 34 Proof of Life).  Pacing is therefore
+    also per-connection: each client gets the full match from the start, and
+    one client's tick-boundary sleeps never block another client's stream.
     """
-    frames = [WebSocketBridge.serialize(event) for event in events]
+    paced_frames = [(event.tick, WebSocketBridge.serialize(event)) for event in events]
 
     async def _stream_to_client(connection: ServerConnection) -> None:
-        for frame in frames:
-            await connection.send(frame)
+        await _stream_match(connection.send, paced_frames, tick_delay)
         await connection.wait_closed()
 
     server = await serve(_stream_to_client, host, port)
@@ -275,7 +299,7 @@ async def _serve_replay(
         sockets = list(server.sockets)
         bound_port = sockets[0].getsockname()[1] if sockets else port
         click.echo(
-            f"serving on ws://{host}:{bound_port} — streaming {len(frames)} events "
+            f"serving on ws://{host}:{bound_port} — streaming {len(paced_frames)} events "
             "to each client; Ctrl+C to exit",
             err=True,
         )
@@ -295,12 +319,22 @@ async def _serve_replay(
 @click.option("--match", "match_id", required=True)
 @click.option("--host", default=DEFAULT_WS_HOST, show_default=True)
 @click.option("--port", type=click.IntRange(min=0), default=DEFAULT_WS_PORT, show_default=True)
-def serve_command(ledger_path: Path, match_id: str, host: str, port: int) -> None:
+@click.option(
+    "--tick-delay",
+    "tick_delay",
+    type=click.FloatRange(min=0),
+    default=0.0,
+    show_default=True,
+    help="Seconds to pause between tick boundaries during replay (0 = no pacing).",
+)
+def serve_command(
+    ledger_path: Path, match_id: str, host: str, port: int, tick_delay: float
+) -> None:
     """Stream a recorded match to WebSocket clients (frontend on :5173)."""
     events = list(SQLiteLedger(ledger_path).read_all(match_id))
     if not events:
         raise click.ClickException(f"no events found for match {match_id!r} in {ledger_path}")
     try:
-        asyncio.run(_serve_replay(events, host=host, port=port))
+        asyncio.run(_serve_replay(events, host=host, port=port, tick_delay=tick_delay))
     except KeyboardInterrupt:
         click.echo("serve interrupted", err=True)

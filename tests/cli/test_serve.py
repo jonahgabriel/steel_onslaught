@@ -9,12 +9,21 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
+import click
 import pytest
 import websockets
+from click.testing import CliRunner
 
 from steel_onslaught.bus.in_process import InProcessEventBus
-from steel_onslaught.cli.serve import DEFAULT_WS_HOST, DEFAULT_WS_PORT, WebSocketBridge
+from steel_onslaught.cli.serve import (
+    DEFAULT_WS_HOST,
+    DEFAULT_WS_PORT,
+    WebSocketBridge,
+    _stream_match,
+    serve_command,
+)
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -142,3 +151,149 @@ async def test_stop_unsubscribes_from_bus() -> None:
     await bridge.stop()
     # Publishing after stop must not raise (no dangling handler on the bus).
     bus.publish(_env())
+
+
+# ---------------------------------------------------------------------------
+# Paced replay: so serve --tick-delay
+# ---------------------------------------------------------------------------
+
+
+def _paced_events() -> list[ModelSOEventEnvelope]:
+    """Five events over ticks [0, 0, 1, 1, 2] — exactly 2 tick transitions."""
+    return [
+        _env(SOEventType.MATCH_TICK, tick=0),
+        _env(SOEventType.BOILER_UPDATED, tick=0),
+        _env(SOEventType.MATCH_TICK, tick=1),
+        _env(SOEventType.WEAPON_FIRED, tick=1),
+        _env(SOEventType.MATCH_TICK, tick=2),
+    ]
+
+
+def _paced_frames(events: list[ModelSOEventEnvelope]) -> list[tuple[int, str]]:
+    return [(event.tick, WebSocketBridge.serialize(event)) for event in events]
+
+
+@pytest.mark.unit
+def test_tick_delay_option_defaults_to_zero() -> None:
+    """Plan invariant: --tick-delay defaults to 0.0 (no pacing, prior behavior)."""
+    param = next(p for p in serve_command.params if p.name == "tick_delay")
+    assert param.default == 0.0
+    assert isinstance(param.type, click.FloatRange)
+    assert param.type.min == 0
+
+
+@pytest.mark.unit
+def test_negative_tick_delay_rejected_by_click(tmp_path: Path) -> None:
+    ledger = tmp_path / "match.sqlite"
+    ledger.touch()
+    result = CliRunner().invoke(
+        serve_command,
+        ["--ledger", str(ledger), "--match", "m", "--tick-delay", "-0.5"],
+    )
+    assert result.exit_code == 2
+    assert "--tick-delay" in result.output
+    assert "is not in the range" in result.output
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_match_sleeps_once_per_tick_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With delay > 0, sleep fires exactly (distinct tick transitions) times."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("steel_onslaught.cli.serve.asyncio.sleep", fake_sleep)
+
+    sent: list[str] = []
+
+    async def fake_send(frame: str) -> None:
+        sent.append(frame)
+
+    events = _paced_events()
+    await _stream_match(fake_send, _paced_frames(events), 0.25)
+
+    # Ticks [0, 0, 1, 1, 2] → transitions 0→1 and 1→2 only.
+    assert sleeps == [0.25, 0.25]
+    assert sent == [event.model_dump_json() for event in events]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_match_zero_delay_never_sleeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default delay 0.0 must not invoke sleep at all — prior behavior intact."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("steel_onslaught.cli.serve.asyncio.sleep", fake_sleep)
+
+    sent: list[str] = []
+
+    async def fake_send(frame: str) -> None:
+        sent.append(frame)
+
+    events = _paced_events()
+    await _stream_match(fake_send, _paced_frames(events), 0.0)
+
+    assert sleeps == []
+    assert sent == [event.model_dump_json() for event in events]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_match_frames_identical_with_and_without_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pacing must not alter frame bytes or order — pacing only."""
+
+    async def fake_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr("steel_onslaught.cli.serve.asyncio.sleep", fake_sleep)
+
+    events = _paced_events()
+
+    unpaced: list[str] = []
+
+    async def collect_unpaced(frame: str) -> None:
+        unpaced.append(frame)
+
+    paced: list[str] = []
+
+    async def collect_paced(frame: str) -> None:
+        paced.append(frame)
+
+    await _stream_match(collect_unpaced, _paced_frames(events), 0.0)
+    await _stream_match(collect_paced, _paced_frames(events), 0.5)
+
+    assert paced == unpaced
+    assert paced == [event.model_dump_json() for event in events]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_paced_stream_over_websocket_delivers_full_match() -> None:
+    """Each connecting client receives the whole match in order, even paced."""
+    from websockets.asyncio.server import ServerConnection, serve
+
+    events = _paced_events()
+    frames = _paced_frames(events)
+
+    async def handler(connection: ServerConnection) -> None:
+        await _stream_match(connection.send, frames, 0.01)
+
+    async with serve(handler, "127.0.0.1", 0) as server:
+        port = next(iter(server.sockets)).getsockname()[1]
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as client:
+            received = [
+                await asyncio.wait_for(client.recv(), timeout=_RECV_TIMEOUT)
+                for _ in range(len(events))
+            ]
+    assert received == [event.model_dump_json() for event in events]
