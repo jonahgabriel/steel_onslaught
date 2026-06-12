@@ -21,6 +21,7 @@ import ulid
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.cli.balance import balance_command
+from steel_onslaught.cli.learn import learn_command
 from steel_onslaught.cli.serve import serve_command
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.runner import MatchRunner, load_loadout
@@ -45,6 +46,7 @@ def main() -> None:
 
 main.add_command(serve_command)
 main.add_command(balance_command)
+main.add_command(learn_command)
 
 
 @main.command(name="run")
