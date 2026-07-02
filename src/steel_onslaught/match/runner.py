@@ -48,6 +48,7 @@ from steel_onslaught.events.envelope import (
     make_event,
 )
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
+from steel_onslaught.match.initiative import order_by_initiative
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
     ModelSOMatchState,
@@ -272,17 +273,21 @@ class MatchRunner:
                 correlation_id=self._correlation_id,
             ).apply(tick_event)
 
-            # Resolve intents. The buffer is filled in mech insertion order
-            # (a then b), which gives a fixed first-actor advantage: the mech
-            # whose intent resolves first takes the killing blow when both
-            # would die in the same tick, breaking the side-swap symmetry the
-            # learning loop relies on. Per-tick we deterministically shuffle
-            # the resolution order via a seeded RNG sub-seed, so neither side
-            # has a systematic advantage across a match (the standard fix for
-            # simultaneous-turn resolution in deterministic games).
-            intents = list(self._intent_buffer)
-            order_rng = self._rng.for_event(tick=next_tick, mech_id="*", kind="resolution_order")
-            order_rng.shuffle(intents)
+            # Resolve intents in initiative order. Initiative is a real combat
+            # mechanic (match/initiative.py): lighter chassis and well-managed
+            # boilers act first; overloaded/redline boilers act late. This
+            # replaces a fixed insertion order, which gave a systematic
+            # first-actor disadvantage in same-tick kill exchanges and broke
+            # the side-swap symmetry the learning loop relies on. Ties break
+            # by a seeded RNG sub-seed so equal-initiative mechs don't get a
+            # fixed ordering across the match.
+            ordered_mechs = order_by_initiative(
+                list(self.fold.state.living_mechs()), rng=self._rng, tick=next_tick
+            )
+            initiative_order = {mech.mech_id: i for i, mech in enumerate(ordered_mechs)}
+            intents = sorted(
+                self._intent_buffer, key=lambda e: initiative_order.get(e.subject.mech_id, 0)
+            )
             for intent in intents:
                 if self.fold.state.status is not SOMatchStatus.RUNNING:
                     break  # an earlier resolution ended the match
