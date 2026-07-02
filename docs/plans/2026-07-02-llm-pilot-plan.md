@@ -1,6 +1,6 @@
 # LLM Integration — ONEX-native pilots + learning-loop Phase 3 (LLM tuner)
 
-> **Status:** Rev 2, awaiting review/iteration.
+> **Status:** Rev 3, awaiting review/iteration.
 > **Author:** generated 2026-07-02 (Rev 1); Rev 2 same day after a 7-agent
 > research + adversarial-verification pass (5 research, 2 verify agents; all
 > claims below carry file:line evidence from that pass or direct reads).
@@ -33,6 +33,19 @@
 >    for `rationale` (it enumerates fields; nothing "flows automatically"),
 >    the decision model's required `reason_code`/`considered_actions` get
 >    explicit LLM handling, transport failures hit the REMAIN fallback.
+> 6. **(Rev 3) Bus-first evidence + transport lanes.** The HTTP client is
+>    demoted to an implementation detail *inside* the effect node — model
+>    servers (LM Studio/Ollama/vLLM/Gemini-compat) only speak HTTP; Kafka
+>    cannot POST to them, and even the platform's deployed
+>    `node_llm_delegation_call_effect` is an httpx POST inside a node
+>    (`handlers/transport.py`). What changes architecturally: every LLM
+>    request/response is published as **evidence events on the game bus**
+>    (→ append-only ledger, causation-chained, replayable), and the client
+>    seam gains a **Kafka delegation lane** — on infra-installed hosts
+>    (.201) a contract override routes completions through the bus to the
+>    platform's deployed delegation effect node instead of the game-local
+>    HTTP client. In-memory/local bus is the default; Kafka is the
+>    override (platform doctrine).
 
 ## Core principle (verified, unchanged from Rev 1)
 
@@ -104,7 +117,7 @@ in every file under `learning/` — LLM timeout/clock code cannot live there).
 
 - `llm/contract.yaml` — `node_type: effect`, `descriptor: {node_archetype:
   effect, purity: impure, idempotent: false, timeout_ms: <from provider>}`,
-  `handler: steel_onslaught.llm.client:LlmCompletionClient`,
+  `handler: steel_onslaught.llm.effect:LlmCompletionEffect`,
   `metadata: {transport_type: in_process}`. Use exactly `effect` — do not
   repeat the leaderboard's `node_archetype: projection` divergence from the
   four canonical archetypes (`EnumNodeArchetype`: compute/effect/reducer/
@@ -116,32 +129,81 @@ in every file under `learning/` — LLM timeout/clock code cannot live there).
   above, with `prompt_tokens`/`completion_tokens`/`cost_usd` carried in
   `usage_statistics` so the tuner's `cost_per_promotion` has a source of
   truth from day one.
-- `llm/client.py` — `LlmCompletionClient`, pattern-copied (not imported)
-  from the platform's canonical minimal reference,
-  `omnimarket/.../node_llm_delegation_call_effect/handlers/transport.py` +
-  `handler_llm_delegation_call.py`. Behaviors copied verbatim:
-  - **fail-closed verbatim-URL check** before any network call (URL must
-    start with http(s)://; posted byte-for-byte, no rstrip/append —
-    OMN-12815/13159 doctrine);
-  - **required timeout, no default** (caller supplies the
-    contract-resolved value);
-  - single `httpx.Client(...).post(...)` + `raise_for_status()` +
-    `response.json()`; **exactly one call, no retry** (the reference
-    handler's own doctrine: retries/escalation belong to orchestration,
-    never the transport);
-  - error taxonomy: `httpx.TimeoutException` → timeout; `HTTPStatusError`
-    429 → rate-limited, **401/403 → auth-failed** (fixing a classification
-    gap the reference itself has), other statuses → provider-unavailable;
-    empty `choices` → invalid-response; anything else → unknown;
-  - usage extraction: `usage.get("prompt_tokens"/"completion_tokens") or 0`.
-  Behaviors deliberately skipped (platform-scale overkill): curl/httpx dual
-  transport (macOS-LAN-grant workaround), Infisical/ProtocolSecretStore DI,
-  tier-ladder escalation, YAML pricing registry (per-1M prices live as
-  optional fields on the provider entry instead), Kafka provenance.
-- `llm/stub.py` — `StubLlmClient`: table-driven, fail-fast (KeyError on
-  unscripted input — the repo's `FakeEvaluator` stub convention,
-  `learning/fake_evaluator.py:9-32`). All pilot + tuner logic is developed
-  offline against it.
+- `llm/effect.py` — `LlmCompletionEffect`, the node's handler. It resolves
+  the provider entry, invokes the configured **lane client**
+  (`ProtocolLlmClient`), and publishes the evidence events (below) on the
+  game bus. Which lane is active is contract configuration, never code:
+
+  - **Local HTTP lane (default) — `llm/client.py::LlmHttpClient`.**
+    Pattern-copied (not imported) from the platform's canonical minimal
+    reference, `omnimarket/.../node_llm_delegation_call_effect/handlers/
+    transport.py` + `handler_llm_delegation_call.py` — which is itself the
+    proof that an httpx POST *inside an effect node* is the platform's own
+    bottom layer: model servers (LM Studio/Ollama/vLLM/Gemini-compat) only
+    speak HTTP; Kafka cannot POST to them. Every LLM integration terminates
+    in an HTTP call at some effect boundary — the doctrine question is only
+    *which node owns it* (see the Kafka lane for the answer "the platform's
+    node" on infra hosts). Behaviors copied verbatim:
+    - **fail-closed verbatim-URL check** before any network call (URL must
+      start with http(s)://; posted byte-for-byte, no rstrip/append —
+      OMN-12815/13159 doctrine);
+    - **required timeout, no default** (caller supplies the
+      contract-resolved value);
+    - single `httpx.Client(...).post(...)` + `raise_for_status()` +
+      `response.json()`; **exactly one call, no retry** (the reference
+      handler's own doctrine: retries/escalation belong to orchestration,
+      never the transport);
+    - error taxonomy: `httpx.TimeoutException` → timeout; `HTTPStatusError`
+      429 → rate-limited, **401/403 → auth-failed** (fixing a classification
+      gap the reference itself has), other statuses → provider-unavailable;
+      empty `choices` → invalid-response; anything else → unknown;
+    - usage extraction: `usage.get("prompt_tokens"/"completion_tokens") or 0`.
+    Behaviors deliberately skipped (platform-scale overkill): curl/httpx
+    dual transport (macOS-LAN-grant workaround), Infisical/
+    ProtocolSecretStore DI, tier-ladder escalation, YAML pricing registry
+    (per-1M prices live as optional fields on the provider entry instead),
+    Kafka provenance.
+
+  - **Kafka delegation lane (contract override, infra hosts) — Phase E.**
+    Where infra is installed (.201), the override routes completions
+    through the bus to the platform's **already-deployed**
+    `node_llm_delegation_call_effect` instead of game-local HTTP: the lane
+    client (`LlmBusDelegationClient`, same `ProtocolLlmClient`) publishes
+    the delegation request event and consumes the terminal response event.
+    The game-side HTTP client is bypassed entirely; the platform node does
+    the POST, key resolution, and usage metering it already does in
+    production. Two prerequisites make this a gated phase rather than the
+    default: (a) the game takes an **optional** Kafka client dependency (an
+    extra — the base install stays infra-free per the repo's own pyproject
+    doctrine), and (b) the delegation request/response topics + wire DTOs
+    must be consumed from the platform's contract, verified against the
+    live deployed lane before building — no guessed envelope shapes.
+
+  - **Stub lane — `llm/stub.py::StubLlmClient`:** table-driven, fail-fast
+    (KeyError on unscripted input — the repo's `FakeEvaluator` stub
+    convention, `learning/fake_evaluator.py:9-32`). All pilot + tuner logic
+    is developed offline against it.
+
+**Evidence events (all lanes).** The effect node publishes
+`LLM_COMPLETION_REQUESTED` (prompt, model, provider, persona/arm,
+correlation) and `LLM_COMPLETION_RESOLVED` (text, finish reason, usage,
+latency, failure class on fallback) on the game `EventBus`. During a match
+they land in the append-only ledger with causation chains like every other
+event; `MatchStateFold` ignores them (default no-op case,
+`match/fold.py:271-272`), so state equality and `verify_replay_validity`
+are untouched, and ordering is owned by `(tick, sequence_in_tick)`, which
+the bus re-stamps. Every prompt and completion becomes durable,
+inspectable ledger evidence — and this opens a future `RecordedLlmClient`
+lane that serves completions straight from a recorded ledger
+(deterministic re-run of an LLM match with no network).
+
+**Invocation stays a direct handler call in-process.** `decide()` must
+return a decision within the tick; a request/response round-trip *through*
+the synchronous in-process bus would re-enter `publish()` mid-cascade. So
+in-process composition wires the effect node into the pilot the way
+`assemble_match_live` already wires the ledger and scoring callables —
+direct typed calls — while the bus carries the *evidence* (all lanes) and,
+on the Kafka lane, the *transport*.
 
 **Provider registry is a contract, not env vars** — `llm/providers.yaml`,
 mirroring the *shape conventions* of omnimarket's `model_registry_v1.yaml`
@@ -190,8 +252,9 @@ existing `PilotProtocol.decide(observation) -> ModelSOPilotDecision`
 1. Serialize the observation compactly (own hp/heat/pressure/weapons/mode +
    noisy enemy readings); prepend the persona system prompt, which also pins
    the required JSON response shape (`EnumResponseFormat.JSON`).
-2. `client.complete(...)`; parse; validate the action against
-   `available_actions(observation)` (`pilots/schemas.py:202`).
+2. Invoke the LLM effect node (whichever lane its contract configures);
+   parse; validate the action against `available_actions(observation)`
+   (`pilots/schemas.py:202`).
 3. Return the decision with `reason_code=LLM_DECISION`,
    `considered_actions=[]` (the LLM's alternatives live in prose in
    `rationale`; the scored list is a heuristic concept), `rationale` set.
@@ -383,7 +446,8 @@ Phase A is the shared seam; B and C are independent after A (disjoint
 files, parallel-safe). C is the priority payload; B is the show-piece.
 
 **A — LLM effect node:** (1) `llm/schemas.py` shapes (spi-structural) +
-`ProtocolLlmClient`; (2) `llm/stub.py`; (3) `llm/client.py` +
+`ProtocolLlmClient`; (2) `llm/stub.py`; (3) `llm/effect.py` (lane
+resolution + evidence events) + `llm/client.py` (local HTTP lane) +
 `llm/contract.yaml` + `llm/providers.yaml`.
 
 **B — LLM pilot:** (4) schema/payload changes (§3, additive); (5) `llm`
@@ -401,13 +465,24 @@ control enforced), usage sidecar + ROI-compatible row export.
 **D — docs + demo:** (9) determinism-boundaries update; (10) demo script:
 LLM-vs-LLM persona match + one tuner experiment against a local model.
 
+**E — Kafka delegation lane (gated, optional; no other phase depends on
+it):** `LlmBusDelegationClient` behind the same `ProtocolLlmClient`. Two
+explicit decisions gate it: the optional Kafka dependency (packaged as an
+extra so the base install stays infra-free), and the platform delegation
+topic/DTO contract verified against the live deployed .201 lane. Until
+then, "infra installed" hosts still work via the local HTTP lane pointed
+at .201's model endpoints.
+
 ## Verification
 
 - **A:** stub round-trip; client tests against a recorded OpenAI-compatible
   response fixture; verbatim-URL fail-closed test (bare host without path
   rejected); required-timeout test; each error-taxonomy branch; fail-closed
-  missing-key; **source-scan: no `asyncio` import anywhere in `llm/`** (the
-  C2 latent-hazard guard, mirroring the repo's source-scan convention).
+  missing-key; evidence events published on both success and fallback and
+  present in a match ledger, with `verify_replay_validity` passing on a
+  ledger that contains them; **source-scan: no `asyncio` import anywhere in
+  `llm/`** (the C2 latent-hazard guard, mirroring the repo's source-scan
+  convention).
 - **B:** stub-based `LLMPilot` tests — parse/validate/REMAIN-fallback per
   failure class; `rationale` present in `PILOT_DECISION_MADE` ledger rows
   and REST inspector output; a full stub LLM-vs-LLM match passes
