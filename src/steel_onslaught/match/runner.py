@@ -44,6 +44,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    caused_by,
     make_event,
 )
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
@@ -371,6 +372,7 @@ class MatchRunner:
                     "ticks_consumed": 1,
                     "pressure_consumed": moved,
                 },
+                caused_by_intent=intent,
             )
         )
 
@@ -444,6 +446,7 @@ class MatchRunner:
                     "pressure_cost": spec.pressure_cost,
                     "heat_generated": spec.heat_generated,
                 },
+                caused_by_intent=intent,
             )
         )
         if not hit:
@@ -537,6 +540,7 @@ class MatchRunner:
             build_mode_transition_started_event(
                 match_id=self._match_id,
                 correlation_id=self._correlation_id,
+                causation_id=intent.envelope.message_id,
                 tick=state.tick,
                 mech=mech,
                 transition=transition,
@@ -624,7 +628,26 @@ class MatchRunner:
         tick: int,
         mech: ModelSOMechRuntimeState,
         payload: dict[str, Any],
+        caused_by_intent: ModelSOEventEnvelope | None = None,
     ) -> ModelSOEventEnvelope:
+        """Build a mech-scoped event; optionally chains causation off an intent.
+
+        When *caused_by_intent* is set (a resolved event produced from a pilot
+        intent), the new event's causation_id links to that intent's
+        message_id — the ONEX causation chain that lets a downstream consumer
+        trace WEAPON_FIRED back to the WEAPON_FIRE_INTENT that triggered it.
+        """
+        if caused_by_intent is not None:
+            return caused_by(  # the ONEX child-envelope factory
+                caused_by_intent,
+                match_id=self._match_id,
+                tick=tick,
+                sequence_in_tick=0,  # bus re-stamps
+                event_type=event_type,
+                producer_node=_PRODUCER_NODE,
+                subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
+                payload=payload,
+            )
         return make_event(
             match_id=self._match_id,
             tick=tick,

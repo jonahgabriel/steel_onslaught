@@ -84,14 +84,20 @@ def build_mode_transition_started_event(
     *,
     match_id: str,
     correlation_id: UUID | None = None,
+    causation_id: UUID | None = None,
     tick: int,
     mech: ModelSOMechRuntimeState,
     transition: ModelSOModeTransition,
 ) -> ModelSOEventEnvelope:
-    """Build the canonical MODE_TRANSITION_STARTED envelope for *mech*."""
+    """Build the canonical MODE_TRANSITION_STARTED envelope for *mech*.
+
+    *causation_id* (when set) links this event to the MODE_SWITCH_INTENT that
+    triggered it — the ONEX causation chain.
+    """
     return make_event(
         match_id=match_id,
         correlation_id=correlation_id if correlation_id is not None else uuid4(),
+        causation_id=causation_id,
         tick=tick,
         sequence_in_tick=0,  # bus re-stamps
         event_type=SOEventType.MODE_TRANSITION_STARTED,
