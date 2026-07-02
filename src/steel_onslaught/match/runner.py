@@ -31,10 +31,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import ulid
 import yaml  # type: ignore[import-untyped]
 
-from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
@@ -48,7 +46,6 @@ from steel_onslaught.events.envelope import (
     SOEventType,
     make_event,
 )
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
@@ -61,7 +58,6 @@ from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.defensive import DefensivePilot
 from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
-from steel_onslaught.projections.leaderboard.handler import LeaderboardHandler
 from steel_onslaught.reducers.damage import (
     compute_armor_reduction,
     compute_effective_damage_after_vulnerability,
@@ -73,7 +69,6 @@ from steel_onslaught.reducers.mode import (
 )
 from steel_onslaught.reducers.movement import chebyshev, effective_speed
 from steel_onslaught.reducers.pilot_tick import ReducerPilotTick
-from steel_onslaught.reducers.scoring import ReducerScoring, verify_replay_validity
 from steel_onslaught.reducers.sensors import ReducerSensors
 from steel_onslaught.reducers.weapons import (
     interpolate_accuracy,
@@ -745,16 +740,16 @@ def run_match(
 ) -> ModelSOMatchState:
     """Wire the full Task 1-33 stack and drive one red-vs-blue duel to its end.
 
-    Composition (plan Task 34 step 3): load loadouts -> validate budgets ->
-    spawn match (40x40 arena, 30 cells apart) -> register the canonical fold,
-    scoring reducer (replay-validity hard gate), and leaderboard handler ->
-    run the tick loop until VICTORY_DECLARED or the max_ticks bound -> emit
-    the MATCH_ENDED re-statement -> MATCH_SCORED -> ledger flushed per event.
+    Delegates the composition to ``assemble_match_live()`` (the ONEX-style
+    wiring function) and drives the runner to termination. The subscriber
+    order (ledger → fold → scoring → leaderboard) is fixed there.
 
-    Subscriber order matters and is fixed here: ledger first (the canonical
-    record the replay-validity check reads), then the runner's fold, then
-    scoring, then the leaderboard projection.
+    Hard gates (plan Task 29/34): a match whose ledger does not replay to the
+    live state must never be reported as healthy; a draw must not record a winner.
     """
+    from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
+    from steel_onslaught.match.composition import assemble_match_live
+
     catalog = MatchContractCatalog.load(contracts_data_dir)
     pilot_registry = PilotSpecRegistry.load(
         contracts_data_dir / "pilots" if contracts_data_dir is not None else None
@@ -766,53 +761,22 @@ def run_match(
     _require_valid_budgets(red, catalog)
     _require_valid_budgets(blue, catalog)
 
-    bus = InProcessEventBus()
-    ledger = SQLiteLedger(ledger_path)
-    bus.subscribe(ledger.append)  # 1st: every event lands in the ledger first
-
-    match_id = f"match.{ulid.new().str}"
-    runner = MatchRunner(  # 2nd: the canonical fold subscribes in __init__
-        match_id=match_id,
+    stack = assemble_match_live(
+        red=red,
+        blue=blue,
+        red_loadout_dir=red_path.parent,
+        blue_loadout_dir=blue_path.parent,
         seed=seed,
-        loadout_a=red,
-        loadout_b=blue,
-        bus=bus,
         max_ticks=max_ticks,
+        ledger_path=ledger_path,
+        leaderboard_path=leaderboard_path,
         catalog=catalog,
         pilot_registry=pilot_registry,
-        loadout_dir_a=red_path.parent,
-        loadout_dir_b=blue_path.parent,
-        side_a="red",
-        side_b="blue",
-        spawn_a=ModelSOPosition(x=5, y=5),
-        spawn_b=ModelSOPosition(x=35, y=35),  # Chebyshev 30 apart on a 40x40 grid
-        arena_size=ARENA_SIZE_CELLS,
     )
+    final = stack.runner.run()
 
-    scoring = ReducerScoring(  # 3rd: scores on the terminal event
-        match_id,
-        runner._correlation_id,
-        emit=bus.publish,
-        replay_validity_check=lambda: verify_replay_validity(ledger, match_id, runner.fold.state),
-    )
-    bus.subscribe(scoring.handle)
-
-    leaderboard = LeaderboardHandler(leaderboard_path)  # 4th: projection
-
-    def _on_match_scored(event: ModelSOEventEnvelope) -> None:
-        # The lifecycle reducer emits a skinny draw-backstop MATCH_SCORED;
-        # only the scoring reducer's full payload feeds the leaderboard.
-        if event.payload.get("kind") == "steel_onslaught.match_scored":
-            leaderboard.on_match_scored(event.payload)
-
-    bus.subscribe(_on_match_scored, event_types=[SOEventType.MATCH_SCORED])
-
-    final = runner.run()
-
-    # Hard gate (plan Task 29/34): a match whose ledger does not replay to the
-    # live state must never be reported as healthy.
     if final.status is not SOMatchStatus.ENDED:
-        raise RuntimeError(f"match {match_id!r} did not terminate: {final.status.value}")
+        raise RuntimeError(f"match {stack.match_id!r} did not terminate: {final.status.value}")
     if final.end_reason is SOMatchEndReason.DRAW_MAX_TICKS and final.winner_id is not None:
         raise RuntimeError("draw recorded a winner — lifecycle invariant violated")
     return final

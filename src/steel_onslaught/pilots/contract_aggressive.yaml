@@ -1,0 +1,38 @@
+---
+# ONEX Node Contract — Aggressive pilot archetype (compute node).
+#
+# Declares AggressivePilot as an ONEX compute node: a pure transform
+# decide(observation) -> decision. The pilot is already a deterministic,
+# side-effect-free function (no I/O, no randomness) — this contract makes
+# its ONEX archetype explicit.
+name: aggressive_pilot_compute
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: compute
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  Aggressive combat archetype — ONEX compute node. Pure, deterministic
+  decide(observation) -> decision mapping. Decision tree (spec-driven):
+  near-rupture vent -> switch-to-assault -> fire preferred weapon ->
+  idle vent -> move toward enemy. All thresholds come from the injected
+  ModelSOPilotSpec; the tree structure is code-owned.
+
+handler:
+  module: steel_onslaught.pilots.aggressive
+  class: AggressivePilot
+
+handler_routing:
+  default_handler: steel_onslaught.pilots.aggressive:AggressivePilot
+
+descriptor:
+  node_archetype: compute
+  purity: pure
+  idempotent: true
+  timeout_ms: 100
+
+event_bus:
+  subscribe_topics: []
+  publish_topics: []
+
+metadata:
+  transport_type: in_process
