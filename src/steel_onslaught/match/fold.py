@@ -1,10 +1,21 @@
-"""Canonical match-state fold — Task 34.
+"""Canonical match-state fold — ONEX pure reducer (Task 34 / ONEX restructure).
 
 ``MatchStateFold`` is the SINGLE deterministic function from the canonical
 event stream to ``ModelSOMatchState``.  The live match runner (Task 28/34)
 and the replay engine (Task 27) both fold events through this class, which is
 what makes ``replay.reconstruct_at_tick(final) == live_state`` hold by
 construction (R9 / Architectural Decision #6).
+
+ONEX reducer shape
+------------------
+This follows the OmniNode ``delta(state, event) -> (new_state, intents[])``
+pure-reducer pattern. ``delta(event)`` is the pure state derivation — it
+collects produced events (boiler updates, mode completions, victory
+declarations) into an intents list and RETURNS them, never publishing.
+``handle(event)`` is the effect-boundary adapter that publishes those intents
+post-commit on the live bus (the only site of bus I/O). On the replay path
+(``bus=None``) the intents are discarded (the same events arrive from the
+ledger as idempotent re-statements).
 
 Design rules
 ------------
@@ -14,11 +25,10 @@ Design rules
    ``MECH_DESTROYED``, ``PILOT_KILLED``, terminal events).  Intent events are
    telemetry: the live resolver in ``match/runner.py`` validates them and
    publishes the resolved events; the fold never re-validates intents.
-2. Commit-then-emit: every event the fold itself produces (boiler updates,
-   mode-transition completions, the failure cascade, victory declarations) is
-   buffered, the state delta is committed first, and the buffer is published
-   afterwards (live path only; on replay ``bus=None`` suppresses emission and
-   the same events arrive from the ledger as idempotent re-statements).
+2. Commit-then-return: every event the fold itself produces is buffered, the
+   state delta commits first, and the buffer is RETURNED from ``delta`` (live
+   path only; on replay ``bus=None`` suppresses emission and the same events
+   arrive from the ledger as idempotent re-statements).
 3. All stochastic inputs (rupture survival rolls) flow through ``MatchRng``
    sub-seeds, so the fold is a pure function of ``(seed, event stream)``.
 
@@ -187,17 +197,53 @@ class MatchStateFold:
         return self._lifecycle.state.model_copy(update={"mech_states": dict(self._mech_states)})
 
     def handle(self, event: ModelSOEventEnvelope) -> None:
-        """``EventHandler``-shaped adapter for ``EventBus.subscribe``."""
+        """``EventHandler``-shaped adapter for ``EventBus.subscribe``.
+
+        Drives ``delta`` (pure) and publishes the returned intents on the live
+        bus post-commit — the single effect-boundary site for bus I/O. On the
+        replay path (``bus=None``) the intents are discarded (the same events
+        arrive from the ledger and re-fold as no-ops).
+        """
         self.apply(event)
 
     def apply(self, event: ModelSOEventEnvelope) -> ModelSOMatchState:
-        """Fold one canonical event; return the updated composite state."""
+        """Fold one canonical event; return the updated composite state.
+
+        Delegates to ``delta`` (the pure state derivation) and, on the live
+        path, publishes the intents ``delta`` returned. This is the ONEX
+        pure-reducer-as-effect pattern: state derivation is pure and returns
+        intents; the effect boundary (this method, live-only) executes them.
+        """
         if event.match_id != self._match_id:
             return self.state
+        produced = self.delta(event)
+        # Commit happened inside delta; emissions go out only afterwards (live).
+        if self._bus is not None:
+            for intent in produced:
+                self._bus.publish(intent)
+        return self.state
 
-        buffer: list[ModelSOEventEnvelope] = []
+    def delta(self, event: ModelSOEventEnvelope) -> list[ModelSOEventEnvelope]:
+        """Pure fold: derive the state delta from one event, return produced intents.
+
+        This is the ONEX ``delta(state, event) -> (new_state, intents[])`` shape.
+        It is the SINGLE deterministic function from the canonical event stream
+        to ``ModelSOMatchState`` — used identically by the live runner and the
+        replay engine, which is what guarantees ``replay == live`` (R9).
+
+        Side-effect-free: produced events (boiler updates, victory declarations,
+        mode completions) are collected and RETURNED, never published here.
+        The live ``apply`` publishes them post-commit; replay (``bus=None``)
+        discards them (they arrive from the ledger as idempotent re-statements).
+
+        Non-deterministic inputs (clock/UUID for the produced events) flow
+        through the ``make_event`` factories' injected ``emitted_at``/ids, which
+        are excluded from state-level replay validity (see
+        docs/plans/2026-07-02-determinism-boundaries.md).
+        """
+        produced: list[ModelSOEventEnvelope] = []
         outer_sink = self._sink
-        self._sink = buffer
+        self._sink = produced
         try:
             # Lifecycle authority first: status / tick / winner / end_reason.
             # (It commits its state BEFORE any of its own terminal emissions.)
@@ -226,12 +272,7 @@ class MatchStateFold:
                     pass  # intents, observations, telemetry: no state delta
         finally:
             self._sink = outer_sink
-
-        # Commit happened above; emissions go out only afterwards (live path).
-        if self._bus is not None:
-            for produced in buffer:
-                self._bus.publish(produced)
-        return self.state
+        return produced
 
     # ------------------------------------------------------------------
     # Emission sink (buffered; drained post-commit by `apply`)
