@@ -272,7 +272,18 @@ class MatchRunner:
                 correlation_id=self._correlation_id,
             ).apply(tick_event)
 
-            for intent in list(self._intent_buffer):
+            # Resolve intents. The buffer is filled in mech insertion order
+            # (a then b), which gives a fixed first-actor advantage: the mech
+            # whose intent resolves first takes the killing blow when both
+            # would die in the same tick, breaking the side-swap symmetry the
+            # learning loop relies on. Per-tick we deterministically shuffle
+            # the resolution order via a seeded RNG sub-seed, so neither side
+            # has a systematic advantage across a match (the standard fix for
+            # simultaneous-turn resolution in deterministic games).
+            intents = list(self._intent_buffer)
+            order_rng = self._rng.for_event(tick=next_tick, mech_id="*", kind="resolution_order")
+            order_rng.shuffle(intents)
+            for intent in intents:
                 if self.fold.state.status is not SOMatchStatus.RUNNING:
                     break  # an earlier resolution ended the match
                 self._resolve_intent(intent)
