@@ -32,11 +32,10 @@ while the match is still RUNNING):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from uuid import UUID, uuid4
 
-import ulid
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
@@ -51,6 +50,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    make_event,
 )
 from steel_onslaught.match.state import (
     ModelSOMatchState,
@@ -142,6 +142,10 @@ class MatchStateFold:
 
     Args:
         match_id: Owning match; events for other matches are ignored.
+        correlation_id:
+                  ONEX workflow correlation id shared across all events of
+                  this match; threaded into every event the fold + its
+                  sub-reducers produce.
         bus:      Live path: fold-produced events are published here after the
                   state delta commits.  Replay path: ``None`` (no emission —
                   the same events arrive from the ledger and fold as no-ops).
@@ -152,16 +156,19 @@ class MatchStateFold:
     def __init__(
         self,
         match_id: str,
+        correlation_id: UUID | None = None,
         *,
         bus: EventBus | None = None,
         catalog: MatchContractCatalog | None = None,
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
         self._bus = bus
         self._catalog = catalog if catalog is not None else MatchContractCatalog.load()
-        self._lifecycle = ReducerMatchLifecycle(match_id, bus=bus)
+        self._lifecycle = ReducerMatchLifecycle(match_id, correlation_id, bus=bus)
         self._failure = ReducerFailureCascade(
             match_id,
+            correlation_id,
             emit=self._emit,
             safety_gizmo_ids=self._catalog.safety_gizmo_ids,
         )
@@ -243,7 +250,9 @@ class MatchStateFold:
         self._mech_states = dict(self._lifecycle.state.mech_states)
         composite = self.state
         self._boilers = {
-            mech_id: ReducerBoiler(mech_id, composite, emit=self._emit)
+            mech_id: ReducerBoiler(
+                mech_id, composite, emit=self._emit, correlation_id=self._correlation_id
+            )
             for mech_id in self._mech_states
         }
 
@@ -372,9 +381,9 @@ class MatchStateFold:
         if len(survivors_before) > 1 and len(survivors_after) == 1:
             winner = next(iter(survivors_after))
             self._emit(
-                ModelSOEventEnvelope(
-                    event_id=ulid.new().str,
+                make_event(
                     match_id=self._match_id,
+                    correlation_id=self._correlation_id,
                     tick=event.tick,
                     sequence_in_tick=0,  # bus re-stamps
                     event_type=SOEventType.VICTORY_DECLARED,
@@ -384,9 +393,6 @@ class MatchStateFold:
                         "winner_player_id": winner,
                         "reason": SOMatchEndReason.LAST_MECH_STANDING.value,
                     },
-                    # Wall-clock metadata only — see pilot_tick._now_iso /
-                    # docs/plans/2026-07-02-determinism-boundaries.md.
-                    emitted_at=datetime.now(UTC).isoformat(),
                 )
             )
 
@@ -482,6 +488,7 @@ class MatchStateFold:
             self._emit(
                 build_mode_transition_completed_event(
                     match_id=self._match_id,
+                    correlation_id=self._correlation_id,
                     tick=event.tick,
                     mech_id=mech_id,
                     player_id=mech.player_id,

@@ -33,16 +33,15 @@ Design notes
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
-
-import ulid
+from uuid import UUID, uuid4
 
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    make_event,
 )
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import (
@@ -55,13 +54,6 @@ from steel_onslaught.pilots.schemas import (
 )
 
 _PRODUCER_NODE = "node.reducer.pilot_tick"
-
-
-def _now_iso() -> str:
-    # Wall-clock metadata only — excluded from ordering and from replay
-    # validity (ModelSOMatchState carries no emitted_at field). See
-    # docs/plans/2026-07-02-determinism-boundaries.md.
-    return datetime.now(UTC).isoformat()
 
 
 def _build_observation(
@@ -164,6 +156,8 @@ class ReducerPilotTick:
     ----------
     match_id:
         Identifier of the match this reducer belongs to.
+    correlation_id:
+        ONEX workflow correlation id shared across all events of this match.
     state:
         Current (immutable) match state.  The pilot tick reducer does NOT
         mutate match state; it only emits events.
@@ -186,8 +180,11 @@ class ReducerPilotTick:
         sensor_events: list[ModelSOEventEnvelope],
         emit: Callable[[ModelSOEventEnvelope], None],
         weapon_specs: dict[str, ModelSOWeaponSpec] | None = None,
+        *,
+        correlation_id: UUID | None = None,
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
         self._state = state
         self._pilots = pilots
         self._sensor_events = sensor_events
@@ -240,16 +237,15 @@ class ReducerPilotTick:
 
         # 1. Emit PILOT_DECISION_MADE first (invariant: before any intent).
         self._emit(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            make_event(
                 match_id=self._match_id,
+                correlation_id=self._correlation_id,
                 tick=state.tick,
                 sequence_in_tick=0,
                 event_type=SOEventType.PILOT_DECISION_MADE,
                 producer_node=_PRODUCER_NODE,
                 subject=subject,
                 payload=_decision_payload(decision),
-                emitted_at=_now_iso(),
             )
         )
 
@@ -258,15 +254,14 @@ class ReducerPilotTick:
         if intent is not None:
             intent_type, intent_payload = intent
             self._emit(
-                ModelSOEventEnvelope(
-                    event_id=ulid.new().str,
+                make_event(
                     match_id=self._match_id,
+                    correlation_id=self._correlation_id,
                     tick=state.tick,
                     sequence_in_tick=0,
                     event_type=intent_type,
                     producer_node=_PRODUCER_NODE,
                     subject=subject,
                     payload=intent_payload,
-                    emitted_at=_now_iso(),
                 )
             )

@@ -9,6 +9,12 @@ the database layer via BEFORE UPDATE / BEFORE DELETE triggers (migration
 
 Canonical replay ordering is ``(tick ASC, sequence_in_tick ASC, event_id ASC)``.
 ``emitted_at`` is stored as metadata but MUST NOT be used for ordering.
+
+The full ONEX ``ModelEnvelope`` (message_id / correlation_id / causation_id /
+emitted_at) is persisted as a JSON column and round-tripped verbatim, so
+causation chains survive persistence. The denormalized correlation_id /
+causation_id / emitted_at columns are retained as legacy/secondary for
+back-compat with existing rows and external SQL consumers.
 """
 
 from __future__ import annotations
@@ -18,25 +24,23 @@ import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
-from steel_onslaught.events.envelope import (
-    ModelSOEventEnvelope,
-    ModelSOEventSubject,
-    SOEventType,
-)
+from steel_onslaught.events.envelope import ModelSOEventEnvelope
 from steel_onslaught.ledger.migrate import run_migrations
 
 _INSERT_SQL = """
 INSERT INTO events
     (event_id, match_id, tick, sequence_in_tick, event_type,
      correlation_id, causation_id, producer_node,
-     subject_json, payload_json, emitted_at, schema_version)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     subject_json, payload_json, emitted_at, schema_version,
+     envelope_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _SELECT_ALL_SQL = """
 SELECT event_id, match_id, tick, sequence_in_tick, event_type,
        correlation_id, causation_id, producer_node,
-       subject_json, payload_json, emitted_at, schema_version
+       subject_json, payload_json, emitted_at, schema_version,
+       envelope_json
   FROM events
  WHERE match_id = ?
  ORDER BY tick ASC, sequence_in_tick ASC, event_id ASC
@@ -45,7 +49,8 @@ SELECT event_id, match_id, tick, sequence_in_tick, event_type,
 _SELECT_AFTER_SQL = """
 SELECT event_id, match_id, tick, sequence_in_tick, event_type,
        correlation_id, causation_id, producer_node,
-       subject_json, payload_json, emitted_at, schema_version
+       subject_json, payload_json, emitted_at, schema_version,
+       envelope_json
   FROM events
  WHERE match_id = ?
    AND tick > ?
@@ -60,32 +65,59 @@ def _row_to_envelope(row: tuple[object, ...]) -> ModelSOEventEnvelope:
         tick,
         sequence_in_tick,
         event_type,
-        correlation_id,
-        causation_id,
+        _correlation_id,  # legacy column; superseded by envelope_json
+        _causation_id,  # legacy column; superseded by envelope_json
         producer_node,
         subject_json,
         payload_json,
-        emitted_at,
+        _emitted_at,  # legacy column; superseded by envelope_json
         schema_version,
+        envelope_json,
     ) = row
     subject_data = json.loads(str(subject_json))
-    subject = ModelSOEventSubject(
-        mech_id=subject_data["mech_id"],
-        player_id=subject_data["player_id"],
-    )
-    return ModelSOEventEnvelope(
-        event_id=str(event_id),
-        match_id=str(match_id),
-        tick=int(str(tick)),
-        sequence_in_tick=int(str(sequence_in_tick)),
-        event_type=SOEventType(str(event_type)),
-        correlation_id=str(correlation_id) if correlation_id is not None else None,
-        causation_id=str(causation_id) if causation_id is not None else None,
-        producer_node=str(producer_node),
-        subject=subject,
-        payload=json.loads(str(payload_json)),
-        emitted_at=str(emitted_at),
-        schema_version=str(schema_version),
+    # The canonical ONEX envelope is persisted verbatim in envelope_json;
+    # prefer it when present (new rows) and fall back to reconstructing from
+    # the legacy columns for rows written before the ONEX migration.
+    if envelope_json is not None:
+        return ModelSOEventEnvelope.model_validate(
+            {
+                "event_id": str(event_id),
+                "match_id": str(match_id),
+                "tick": int(str(tick)),
+                "sequence_in_tick": int(str(sequence_in_tick)),
+                "producer_node": str(producer_node),
+                "subject": subject_data,
+                "event_type": str(event_type),
+                "payload": json.loads(str(payload_json)),
+                "schema_version": str(schema_version),
+                "envelope": json.loads(str(envelope_json)),
+            }
+        )
+    # Legacy row (pre-ONEX): reconstruct an envelope from the denormalized columns.
+    from datetime import UTC, datetime
+
+    corr = str(_correlation_id) if _correlation_id is not None else None
+    caus = str(_causation_id) if _causation_id is not None else None
+    emitted = str(_emitted_at) if _emitted_at is not None else datetime.now(UTC).isoformat()
+    return ModelSOEventEnvelope.model_validate(
+        {
+            "event_id": str(event_id),
+            "match_id": str(match_id),
+            "tick": int(str(tick)),
+            "sequence_in_tick": int(str(sequence_in_tick)),
+            "producer_node": str(producer_node),
+            "subject": subject_data,
+            "event_type": str(event_type),
+            "payload": json.loads(str(payload_json)),
+            "schema_version": str(schema_version),
+            "envelope": {
+                "message_id": str(event_id),  # best-effort stable id for legacy rows
+                "correlation_id": corr if corr is not None else str(match_id),
+                "causation_id": caus,
+                "entity_id": str(match_id),
+                "emitted_at": emitted,
+            },
+        }
     )
 
 
@@ -114,13 +146,14 @@ class SQLiteLedger:
                 env.tick,
                 env.sequence_in_tick,
                 env.event_type.value,
-                env.correlation_id,
-                env.causation_id,
+                str(env.correlation_id),
+                str(env.causation_id) if env.causation_id is not None else None,
                 env.producer_node,
                 env.subject.model_dump_json(),
                 json.dumps(env.payload),
                 env.emitted_at,
                 env.schema_version,
+                env.envelope.model_dump_json(),
             ),
         )
         self._conn.commit()

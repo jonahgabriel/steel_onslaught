@@ -17,9 +17,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 import ulid
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
@@ -47,7 +49,13 @@ def _env(
         producer_node="node.test",
         subject=subject,
         payload=payload or {},
-        emitted_at=datetime.now(UTC).isoformat(),
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id=_MATCH_ID,
+            emitted_at=datetime.now(UTC),
+        ),
     )
 
 

@@ -27,9 +27,9 @@ handler around a ``MatchRunner`` and drives one duel to termination.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import ulid
 import yaml  # type: ignore[import-untyped]
@@ -46,6 +46,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    make_event,
 )
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
@@ -162,6 +163,9 @@ class MatchRunner:
         arena_size: int = ARENA_SIZE_CELLS,
     ) -> None:
         self._match_id = match_id
+        # ONEX workflow correlation id — generated once per match, shared across
+        # every event the runner emits (the causation-chain root identity).
+        self._correlation_id = uuid4()
         self._seed = seed
         self._rng = MatchRng(match_seed=seed)
         self._loadout_a = loadout_a
@@ -191,7 +195,7 @@ class MatchRunner:
         # Canonical state fold — the same fold the replay engine uses.
         # Subscribed at construction time so callers can order later
         # subscribers (scoring, leaderboard) AFTER the fold.
-        self.fold = MatchStateFold(match_id, bus=bus, catalog=self._catalog)
+        self.fold = MatchStateFold(match_id, self._correlation_id, bus=bus, catalog=self._catalog)
         bus.subscribe(self.fold.handle)
 
         # Per-tick buffers + MATCH_ENDED bookkeeping.
@@ -255,7 +259,11 @@ class MatchRunner:
                 break  # terminal tick (max_ticks bound or failure-cascade kill)
 
             ReducerSensors(
-                self._match_id, self.fold.state, self._catalog.sensors, emit=self._bus.publish
+                self._match_id,
+                self.fold.state,
+                self._catalog.sensors,
+                emit=self._bus.publish,
+                correlation_id=self._correlation_id,
             ).apply(tick_event)
 
             ReducerPilotTick(
@@ -265,6 +273,7 @@ class MatchRunner:
                 sensor_events=list(self._sensor_buffer),
                 emit=self._bus.publish,
                 weapon_specs=self._catalog.weapons,
+                correlation_id=self._correlation_id,
             ).apply(tick_event)
 
             for intent in list(self._intent_buffer):
@@ -532,6 +541,7 @@ class MatchRunner:
         self._bus.publish(
             build_mode_transition_started_event(
                 match_id=self._match_id,
+                correlation_id=self._correlation_id,
                 tick=state.tick,
                 mech=mech,
                 transition=transition,
@@ -598,8 +608,7 @@ class MatchRunner:
     def _make_match_event(
         self, event_type: SOEventType, *, tick: int, payload: dict[str, Any]
     ) -> ModelSOEventEnvelope:
-        return ModelSOEventEnvelope(
-            event_id=ulid.new().str,
+        return make_event(
             match_id=self._match_id,
             tick=tick,
             sequence_in_tick=0,  # bus re-stamps
@@ -607,10 +616,10 @@ class MatchRunner:
             producer_node=_PRODUCER_NODE,
             subject=_MATCH_SUBJECT,
             payload=payload,
-            # Wall-clock metadata only — excluded from ordering (bus owns tick/
-            # sequence_in_tick) and from replay validity (state has no field for
-            # it). See docs/plans/2026-07-02-determinism-boundaries.md.
-            emitted_at=datetime.now(UTC).isoformat(),
+            # Match-scoped correlation id, shared across all events of this match
+            # (the ONEX workflow identity). Root events (MATCH_STARTED) carry no
+            # causation_id; subsequent events chain off it where applicable.
+            correlation_id=self._correlation_id,
         )
 
     def _make_subject_event(
@@ -621,8 +630,7 @@ class MatchRunner:
         mech: ModelSOMechRuntimeState,
         payload: dict[str, Any],
     ) -> ModelSOEventEnvelope:
-        return ModelSOEventEnvelope(
-            event_id=ulid.new().str,
+        return make_event(
             match_id=self._match_id,
             tick=tick,
             sequence_in_tick=0,  # bus re-stamps
@@ -630,8 +638,7 @@ class MatchRunner:
             producer_node=_PRODUCER_NODE,
             subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
             payload=payload,
-            # Wall-clock metadata only — see comment in _make_match_event.
-            emitted_at=datetime.now(UTC).isoformat(),
+            correlation_id=self._correlation_id,
         )
 
 
@@ -784,6 +791,7 @@ def run_match(
 
     scoring = ReducerScoring(  # 3rd: scores on the terminal event
         match_id,
+        runner._correlation_id,
         emit=bus.publish,
         replay_validity_check=lambda: verify_replay_validity(ledger, match_id, runner.fold.state),
     )

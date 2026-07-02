@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 import ulid
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.events.envelope import (
@@ -43,7 +46,13 @@ def _env(
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id=mech_id, player_id=player_id),
         payload=payload,
-        emitted_at="2026-04-30T00:00:00+00:00",
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id=MATCH_ID,
+            emitted_at=datetime(2026, 4, 30, tzinfo=UTC),
+        ),
     )
 
 

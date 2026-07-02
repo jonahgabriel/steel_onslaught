@@ -12,11 +12,14 @@ returned ``None`` implicitly, leaving a mech that silently never acted).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import ulid
 import yaml  # type: ignore[import-untyped]
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
@@ -26,6 +29,20 @@ from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.errors import ReducerError
 
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
+
+
+def _onex_envelope(
+    entity_id: str, emitted_at: datetime = datetime(2026, 7, 2, tzinfo=UTC)
+) -> ModelEnvelope:
+    """Composed ONEX ModelEnvelope."""
+    return ModelEnvelope(
+        message_id=uuid4(),
+        correlation_id=uuid4(),
+        causation_id=uuid4(),
+        entity_id=entity_id,
+        emitted_at=emitted_at,
+    )
+
 
 LOADOUT_DEFENSIVE = Path("contracts_data/loadouts/proof_red_defensive_passive.yaml")
 LOADOUT_AGGRESSIVE = Path("contracts_data/loadouts/example_aggressive_light.yaml")
@@ -128,7 +145,7 @@ def test_resolve_move_raises_on_unknown_direction() -> None:
                     _mech_payload("mech.b.01", "player.b"),
                 ],
             },
-            emitted_at="2026-07-02T00:00:00Z",
+            envelope=_onex_envelope(MATCH_ID),
         )
     )
     mech = runner.fold.state.mech_states["mech.a.01"]
@@ -141,7 +158,7 @@ def test_resolve_move_raises_on_unknown_direction() -> None:
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
         payload={"direction": "sideways"},  # not a recognized direction
-        emitted_at="2026-07-02T00:00:00Z",
+        envelope=_onex_envelope(MATCH_ID),
     )
     with pytest.raises(ReducerError, match="unknown/missing direction"):
         runner._resolve_move(bad_intent, runner.fold.state, mech)
@@ -176,7 +193,7 @@ def test_resolve_move_raises_on_missing_direction() -> None:
                     _mech_payload("mech.b.01", "player.b"),
                 ],
             },
-            emitted_at="2026-07-02T00:00:00Z",
+            envelope=_onex_envelope(MATCH_ID),
         )
     )
     mech = runner.fold.state.mech_states["mech.a.01"]
@@ -189,7 +206,7 @@ def test_resolve_move_raises_on_missing_direction() -> None:
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
         payload={},  # no direction at all
-        emitted_at="2026-07-02T00:00:00Z",
+        envelope=_onex_envelope(MATCH_ID),
     )
     with pytest.raises(ReducerError, match="unknown/missing direction"):
         runner._resolve_move(no_dir_intent, runner.fold.state, mech)

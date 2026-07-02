@@ -1,0 +1,11 @@
+-- Migration 0003: add the canonical ONEX ModelEnvelope column.
+-- The full envelope (message_id / correlation_id / causation_id / emitted_at /
+-- entity_id) is persisted here as JSON and round-tripped verbatim by the
+-- ledger, so causation chains survive persistence. The denormalized legacy
+-- correlation_id / causation_id / emitted_at columns from 0001 are retained
+-- for back-compat with existing rows and external SQL consumers.
+--
+-- NOTE: SQLite's ALTER TABLE ADD COLUMN has no IF NOT EXISTS clause, so this
+-- DDL is applied via a guarded path in migrate.py (add_column_if_missing)
+-- rather than raw executescript, making it safe to re-run.
+ALTER TABLE events ADD COLUMN envelope_json TEXT;

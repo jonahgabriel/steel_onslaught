@@ -47,14 +47,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
+from uuid import UUID, uuid4
 
-import ulid
 from pydantic import BaseModel, ConfigDict, Field
 
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    make_event,
 )
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.state import ModelSOMatchState
@@ -230,6 +231,8 @@ class ReducerScoring:
     Args:
         match_id:              Owning match; events for other matches are
                                silently ignored.
+        correlation_id:        ONEX workflow correlation id shared across all
+                               events of this match.
         emit:                  Callable receiving the produced MATCH_SCORED
                                envelope (e.g. ``bus.publish``).
         replay_validity_check: Zero-arg callable invoked once at scoring time;
@@ -240,11 +243,13 @@ class ReducerScoring:
     def __init__(
         self,
         match_id: str,
+        correlation_id: UUID | None = None,
         *,
         emit: EmitFn,
         replay_validity_check: ReplayValidityCheck,
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
         self._emit = emit
         self._replay_validity_check = replay_validity_check
 
@@ -414,8 +419,7 @@ class ReducerScoring:
             is_draw=is_draw,
         )
         self._emit(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            make_event(
                 match_id=self._match_id,
                 tick=tick,
                 sequence_in_tick=0,  # bus reassigns on publish
@@ -423,7 +427,7 @@ class ReducerScoring:
                 producer_node=_PRODUCER_NODE,
                 subject=_MATCH_SUBJECT,
                 payload=payload.model_dump(mode="json"),
-                emitted_at=datetime.now(UTC).isoformat(),
+                correlation_id=self._correlation_id,
             )
         )
 

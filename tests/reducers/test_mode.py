@@ -21,9 +21,12 @@ Invariants covered
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
@@ -179,7 +182,13 @@ def _intent_env(
         producer_node="node.pilot.red.01",
         subject=ModelSOEventSubject(mech_id=mech_id, player_id=_PLAYER_ID),
         payload={"from_mode": from_mode, "to_mode": to_mode},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id=_MATCH_ID,
+            emitted_at=datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC),
+        ),
     )
 
 
@@ -193,7 +202,13 @@ def _tick_env(tick: int) -> ModelSOEventEnvelope:
         producer_node="node.reducer.lifecycle",
         subject=ModelSOEventSubject(mech_id="*", player_id="*"),
         payload={"tick": tick},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id=_MATCH_ID,
+            emitted_at=datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC),
+        ),
     )
 
 

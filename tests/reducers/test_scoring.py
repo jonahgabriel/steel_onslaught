@@ -22,11 +22,14 @@ Invariants covered:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 import ulid
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
@@ -130,7 +133,13 @@ def _env(
         producer_node="node.test.scoring",
         subject=subject,
         payload=payload,
-        emitted_at="2026-04-30T00:00:00+00:00",
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id=match_id,
+            emitted_at=datetime(2026, 4, 30, tzinfo=UTC),
+        ),
     )
 
 

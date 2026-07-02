@@ -4,8 +4,6 @@
   "match_id": "match.fixture.0001",
   "tick": 7,
   "sequence_in_tick": 0,
-  "correlation_id": null,
-  "causation_id": null,
   "producer_node": "node.fixture_emitter",
   "subject": {
     "mech_id": "mech.a.01",
@@ -17,5 +15,11 @@
     "new_mode": "assault",
     "mode_lock_until": 12
   },
-  "emitted_at": "2026-04-30T00:00:00+00:00"
+  "envelope": {
+    "message_id": "18b88439-cf31-527c-92c3-defec056e2f9",
+    "correlation_id": "216a8b7b-6339-56ff-86ef-1af3393f4562",
+    "causation_id": null,
+    "emitted_at": "2026-04-30T00:00:00Z",
+    "entity_id": "match.fixture.0001"
+  }
 }

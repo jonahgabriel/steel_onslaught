@@ -26,14 +26,17 @@ Payload shapes mirror the actual emitters:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid5
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    make_event,
 )
 from steel_onslaught.match.state import ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
@@ -48,9 +51,15 @@ FIXTURES_DIR = _REPO_ROOT / "frontend" / "src" / "__tests__" / "fixtures"
 
 _MATCH_ID = "match.fixture.0001"
 _EMITTED_AT = "2026-04-30T00:00:00+00:00"
+_EMITTED_AT_DT = datetime(2026, 4, 30, tzinfo=UTC)
 _PRODUCER = "node.fixture_emitter"
 _SUBJECT_A = ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a")
 _SUBJECT_B = ModelSOEventSubject(mech_id="mech.b.01", player_id="player.b")
+
+# Deterministic ONEX workflow correlation id, shared across every fixture
+# event (uuid5 from a fixed namespace + the fixture match id — stable across
+# runs so the checked-in JSON fixtures don't churn).
+_CORRELATION_ID: UUID = uuid5(UUID(int=0), _MATCH_ID)
 
 _ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32 (ULID)
 
@@ -59,6 +68,11 @@ def _event_id(event_type: SOEventType) -> str:
     """Deterministic 26-char ULID-shaped id, unique per event type."""
     stem = "".join(c for c in event_type.value.upper() if c in _ULID_ALPHABET)
     return (f"01{stem}" + "0" * 26)[:26]
+
+
+def _message_id(event_type: SOEventType) -> UUID:
+    """Deterministic ONEX message UUID, unique per event type (uuid5)."""
+    return uuid5(_CORRELATION_ID, event_type.value)
 
 
 def _mech_state(
@@ -267,16 +281,18 @@ def build_sample_envelopes() -> dict[SOEventType, ModelSOEventEnvelope]:
     envelopes: dict[SOEventType, ModelSOEventEnvelope] = {}
     for event_type, payload in _sample_payloads().items():
         subject = _SUBJECT_B if event_type in _DEFENDER_SUBJECT_EVENTS else _SUBJECT_A
-        envelopes[event_type] = ModelSOEventEnvelope(
+        envelopes[event_type] = make_event(
             event_id=_event_id(event_type),
+            message_id=_message_id(event_type),
+            emitted_at=_EMITTED_AT_DT,
             match_id=_MATCH_ID,
+            correlation_id=_CORRELATION_ID,
             tick=0 if event_type is SOEventType.MATCH_STARTED else 7,
             sequence_in_tick=0,
             producer_node=_PRODUCER,
             subject=subject,
             event_type=event_type,
             payload=payload,
-            emitted_at=_EMITTED_AT,
         )
     return envelopes
 

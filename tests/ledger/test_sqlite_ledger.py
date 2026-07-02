@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -21,6 +24,20 @@ _EID2 = "01JABCDE0123456789ABCDEF02"
 _EID3 = "01JABCDE0123456789ABCDEF03"
 _EID4 = "01JABCDE0123456789ABCDEF04"
 _EID5 = "01JABCDE0123456789ABCDEF05"
+
+
+def _onex_envelope(
+    entity_id: str,
+    emitted_at: datetime = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC),
+) -> ModelEnvelope:
+    """Composed ONEX ModelEnvelope."""
+    return ModelEnvelope(
+        message_id=uuid4(),
+        correlation_id=uuid4(),
+        causation_id=uuid4(),
+        entity_id=entity_id,
+        emitted_at=emitted_at,
+    )
 
 
 def _make_env(
@@ -39,7 +56,7 @@ def _make_env(
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id="mech.red.01", player_id="player.1"),
         payload={"test": True},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_onex_envelope(match_id),
     )
 
 
@@ -226,7 +243,7 @@ def test_read_all_isolates_by_match_id(tmp_path: Path) -> None:
             producer_node="node.test",
             subject=ModelSOEventSubject(mech_id="mech.red.01", player_id="player.1"),
             payload={},
-            emitted_at="2026-04-30T16:00:00Z",
+            envelope=_onex_envelope("match.test.002"),
         )
     )
 
@@ -237,7 +254,9 @@ def test_read_all_isolates_by_match_id(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_correlation_and_causation_preserved(tmp_path: Path) -> None:
-    """append/read preserves optional correlation_id and causation_id fields."""
+    """append/read preserves the ONEX correlation_id and causation_id (UUIDs)."""
+    corr = uuid4()
+    caus = uuid4()
     ledger = SQLiteLedger(tmp_path / "test.sqlite")
     env = ModelSOEventEnvelope(
         event_id=_EID1,
@@ -245,17 +264,21 @@ def test_correlation_and_causation_preserved(tmp_path: Path) -> None:
         tick=0,
         sequence_in_tick=0,
         event_type=SOEventType.PILOT_DECISION_MADE,
-        correlation_id="corr.abc",
-        causation_id="evt.prev",
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id="mech.red.01", player_id="player.1"),
         payload={},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=corr,
+            causation_id=caus,
+            entity_id="match.test.001",
+            emitted_at=datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC),
+        ),
     )
     ledger.append(env)
     result = next(iter(ledger.read_all("match.test.001")))
-    assert result.correlation_id == "corr.abc"
-    assert result.causation_id == "evt.prev"
+    assert result.correlation_id == corr
+    assert result.causation_id == caus
 
 
 @pytest.mark.unit

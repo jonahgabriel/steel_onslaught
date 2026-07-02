@@ -15,7 +15,11 @@ Invariants verified:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from uuid import uuid4
+
 import pytest
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.events.envelope import (
@@ -26,6 +30,20 @@ from steel_onslaught.events.envelope import (
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState, SOMatchStatus
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.boiler import ReducerBoiler
+
+
+def _onex_envelope(
+    entity_id: str, emitted_at: datetime = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+) -> ModelEnvelope:
+    """Composed ONEX ModelEnvelope."""
+    return ModelEnvelope(
+        message_id=uuid4(),
+        correlation_id=uuid4(),
+        causation_id=uuid4(),
+        entity_id=entity_id,
+        emitted_at=emitted_at,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -117,7 +135,7 @@ def _env(
         producer_node="node.test",
         subject=_SUBJECT,
         payload=payload,
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_onex_envelope("match.001"),
     )
 
 
@@ -226,7 +244,7 @@ def test_two_consecutive_ticks_no_actions() -> None:
         producer_node="node.test",
         subject=_SUBJECT,
         payload={},
-        emitted_at="2026-04-30T16:00:02Z",
+        envelope=_onex_envelope("match.001", datetime(2026, 4, 30, 16, 0, 2, tzinfo=UTC)),
     )
     state = reducer.apply(tick2, state)
 

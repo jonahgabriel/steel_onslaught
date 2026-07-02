@@ -21,10 +21,8 @@ When ``transition_ticks_remaining`` reaches 0, it emits
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
-
-import ulid
+from uuid import UUID, uuid4
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.mode import ModelSOModeTransition
@@ -32,6 +30,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    make_event,
 )
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 
@@ -84,14 +83,15 @@ def validate_mode_switch(
 def build_mode_transition_started_event(
     *,
     match_id: str,
+    correlation_id: UUID | None = None,
     tick: int,
     mech: ModelSOMechRuntimeState,
     transition: ModelSOModeTransition,
 ) -> ModelSOEventEnvelope:
     """Build the canonical MODE_TRANSITION_STARTED envelope for *mech*."""
-    return ModelSOEventEnvelope(
-        event_id=ulid.new().str,
+    return make_event(
         match_id=match_id,
+        correlation_id=correlation_id if correlation_id is not None else uuid4(),
         tick=tick,
         sequence_in_tick=0,  # bus re-stamps
         event_type=SOEventType.MODE_TRANSITION_STARTED,
@@ -108,13 +108,13 @@ def build_mode_transition_started_event(
             "sensor_dropout_ticks": transition.vulnerability.sensor_dropout_ticks,
             "evasion_penalty": transition.vulnerability.evasion_penalty_during_transition,
         },
-        emitted_at=datetime.now(UTC).isoformat(),
     )
 
 
 def build_mode_transition_completed_event(
     *,
     match_id: str,
+    correlation_id: UUID | None = None,
     tick: int,
     mech_id: str,
     player_id: str,
@@ -123,9 +123,9 @@ def build_mode_transition_completed_event(
     mode_lock_until: int,
 ) -> ModelSOEventEnvelope:
     """Build the canonical MODE_TRANSITION_COMPLETED envelope."""
-    return ModelSOEventEnvelope(
-        event_id=ulid.new().str,
+    return make_event(
         match_id=match_id,
+        correlation_id=correlation_id if correlation_id is not None else uuid4(),
         tick=tick,
         sequence_in_tick=0,  # bus re-stamps
         event_type=SOEventType.MODE_TRANSITION_COMPLETED,
@@ -136,7 +136,6 @@ def build_mode_transition_completed_event(
             "new_mode": new_mode,
             "mode_lock_until": mode_lock_until,
         },
-        emitted_at=datetime.now(UTC).isoformat(),
     )
 
 
@@ -147,6 +146,8 @@ class ReducerModeTransition:
     ----------
     match_id:
         Owning match identifier.
+    correlation_id:
+        ONEX workflow correlation id shared across all events of this match.
     transitions:
         Mapping ``(from_mode, to_mode) -> ModelSOModeTransition`` for all
         valid directed mode pairs in this match's rule set.
@@ -160,8 +161,11 @@ class ReducerModeTransition:
         match_id: str,
         transitions: dict[tuple[str, str], ModelSOModeTransition],
         bus: EventBus | None = None,
+        *,
+        correlation_id: UUID | None = None,
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
         self._transitions = transitions
         self._bus = bus
         # Mutable per-mech state cache, keyed by mech_id.  Seeded via
@@ -371,15 +375,14 @@ class ReducerModeTransition:
         if self._bus is None:
             return
         self._bus.publish(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            make_event(
                 match_id=self._match_id,
+                correlation_id=self._correlation_id,
                 tick=self._current_tick,
                 sequence_in_tick=0,  # bus re-stamps
                 event_type=event_type,
                 producer_node=_PRODUCER_NODE,
                 subject=ModelSOEventSubject(mech_id=mech_id, player_id=player_id),
                 payload=payload,
-                emitted_at=datetime.now(UTC).isoformat(),
             )
         )

@@ -12,7 +12,11 @@ Invariants verified:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from uuid import uuid4
+
 import pytest
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
@@ -166,7 +170,13 @@ def _tick_event(tick: int = 5, match_id: str = MATCH_ID) -> ModelSOEventEnvelope
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id="*", player_id="*"),
         payload={},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id=match_id,
+            emitted_at=datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC),
+        ),
     )
 
 

@@ -46,16 +46,15 @@ same event sequence.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-
-import ulid
+from uuid import UUID, uuid4
 
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    make_event,
 )
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
@@ -147,8 +146,10 @@ class ReducerFailureCascade:
     Args:
         match_id:         Owning match identifier; events for other matches
                           are silently ignored.
+        correlation_id:   ONEX workflow correlation id shared across all events
+                          of this match.
         emit:             Callable receiving produced events (e.g.
-                          ``bus.publish``).  Pass a no-op for replay.
+                          bus.publish).  Pass a no-op for replay.
         safety_gizmo_ids: Gizmo ids that count as *emergency safety* gizmos
                           for the rupture-survival roll (resolved by the match
                           runner from gizmo specs with ``category=safety``).
@@ -157,11 +158,13 @@ class ReducerFailureCascade:
     def __init__(
         self,
         match_id: str,
+        correlation_id: UUID | None = None,
         *,
         emit: EmitFn,
         safety_gizmo_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
         self._emit = emit
         self._safety_gizmo_ids = safety_gizmo_ids
 
@@ -494,17 +497,14 @@ class ReducerFailureCascade:
         payload: dict[str, Any],
     ) -> None:
         self._emit(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            make_event(
                 match_id=self._match_id,
+                correlation_id=self._correlation_id,
                 tick=tick,
                 sequence_in_tick=0,  # bus reassigns on publish
                 event_type=event_type,
                 producer_node=_PRODUCER_NODE,
                 subject=subject,
                 payload=payload,
-                # Wall-clock metadata only — see pilot_tick._now_iso / the
-                # determinism-boundaries doc.
-                emitted_at=datetime.now(UTC).isoformat(),
             )
         )

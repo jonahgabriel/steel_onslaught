@@ -56,7 +56,8 @@ _REPLAY_RE = re.compile(r"^/api/replay/([^/]+)/tick/(-?\d+)$")
 _SELECT_DECISIONS_SQL = """
 SELECT event_id, match_id, tick, sequence_in_tick, event_type,
        correlation_id, causation_id, producer_node,
-       subject_json, payload_json, emitted_at, schema_version
+       subject_json, payload_json, emitted_at, schema_version,
+       envelope_json
   FROM events
  WHERE match_id = ?
    AND tick = ?

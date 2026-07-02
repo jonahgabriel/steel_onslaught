@@ -28,6 +28,7 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 from steel_onslaught.events.envelope import ModelSOEventEnvelope
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
@@ -63,6 +64,12 @@ class ReplayEngine:
         self._catalog = MatchContractCatalog.load(contracts_data_dir)
         # Cache the full canonical event list once.
         self._events: list[ModelSOEventEnvelope] = list(ledger.read_all(match_id))
+        # ONEX workflow correlation id shared across every event of this match.
+        # Derived from the ledger (the replay path never emits, so the fold's
+        # bus=None; correlation_id is threaded only to satisfy the factory
+        # signature and stays unused on this path). All events of one match
+        # share it (the runner generates one per match).
+        self._correlation_id = self._events[0].correlation_id if self._events else uuid4()
         # Current cursor position — updated by reconstruct_at_tick / step_*.
         self._cursor_tick: int = 0
 
@@ -142,7 +149,7 @@ class ReplayEngine:
         A fresh fold per call keeps reconstruction stateless and exact: the
         result is a pure function of the canonical event prefix.
         """
-        fold = MatchStateFold(self._match_id, bus=None, catalog=self._catalog)
+        fold = MatchStateFold(self._match_id, self._correlation_id, bus=None, catalog=self._catalog)
         for event in self._events:
             if event.tick > target_tick:
                 break

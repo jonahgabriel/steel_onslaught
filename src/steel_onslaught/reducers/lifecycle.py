@@ -17,10 +17,9 @@ around via the bus or the ledger.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID, uuid4
 
-import ulid
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from steel_onslaught.bus.protocol import EventBus
@@ -28,6 +27,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+    make_event,
 )
 from steel_onslaught.match.state import (
     ModelSOMatchState,
@@ -107,7 +107,10 @@ class ModelSOMatchEndedPayload(BaseModel):
 class ReducerMatchLifecycle:
     """Per-match lifecycle reducer. Construct one per ``match_id``."""
 
-    def __init__(self, match_id: str, bus: EventBus | None = None) -> None:
+    def __init__(
+        self, match_id: str, correlation_id: UUID | None = None, bus: EventBus | None = None
+    ) -> None:
+        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
         self._bus = bus
         self._state = ModelSOMatchState(
             match_id=match_id,
@@ -273,15 +276,14 @@ class ReducerMatchLifecycle:
         if self._bus is None:
             return
         self._bus.publish(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            make_event(
                 match_id=self._state.match_id,
+                correlation_id=self._correlation_id,
                 tick=self._state.tick,  # bus re-stamps tick + sequence_in_tick
                 sequence_in_tick=0,
                 event_type=event_type,
                 producer_node=_PRODUCER_NODE,
                 subject=_MATCH_SUBJECT,
                 payload=payload,
-                emitted_at=datetime.now(UTC).isoformat(),
             )
         )

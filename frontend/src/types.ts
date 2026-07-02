@@ -352,17 +352,25 @@ export interface PayloadMap {
 // Envelope (mirror of ModelSOEventEnvelope) — discriminated on event_type
 // ---------------------------------------------------------------------------
 
+/** The composed ONEX ModelEnvelope — tracing identity + causation chain. */
+interface OnexEnvelope {
+  message_id: string;
+  correlation_id: string;
+  causation_id: string | null;
+  emitted_at: string;
+  entity_id: string;
+}
+
 interface EnvelopeBase {
   schema_version: string;
   event_id: string;
   match_id: string;
   tick: number;
   sequence_in_tick: number;
-  correlation_id: string | null;
-  causation_id: string | null;
   producer_node: string;
   subject: SOEventSubject;
-  emitted_at: string;
+  /** The ONEX canonical envelope (correlation/causation/identity). */
+  envelope: OnexEnvelope;
 }
 
 export type SOEventEnvelope = {
@@ -1028,13 +1036,11 @@ const ENVELOPE_FIELDS = [
   "match_id",
   "tick",
   "sequence_in_tick",
-  "correlation_id",
-  "causation_id",
   "producer_node",
   "subject",
   "event_type",
   "payload",
-  "emitted_at",
+  "envelope",
 ] as const;
 
 function isEventType(value: string): value is SOEventType {
@@ -1070,17 +1076,24 @@ export function parseEnvelope(raw: unknown): SOEventEnvelope {
     fail(context, `event_id must be a 26-char ULID, got length ${eventId.length}`);
   }
 
+  const onexRecord = asRecord(record["envelope"], `${context}.envelope`);
+  const onexEnvelope: OnexEnvelope = {
+    message_id: str(onexRecord, "message_id", `${context}.envelope.message_id`),
+    correlation_id: str(onexRecord, "correlation_id", `${context}.envelope.correlation_id`),
+    causation_id: nullableStr(onexRecord, "causation_id", `${context}.envelope.causation_id`),
+    emitted_at: str(onexRecord, "emitted_at", `${context}.envelope.emitted_at`),
+    entity_id: str(onexRecord, "entity_id", `${context}.envelope.entity_id`),
+  };
+
   const base: EnvelopeBase = {
     schema_version: str(record, "schema_version", context),
     event_id: eventId,
     match_id: str(record, "match_id", context),
     tick: num(record, "tick", context),
     sequence_in_tick: num(record, "sequence_in_tick", context),
-    correlation_id: nullableStr(record, "correlation_id", context),
-    causation_id: nullableStr(record, "causation_id", context),
     producer_node: str(record, "producer_node", context),
     subject: parseSubject(record["subject"], `${context}.subject`),
-    emitted_at: str(record, "emitted_at", context),
+    envelope: onexEnvelope,
   };
 
   return buildEnvelope(base, eventTypeRaw, record["payload"]);

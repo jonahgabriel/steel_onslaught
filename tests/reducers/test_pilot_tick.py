@@ -16,9 +16,12 @@ Invariants from the plan:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.events.envelope import (
@@ -51,6 +54,19 @@ MECH_BLUE = "mech.blue.01"
 PLAYER_RED = "player.red"
 PLAYER_BLUE = "player.blue"
 ULID = "01JABCDE0123456789ABCDEFGX"
+
+
+def _onex_envelope(
+    entity_id: str, emitted_at: datetime = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+) -> ModelEnvelope:
+    """Composed ONEX ModelEnvelope."""
+    return ModelEnvelope(
+        message_id=uuid4(),
+        correlation_id=uuid4(),
+        causation_id=uuid4(),
+        entity_id=entity_id,
+        emitted_at=emitted_at,
+    )
 
 
 def _boiler(
@@ -139,7 +155,7 @@ def _tick_event(tick: int = 5) -> ModelSOEventEnvelope:
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id="*", player_id="*"),
         payload={},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_onex_envelope(MATCH_ID),
     )
 
 
@@ -153,7 +169,7 @@ def _other_event() -> ModelSOEventEnvelope:
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id=MECH_RED, player_id=PLAYER_RED),
         payload={"heat": 10},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_onex_envelope(MATCH_ID),
     )
 
 
@@ -454,7 +470,7 @@ def test_sensor_events_passed_to_observation() -> None:
             "distance_estimate": 12.5,
             "confidence": 0.7,
         },
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_onex_envelope(MATCH_ID),
     )
 
     stub = _StubPilot()

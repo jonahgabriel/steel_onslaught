@@ -20,8 +20,10 @@ from threading import Thread
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import urlopen
+from uuid import uuid4
 
 import pytest
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.cli.serve import create_replay_http_handler
 from steel_onslaught.events.envelope import (
@@ -32,7 +34,7 @@ from steel_onslaught.events.envelope import (
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 
 _MATCH_ID = "match.test.replay.endpoint"
-_EMITTED_AT = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC).isoformat()
+_EMITTED_AT = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
 
 _ENVELOPE_COUNTER: list[int] = [0]
 
@@ -42,6 +44,17 @@ def _uid() -> str:
     n = _ENVELOPE_COUNTER[0]
     # 26-char ULID-shaped ID (deterministic for tests, unique enough per session)
     return f"01TEST{str(n).zfill(20)}"
+
+
+def _onex_envelope(entity_id: str, emitted_at: datetime = _EMITTED_AT) -> ModelEnvelope:
+    """Composed ONEX ModelEnvelope."""
+    return ModelEnvelope(
+        message_id=uuid4(),
+        correlation_id=uuid4(),
+        causation_id=uuid4(),
+        entity_id=entity_id,
+        emitted_at=emitted_at,
+    )
 
 
 def _make_decision_event(
@@ -66,7 +79,7 @@ def _make_decision_event(
             "confidence": 0.85,
             "considered_actions": [{"action": "FIRE_WEAPON", "score": 0.85}],
         },
-        emitted_at=_EMITTED_AT,
+        envelope=_onex_envelope(match_id),
     )
 
 
@@ -86,7 +99,7 @@ def _make_other_event(match_id: str, tick: int, seq: int) -> ModelSOEventEnvelop
             "heat_before": 30,
             "heat_after": 32,
         },
-        emitted_at=_EMITTED_AT,
+        envelope=_onex_envelope(match_id),
     )
 
 

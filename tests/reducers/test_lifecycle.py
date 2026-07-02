@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 import ulid
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
@@ -98,7 +101,13 @@ def _envelope(
         producer_node="node.test.driver",
         subject=ModelSOEventSubject(mech_id="*", player_id="*"),
         payload=payload,
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id=match_id,
+            emitted_at=datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC),
+        ),
     )
 
 

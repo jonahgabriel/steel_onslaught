@@ -1,26 +1,73 @@
+from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 from pydantic import ValidationError
 
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
 
+_CORR = uuid4()
+_CAUS = uuid4()
+
+
+def _coerce_uuid(v: object) -> UUID:
+    """Coerce a str/UUID override into a real UUID (matches ONEX coercion)."""
+    if isinstance(v, UUID):
+        return v
+    return UUID(str(v))
+
+
+def _envelope(
+    match_id: str = "match.2026-04-30.001",
+    emitted_at: datetime = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC),
+) -> ModelEnvelope:
+    """Composed ONEX ModelEnvelope (message_id/correlation_id/causation_id/entity_id/emitted_at)."""
+    return ModelEnvelope(
+        message_id=uuid4(),
+        correlation_id=_CORR,
+        causation_id=_CAUS,
+        entity_id=match_id,
+        emitted_at=emitted_at,
+    )
+
 
 def _base_kwargs(**overrides: Any) -> dict[str, Any]:
-    """Return a valid set of kwargs for ModelSOEventEnvelope with optional overrides."""
+    """Return a valid set of kwargs for ModelSOEventEnvelope with optional overrides.
+
+    Legacy ``correlation_id``/``causation_id``/``emitted_at`` overrides are routed
+    into the composed ``envelope`` ModelEnvelope (matching the ONEX migration).
+    """
     # ULID is 26 chars (10-char timestamp + 16-char random, Crockford base32)
+    match_id = overrides.get("match_id", "match.2026-04-30.001")
+    correlation_id = _CORR
+    causation_id: UUID | None = _CAUS
+    emitted_at = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+    if "correlation_id" in overrides:
+        correlation_id = _coerce_uuid(overrides.pop("correlation_id"))
+    if "causation_id" in overrides:
+        caus = overrides.pop("causation_id")
+        causation_id = None if caus is None else _coerce_uuid(caus)
+    if "emitted_at" in overrides:
+        emitted_at = datetime.fromisoformat(str(overrides.pop("emitted_at")))
+    envelope = ModelEnvelope(
+        message_id=uuid4(),
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        entity_id=match_id,
+        emitted_at=emitted_at,
+    )
     base: dict[str, Any] = {
         "event_id": "01JABCDE0123456789ABCDEFGX",  # 26 chars
-        "match_id": "match.2026-04-30.001",
+        "match_id": match_id,
         "tick": 42,
         "sequence_in_tick": 0,
         "event_type": SOEventType.PILOT_DECISION_MADE,
-        "correlation_id": "corr.x",
-        "causation_id": "evt.prev",
         "producer_node": "node.pilot.red.01",
         "subject": {"mech_id": "mech.red.01", "player_id": "player.17"},
         "payload": {"action": "vent"},
-        "emitted_at": "2026-04-30T16:00:00Z",
+        "envelope": envelope,
     }
     base.update(overrides)
     return base
@@ -46,7 +93,7 @@ def test_envelope_rejects_negative_tick() -> None:
             producer_node="p",
             subject=ModelSOEventSubject(mech_id="m", player_id="p"),
             payload={},
-            emitted_at="2026-04-30T16:00:00Z",
+            envelope=_envelope(match_id="m"),
         )
 
 
@@ -118,18 +165,23 @@ def test_schema_version_defaults_to_010() -> None:
 
 @pytest.mark.unit
 def test_causation_id_round_trips() -> None:
-    env = ModelSOEventEnvelope(**_base_kwargs(causation_id="01JABCDE0123456789ABCDEF0"))
+    """causation_id is now a UUID on the composed ONEX envelope; round-trips via JSON."""
+    from uuid import uuid4
+
+    cause = uuid4()
+    env = ModelSOEventEnvelope(**_base_kwargs(causation_id=str(cause)))
     blob = env.model_dump_json()
     parsed = ModelSOEventEnvelope.model_validate_json(blob)
-    assert parsed.causation_id == "01JABCDE0123456789ABCDEF0"
+    assert parsed.causation_id == cause
     assert parsed == env
 
 
 @pytest.mark.unit
 def test_optional_ids_can_be_none() -> None:
-    env = ModelSOEventEnvelope(**_base_kwargs(correlation_id=None, causation_id=None))
-    assert env.correlation_id is None
-    assert env.causation_id is None
+    """correlation_id is always present (UUID); causation_id is None for root events."""
+    env = ModelSOEventEnvelope(**_base_kwargs(causation_id=None))
+    assert env.correlation_id is not None  # always a UUID now
+    assert env.causation_id is None  # root event: no parent
     blob = env.model_dump_json()
     parsed = ModelSOEventEnvelope.model_validate_json(blob)
     assert parsed == env
