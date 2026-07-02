@@ -1,6 +1,6 @@
 # LLM Integration — ONEX-native pilots + learning-loop Phase 3 (LLM tuner)
 
-> **Status:** Rev 3, awaiting review/iteration.
+> **Status:** Rev 4, awaiting review/iteration.
 > **Author:** generated 2026-07-02 (Rev 1); Rev 2 same day after a 7-agent
 > research + adversarial-verification pass (5 research, 2 verify agents; all
 > claims below carry file:line evidence from that pass or direct reads).
@@ -44,6 +44,19 @@
 >    deployed delegation effect node instead of the game-local handler.
 >    In-memory/local bus is the default; Kafka is the override (platform
 >    doctrine).
+> 7. **(Rev 4) Reuse everything — the infra exclusion is lifted.** The
+>    game's earlier "Infra intentionally not pulled into this
+>    single-process engine" pyproject line was an April MVP scoping choice,
+>    not platform doctrine; operator overrode it (2026-07-02: "we should
+>    reuse everything"). omnimarket is published to PyPI (release.yml →
+>    `uv publish`; 0.4.3 live), so the game takes `omnimarket` as a normal
+>    dependency and **imports the production LLM handler**
+>    (`HandlerLlmDelegationCall` — no constructor, no DI, one
+>    `handle(request) → typed terminal event/result` method) instead of
+>    pattern-copying its code. The hand-written `LlmHttpClient` from Rev
+>    2–3 is deleted from this plan. Endpoint/model/key resolution reuses
+>    the platform's registry + overlay mechanism rather than a game-local
+>    providers.yaml.
 
 ## Core principle (verified, unchanged from Rev 1)
 
@@ -82,33 +95,42 @@ A new module **outside** `learning/` (a directory-wide source scan,
 `tests/cli/test_learn.py:258-273`, bans the literal substring `datetime.now`
 in every file under `learning/` — LLM timeout/clock code cannot live there).
 
-**What we reuse instead of inventing:**
+**What we reuse (import, not copy):**
 
-- **spi protocol shapes, satisfied structurally.** The game's frozen
-  models mirror `ProtocolLLMRequest` / `ProtocolLLMResponse`
-  (`omnibase_spi/protocols/types/protocol_llm_types.py:60-127` — import via
-  full submodule path; they are not re-exported at package level):
-  request = `prompt, model_name, parameters, max_tokens, temperature`;
-  response = `generated_text, model_used, usage_statistics, finish_reason,
-  response_metadata`. Structural satisfaction (Protocols) means the game's
-  types ARE valid spi LLM types without inheritance or an spi runtime
-  import in the hot path.
-- **core enums:** `EnumMessageRole` (user/system/assistant),
-  `EnumFinishReason`, `EnumResponseFormat` (TEXT/JSON) from
-  `omnibase_core.enums` (importable; already a dependency —
-  `pyproject.toml` wires omnibase-core>=0.46.2 as a workspace path dep).
-- **NOT reused, with reason:** spi's `ProtocolLLMProvider` full surface
-  (13 methods, `generate` is `async def`). Adversarial verdict: bridging it
-  through `asyncio.run()` inside the synchronous `decide()` is safe *today*
-  (no execution path — `so run`/`so learn`/`so replay`/pytest — calls
-  `decide()` inside a running loop; `so serve` runs the only loop and never
-  constructs a `MatchRunner`), but that is a **latent, unenforced
-  invariant**. Ruling: the client is a plain **sync `httpx.Client`** behind
-  the spi request/response *shapes*; no `asyncio` anywhere in `llm/`
-  (guarded by a source-scan test, §Verification). Core/spi ship **zero
-  concrete clients** (verified: no openai/anthropic/genai imports, no live
-  HTTP LLM code in either repo), so a hand-written handler is required, not
-  a choice.
+- **The production LLM handler, whole.** `omnimarket` is a normal PyPI
+  dependency (published via its release.yml; 0.4.3 live), and
+  `HandlerLlmDelegationCall`
+  (`omnimarket/nodes/node_llm_delegation_call_effect/handlers/
+  handler_llm_delegation_call.py:256`) is a plain class — **no
+  constructor, no DI** — with one synchronous
+  `handle(request: ModelLlmDelegationCallRequest) →
+  ModelLlmDelegationCompletedEvent | ModelLlmDelegationAllTiersFailedEvent
+  | ModelLlmDelegationCallResult` method that *returns* typed models
+  rather than publishing (the runtime publishes what handlers return — and
+  in the game, the game bus does). Everything Rev 2 was going to
+  pattern-copy — verbatim-URL doctrine, required timeouts, the error
+  taxonomy, usage/cost extraction, endpoint health probing — arrives by
+  import, maintained upstream. Sync `handle`, sync `decide()`: no asyncio
+  anywhere in the hot path (the spi `ProtocolLLMProvider` async surface
+  remains unused; the source-scan guard in §Verification stays).
+- **The platform's endpoint/model/key resolution.** Requests carry an
+  `endpoint_ref`; resolution + overlay live in omnimarket
+  (`resolve_delegation_backend` + registry + overlay, with the
+  documented dev-overlay path). Local laptop providers (LM Studio/Ollama)
+  are **overlay entries** on the platform's own mechanism — no game-local
+  `providers.yaml` reinvented. Personas remain game contracts (§2); which
+  `endpoint_ref` a pilot/tuner uses is a field in the game's pilot-spec /
+  experiment config.
+- **core enums** where the game's own models need them:
+  `EnumMessageRole`, `EnumFinishReason`, `EnumResponseFormat`
+  (`omnibase_core.enums` — already a dependency).
+- **Dependency note (accepted, per operator directive):** omnimarket
+  transitively brings omnibase-infra, aiokafka, asyncpg, fastapi, etc. The
+  game's pyproject line "Infra intentionally not pulled into this
+  single-process engine" is deleted as part of this work. The transitive
+  aiokafka also dissolves Phase E's dependency gate. Two mechanical checks
+  at build time: `requires-python` compatibility, and pinning
+  `omnimarket>=0.4.3` with the same pin-discipline as core/spi.
 
 **The node (branch's established contract pattern, effect template =
 `ledger/contract.yaml`):**
@@ -127,53 +149,30 @@ in every file under `learning/` — LLM timeout/clock code cannot live there).
   above, with `prompt_tokens`/`completion_tokens`/`cost_usd` carried in
   `usage_statistics` so the tuner's `cost_per_promotion` has a source of
   truth from day one.
-- `llm/effect.py` — `LlmCompletionEffect`, the node's handler. It resolves
-  the provider entry, invokes the configured **lane client**
-  (`ProtocolLlmClient`), and publishes the evidence events (below) on the
-  game bus. Which lane is active is contract configuration, never code:
+- `llm/effect.py` — `LlmCompletionEffect`, the game-side adapter node. It
+  maps the game's request (persona/arm prompt + `endpoint_ref` from the
+  spec) to `ModelLlmDelegationCallRequest`, invokes the configured **lane**
+  behind the game's `ProtocolLlmClient` seam, maps the returned terminal
+  model back (completed → text + usage; failure classes → the REMAIN
+  fallback in §2), and publishes the evidence events (below) on the game
+  bus. Which lane is active is contract configuration, never code:
 
-  - **Local HTTP lane (default) — `llm/client.py::LlmHttpClient`.**
-    The standard effect-handler HTTP call, pattern-copied (not imported)
-    from the platform's canonical reference,
-    `omnimarket/.../node_llm_delegation_call_effect/handlers/transport.py`
-    + `handler_llm_delegation_call.py`. The game ships its own handler
-    because core/spi ship no concrete client (verified) and this repo does
-    not depend on omnimarket/infra; on infra hosts the Kafka lane reuses
-    the deployed platform handler instead. Behaviors copied verbatim:
-    - **fail-closed verbatim-URL check** before any network call (URL must
-      start with http(s)://; posted byte-for-byte, no rstrip/append —
-      OMN-12815/13159 doctrine);
-    - **required timeout, no default** (caller supplies the
-      contract-resolved value);
-    - single `httpx.Client(...).post(...)` + `raise_for_status()` +
-      `response.json()`; **exactly one call, no retry** (the reference
-      handler's own doctrine: retries/escalation belong to orchestration,
-      never the transport);
-    - error taxonomy: `httpx.TimeoutException` → timeout; `HTTPStatusError`
-      429 → rate-limited, **401/403 → auth-failed** (fixing a classification
-      gap the reference itself has), other statuses → provider-unavailable;
-      empty `choices` → invalid-response; anything else → unknown;
-    - usage extraction: `usage.get("prompt_tokens"/"completion_tokens") or 0`.
-    Behaviors deliberately skipped (platform-scale overkill): curl/httpx
-    dual transport (macOS-LAN-grant workaround), Infisical/
-    ProtocolSecretStore DI, tier-ladder escalation, YAML pricing registry
-    (per-1M prices live as optional fields on the provider entry instead),
-    Kafka provenance.
+  - **In-process lane (default) — the imported production handler.**
+    `HandlerLlmDelegationCall().handle(request)` called directly — the
+    real platform node composed into the game process, the same code that
+    runs in production. Nothing is reimplemented; the game does not own
+    URL discipline, timeouts, error taxonomy, health probes, or usage
+    extraction — omnimarket does.
 
   - **Kafka delegation lane (contract override, infra hosts) — Phase E.**
-    Where infra is installed (.201), the override routes completions
-    through the bus to the platform's **already-deployed**
-    `node_llm_delegation_call_effect` instead of game-local HTTP: the lane
-    client (`LlmBusDelegationClient`, same `ProtocolLlmClient`) publishes
-    the delegation request event and consumes the terminal response event.
-    The game-side HTTP client is bypassed entirely; the platform node does
-    the POST, key resolution, and usage metering it already does in
-    production. Two prerequisites make this a gated phase rather than the
-    default: (a) the game takes an **optional** Kafka client dependency (an
-    extra — the base install stays infra-free per the repo's own pyproject
-    doctrine), and (b) the delegation request/response topics + wire DTOs
-    must be consumed from the platform's contract, verified against the
-    live deployed lane before building — no guessed envelope shapes.
+    Where infra runs (.201), the override publishes the same
+    `ModelLlmDelegationCallRequest` wire DTO (imported — no guessed
+    envelope shapes) to the deployed node's request topic and consumes the
+    terminal event. Same handler code either way; the only difference is
+    which process runs it. The former dependency gate is gone (aiokafka
+    arrives transitively with omnimarket); the remaining gate is verifying
+    the live topic names + consumer wiring against the deployed .201 lane
+    before building.
 
   - **Stub lane — `llm/stub.py::StubLlmClient`:** table-driven, fail-fast
     (KeyError on unscripted input — the repo's `FakeEvaluator` stub
@@ -201,17 +200,16 @@ in-process composition wires the effect node into the pilot the way
 direct typed calls — while the bus carries the *evidence* (all lanes) and,
 on the Kafka lane, the *transport*.
 
-**Provider registry is a contract, not env vars** — `llm/providers.yaml`,
-mirroring the *shape conventions* of omnimarket's `model_registry_v1.yaml`
-(pattern only; nothing imported): each entry = `provider_id`, **complete**
-`endpoint_url` verbatim including the `/v1/chat/completions` path,
-`model_name`, `temperature`, `max_tokens`, `timeout_ms`, optional
-`pricing_per_1m_input/output`, and `requires_api_key_env` — the env var
-**name**, never a value; resolved fail-closed at the effect boundary (raise
-on required-but-absent, never call unauthenticated). Default entries are
-local-first (LM Studio / Ollama on localhost, no key), cloud opt-in — the
-addendum's own routing posture and the org's no-Anthropic/OpenAI-key
-constraint. Swapping providers is a YAML edit.
+**Provider registry: the platform's, via overlay.** No game-local
+`providers.yaml`. The game ships overlay entries for local providers
+(LM Studio / Ollama complete-URL endpoints, no key) through omnimarket's
+own registry + overlay mechanism, inheriting its conventions for free:
+complete URLs verbatim, `api_key_ref` name-not-value resolved fail-closed
+at the effect boundary, pricing metadata for cost telemetry. Default
+entries are local-first, cloud opt-in — the addendum's routing posture and
+the org's no-Anthropic/OpenAI-key constraint. Swapping providers is an
+overlay edit. (Build-time check, not a design question: confirm the exact
+overlay file/namespace `_resolve_endpoint` reads for game-local refs.)
 
 ### 2. The LLM pilot — a 4th archetype, not a bypass
 
@@ -441,10 +439,11 @@ boundary** (LLM sampling, request timing). State:
 Phase A is the shared seam; B and C are independent after A (disjoint
 files, parallel-safe). C is the priority payload; B is the show-piece.
 
-**A — LLM effect node:** (1) `llm/schemas.py` shapes (spi-structural) +
-`ProtocolLlmClient`; (2) `llm/stub.py`; (3) `llm/effect.py` (lane
-resolution + evidence events) + `llm/client.py` (local HTTP lane) +
-`llm/contract.yaml` + `llm/providers.yaml`.
+**A — LLM effect node:** (1) `omnimarket` dependency + pyproject
+"infra-free" line removal; (2) `llm/schemas.py` (game-side seam models +
+`ProtocolLlmClient`) + `llm/stub.py`; (3) `llm/effect.py` (request
+mapping, imported `HandlerLlmDelegationCall` in-process lane, evidence
+events) + `llm/contract.yaml` + local-provider overlay entries.
 
 **B — LLM pilot:** (4) schema/payload changes (§3, additive); (5) `llm`
 archetype registration (Literal + `_ARCHETYPE_PARAMS` + `_pilot_from_spec`
@@ -462,19 +461,23 @@ control enforced), usage sidecar + ROI-compatible row export.
 LLM-vs-LLM persona match + one tuner experiment against a local model.
 
 **E — Kafka delegation lane (gated, optional; no other phase depends on
-it):** `LlmBusDelegationClient` behind the same `ProtocolLlmClient`. Two
-explicit decisions gate it: the optional Kafka dependency (packaged as an
-extra so the base install stays infra-free), and the platform delegation
-topic/DTO contract verified against the live deployed .201 lane. Until
-then, "infra installed" hosts still work via the local HTTP lane pointed
-at .201's model endpoints.
+it):** `LlmBusDelegationClient` behind the same `ProtocolLlmClient`,
+publishing the imported `ModelLlmDelegationCallRequest` DTO to the
+deployed node's topic and consuming the terminal event. The dependency
+gate is gone (aiokafka arrives transitively with omnimarket); the one
+remaining gate is verifying live topic names + consumer wiring against
+the deployed .201 lane before building. Until then, infra hosts work via
+the in-process lane pointed at .201's model endpoints.
 
 ## Verification
 
-- **A:** stub round-trip; client tests against a recorded OpenAI-compatible
-  response fixture; verbatim-URL fail-closed test (bare host without path
-  rejected); required-timeout test; each error-taxonomy branch; fail-closed
-  missing-key; evidence events published on both success and fallback and
+- **A:** stub round-trip; adapter tests — game request → correct
+  `ModelLlmDelegationCallRequest` mapping, each returned terminal model
+  (completed / all-tiers-failed / failure result) → correct game-side
+  outcome incl. REMAIN-fallback classes (transport/URL/timeout/taxonomy
+  behavior itself is omnimarket's test surface, not re-tested here);
+  overlay-resolved local endpoint_ref round-trip against a recorded
+  fixture; evidence events published on both success and fallback and
   present in a match ledger, with `verify_replay_validity` passing on a
   ledger that contains them; **source-scan: no `asyncio` import anywhere in
   `llm/`** (the C2 latent-hazard guard, mirroring the repo's source-scan
