@@ -33,19 +33,17 @@
 >    for `rationale` (it enumerates fields; nothing "flows automatically"),
 >    the decision model's required `reason_code`/`considered_actions` get
 >    explicit LLM handling, transport failures hit the REMAIN fallback.
-> 6. **(Rev 3) Bus-first evidence + transport lanes.** The HTTP client is
->    demoted to an implementation detail *inside* the effect node — model
->    servers (LM Studio/Ollama/vLLM/Gemini-compat) only speak HTTP; Kafka
->    cannot POST to them, and even the platform's deployed
->    `node_llm_delegation_call_effect` is an httpx POST inside a node
->    (`handlers/transport.py`). What changes architecturally: every LLM
->    request/response is published as **evidence events on the game bus**
->    (→ append-only ledger, causation-chained, replayable), and the client
->    seam gains a **Kafka delegation lane** — on infra-installed hosts
->    (.201) a contract override routes completions through the bus to the
->    platform's deployed delegation effect node instead of the game-local
->    HTTP client. In-memory/local bus is the default; Kafka is the
->    override (platform doctrine).
+> 6. **(Rev 3) Bus-first evidence + transport lanes.** HTTP lives inside
+>    the effect node's handler — the settled platform pattern
+>    (`node_llm_delegation_call_effect` does exactly this in production).
+>    What Rev 3 adds: every LLM request/response is published as
+>    **evidence events on the game bus** (→ append-only ledger,
+>    causation-chained, replayable), and the handler seam gains a **Kafka
+>    delegation lane** — on infra-installed hosts (.201) a contract
+>    override routes completions through the bus to the platform's
+>    deployed delegation effect node instead of the game-local handler.
+>    In-memory/local bus is the default; Kafka is the override (platform
+>    doctrine).
 
 ## Core principle (verified, unchanged from Rev 1)
 
@@ -135,15 +133,13 @@ in every file under `learning/` — LLM timeout/clock code cannot live there).
   game bus. Which lane is active is contract configuration, never code:
 
   - **Local HTTP lane (default) — `llm/client.py::LlmHttpClient`.**
-    Pattern-copied (not imported) from the platform's canonical minimal
-    reference, `omnimarket/.../node_llm_delegation_call_effect/handlers/
-    transport.py` + `handler_llm_delegation_call.py` — which is itself the
-    proof that an httpx POST *inside an effect node* is the platform's own
-    bottom layer: model servers (LM Studio/Ollama/vLLM/Gemini-compat) only
-    speak HTTP; Kafka cannot POST to them. Every LLM integration terminates
-    in an HTTP call at some effect boundary — the doctrine question is only
-    *which node owns it* (see the Kafka lane for the answer "the platform's
-    node" on infra hosts). Behaviors copied verbatim:
+    The standard effect-handler HTTP call, pattern-copied (not imported)
+    from the platform's canonical reference,
+    `omnimarket/.../node_llm_delegation_call_effect/handlers/transport.py`
+    + `handler_llm_delegation_call.py`. The game ships its own handler
+    because core/spi ship no concrete client (verified) and this repo does
+    not depend on omnimarket/infra; on infra hosts the Kafka lane reuses
+    the deployed platform handler instead. Behaviors copied verbatim:
     - **fail-closed verbatim-URL check** before any network call (URL must
       start with http(s)://; posted byte-for-byte, no rstrip/append —
       OMN-12815/13159 doctrine);
