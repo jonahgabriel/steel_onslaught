@@ -8,7 +8,7 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
-from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
+from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, WeaponDamageType
 
 CONTRACTS_DATA = Path(__file__).parent.parent.parent / "contracts_data" / "weapons"
 
@@ -109,3 +109,68 @@ def test_target_class_effectiveness_values_are_positive() -> None:
     spec = ModelSOWeaponSpec.model_validate(yaml.safe_load(path.read_text()))
     for val in spec.target_class_effectiveness.values():
         assert val > 0.0
+
+
+@pytest.mark.unit
+def test_heat_lance_damage_type_is_heat() -> None:
+    """The only heat weapon in the catalog names its damage type explicitly."""
+    path = CONTRACTS_DATA / "heat_lance.yaml"
+    spec = ModelSOWeaponSpec.model_validate(yaml.safe_load(path.read_text()))
+    assert spec.damage_type is WeaponDamageType.HEAT
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "filename",
+    ["machine_gun", "steam_cannon", "artillery_mortar", "shrapnel_thrower", "harpoon_gun"],
+)
+def test_non_heat_weapons_are_standard(filename: str) -> None:
+    path = CONTRACTS_DATA / f"{filename}.yaml"
+    spec = ModelSOWeaponSpec.model_validate(yaml.safe_load(path.read_text()))
+    assert spec.damage_type is WeaponDamageType.STANDARD
+
+
+@pytest.mark.unit
+def test_damage_type_defaults_to_standard_when_omitted() -> None:
+    """Backward-compat: a weapon YAML that omits damage_type validates as STANDARD."""
+    spec = ModelSOWeaponSpec.model_validate(
+        {
+            "schema_version": "0.1.0",
+            "kind": "steel_onslaught.weapon",
+            "id": "weapon.light.legacy",
+            "display_name": "Legacy",
+            "weapon_class": "light",
+            "range": 10,
+            "damage": 5,
+            "pressure_cost": 5,
+            "heat_generated": 3,
+            "cooldown_ticks": 1,
+            "accuracy_curve": [{"range": 5, "hit_probability": 0.8}],
+            "target_class_effectiveness": {"light": 1.0},
+            "compatibility": {"compatible_chassis_classes": ["light"]},
+        }
+    )
+    assert spec.damage_type is WeaponDamageType.STANDARD
+
+
+@pytest.mark.unit
+def test_damage_type_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        ModelSOWeaponSpec.model_validate(
+            {
+                "schema_version": "0.1.0",
+                "kind": "steel_onslaught.weapon",
+                "id": "weapon.light.bad",
+                "display_name": "Bad",
+                "weapon_class": "light",
+                "range": 10,
+                "damage": 5,
+                "pressure_cost": 5,
+                "heat_generated": 3,
+                "cooldown_ticks": 1,
+                "accuracy_curve": [{"range": 5, "hit_probability": 0.8}],
+                "target_class_effectiveness": {"light": 1.0},
+                "damage_type": "plasma",  # not a WeaponDamageType member
+                "compatibility": {"compatible_chassis_classes": ["light"]},
+            }
+        )

@@ -91,7 +91,12 @@ class ModelSOMechRuntimeState(BaseModel):
     # Health.
     hp: int = Field(ge=0)
     hp_max: int = Field(gt=0)
-    armor_value: int = Field(ge=0)
+    armor_value: int = Field(
+        ge=0, description="Current armor (degrades per hit, regenerates per tick)"
+    )
+    armor_max: int = Field(
+        ge=0, description="Armor capacity ceiling; armor_value regenerates toward this"
+    )
     alive: bool = True
     pilot_alive: bool = True
 

@@ -61,6 +61,7 @@ def _mech_kwargs(mech_id: str = "mech.red.01", player_id: str = "player.red") ->
         "hp": 100,
         "hp_max": 100,
         "armor_value": 10,
+        "armor_max": 10,
         "current_mode": "recon",
         "weapon_cooldowns": {"weapon.machine_gun": 0},
         "boiler": _boiler(mech_id),

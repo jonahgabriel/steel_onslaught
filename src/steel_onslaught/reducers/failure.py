@@ -459,6 +459,14 @@ class ReducerFailureCascade:
         Emitting only on the >1 -> ==1 transition keeps re-folds and
         already-decided states from duplicating the declaration.  Zero
         survivors emits nothing (lifecycle max_ticks draw is the backstop).
+
+        Defense-in-depth: ``MatchStateFold._on_flag_drop`` (in ``match/fold.py``)
+        declares victory on the same transition.  This cascade-level declaration
+        fires when the kill arrives via the rupture chain; the fold-level one is
+        the backstop for kills arriving as direct MECH_DESTROYED events.  Both
+        are guarded to the >1 -> ==1 transition so they don't duplicate.  The
+        paired redundancy is intentional — see
+        ``tests/match/test_fold_victory_backstop.py``.
         """
         survivors_after = new_state.surviving_player_ids()
         if len(survivors_before) > 1 and len(survivors_after) == 1:
@@ -495,6 +503,8 @@ class ReducerFailureCascade:
                 producer_node=_PRODUCER_NODE,
                 subject=subject,
                 payload=payload,
+                # Wall-clock metadata only — see pilot_tick._now_iso / the
+                # determinism-boundaries doc.
                 emitted_at=datetime.now(UTC).isoformat(),
             )
         )

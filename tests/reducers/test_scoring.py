@@ -102,6 +102,7 @@ def _make_mech(mech_id: str, player_id: str, *, loadout_id: str) -> ModelSOMechR
         hp=100,
         hp_max=100,
         armor_value=10,
+        armor_max=10,
         current_mode="recon",
         boiler=_make_boiler(mech_id),
     )

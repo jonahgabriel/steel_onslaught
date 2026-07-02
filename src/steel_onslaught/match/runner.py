@@ -62,7 +62,6 @@ from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
 from steel_onslaught.projections.leaderboard.handler import LeaderboardHandler
 from steel_onslaught.reducers.damage import (
-    WeaponDamageType,
     compute_armor_reduction,
     compute_effective_damage_after_vulnerability,
 )
@@ -97,10 +96,8 @@ _SPAWN_B = ModelSOPosition(x=10, y=10)
 _FACING_A = 45
 _FACING_B = 225
 
-# Combat stats: hull/armor are not part of any contract yet (no hp field on
-# chassis contracts), so every mech fields the same provisional hull.
-_INITIAL_HP = 100
-_INITIAL_ARMOR = 10
+# Combat stats: hull/armor come from the chassis contract (base_hp /
+# base_armor on ModelSOChassisConstraints), so chassis class drives durability.
 _INITIAL_MODE = "recon"
 
 # All mode names a module may be active in (budget normalization).
@@ -128,6 +125,11 @@ def _pilot_from_spec(spec: ModelSOPilotSpec) -> PilotProtocol:
             return DefensivePilot(spec=spec)
         case "predictive":
             return PredictivePilot(spec=spec)
+        case _:
+            # archetype is a Literal, so this is only reachable via a spec that
+            # bypassed validation — fail loudly rather than yielding a mech that
+            # silently never acts (ReducerPilotTick skips None pilot entries).
+            raise ValueError(f"unknown pilot archetype {spec.archetype!r} (spec id: {spec.id!r})")
 
 
 def _clamp(value: int, magnitude: int) -> int:
@@ -319,7 +321,14 @@ class MatchRunner:
     ) -> None:
         direction = str(intent.payload.get("direction", ""))
         if direction not in {"toward_enemy", "defensive"}:
-            return  # hold position (defensive "maintain range" / disengage-in-place)
+            # A MOVE_INTENT always originates from a pilot's MOVE/DISENGAGE
+            # decision, which must name a recognized direction. Failing loud
+            # here (rather than silently holding position) surfaces pilot
+            # contract violations — the same discipline as the scoring gate.
+            raise ReducerError(
+                f"MOVE_INTENT for mech {mech.mech_id!r} at tick {state.tick} carries "
+                f"unknown/missing direction {direction!r}; expected 'toward_enemy' or 'defensive'"
+            )
         enemy = self._living_opponent(state, mech)
         if enemy is None:
             return
@@ -437,14 +446,15 @@ class MatchRunner:
             return
 
         # --- Damage chain (Task 25) ---------------------------------------
-        damage_type = WeaponDamageType.HEAT if "heat" in weapon_id else WeaponDamageType.STANDARD
+        damage_type = spec.damage_type
         effectiveness = spec.target_class_effectiveness.get(target.chassis_class, 1.0)
         damage_raw = int(spec.damage * effectiveness)
-        absorbed = compute_armor_reduction(
+        armor_reduction = compute_armor_reduction(
             damage_raw=damage_raw,
             armor_value=target.armor_value,
             weapon_damage_type=damage_type,
         )
+        absorbed = armor_reduction.absorbed
         vulnerability = self._catalog.chassis[target.chassis_id].penalties.heat_weapon_vulnerability
         effective = compute_effective_damage_after_vulnerability(
             damage_after_armor=damage_raw - absorbed,
@@ -469,7 +479,12 @@ class MatchRunner:
                 SOEventType.ARMOR_ABSORBED,
                 tick=state.tick,
                 mech=target,
-                payload={"target_id": target.mech_id, "absorbed_amount": absorbed},
+                payload={
+                    "target_id": target.mech_id,
+                    "absorbed_amount": absorbed,
+                    # Post-hit armor value; the fold degrades armor_value to this.
+                    "armor_after": armor_reduction.armor_after,
+                },
             )
         )
         # Re-read the target post-WEAPON_FIRED fold (its hp is unchanged by the
@@ -571,9 +586,10 @@ class MatchRunner:
             position=position,
             facing=facing,
             speed=chassis.constraints.base_speed,
-            hp=_INITIAL_HP,
-            hp_max=_INITIAL_HP,
-            armor_value=_INITIAL_ARMOR,
+            hp=chassis.constraints.base_hp,
+            hp_max=chassis.constraints.base_hp,
+            armor_value=chassis.constraints.base_armor,
+            armor_max=chassis.constraints.base_armor,
             current_mode=_INITIAL_MODE,
             weapon_cooldowns={weapon_id: 0 for weapon_id in loadout.modules.weapons},
             boiler=boiler,
@@ -591,6 +607,9 @@ class MatchRunner:
             producer_node=_PRODUCER_NODE,
             subject=_MATCH_SUBJECT,
             payload=payload,
+            # Wall-clock metadata only — excluded from ordering (bus owns tick/
+            # sequence_in_tick) and from replay validity (state has no field for
+            # it). See docs/plans/2026-07-02-determinism-boundaries.md.
             emitted_at=datetime.now(UTC).isoformat(),
         )
 
@@ -611,6 +630,7 @@ class MatchRunner:
             producer_node=_PRODUCER_NODE,
             subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
             payload=payload,
+            # Wall-clock metadata only — see comment in _make_match_event.
             emitted_at=datetime.now(UTC).isoformat(),
         )
 

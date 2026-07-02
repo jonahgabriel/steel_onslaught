@@ -104,6 +104,7 @@ def _mech(
         hp=100,
         hp_max=100,
         armor_value=5,
+        armor_max=5,
         alive=alive,
         pilot_alive=pilot_alive,
         current_mode="recon",

@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class WeaponDamageType(StrEnum):
+    """Damage type classification — drives armor effectiveness (Task 25).
+
+    Declared on the weapon contract so each weapon names its damage type
+    explicitly (rather than inferring it by substring of the id, which is
+    brittle: a ``sheet_metal_cannon`` would wrongly read as heat).
+
+    - STANDARD: baseline armor efficiency (1.0 multiplier).
+    - HEAT:     armor is less effective (lower efficiency coefficient).
+    - PRESSURE: armor is more effective (higher efficiency coefficient).
+    """
+
+    STANDARD = "standard"
+    HEAT = "heat"
+    PRESSURE = "pressure"
 
 
 class ModelSOAccuracyPoint(BaseModel):
@@ -50,5 +68,10 @@ class ModelSOWeaponSpec(BaseModel):
 
     # Multiplier applied to base damage against each chassis class.
     target_class_effectiveness: dict[str, float]
+
+    # Damage type used to resolve armor effectiveness on a hit (Task 25).
+    # Defaults to STANDARD so existing weapons that omit the field behave
+    # unchanged; declared explicitly per weapon rather than inferred by id.
+    damage_type: WeaponDamageType = WeaponDamageType.STANDARD
 
     compatibility: ModelSOWeaponCompatibility

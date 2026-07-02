@@ -58,6 +58,9 @@ _PRODUCER_NODE = "node.reducer.pilot_tick"
 
 
 def _now_iso() -> str:
+    # Wall-clock metadata only — excluded from ordering and from replay
+    # validity (ModelSOMatchState carries no emitted_at field). See
+    # docs/plans/2026-07-02-determinism-boundaries.md.
     return datetime.now(UTC).isoformat()
 
 

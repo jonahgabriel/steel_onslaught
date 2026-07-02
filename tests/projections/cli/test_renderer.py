@@ -406,6 +406,7 @@ def test_renderer_does_not_modify_match_state() -> None:
             "hp": 100,
             "hp_max": 100,
             "armor_value": 10,
+            "armor_max": 10,
             "current_mode": "recon",
             "boiler": {
                 "match_id": MATCH_ID,

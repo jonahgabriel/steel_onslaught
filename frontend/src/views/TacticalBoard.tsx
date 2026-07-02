@@ -230,6 +230,8 @@ export default function TacticalBoard({ subscribe }: TacticalBoardProps): React.
     <div style={{ position: "relative", display: "inline-block" }}>
       <svg
         data-testid="tactical-board-svg"
+        role="img"
+        aria-label="Tactical board showing mech positions, heat and pressure"
         width={BOARD_SIZE}
         height={BOARD_SIZE}
         style={{ background: "#111827", display: "block" }}

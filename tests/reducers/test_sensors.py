@@ -126,6 +126,7 @@ def _mech(
         hp=100,
         hp_max=100,
         armor_value=5,
+        armor_max=5,
         current_mode="recon",
         sensor_ids=sensor_ids,
         jamming_intensity=jamming_intensity,

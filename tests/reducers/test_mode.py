@@ -103,6 +103,7 @@ def _mech(
         hp=100,
         hp_max=100,
         armor_value=10,
+        armor_max=10,
         alive=alive,
         pilot_alive=True,
         current_mode=current_mode,

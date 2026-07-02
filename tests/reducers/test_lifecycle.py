@@ -75,6 +75,7 @@ def _mech(mech_id: str, player_id: str, *, alive: bool = True) -> ModelSOMechRun
         hp=100,
         hp_max=100,
         armor_value=10,
+        armor_max=10,
         alive=alive,
         current_mode="recon",
         weapon_cooldowns={"weapon.machine_gun": 0},

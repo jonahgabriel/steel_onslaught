@@ -104,6 +104,7 @@ def _mech_state(
         hp=100,
         hp_max=100,
         armor_value=10,
+        armor_max=10,
         current_mode="recon",
         weapon_cooldowns={"module.weapon.machine_gun": 0},
         boiler=boiler,
@@ -228,7 +229,11 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
             "defender_id": "mech.b.01",
             "result": {"hit": True, "damage_after_armor": 8},
         },
-        SOEventType.ARMOR_ABSORBED: {"target_id": "mech.b.01", "absorbed_amount": 4},
+        SOEventType.ARMOR_ABSORBED: {
+            "target_id": "mech.b.01",
+            "absorbed_amount": 4,
+            "armor_after": 6,
+        },
         SOEventType.DAMAGE_APPLIED: {
             "target_id": "mech.b.01",
             "damage": 8,

@@ -120,6 +120,7 @@ def _make_mech(
         hp=hp,
         hp_max=100,
         armor_value=10,
+        armor_max=10,
         alive=alive,
         pilot_alive=pilot_alive,
         current_mode="recon",

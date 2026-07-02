@@ -21,6 +21,7 @@ target_class_effectiveness:
   light: 0.9
   medium: 1.0
   heavy: 1.3
+damage_type: standard
 compatibility:
   compatible_chassis_classes:
     - heavy

@@ -243,7 +243,22 @@ class PredictivePilot:
                 considered_actions=considered,
             )
 
-        # Fallback: remain (no decision rule fires)
+        # Fallback: if the enemy is known but out of weapon range (or confidence
+        # is too low to fire), close distance rather than remain — otherwise two
+        # predictive pilots stare at each other forever and the match draws.
+        # Only remain when there is genuinely no enemy information.
+        if current_distance is not None and not in_weapon_range:
+            considered.append(ModelSOConsideredAction(action=SOPilotAction.MOVE, score=0.4))
+            considered.append(ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=0.1))
+            return ModelSOPilotDecision(
+                action=SOPilotAction.MOVE,
+                action_params={"direction": "toward_enemy"},
+                reason_code=SOPilotReasonCode.CLOSING_DISTANCE,
+                confidence=0.4,
+                considered_actions=considered,
+            )
+
+        # Fallback: remain (no actionable enemy information)
         considered.append(ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=0.3))
         return ModelSOPilotDecision(
             action=SOPilotAction.REMAIN,

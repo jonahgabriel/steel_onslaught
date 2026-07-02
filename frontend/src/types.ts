@@ -112,6 +112,7 @@ export interface SOMechRuntimeState {
   hp: number;
   hp_max: number;
   armor_value: number;
+  armor_max: number;
   alive: boolean;
   pilot_alive: boolean;
   current_mode: string;
@@ -250,6 +251,7 @@ export interface HitResolvedPayload {
 export interface ArmorAbsorbedPayload {
   target_id: string;
   absorbed_amount: number;
+  armor_after: number;
 }
 
 export interface DamageAppliedPayload {
@@ -600,6 +602,7 @@ const MECH_FIELDS = [
   "hp",
   "hp_max",
   "armor_value",
+  "armor_max",
   "alive",
   "pilot_alive",
   "current_mode",
@@ -647,6 +650,7 @@ function parseMechState(value: unknown, context: string): SOMechRuntimeState {
     hp: num(record, "hp", context),
     hp_max: num(record, "hp_max", context),
     armor_value: num(record, "armor_value", context),
+    armor_max: num(record, "armor_max", context),
     alive: bool(record, "alive", context),
     pilot_alive: bool(record, "pilot_alive", context),
     current_mode: str(record, "current_mode", context),
@@ -869,10 +873,11 @@ const PAYLOAD_PARSERS: PayloadParsers = {
   },
   armor_absorbed: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["target_id", "absorbed_amount"], context);
+    rejectUnknown(record, ["target_id", "absorbed_amount", "armor_after"], context);
     return {
       target_id: str(record, "target_id", context),
       absorbed_amount: num(record, "absorbed_amount", context),
+      armor_after: num(record, "armor_after", context),
     };
   },
   damage_applied: (value, context) => {

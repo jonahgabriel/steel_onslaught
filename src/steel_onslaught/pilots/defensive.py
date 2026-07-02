@@ -189,19 +189,19 @@ class DefensivePilot:
             )
             return ModelSOPilotDecision(
                 action=SOPilotAction.DISENGAGE,
-                action_params={},
+                action_params={"direction": "defensive"},
                 reason_code=SOPilotReasonCode.LOW_HP_RETREAT,
                 confidence=0.85,
                 considered_actions=considered,
             )
 
         # ------------------------------------------------------------------
-        # Rule 5: Fallback — move to maintain optimal range.
+        # Rule 5: Fallback — move to maintain optimal range (open distance).
         # ------------------------------------------------------------------
         considered.append(ModelSOConsideredAction(action=SOPilotAction.MOVE, score=0.5))
         return ModelSOPilotDecision(
             action=SOPilotAction.MOVE,
-            action_params={},
+            action_params={"direction": "defensive"},
             reason_code=SOPilotReasonCode.MAINTAIN_RANGE,
             confidence=0.5,
             considered_actions=considered,

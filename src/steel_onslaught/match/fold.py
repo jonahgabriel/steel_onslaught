@@ -209,6 +209,8 @@ class MatchStateFold:
                     self._on_mode_transition_started(event)
                 case SOEventType.DAMAGE_APPLIED:
                     self._on_damage_applied(event)
+                case SOEventType.ARMOR_ABSORBED:
+                    self._on_armor_absorbed(event)
                 case SOEventType.MECH_DESTROYED:
                     self._on_flag_drop(event, field="alive")
                 case SOEventType.PILOT_KILLED:
@@ -253,6 +255,7 @@ class MatchStateFold:
         for mech_id in list(working.mech_states):
             working = self._boilers[mech_id].apply(event, working)
         working = self._decrement_counters(working)
+        working = self._regenerate_armor(working)
         working = self._advance_mode_transitions(event, working)
         working = self._failure.apply(event, working)
         self._mech_states = dict(working.mech_states)
@@ -319,13 +322,39 @@ class MatchStateFold:
             mech.mech_id: mech.model_copy(update={"hp": hp_after}),
         }
 
+    def _on_armor_absorbed(self, event: ModelSOEventEnvelope) -> None:
+        """Degrade armor_value to the post-hit value the runner computed.
+
+        The runner computes the capped absorption and emits ``armor_after``;
+        the fold applies it so canonical state tracks the degrading pool.
+        Idempotent if the value is already current.
+        """
+        mech = self._mech_states.get(event.subject.mech_id)
+        if mech is None:
+            return
+        armor_after = int(event.payload["armor_after"])
+        if mech.armor_value == armor_after:
+            return  # idempotent re-statement
+        self._mech_states = {
+            **self._mech_states,
+            mech.mech_id: mech.model_copy(update={"armor_value": armor_after}),
+        }
+
     def _on_flag_drop(
         self,
         event: ModelSOEventEnvelope,
         *,
         field: Literal["alive", "pilot_alive"],
     ) -> None:
-        """Fold MECH_DESTROYED / PILOT_KILLED; declare victory on the 2->1 transition."""
+        """Fold MECH_DESTROYED / PILOT_KILLED; declare victory on the 2->1 transition.
+
+        Defense-in-depth: the failure cascade (``ReducerFailureCascade._maybe_declare_victory``
+        in ``reducers/failure.py``) declares victory on the same transition.  This
+        fold-level declaration is the backstop that fires even on a MECH_DESTROYED
+        emitted outside the cascade (e.g. a direct weapon kill).  Both are guarded
+        to the >1 -> ==1 transition so they don't duplicate.  The paired
+        redundancy is intentional — see ``tests/match/test_fold_victory_backstop.py``.
+        """
         mech = self._mech_states.get(event.subject.mech_id)
         if mech is None:
             return
@@ -355,6 +384,8 @@ class MatchStateFold:
                         "winner_player_id": winner,
                         "reason": SOMatchEndReason.LAST_MECH_STANDING.value,
                     },
+                    # Wall-clock metadata only — see pilot_tick._now_iso /
+                    # docs/plans/2026-07-02-determinism-boundaries.md.
                     emitted_at=datetime.now(UTC).isoformat(),
                 )
             )
@@ -383,6 +414,28 @@ class MatchStateFold:
                 )
             new_states[mech_id] = mech
         return working.model_copy(update={"mech_states": new_states})
+
+    def _regenerate_armor(self, working: ModelSOMatchState) -> ModelSOMatchState:
+        """Regenerate each mech's armor_value toward armor_max (degrading-armor model).
+
+        The regen rate is chassis-driven (``base_armor_regen``). Armor that is
+        already at max is untouched. A dead mech does not regenerate.
+        """
+        new_states: dict[str, ModelSOMechRuntimeState] = {}
+        changed = False
+        for mech_id, mech in working.mech_states.items():
+            if not mech.alive or mech.armor_value >= mech.armor_max:
+                new_states[mech_id] = mech
+                continue
+            chassis = self._catalog.chassis.get(mech.chassis_id)
+            regen = chassis.constraints.base_armor_regen if chassis is not None else 0
+            new_armor = min(mech.armor_max, mech.armor_value + regen)
+            if new_armor == mech.armor_value:
+                new_states[mech_id] = mech
+                continue
+            changed = True
+            new_states[mech_id] = mech.model_copy(update={"armor_value": new_armor})
+        return working.model_copy(update={"mech_states": new_states}) if changed else working
 
     def _advance_mode_transitions(
         self, event: ModelSOEventEnvelope, working: ModelSOMatchState

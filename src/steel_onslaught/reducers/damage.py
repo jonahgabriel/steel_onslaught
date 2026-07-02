@@ -22,42 +22,30 @@ Invariants:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from enum import StrEnum
 
-# ---------------------------------------------------------------------------
-# Weapon damage type enum
-# ---------------------------------------------------------------------------
+from steel_onslaught.contracts.weapon import WeaponDamageType
 
-
-class WeaponDamageType(StrEnum):
-    """Damage type classification used to determine armor effectiveness.
-
-    - STANDARD: baseline armor efficiency (1.0 multiplier).
-    - HEAT: armor is less effective (lower efficiency coefficient).
-    - PRESSURE: armor is more effective (higher efficiency coefficient).
-    """
-
-    STANDARD = "standard"
-    HEAT = "heat"
-    PRESSURE = "pressure"
+__all__ = ["ArmorReduction", "WeaponDamageType"]  # WeaponDamageType re-exported (was defined here)
 
 
 # ---------------------------------------------------------------------------
-# Armor efficiency coefficients per damage type
+# Mitigation caps per damage type
 # ---------------------------------------------------------------------------
 
-# Armor efficiency is the fraction of armor_value that is subtracted from
-# damage_raw. The effective absorbed amount is:
-#   absorbed = min(damage_raw, armor_value * efficiency)
+# Degrading-armor model: armor absorbs a *fraction* of each hit (capped so a
+# fraction of every hit always leaks through — no weapon is ever fully negated
+# by high armor), and degrades by the amount absorbed (regeneration is per-tick
+# in the fold, toward armor_max).
 #
-# STANDARD: full armor value applies.
-# HEAT: armor is bypassed more → lower efficiency (armor is less effective).
-# PRESSURE: armor is especially effective → higher efficiency.
-_ARMOR_EFFICIENCY: dict[WeaponDamageType, float] = {
-    WeaponDamageType.STANDARD: 1.0,
-    WeaponDamageType.HEAT: 0.5,  # heat weapons bypass armor
-    WeaponDamageType.PRESSURE: 1.5,  # pressure weapons are absorbed well
+# mitigation_cap = the maximum fraction of damage_raw that armor may absorb on
+# a single hit. The ordering HEAT < STANDARD < PRESSURE preserves the original
+# design intent (heat bypasses armor, pressure is well-absorbed).
+_MITIGATION_CAP: dict[WeaponDamageType, float] = {
+    WeaponDamageType.HEAT: 0.50,  # heat weapons: armor absorbs <=50% of a hit
+    WeaponDamageType.STANDARD: 0.75,  # standard weapons: armor absorbs <=75%
+    WeaponDamageType.PRESSURE: 0.90,  # pressure weapons: armor absorbs <=90%
 }
 
 
@@ -79,6 +67,21 @@ class DamageOutcome:
     mech_destroyed: bool
 
 
+@dataclass(frozen=True)
+class ArmorReduction:
+    """Result of armor absorbing one hit (degrading-armor model).
+
+    Attributes:
+        absorbed:    Damage absorbed by armor this hit, in [0, damage_raw].
+                     Armor never amplifies damage.
+        armor_after: Armor remaining after this hit (armor_value - absorbed).
+                     Drives the fold's per-mech armor degradation.
+    """
+
+    absorbed: int
+    armor_after: int
+
+
 # ---------------------------------------------------------------------------
 # Core functions
 # ---------------------------------------------------------------------------
@@ -89,37 +92,36 @@ def compute_armor_reduction(
     damage_raw: int,
     armor_value: int,
     weapon_damage_type: WeaponDamageType,
-) -> int:
-    """Compute how many hit points of damage the armor absorbs.
+) -> ArmorReduction:
+    """Compute how armor absorbs one hit (degrading + capped mitigation).
+
+    The model guarantees a fraction of every hit leaks through, so no weapon
+    is ever fully negated by high armor — even when ``damage_raw < armor_value``
+    (the original flat-subtraction bug). Armor degrades by the absorbed amount.
 
     Args:
-        damage_raw:        Raw damage from the weapon before armor.
-        armor_value:       Mech armor stat (0 = unarmoured).
+        damage_raw:        Raw damage from the weapon before armor (>= 0).
+        armor_value:       Current armor of the target (>= 0; degrades per hit).
         weapon_damage_type: Type of the incoming weapon damage.
 
     Returns:
-        Absorbed damage in [0, damage_raw].  The result is always non-negative
-        and never exceeds damage_raw (armor cannot amplify damage).
+        An ``ArmorReduction`` with ``absorbed`` in [0, damage_raw] and
+        ``armor_after`` in [0, armor_value].
 
-    The effective armor absorption is:
-        absorbed = min(damage_raw, floor(armor_value * efficiency))
+    Per-hit absorption::
 
-    where efficiency depends on weapon_damage_type:
-        - STANDARD: 1.0  (full armor value)
-        - HEAT:     0.5  (armor less effective against heat weapons)
-        - PRESSURE: 1.5  (armor very effective against pressure weapons)
+        cap         = mitigation_cap[weapon_damage_type]   # heat .50 / std .75 / pressure .90
+        absorbable  = min(armor_value, ceil(damage_raw * cap))
+        absorbed    = min(absorbable, damage_raw)          # never amplify
+        armor_after = armor_value - absorbed               # degrades
     """
-    if armor_value <= 0:
-        return 0
+    if armor_value <= 0 or damage_raw <= 0:
+        return ArmorReduction(absorbed=0, armor_after=armor_value)
 
-    efficiency = _ARMOR_EFFICIENCY[weapon_damage_type]
-    # Clamp efficiency so armor_value * efficiency never exceeds damage_raw
-    # (the floor call keeps the result an integer).
-    absorbed_raw = armor_value * efficiency
-    absorbed = int(absorbed_raw)  # floor
-
-    # Armor can absorb at most damage_raw (no amplification).
-    return min(absorbed, damage_raw)
+    cap = _MITIGATION_CAP[weapon_damage_type]
+    absorbable = min(armor_value, math.ceil(damage_raw * cap))
+    absorbed = min(absorbable, damage_raw)
+    return ArmorReduction(absorbed=absorbed, armor_after=armor_value - absorbed)
 
 
 def compute_effective_damage_after_vulnerability(

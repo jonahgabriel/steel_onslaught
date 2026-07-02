@@ -82,6 +82,7 @@ def _make_mech(boiler: ModelSOBoilerState) -> ModelSOMechRuntimeState:
         hp=100,
         hp_max=100,
         armor_value=10,
+        armor_max=10,
         current_mode="recon",
         boiler=boiler,
     )
