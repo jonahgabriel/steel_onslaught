@@ -141,8 +141,42 @@ body {
 }
 .pd-transport {
   display: flex;
+  align-items: center;
   gap: 0.35rem;
   margin-left: 1rem;
+  flex-wrap: wrap;
+}
+.pd-speed {
+  display: flex;
+  gap: 0.2rem;
+  margin-left: 0.35rem;
+}
+.pd-match-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-right: 0.35rem;
+}
+.pd-match-picker-label {
+  font-family: var(--font-stencil, var(--font-mono));
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  color: var(--ash);
+}
+.pd-select {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  background: #0d0f13;
+  color: var(--phosphor);
+  border: 1px solid var(--seam);
+  padding: 0.15rem 0.4rem;
+  cursor: pointer;
+  max-width: 15rem;
+}
+.pd-select:focus-visible,
+.pd-tbtn:focus-visible {
+  outline: 2px solid var(--phosphor);
+  outline-offset: 1px;
 }
 .pd-tbtn {
   font-family: var(--font-mono);
@@ -188,8 +222,14 @@ body {
   min-height: 0;
   overflow: hidden;
   padding: 0.6rem;
+  position: relative; /* anchor the awaiting-transmission overlay */
 }
+/* Overlays the (always-mounted) arena until the first mech state arrives. */
 .pd-arena-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   width: 100%;
   max-width: 640px;
 }
@@ -570,6 +610,10 @@ body {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Disable scroll anchoring: appending/trimming rows must not shift scrollTop
+     and fire a spurious scroll event that the follow-scroll logic would read as
+     a user scroll (the bug that froze the river mid-match). */
+  overflow-anchor: none;
   padding: 0 0.35rem 3rem;
   scrollbar-width: thin;
   scrollbar-color: var(--seam) transparent;

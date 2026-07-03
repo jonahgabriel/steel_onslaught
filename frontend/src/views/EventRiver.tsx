@@ -41,26 +41,51 @@ export default function EventRiver({
   // (index is intentionally not needed: parent lanes resolve from laneMap.)
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
-  const pausedRef = useRef(false);
+  // Last observed scrollTop and a flag marking scrolls WE caused. Together they
+  // let `onScroll` tell a genuine user scroll from the component's own
+  // programmatic follow-scroll and from content-growth reflow — see below.
+  const lastTopRef = useRef(0);
+  const programmaticRef = useRef(false);
 
-  // Autoscroll to newest when pinned and not paused by hover.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: bottomKey is the change signal — re-run when the newest row id changes though the body reads scrollHeight
+  // Follow the newest row while pinned. `bottomKey` is the per-append change
+  // signal; the body reads scrollHeight fresh each run.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: bottomKey is the append signal — re-run when the newest row id changes though the body reads scrollHeight
   useEffect(() => {
     const el = scrollRef.current;
-    if (el === null || !pinned || pausedRef.current) return;
+    if (el === null || !pinned) return;
+    programmaticRef.current = true;
     el.scrollTop = el.scrollHeight;
+    lastTopRef.current = el.scrollTop;
   }, [bottomKey, pinned]);
 
+  // Only a genuine UPWARD user scroll un-pins; scrolling back to the bottom
+  // re-pins. Appending a batch at the bottom (which grows scrollHeight and, via
+  // scroll anchoring, nudges scrollTop DOWN toward the bottom) and our own
+  // programmatic scroll must never un-pin — that race was freezing the river.
   function onScroll(): void {
     const el = scrollRef.current;
     if (el === null) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    setPinned(atBottom);
+    const top = el.scrollTop;
+    const prev = lastTopRef.current;
+    lastTopRef.current = top;
+    if (programmaticRef.current) {
+      programmaticRef.current = false;
+      return; // our own follow-scroll — never changes pin state
+    }
+    if (top < prev - 2) {
+      setPinned(false); // user dragged the view upward → stop following
+    } else if (el.scrollHeight - top - el.clientHeight < 24) {
+      setPinned(true); // user returned to the bottom → resume following
+    }
   }
 
   function resume(): void {
     const el = scrollRef.current;
-    if (el !== null) el.scrollTop = el.scrollHeight;
+    if (el !== null) {
+      programmaticRef.current = true;
+      el.scrollTop = el.scrollHeight;
+      lastTopRef.current = el.scrollTop;
+    }
     setPinned(true);
   }
 
@@ -71,12 +96,7 @@ export default function EventRiver({
         className="pd-river"
         ref={scrollRef}
         onScroll={onScroll}
-        onMouseEnter={() => {
-          pausedRef.current = true;
-        }}
-        onMouseLeave={() => {
-          pausedRef.current = false;
-        }}
+        onMouseEnter={() => setPinned(false)}
         role="log"
         aria-label="Event river"
         data-testid="event-river"

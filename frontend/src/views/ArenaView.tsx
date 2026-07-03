@@ -20,7 +20,7 @@ import { mechStateOf } from "../lib/gauges";
 import { weaponClassOf } from "../lib/weapons";
 import type { SOEventEnvelope, SOMechRuntimeState, SOPosition } from "../types";
 
-const GRID_CELLS = 40;
+export const GRID_CELLS = 40;
 /** Sector grid lines every 4 cells — keyed by coordinate, not array index. */
 const SECTORS = Array.from({ length: GRID_CELLS / 4 + 1 }, (_, i) => i * 4);
 const TRAIL_MAX = 8;
@@ -57,7 +57,7 @@ interface Shimmer {
   expiresAt: number;
 }
 
-interface ArenaState {
+export interface ArenaState {
   mechs: Record<string, ArenaMech>;
   trails: Record<string, SOPosition[]>;
   tracers: ArenaTracer[];
@@ -67,7 +67,7 @@ interface ArenaState {
   revision: number;
 }
 
-const INITIAL_STATE: ArenaState = {
+export const ARENA_INITIAL_STATE: ArenaState = {
   mechs: {},
   trails: {},
   tracers: [],
@@ -106,7 +106,7 @@ function facingToward(a: SOPosition, b: SOPosition): number {
   return (deg + 360) % 360;
 }
 
-function reduce(state: ArenaState, action: ArenaAction): ArenaState {
+export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState {
   if (action.type === "SELECT") {
     return {
       ...state,
@@ -128,7 +128,7 @@ function reduce(state: ArenaState, action: ArenaAction): ArenaState {
     case "match_started": {
       const mechs: Record<string, ArenaMech> = {};
       for (const m of envelope.payload.mechs) mechs[m.mech_id] = mechFromRuntime(m);
-      return { ...INITIAL_STATE, mechs };
+      return { ...ARENA_INITIAL_STATE, mechs };
     }
 
     case "movement_resolved": {
@@ -267,7 +267,7 @@ export interface ArenaViewProps {
 }
 
 export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Element {
-  const [state, dispatch] = useReducer(reduce, INITIAL_STATE);
+  const [state, dispatch] = useReducer(arenaReduce, ARENA_INITIAL_STATE);
 
   useEffect(() => {
     const unsubscribe = subscribe((envelope) => dispatch({ type: "ENVELOPE", envelope }));
