@@ -125,13 +125,36 @@ __all__ = ["PROVIDER_ENDPOINTS", "OpenAICompatibleClient", "client_for_provider"
 PROVIDER_ENDPOINTS: dict[str, tuple[str, str]] = {
     "stub": ("", ""),
     "openai-compat": (_DEFAULT_BASE_URL, _DEFAULT_MODEL),
+    # AI PC lab (local, no key needed)
     "qwen35": ("http://100.109.203.94:8000/v1", "Qwen3.6-35B-A3B"),
     "qwen27": ("http://100.109.203.94:8001/v1", "Qwen3.6-27B-MTP-IQ4_XS.gguf"),
     "deepseek": ("http://100.99.174.19:8101/v1", "deepseek-v4-pro"),
+    # z.ai frontier (GLM models; set LLM_GLM_API_KEY env var)
+    "glm-5.2": ("https://api.z.ai/api/coding/paas/v4", "glm-5.2"),
+    "glm-5.1": ("https://api.z.ai/api/coding/paas/v4", "glm-5.1"),
+    "glm-5": ("https://api.z.ai/api/coding/paas/v4", "glm-5"),
+    # OpenRouter (340+ models; set OPEN_ROUTER_API_KEY env var)
+    "openrouter-glm": ("https://openrouter.ai/api/v1", "z-ai/glm-5.2"),
+    "openrouter-claude": ("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-5"),
+}
+
+
+# Provider -> env var name holding the API key (local endpoints need none).
+_PROVIDER_API_KEY_ENV: dict[str, str] = {
+    "glm-5.2": "LLM_GLM_API_KEY",
+    "glm-5.1": "LLM_GLM_API_KEY",
+    "glm-5": "LLM_GLM_API_KEY",
+    "openrouter-glm": "OPEN_ROUTER_API_KEY",
+    "openrouter-claude": "OPEN_ROUTER_API_KEY",
 }
 
 
 def client_for_provider(provider: str) -> OpenAICompatibleClient:
-    """Build an OpenAICompatibleClient from a provider id (registry lookup)."""
+    """Build an OpenAICompatibleClient from a provider id (registry lookup).
+
+    For z.ai/OpenRouter providers, the API key is read from the corresponding
+    env var at call time (fail-closed if unset). Local endpoints send no auth.
+    """
     base_url, model = PROVIDER_ENDPOINTS.get(provider, (_DEFAULT_BASE_URL, _DEFAULT_MODEL))
-    return OpenAICompatibleClient(base_url=base_url, model=model)
+    api_key_env = _PROVIDER_API_KEY_ENV.get(provider, "OPENAI_API_KEY")
+    return OpenAICompatibleClient(base_url=base_url, model=model, api_key_env=api_key_env)
