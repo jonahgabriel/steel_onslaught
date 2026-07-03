@@ -69,6 +69,10 @@ class SOPilotReasonCode(StrEnum):
     PREDICTED_INTERCEPT = "predicted_intercept"
     EVADE_SENSOR_LOCK = "evade_sensor_lock"
     NO_VIABLE_ACTION = "no_viable_action"
+    # LLM-pilot-specific: a decision made by the LLM, or a REMAIN fallback when
+    # the LLM call failed / returned an invalid action.
+    LLM_DECISION = "llm_decision"
+    LLM_FALLBACK = "llm_fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +189,10 @@ class ModelSOPilotDecision(BaseModel):
         AfterValidator(tuple),
         PlainSerializer(list, return_type=list[ModelSOConsideredAction]),
     ]
+    rationale: str | None = Field(
+        default=None,
+        description="Freeform natural-language reasoning (LLM pilots); None for heuristics.",
+    )
 
     @field_validator("confidence")
     @classmethod

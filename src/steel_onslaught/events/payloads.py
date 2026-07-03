@@ -169,6 +169,7 @@ class ModelSOPilotDecisionPayload(_ClosedPayload):
     reason_code: SOPilotReasonCode
     confidence: StrictFloat
     considered_actions: tuple[ModelSOConsideredAction, ...]
+    rationale: str | None
 
     @field_validator("confidence")
     @classmethod

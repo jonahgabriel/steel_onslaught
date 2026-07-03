@@ -1,0 +1,120 @@
+"""OpenAI-compatible HTTP LLM client (the real provider implementation).
+
+Calls ``POST {base_url}/chat/completions`` — the OpenAI Chat Completions API,
+also served by Ollama, vLLM, LM Studio, and Gemini-compat gateways via a
+``base_url`` override. Uses ``httpx`` synchronously (the pilot's ``decide`` is
+sync; the fold forbids asyncio in the hot path).
+
+Configurable: ``base_url``, ``api_key`` (read from env at call time, fail-closed
+if unset), ``model``, ``temperature``. Default ``base_url`` targets a local
+Ollama/LM Studio server (no key) — local-first, cloud opt-in.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import httpx
+
+from steel_onslaught.llm.schemas import LlmResponse, LlmUsage
+
+# Default: a local OpenAI-compatible server (Ollama/LM Studio default port).
+_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+_DEFAULT_MODEL = "llama3.1"
+_DEFAULT_TIMEOUT = 30.0
+
+
+class OpenAICompatibleClient:
+    """Synchronous OpenAI-compatible chat completions client.
+
+    Parameters
+    ----------
+    base_url:
+        The API root (without ``/chat/completions``). Defaults to a local
+        Ollama server; override for OpenAI (``https://api.openai.com/v1``),
+        vLLM, LM Studio, etc.
+    api_key_env:
+        Environment variable name holding the API key. Read at call time;
+        if unset, the request is sent with no Authorization header (local
+        servers typically don't require one). Fail-closed for cloud providers
+        is the caller's responsibility (set the env var).
+    model:
+        Default model id; overridable per-call via ``opts["model"]``.
+    temperature:
+        Default sampling temperature; overridable per-call.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str = _DEFAULT_BASE_URL,
+        api_key_env: str = "OPENAI_API_KEY",
+        model: str = _DEFAULT_MODEL,
+        temperature: float = 0.7,
+        timeout: float = _DEFAULT_TIMEOUT,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._api_key_env = api_key_env
+        self._model = model
+        self._temperature = temperature
+        self._timeout = timeout
+
+    def complete(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        **opts: Any,
+    ) -> LlmResponse:
+        """One synchronous chat-completion call. Raises on transport/HTTP error.
+
+        The pilot wraps this in a try/except → REMAIN fallback, so a network
+        failure degrades the decision rather than crashing the match.
+        """
+        model = opts.get("model", self._model)
+        temperature = opts.get("temperature", self._temperature)
+        api_key = os.environ.get(self._api_key_env)
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature,
+        }
+        # Request JSON output if the caller asks for it (most compat servers
+        # support response_format; older ones ignore it).
+        if opts.get("json_mode"):
+            payload["response_format"] = {"type": "json_object"}
+
+        with httpx.Client(timeout=self._timeout) as client:
+            resp = client.post(
+                f"{self._base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        choice = data["choices"][0]
+        message = choice["message"]
+        usage_raw = data.get("usage", {})
+        usage = LlmUsage(
+            prompt_tokens=usage_raw.get("prompt_tokens", 0),
+            completion_tokens=usage_raw.get("completion_tokens", 0),
+            cost_usd=0.0,  # cost computation is provider-specific; left for the tuner sidecar
+        )
+        return LlmResponse(
+            text=message["content"],
+            usage=usage,
+            model=data.get("model", model),
+            finish_reason=choice.get("finish_reason", ""),
+        )
+
+
+__all__ = ["OpenAICompatibleClient"]

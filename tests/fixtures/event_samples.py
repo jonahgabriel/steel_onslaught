@@ -186,6 +186,7 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
                 {"action": "fire_weapon", "score": 0.9},
                 {"action": "move", "score": 0.4},
             ],
+            "rationale": None,
         },
         SOEventType.MOVE_INTENT: {"direction": "toward_enemy", "speed": "full"},
         SOEventType.WEAPON_FIRE_INTENT: {"weapon_id": "module.weapon.machine_gun"},

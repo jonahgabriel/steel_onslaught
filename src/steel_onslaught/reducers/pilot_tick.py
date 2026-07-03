@@ -138,6 +138,9 @@ def _decision_payload(decision: ModelSOPilotDecision) -> dict[str, Any]:
         "considered_actions": [
             {"action": c.action.value, "score": c.score} for c in decision.considered_actions
         ],
+        # Rationale is None for heuristic pilots and populated by LLM pilots.
+        # The closed event payload contract validates it before canonical append.
+        "rationale": decision.rationale,
     }
 
 
