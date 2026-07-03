@@ -95,37 +95,59 @@ genuine strategic rationale stored in the ledger.
 
 ### Divergence register (remediation queue — severity-ordered)
 
-| # | Divergence | Evidence | Sev | Corrective action |
-|---|---|---|---|---|
-| D1 | Soft auth: `os.environ.get` + `if api_key:` sends **unauthenticated** requests when the key env var is unset, despite docstrings claiming fail-closed | `llm/client_http.py:76-80` | HIGH | Providers with a declared key ref must raise before the call — never silently unauthenticated |
-| D2 | Endpoint URLs (incl. lab Tailscale IPs) hardcoded in Python source via `PROVIDER_ENDPOINTS` | `llm/client_http.py:125-139` | HIGH | Move to contract YAML/overlay (all-URLs-from-contracts); interim: a game contract file, target: platform registry per Rev 4 |
-| D3 | Rev 4 reuse directive not applied — game-local client instead of imported omnimarket `HandlerLlmDelegationCall` (execution predated Rev 4) | `llm/client_http.py` exists; no omnimarket dep in pyproject | MED | Swap the lane impl per Rev 4 §1 (contained behind `ProtocolLlmClient`); delete `client_http.py` |
-| D4 | Bare base_url + `"/chat/completions"` append | `llm/client_http.py:57,97` | MED | Complete-URL-verbatim; resolved by D2/D3 |
-| D5 | Paid models routed via OpenRouter (`openrouter-claude` → `anthropic/claude-sonnet-5`, `openrouter-glm` → `z-ai/glm-5.2`) while direct z.ai entries exist | `llm/client_http.py:137-139` | MED | Routing doctrine: OpenRouter for free models only; GLM routes direct z.ai. Drop or mark experiment-only |
-| D6 | Personas in code, not contracts (self-acknowledged interim in its docstring) | `llm/personas.py` | LOW | Migrate to `pilots/personas/*.yaml` per §2 |
+> **Status reconciliation (2026-07-02, integration gate).** Five parallel lanes
+> landed on `feat/armor-degrading-pool`; the full suite (901 passed, 2 skipped;
+> `mypy --strict` clean; `ruff check`/`format` clean) is green modulo the
+> pre-existing PoL Playwright timing flake (frontend-owned; see HANDOFF).
+> D1/D2/D4/D5/D6 are DONE; D3 remains DEFERRED (sibling version misalignment).
+
+| # | Divergence | Evidence | Sev | Corrective action | Status |
+|---|---|---|---|---|---|
+| D1 | Soft auth: `os.environ.get` + `if api_key:` sends **unauthenticated** requests when the key env var is unset, despite docstrings claiming fail-closed | `llm/client_http.py:76-80` | HIGH | Providers with a declared key ref must raise before the call — never silently unauthenticated | **DONE** — `_resolve_auth_header` raises `RuntimeError` on unset/empty declared `api_key_env` before any network call (`llm/client_http.py:120-135`) |
+| D2 | Endpoint URLs (incl. lab Tailscale IPs) hardcoded in Python source via `PROVIDER_ENDPOINTS` | `llm/client_http.py:125-139` | HIGH | Move to contract YAML/overlay (all-URLs-from-contracts); interim: a game contract file, target: platform registry per Rev 4 | **DONE** — all endpoints moved to `llm/providers.yaml`, loaded + validated by frozen `ProviderEndpoint`; no URLs in Python source |
+| D3 | Rev 4 reuse directive not applied — game-local client instead of imported omnimarket `HandlerLlmDelegationCall` (execution predated Rev 4) | `llm/client_http.py` exists; no omnimarket dep in pyproject | MED | Swap the lane impl per Rev 4 §1 (contained behind `ProtocolLlmClient`); delete `client_http.py` | **DEFERRED** — omnimarket import still blocked by sibling version misalignment (7 repos at different versions; `PackageNotFoundError`, confirmed by R5 probe §5). `client_http.py` retained behind the `ProtocolLlmClient` seam as the drop-in-replaceable workaround |
+| D4 | Bare base_url + `"/chat/completions"` append | `llm/client_http.py:57,97` | MED | Complete-URL-verbatim; resolved by D2/D3 | **DONE** — `providers.yaml` `endpoint_url` is the complete chat-completions URL, posted verbatim (no rstrip, no path append) |
+| D5 | Paid models routed via OpenRouter (`openrouter-claude` → `anthropic/claude-sonnet-5`, `openrouter-glm` → `z-ai/glm-5.2`) while direct z.ai entries exist | `llm/client_http.py:137-139` | MED | Routing doctrine: OpenRouter for free models only; GLM routes direct z.ai. Drop or mark experiment-only | **DONE** — paid-via-OpenRouter entries dropped; GLM routes direct to z.ai in `providers.yaml` |
+| D6 | Personas in code, not contracts (self-acknowledged interim in its docstring) | `llm/personas.py` | LOW | Migrate to `pilots/personas/*.yaml` per §2 | **DONE** — personas migrated to `contracts_data/pilots/personas/{berserker,sniper,opportunist}.yaml`; `personas.py` now a contract loader (registry test covers it) |
 
 ### Remaining work
 
 - **R1 — experiment harness** (§4.5–4.6): `so learn-experiment` — K=5
   seed-varied trials, deterministic baseline floor, ENFORCED
   negative-control arm, `ModelSOTunerUsage` cost sidecar, ROI-compatible
-  row export incl. the 7 platform-required fields.
-- **R2 — divergence remediations D1–D6** (D1/D2 first).
+  row export incl. the 7 platform-required fields. — **DONE**: pure half in
+  `llm/experiment.py`, effect boundary in `cli/experiment.py`, wired as
+  `so learn-experiment`; `tuner.tune_with_usage` returns the usage sidecar.
+- **R2 — divergence remediations D1–D6** (D1/D2 first). — **DONE except D3**
+  (D1/D2/D4/D5/D6 landed; D3 deferred, see register above).
 - **R3 — cross-adaptation experiment** (operator direction, HANDOFF §3):
   a pilot variant that ingests the *opponent's* decision history (ledger
   replay trace) into its prompt; measure whether exposure to B's history
   changes A's win rate on paired seed batteries. Infrastructure exists
   (`llm_replay_trace`/`llm_decision_diff` arm assemblers); needs a short
-  design note + the measurement harness from R1.
+  design note + the measurement harness from R1. — **DONE**: `OpponentAwareClient`
+  wraps the `ProtocolLlmClient` seam (no shipped pilot code edited);
+  `cli/adaptation.py` runs paired seed batteries with a McNemar test, wired as
+  `so run-adaptation`.
 - **R4 — eval-framework reuse survey** (HANDOFF §2): inventory
   omnimarket/omniclaude/omniintelligence eval/benchmark machinery before
-  building any cross-model scoring.
+  building any cross-model scoring. — **DONE**:
+  `docs/research/2026-07-02-eval-framework-reuse-survey.md`.
 - **R5 — Phase E Kafka lane** (gate unchanged: verify live topics against
-  the deployed .201 lane).
+  the deployed .201 lane). — **PROBE DONE / BUILD DEFERRED**:
+  `docs/plans/2026-07-02-kafka-delegation-lane-probe.md` (read-only). Gate is
+  evidence-supported to proceed — all declared subscribe/publish topics and
+  `node_llm_delegation_call_effect` are confirmed live on stability-test
+  (`.201`) — but the command topic has **zero messages ever produced**; the
+  first live-fire publish (a mutation) is the first step of the Phase E *build*,
+  which remains unstarted. Recommendation: sync `confluent-kafka` client (not
+  aiokafka), matching the game's hard-sync `decide()`/`EventBus` seam.
 - **R6 — new event-flow UI** (operator, 2026-07-02): replace the frontend
   with an event-native view — live event river from the WS bridge with
   causation chains and LLM rationale as first-class display. Designed in
   foreground; implementation dispatched to an Opus agent workflow.
+  — **UI-workflow-owned** (not part of this backend integration gate;
+  `frontend/` changes are staged/committed by that workflow separately).
 
 ## Core principle (verified, unchanged from Rev 1)
 

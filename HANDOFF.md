@@ -44,9 +44,58 @@ Qwen3.6-35B (berserker) vs Qwen3.6-27B (sniper) ran end-to-end. The sniper's rat
 - `types.ts` updated for composed envelope + rationale field.
 - PoL Playwright test has a timing flake under Python 3.12 (page renders fine; subprocess startup delay).
 
+## What landed 2026-07-02 (integration gate — five parallel lanes)
+
+Full suite green: **901 passed, 2 skipped**, `mypy --strict` clean, `ruff
+check`/`format` clean. The only red test is the pre-existing PoL Playwright
+timing flake (frontend-owned; see Known issues) — backend match/replay/leaderboard
+steps all pass.
+
+- **Divergence remediations (D1/D2/D4/D5/D6 DONE, D3 DEFERRED).** Auth is now
+  fail-closed; all provider endpoints moved out of Python into
+  `src/steel_onslaught/llm/providers.yaml` (complete-URL-verbatim); paid
+  OpenRouter entries dropped (GLM routes direct to z.ai); personas migrated to
+  `contracts_data/pilots/personas/*.yaml`. **D3 (import omnimarket's
+  `HandlerLlmDelegationCall`, delete `client_http.py`) stays deferred** — the
+  omnimarket import is still blocked by sibling version misalignment
+  (`PackageNotFoundError`); `client_http.py` remains behind the
+  `ProtocolLlmClient` seam as the drop-in workaround.
+- **R1 — experiment harness (`so learn-experiment`).** `llm/experiment.py`
+  (pure) + `cli/experiment.py` (effect boundary); `tuner.tune_with_usage`
+  emits the `ModelSOTunerUsage` cost sidecar.
+- **R3 — cross-adaptation experiment (`so run-adaptation`).**
+  `OpponentAwareClient` wraps the client seam to inject B's decision trace;
+  paired seed batteries + McNemar test in `cli/adaptation.py`.
+- **R4 — eval-framework reuse survey.**
+  `docs/research/2026-07-02-eval-framework-reuse-survey.md`.
+- **R5 — Kafka Phase E probe (read-only).**
+  `docs/plans/2026-07-02-kafka-delegation-lane-probe.md`. Gate:
+  evidence-supported to proceed (topics + `node_llm_delegation_call_effect`
+  confirmed live on stability-test `.201`), but the command topic has zero
+  messages ever — the first live publish is the Phase E build, still unstarted.
+
 ## What's NOT done yet (the next person should do these)
 
+### 0. D3 — import omnimarket handler (blocked)
+Swap `client_http.py` for omnimarket's `HandlerLlmDelegationCall` once the
+sibling version misalignment is resolved (7 repos at different versions). The
+`ProtocolLlmClient` seam makes this a contained drop-in.
+
+### 0b. R5 — build the Kafka delegation lane
+Probe cleared the gate; build the sync `confluent-kafka` publisher (NOT
+aiokafka — the game's `decide()`/`EventBus` seam is hard-sync) and prove the
+first round-trip through `onex.cmd.omnimarket.delegation-execute.v1`.
+
 ### 1. Add OpenRouter + z.ai as providers (keys found!)
+
+> **PARTIALLY SUPERSEDED (2026-07-02).** z.ai GLM (`glm-5`, `glm-5.1`,
+> `glm-5.2`) is now declared in `src/steel_onslaught/llm/providers.yaml` with
+> fail-closed `api_key_env: LLM_GLM_API_KEY`. OpenRouter was **intentionally
+> dropped** (divergence D5): OpenRouter is reserved for genuinely free models
+> only, and paid models route direct to their provider. The
+> `PROVIDER_ENDPOINTS` dict referenced below no longer exists — add providers to
+> `providers.yaml`, never in Python. The rest of this section is historical
+> context on the available keys/models.
 
 **API keys** (from `~/.omnibase/.env` — do NOT commit these; reference by env var):
 
