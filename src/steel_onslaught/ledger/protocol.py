@@ -29,7 +29,19 @@ class EventLedger(Protocol):
         ...
 
 
-class QueryableEventLedger(EventLedger, Protocol):
+class ReplayEventCatalog(Protocol):
+    """Read-only catalog used to source one or every recorded match."""
+
+    def read_all(self, match_id: str) -> Iterator[ModelSOEventEnvelope]:
+        """Read one match in canonical event order."""
+        ...
+
+    def read_match_ids(self) -> Iterator[str]:
+        """Read every recorded match identifier in deterministic order."""
+        ...
+
+
+class QueryableEventLedger(EventLedger, ReplayEventCatalog, Protocol):
     """Separate read capability needed by replay HTTP projections."""
 
     def contains_match(self, match_id: str) -> bool:
@@ -47,4 +59,4 @@ class QueryableEventLedger(EventLedger, Protocol):
         ...
 
 
-__all__ = ["EventLedger", "QueryableEventLedger"]
+__all__ = ["EventLedger", "QueryableEventLedger", "ReplayEventCatalog"]

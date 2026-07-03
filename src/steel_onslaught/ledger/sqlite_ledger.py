@@ -51,6 +51,13 @@ _SELECT_COLUMNS = """
 event_id, match_id, tick, sequence_in_tick, event_type, envelope_json
 """
 
+_SELECT_MATCH_IDS_SQL = """
+SELECT DISTINCT match_id
+  FROM events
+ WHERE match_id IS NOT NULL
+ ORDER BY match_id ASC
+"""
+
 
 def _decode_row(row: tuple[object, ...]) -> ModelSOEventEnvelope:
     event_id, match_id, tick, sequence_in_tick, event_type, event_json = row
@@ -163,6 +170,12 @@ class SQLiteLedger(QueryableEventLedger):
         )
         for row in cursor:
             yield _decode_row(row)
+
+    def read_match_ids(self) -> Iterator[str]:
+        """Yield every recorded match identifier in deterministic order."""
+        cursor = self._conn.execute(_SELECT_MATCH_IDS_SQL)
+        for row in cursor:
+            yield str(row[0])
 
     def contains_match(self, match_id: str) -> bool:
         row = self._conn.execute(

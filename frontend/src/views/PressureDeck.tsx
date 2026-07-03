@@ -35,10 +35,13 @@ import {
   summarizeEnvelope,
   windowRows,
 } from "../lib/river";
+import type { TransportSnapshot, TransportSpeed } from "../lib/transport";
+import type { TransportControls } from "../lib/useTransport";
 import type { SOEventEnvelope } from "../types";
 import ArenaView from "./ArenaView";
 import EnvelopeInspector from "./EnvelopeInspector";
 import EventRiver from "./EventRiver";
+import HeaderTransport from "./HeaderTransport";
 import SpecPanel from "./SpecPanel";
 import Ticker from "./Ticker";
 
@@ -64,7 +67,7 @@ interface DeckState {
   ruptureKey: number;
 }
 
-const INITIAL: DeckState = {
+export const INITIAL: DeckState = {
   rows: [],
   arrival: 0,
   matchId: "",
@@ -87,7 +90,7 @@ function sideForMech(sides: SideMap, mechId: string): Side {
   return sides.byMech.get(mechId) ?? "neutral";
 }
 
-function reduce(state: DeckState, action: DeckAction): DeckState {
+export function reduce(state: DeckState, action: DeckAction): DeckState {
   let {
     matchId,
     tick,
@@ -103,9 +106,24 @@ function reduce(state: DeckState, action: DeckAction): DeckState {
     arrival,
   } = state;
   const counts = { ...state.counts };
-  const rows = state.rows.slice();
+  let rows = state.rows.slice();
 
   for (const env of action.envs) {
+    // `match_started` is the first frame of every (re)played match — including
+    // a transport match-switch, restart, or step-back rebuild. Clear the fold
+    // so a new/replayed match never inherits the previous stream's rows,
+    // counts, tick, or victory. (Arena/gauges reset via their own reducers.)
+    if (env.event_type === "match_started") {
+      rows = [];
+      arrival = 0;
+      total = 0;
+      tick = 0;
+      for (const g of FILTER_GROUPS) counts[g] = 0;
+      latest = "";
+      victoryPlayer = null;
+      victorySide = "neutral";
+    }
+
     rows.push({ env, arrival });
     arrival += 1;
     total += 1;
@@ -193,21 +211,39 @@ function Odometer({ value }: { value: number }): React.JSX.Element {
 
 export interface PressureDeckProps {
   subscribe: (handler: EnvelopeHandler) => () => void;
+  /** Live transport state (header controls + match picker). Absent in isolated tests. */
+  transport?: TransportSnapshot;
+  controls?: TransportControls;
 }
 
-export default function PressureDeck({ subscribe }: PressureDeckProps): React.JSX.Element {
+export default function PressureDeck({
+  subscribe,
+  transport,
+  controls,
+}: PressureDeckProps): React.JSX.Element {
   const [state, dispatch] = useReducer(reduce, INITIAL);
   const reducedMotion = useReducedMotion();
 
+  // Transport mode: pacing (pause/step/speed) is owned upstream by the engine,
+  // so the deck folds everything it receives. Without a transport (isolated
+  // render) the deck falls back to a local play/pause that gates the flush.
+  const transportMode = transport !== undefined && controls !== undefined;
+  const transportModeRef = useRef(transportMode);
+  transportModeRef.current = transportMode;
+
   const bufferRef = useRef<SOEventEnvelope[]>([]);
   const frameRef = useRef<number | null>(null);
-  const [playing, setPlaying] = useState(true);
+  const [localPlaying, setLocalPlaying] = useState(true);
+  const [localSpeed, setLocalSpeed] = useState<TransportSpeed>(1);
   const playingRef = useRef(true);
-  const [speed, setSpeed] = useState(1);
+
+  const playing = transportMode ? transport.status !== "paused" : localPlaying;
+  const isLive = transportMode ? transport.status === "live" : true;
+  const speed = transportMode ? transport.speed : localSpeed;
 
   const flush = useCallback(() => {
     frameRef.current = null;
-    if (!playingRef.current) return;
+    if (!transportModeRef.current && !playingRef.current) return;
     const batch = bufferRef.current;
     if (batch.length === 0) return;
     bufferRef.current = [];
@@ -221,9 +257,9 @@ export default function PressureDeck({ subscribe }: PressureDeckProps): React.JS
   }, [flush]);
 
   useEffect(() => {
-    playingRef.current = playing;
-    if (playing) schedule();
-  }, [playing, schedule]);
+    playingRef.current = transportMode ? true : localPlaying;
+    if (playingRef.current) schedule();
+  }, [transportMode, localPlaying, schedule]);
 
   useEffect(() => {
     const unsub = subscribe((env) => {
@@ -379,39 +415,33 @@ export default function PressureDeck({ subscribe }: PressureDeckProps): React.JS
           ▮ {state.matchId || "no match"}
         </span>
         <Odometer value={state.tick} />
-        <div className="pd-transport">
-          <button
-            type="button"
-            className="pd-tbtn"
-            aria-pressed={playing}
-            onClick={() => setPlaying((p) => !p)}
-            data-testid="transport-play"
-          >
-            {playing ? "▶ LIVE" : "∥ HELD"}
-          </button>
-          {[1, 2, 4].map((s) => (
-            <button
-              key={s}
-              type="button"
-              className="pd-tbtn"
-              aria-pressed={speed === s}
-              onClick={() => setSpeed(s)}
-            >
-              ×{s}
-            </button>
-          ))}
-        </div>
+        <HeaderTransport
+          playing={playing}
+          live={isLive}
+          speed={speed}
+          matches={transport?.matches ?? []}
+          activeMatchId={transport?.activeMatchId ?? null}
+          onTogglePlay={() => (transportMode ? controls?.togglePlay() : setLocalPlaying((p) => !p))}
+          onSetSpeed={(s) => (transportMode ? controls?.setSpeed(s) : setLocalSpeed(s))}
+          onStepBackward={controls?.stepBackward}
+          onStepForward={controls?.stepForward}
+          onRestart={controls?.restart}
+          onGoLive={controls?.goLive}
+          onSelectMatch={controls?.selectMatch}
+        />
       </header>
 
       <div className="pd-body">
         <SpecPanel gauges={gaugeList} />
 
         <div className="pd-arena-cell" data-testid="arena-cell">
-          {gaugeList.length > 0 ? (
-            <ArenaView subscribe={subscribe} />
-          ) : (
-            <AwaitingTransmission className="pd-arena-empty" />
-          )}
+          {/* ArenaView is ALWAYS mounted so its own envelope subscription is
+              live before `match_started` streams past — the EventStream never
+              replays, so a late mount (gated on gauges) would miss the one
+              match_started and render zero mechs. The placeholder overlays it
+              until the first mech state has been folded in. */}
+          <ArenaView subscribe={subscribe} />
+          {gaugeList.length === 0 ? <AwaitingTransmission className="pd-arena-empty" /> : null}
         </div>
 
         <EventRiver

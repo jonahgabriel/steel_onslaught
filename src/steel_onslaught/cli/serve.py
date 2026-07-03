@@ -9,9 +9,9 @@ Each frame is exactly ``envelope.model_dump_json()``: compact separators,
 declaration field order, no whitespace normalization — the same form
 ``JSON.stringify`` produces after a lossless parse on the TS side.
 
-The ``so serve`` command replays a recorded match from a SQLite ledger:
-it binds a WebSocket server (default port 8765) and streams the full match —
-frame-for-frame in canonical ledger order — to every client that connects.
+The ``so serve`` command replays recorded matches from the event catalog
+selected by the application overlay. It binds a WebSocket server (default
+port 8765) and streams canonical envelopes to every client that connects.
 
 REST endpoint (Task 33)
 -----------------------
@@ -42,7 +42,7 @@ from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 from steel_onslaught.bus.protocol import EventBus, HandlerToken
 from steel_onslaught.cli.application import CliApplicationFactory
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
-from steel_onslaught.ledger.protocol import QueryableEventLedger
+from steel_onslaught.ledger.protocol import QueryableEventLedger, ReplayEventCatalog
 from steel_onslaught.match.composition import (
     load_application_overlay,
 )
@@ -286,6 +286,20 @@ async def _serve_replay(
         await server.wait_closed()
 
 
+STREAM_ALL_MATCHES = "all"
+
+
+def _collect_events(catalog: ReplayEventCatalog, match_id: str) -> list[ModelSOEventEnvelope]:
+    """Collect one match or the deterministic catalog-wide replay stream."""
+    if match_id != STREAM_ALL_MATCHES:
+        return list(catalog.read_all(match_id))
+    return [
+        event
+        for catalog_match_id in sorted(catalog.read_match_ids())
+        for event in catalog.read_all(catalog_match_id)
+    ]
+
+
 @click.command(name="serve")
 @click.option(
     "--overlay",
@@ -293,7 +307,12 @@ async def _serve_replay(
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
 )
-@click.option("--match", "match_id", required=True)
+@click.option(
+    "--match",
+    "match_id",
+    required=True,
+    help="Match identifier to replay, or 'all' for every catalogued match.",
+)
 @click.option("--host", default=DEFAULT_WS_HOST, show_default=True)
 @click.option("--port", type=click.IntRange(min=0), default=DEFAULT_WS_PORT, show_default=True)
 @click.option(
@@ -302,15 +321,16 @@ async def _serve_replay(
     type=click.FloatRange(min=0),
     default=0.0,
     show_default=True,
-    help="Seconds to pause between tick boundaries during replay (0 = no pacing).",
+    help="Legacy server-side pacing in seconds (0 = full speed). The frontend "
+    "transport owns play/pause/speed controls.",
 )
 def serve_command(
     overlay_path: Path, match_id: str, host: str, port: int, tick_delay: float
 ) -> None:
-    """Stream a recorded match to WebSocket clients (frontend on :5173)."""
+    """Stream recorded match envelopes to WebSocket clients."""
     overlay = load_application_overlay(overlay_path)
     with CliApplicationFactory.packaged().runtime(overlay) as dependencies:
-        events = list(dependencies.ledger.read_all(match_id))
+        events = _collect_events(dependencies.ledger, match_id)
         if not events:
             raise click.ClickException(
                 f"no events found for match {match_id!r} in {overlay.event_ledger.path}"

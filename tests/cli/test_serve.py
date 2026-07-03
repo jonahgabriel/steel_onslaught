@@ -8,6 +8,7 @@ declaration field order, no whitespace normalization).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -22,7 +23,9 @@ from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.cli.serve import (
     DEFAULT_WS_HOST,
     DEFAULT_WS_PORT,
+    STREAM_ALL_MATCHES,
     WebSocketBridge,
+    _collect_events,
     _stream_match,
     serve_command,
 )
@@ -305,3 +308,89 @@ async def test_paced_stream_over_websocket_delivers_full_match() -> None:
                 for _ in range(len(events))
             ]
     assert received == [event.model_dump_json() for event in events]
+
+
+# ---------------------------------------------------------------------------
+# Injected replay catalog: so serve --match all
+# ---------------------------------------------------------------------------
+
+
+class _FakeReplayEventCatalog:
+    def __init__(self, events: tuple[ModelSOEventEnvelope, ...]) -> None:
+        self._events = events
+
+    def read_match_ids(self) -> Iterator[str]:
+        # Deliberately violate catalog ordering so the collector must impose it.
+        yield from sorted({event.match_id for event in self._events}, reverse=True)
+
+    def read_all(self, match_id: str) -> Iterator[ModelSOEventEnvelope]:
+        events = (event for event in self._events if event.match_id == match_id)
+        yield from sorted(
+            events, key=lambda event: (event.tick, event.sequence_in_tick, event.event_id)
+        )
+
+
+def _catalog_env(
+    event_id: str,
+    *,
+    match_id: str,
+    tick: int,
+    sequence_in_tick: int = 0,
+) -> ModelSOEventEnvelope:
+    return ModelSOEventEnvelope(
+        event_id=event_id,
+        match_id=match_id,
+        tick=tick,
+        sequence_in_tick=sequence_in_tick,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a"),
+        event_type=SOEventType.MATCH_TICK,
+        payload={},
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=None,
+            entity_id=match_id,
+            emitted_at=datetime(2026, 4, 30, tzinfo=UTC),
+        ),
+    )
+
+
+@pytest.mark.unit
+def test_collect_events_reads_only_the_requested_match_from_injected_catalog() -> None:
+    catalog = _FakeReplayEventCatalog(
+        (
+            _catalog_env("01JAAA0000000000000000000A", match_id="match.a", tick=0),
+            _catalog_env("01JBBB0000000000000000000B", match_id="match.b", tick=0),
+        )
+    )
+
+    assert [event.match_id for event in _collect_events(catalog, "match.a")] == ["match.a"]
+
+
+@pytest.mark.unit
+def test_collect_events_all_preserves_catalog_and_per_match_order() -> None:
+    catalog = _FakeReplayEventCatalog(
+        (
+            _catalog_env("01JBBB0000000000000000000B", match_id="match.b", tick=1),
+            _catalog_env("01JAAA0000000000000000000C", match_id="match.a", tick=1),
+            _catalog_env("01JAAA0000000000000000000A", match_id="match.a", tick=0),
+            _catalog_env("01JBBB0000000000000000000D", match_id="match.b", tick=0),
+        )
+    )
+
+    got = [(event.match_id, event.tick) for event in _collect_events(catalog, STREAM_ALL_MATCHES)]
+    assert got == [("match.a", 0), ("match.a", 1), ("match.b", 0), ("match.b", 1)]
+
+
+@pytest.mark.unit
+def test_collect_events_all_accepts_an_empty_injected_catalog() -> None:
+    assert _collect_events(_FakeReplayEventCatalog(()), STREAM_ALL_MATCHES) == []
+
+
+@pytest.mark.unit
+def test_serve_help_documents_frontend_transport_and_all_match_source() -> None:
+    result = CliRunner().invoke(serve_command, ["--help"])
+    assert result.exit_code == 0
+    assert "frontend transport" in result.output
+    assert "'all'" in result.output

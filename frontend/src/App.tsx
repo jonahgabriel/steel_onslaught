@@ -1,37 +1,17 @@
 /**
  * App — PRESSURE DECK shell.
  *
- * Owns the single WebSocket subscription (StrictMode double-mount safe) and
- * fans every envelope out to the deck's panels through a stable handler
- * registry, exactly as the original Task 31/32 wiring did.  The stream is a
- * pure projection source — the UI never sends anything back.
+ * Owns the client-side match transport (via `useTransport`). With the server's
+ * default `--tick-delay 0`, the WebSocket streams at full speed and the client
+ * transport paces it; nonzero server pacing remains available. The deck folds
+ * ONLY the envelopes the transport releases, so pause/step/speed/match-switch
+ * affect the arena, spec panels, river and odometer together. The UI never
+ * sends anything back — it is a pure projection.
  */
-import { useCallback, useEffect, useRef } from "react";
-import { type EnvelopeHandler, EventStream } from "./lib/event_stream";
+import { useTransport } from "./lib/useTransport";
 import PressureDeck from "./views/PressureDeck";
 
 export default function App(): React.JSX.Element {
-  const handlersRef = useRef<Set<EnvelopeHandler>>(new Set());
-
-  useEffect(() => {
-    const stream = new EventStream();
-    const unsubscribe = stream.subscribe((envelope) => {
-      for (const handler of [...handlersRef.current]) {
-        handler(envelope);
-      }
-    });
-    return () => {
-      unsubscribe();
-      stream.close();
-    };
-  }, []);
-
-  const subscribe = useCallback((handler: EnvelopeHandler) => {
-    handlersRef.current.add(handler);
-    return () => {
-      handlersRef.current.delete(handler);
-    };
-  }, []);
-
-  return <PressureDeck subscribe={subscribe} />;
+  const { subscribe, snapshot, controls } = useTransport();
+  return <PressureDeck subscribe={subscribe} transport={snapshot} controls={controls} />;
 }
