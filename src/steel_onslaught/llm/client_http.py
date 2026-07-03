@@ -1,28 +1,82 @@
 """OpenAI-compatible HTTP LLM client (the real provider implementation).
 
-Calls ``POST {base_url}/chat/completions`` — the OpenAI Chat Completions API,
-also served by Ollama, vLLM, LM Studio, and Gemini-compat gateways via a
-``base_url`` override. Uses ``httpx`` synchronously (the pilot's ``decide`` is
-sync; the fold forbids asyncio in the hot path).
+Posts to the **complete** chat-completions endpoint URL **verbatim** — the URL
+declared for the provider is sent byte-for-byte, with no base-url ``rstrip`` and
+no ``/chat/completions`` append. Endpoint, model, key-env, and timeout for every
+provider are declared in the contract file ``providers.yaml`` (loaded once,
+validated by the frozen :class:`ProviderEndpoint` model) — never hardcoded in
+Python source.
 
-Configurable: ``base_url``, ``api_key`` (read from env at call time, fail-closed
-if unset), ``model``, ``temperature``. Default ``base_url`` targets a local
-Ollama/LM Studio server (no key) — local-first, cloud opt-in.
+Auth is **fail-closed**: a provider that declares an ``api_key_env`` whose value
+is unset (or empty) raises before any network call — it never silently sends an
+unauthenticated request. A provider that declares ``api_key_env: null`` is
+keyless *by declaration* (local servers such as Ollama/LM Studio/vLLM).
+
+Uses ``httpx`` synchronously (the pilot's ``decide`` is sync; the fold forbids
+asyncio in the hot path).
 """
 
 from __future__ import annotations
 
 import os
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml  # type: ignore[import-untyped]
+from pydantic import BaseModel, ConfigDict
 
 from steel_onslaught.llm.schemas import LlmResponse, LlmUsage
 
-# Default: a local OpenAI-compatible server (Ollama/LM Studio default port).
-_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+# Default direct-construction target: a local OpenAI-compatible server. This is
+# a COMPLETE endpoint URL, posted verbatim.
+_DEFAULT_ENDPOINT_URL = "http://localhost:11434/v1/chat/completions"
 _DEFAULT_MODEL = "llama3.1"
 _DEFAULT_TIMEOUT = 30.0
+
+_PROVIDERS_YAML = Path(__file__).parent / "providers.yaml"
+
+
+class ProviderRegistryError(ValueError):
+    """``providers.yaml`` is malformed, or names a duplicate/unknown provider."""
+
+
+class ProviderEndpoint(BaseModel):
+    """One provider entry from ``providers.yaml`` (frozen contract row).
+
+    ``endpoint_url`` is the COMPLETE chat-completions URL, posted verbatim.
+    ``api_key_env`` is the name of the env var holding the key, or ``None`` for
+    keyless-by-declaration (local) providers.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider_id: str
+    endpoint_url: str
+    model: str
+    api_key_env: str | None = None
+    timeout_s: float = _DEFAULT_TIMEOUT
+
+
+@lru_cache(maxsize=1)
+def load_providers() -> dict[str, ProviderEndpoint]:
+    """Load + validate ``providers.yaml`` once; return a ``provider_id`` map."""
+    raw: Any = yaml.safe_load(_PROVIDERS_YAML.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not isinstance(raw.get("providers"), list):
+        raise ProviderRegistryError(
+            f"providers.yaml must map 'providers' -> list ({_PROVIDERS_YAML})"
+        )
+    registry: dict[str, ProviderEndpoint] = {}
+    for item in raw["providers"]:
+        entry = ProviderEndpoint.model_validate(item)
+        if entry.provider_id in registry:
+            raise ProviderRegistryError(
+                f"duplicate_provider_id: {entry.provider_id!r} declared more than "
+                f"once in {_PROVIDERS_YAML}"
+            )
+        registry[entry.provider_id] = entry
+    return registry
 
 
 class OpenAICompatibleClient:
@@ -31,34 +85,54 @@ class OpenAICompatibleClient:
     Parameters
     ----------
     base_url:
-        The API root (without ``/chat/completions``). Defaults to a local
-        Ollama server; override for OpenAI (``https://api.openai.com/v1``),
-        vLLM, LM Studio, etc.
+        The **complete** chat-completions endpoint URL, posted verbatim (no
+        append). Defaults to a local Ollama/LM Studio endpoint; override for any
+        OpenAI-compatible server. (Named ``base_url`` for call-site stability.)
     api_key_env:
-        Environment variable name holding the API key. Read at call time;
-        if unset, the request is sent with no Authorization header (local
-        servers typically don't require one). Fail-closed for cloud providers
-        is the caller's responsibility (set the env var).
+        Name of the env var holding the API key, or ``None`` for keyless
+        (local) providers. When a name is given, the key is read at call time
+        and the request **fails closed** — it raises if the var is unset/empty
+        rather than sending an unauthenticated request.
     model:
         Default model id; overridable per-call via ``opts["model"]``.
     temperature:
         Default sampling temperature; overridable per-call.
+    timeout:
+        Per-request timeout (seconds).
     """
 
     def __init__(
         self,
         *,
-        base_url: str = _DEFAULT_BASE_URL,
-        api_key_env: str = "OPENAI_API_KEY",
+        base_url: str = _DEFAULT_ENDPOINT_URL,
+        api_key_env: str | None = None,
         model: str = _DEFAULT_MODEL,
         temperature: float = 0.7,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        # Posted verbatim — no rstrip, no path append.
+        self._endpoint_url = base_url
         self._api_key_env = api_key_env
         self._model = model
         self._temperature = temperature
         self._timeout = timeout
+
+    def _resolve_auth_header(self) -> dict[str, str]:
+        """Fail-closed key resolution → the Authorization header (or none).
+
+        Keyless-by-declaration (``api_key_env is None``) → no header. A declared
+        key that resolves to nothing raises **before** any network call.
+        """
+        if self._api_key_env is None:
+            return {}
+        api_key = os.environ.get(self._api_key_env)
+        if not api_key:
+            raise RuntimeError(
+                f"missing_api_key: provider declares api_key_env "
+                f"{self._api_key_env!r} but it is unset/empty; refusing to send "
+                f"an unauthenticated request to {self._endpoint_url!r}"
+            )
+        return {"Authorization": f"Bearer {api_key}"}
 
     def complete(
         self,
@@ -69,15 +143,14 @@ class OpenAICompatibleClient:
         """One synchronous chat-completion call. Raises on transport/HTTP error.
 
         The pilot wraps this in a try/except → REMAIN fallback, so a network
-        failure degrades the decision rather than crashing the match.
+        failure degrades the decision rather than crashing the match. A
+        fail-closed missing-key raise surfaces the same way.
         """
         model = opts.get("model", self._model)
         temperature = opts.get("temperature", self._temperature)
-        api_key = os.environ.get(self._api_key_env)
 
         headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        headers.update(self._resolve_auth_header())
 
         payload: dict[str, Any] = {
             "model": model,
@@ -94,7 +167,7 @@ class OpenAICompatibleClient:
 
         with httpx.Client(timeout=self._timeout) as client:
             resp = client.post(
-                f"{self._base_url}/chat/completions",
+                self._endpoint_url,
                 headers=headers,
                 json=payload,
             )
@@ -117,44 +190,33 @@ class OpenAICompatibleClient:
         )
 
 
-__all__ = ["PROVIDER_ENDPOINTS", "OpenAICompatibleClient", "client_for_provider"]
-
-
-# Provider registry: maps provider ids to (base_url, model) for the AI PC lab.
-# These are the live-probed endpoints (2026-07-02). To add a model, add an entry.
-PROVIDER_ENDPOINTS: dict[str, tuple[str, str]] = {
-    "stub": ("", ""),
-    "openai-compat": (_DEFAULT_BASE_URL, _DEFAULT_MODEL),
-    # AI PC lab (local, no key needed)
-    "qwen35": ("http://100.109.203.94:8000/v1", "Qwen3.6-35B-A3B"),
-    "qwen27": ("http://100.109.203.94:8001/v1", "Qwen3.6-27B-MTP-IQ4_XS.gguf"),
-    "deepseek": ("http://100.99.174.19:8101/v1", "deepseek-v4-pro"),
-    # z.ai frontier (GLM models; set LLM_GLM_API_KEY env var)
-    "glm-5.2": ("https://api.z.ai/api/coding/paas/v4", "glm-5.2"),
-    "glm-5.1": ("https://api.z.ai/api/coding/paas/v4", "glm-5.1"),
-    "glm-5": ("https://api.z.ai/api/coding/paas/v4", "glm-5"),
-    # OpenRouter (340+ models; set OPEN_ROUTER_API_KEY env var)
-    "openrouter-glm": ("https://openrouter.ai/api/v1", "z-ai/glm-5.2"),
-    "openrouter-claude": ("https://openrouter.ai/api/v1", "anthropic/claude-sonnet-5"),
-}
-
-
-# Provider -> env var name holding the API key (local endpoints need none).
-_PROVIDER_API_KEY_ENV: dict[str, str] = {
-    "glm-5.2": "LLM_GLM_API_KEY",
-    "glm-5.1": "LLM_GLM_API_KEY",
-    "glm-5": "LLM_GLM_API_KEY",
-    "openrouter-glm": "OPEN_ROUTER_API_KEY",
-    "openrouter-claude": "OPEN_ROUTER_API_KEY",
-}
-
-
 def client_for_provider(provider: str) -> OpenAICompatibleClient:
-    """Build an OpenAICompatibleClient from a provider id (registry lookup).
+    """Build an :class:`OpenAICompatibleClient` from a provider id.
 
-    For z.ai/OpenRouter providers, the API key is read from the corresponding
-    env var at call time (fail-closed if unset). Local endpoints send no auth.
+    Resolves the endpoint/model/key-env/timeout from ``providers.yaml``. Fails
+    fast (``ProviderRegistryError``) on an unknown provider — no silent
+    fall-through to a local default. Cloud providers whose ``api_key_env`` is
+    unset fail closed at call time (see :class:`OpenAICompatibleClient`).
     """
-    base_url, model = PROVIDER_ENDPOINTS.get(provider, (_DEFAULT_BASE_URL, _DEFAULT_MODEL))
-    api_key_env = _PROVIDER_API_KEY_ENV.get(provider, "OPENAI_API_KEY")
-    return OpenAICompatibleClient(base_url=base_url, model=model, api_key_env=api_key_env)
+    registry = load_providers()
+    entry = registry.get(provider)
+    if entry is None:
+        raise ProviderRegistryError(
+            f"unknown_provider: {provider!r} is not declared in {_PROVIDERS_YAML} "
+            f"(known: {sorted(registry)})"
+        )
+    return OpenAICompatibleClient(
+        base_url=entry.endpoint_url,
+        api_key_env=entry.api_key_env,
+        model=entry.model,
+        timeout=entry.timeout_s,
+    )
+
+
+__all__ = [
+    "OpenAICompatibleClient",
+    "ProviderEndpoint",
+    "ProviderRegistryError",
+    "client_for_provider",
+    "load_providers",
+]

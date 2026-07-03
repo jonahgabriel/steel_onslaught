@@ -1,0 +1,64 @@
+# LLM provider registry (contract data — all-URLs-from-contracts).
+#
+# Each entry declares the COMPLETE chat-completions endpoint URL verbatim
+# (including the /chat/completions path — the client posts it byte-for-byte,
+# no base-url append), the model id, the env var name holding the API key
+# (null = keyless by declaration, e.g. local servers), and the request
+# timeout in seconds. Loaded once and validated by ProviderEndpoint
+# (client_http.py). To add a model, add an entry here — never in Python.
+#
+# Auth is fail-closed: a provider that names an api_key_env whose value is
+# unset raises before any network call (never sends unauthenticated).
+# Routing doctrine: GLM routes direct to z.ai; OpenRouter is reserved for
+# genuinely free models only (none declared today), so paid-via-OpenRouter
+# entries were dropped.
+providers:
+  - provider_id: stub
+    endpoint_url: ""
+    model: ""
+    api_key_env: null
+    timeout_s: 30.0
+
+  - provider_id: openai-compat
+    endpoint_url: "http://localhost:11434/v1/chat/completions"
+    model: "llama3.1"
+    api_key_env: null
+    timeout_s: 30.0
+
+  # AI PC lab (local, keyless by declaration)
+  - provider_id: qwen35
+    endpoint_url: "http://100.109.203.94:8000/v1/chat/completions"
+    model: "Qwen3.6-35B-A3B"
+    api_key_env: null
+    timeout_s: 30.0
+
+  - provider_id: qwen27
+    endpoint_url: "http://100.109.203.94:8001/v1/chat/completions"
+    model: "Qwen3.6-27B-MTP-IQ4_XS.gguf"
+    api_key_env: null
+    timeout_s: 30.0
+
+  - provider_id: deepseek
+    endpoint_url: "http://100.99.174.19:8101/v1/chat/completions"
+    model: "deepseek-v4-pro"
+    api_key_env: null
+    timeout_s: 30.0
+
+  # z.ai frontier (GLM models, direct — fail-closed on missing key)
+  - provider_id: glm-5.2
+    endpoint_url: "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    model: "glm-5.2"
+    api_key_env: "LLM_GLM_API_KEY"
+    timeout_s: 30.0
+
+  - provider_id: glm-5.1
+    endpoint_url: "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    model: "glm-5.1"
+    api_key_env: "LLM_GLM_API_KEY"
+    timeout_s: 30.0
+
+  - provider_id: glm-5
+    endpoint_url: "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    model: "glm-5"
+    api_key_env: "LLM_GLM_API_KEY"
+    timeout_s: 30.0
