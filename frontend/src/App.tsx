@@ -1,19 +1,16 @@
 /**
- * App — Tasks 31 + 32 + 34.
+ * App — PRESSURE DECK shell.
  *
- * Connects the WebSocket event stream (Task 31) to the tactical-board
- * projection (Task 32).  The stream is created inside the effect so React
- * StrictMode's mount/unmount/mount cycle opens a fresh socket per mount;
- * `so serve` streams the full recorded match to every client, so the final
- * mount always receives the complete event sequence (Task 34 Proof of Life).
+ * Owns the single WebSocket subscription (StrictMode double-mount safe) and
+ * fans every envelope out to the deck's panels through a stable handler
+ * registry, exactly as the original Task 31/32 wiring did.  The stream is a
+ * pure projection source — the UI never sends anything back.
  */
 import { useCallback, useEffect, useRef } from "react";
 import { type EnvelopeHandler, EventStream } from "./lib/event_stream";
-import TacticalBoard from "./views/TacticalBoard";
+import PressureDeck from "./views/PressureDeck";
 
 export default function App(): React.JSX.Element {
-  // Stable handler registry so TacticalBoard's subscription survives the
-  // stream being torn down and recreated across StrictMode remounts.
   const handlersRef = useRef<Set<EnvelopeHandler>>(new Set());
 
   useEffect(() => {
@@ -36,10 +33,5 @@ export default function App(): React.JSX.Element {
     };
   }, []);
 
-  return (
-    <main data-testid="app-root">
-      <h1>Steel Onslaught</h1>
-      <TacticalBoard subscribe={subscribe} />
-    </main>
-  );
+  return <PressureDeck subscribe={subscribe} />;
 }
