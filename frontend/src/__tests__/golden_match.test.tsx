@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EnvelopeHandler } from "../lib/event_stream";
+import { MatchTransport, type ReleaseSink } from "../lib/transport";
 import { parseEnvelope, type SOEventEnvelope } from "../types";
 import { ARENA_INITIAL_STATE, type ArenaState, arenaReduce, GRID_CELLS } from "../views/ArenaView";
 import EventRiver from "../views/EventRiver";
@@ -40,6 +41,65 @@ function loadGoldenStream(): SOEventEnvelope[] {
 
 afterEach(() => {
   cleanup();
+});
+
+describe("golden replay — transport auto-plays from tick 0 (rule 1)", () => {
+  const stream = loadGoldenStream();
+
+  it("with the real buffer + a mocked clock, the cursor is mid-playback, NOT at end", () => {
+    // maxTick of the recorded match — the LIVE-jump bug parked the cursor here.
+    const maxTick = Math.max(...stream.map((e) => e.tick));
+    expect(maxTick).toBeGreaterThan(1);
+
+    const transport = new MatchTransport({ msPerTick: 100 });
+    const released: SOEventEnvelope[] = [];
+    const sink: ReleaseSink = {
+      reset: () => {
+        released.length = 0;
+      },
+      release: (batch) => released.push(...batch),
+    };
+    transport.setSink(sink);
+
+    // Pipe the entire recorded stream in (as the WS bridge would, full-speed).
+    for (const env of stream) transport.ingest(env);
+
+    // DEFAULT is a paced replay — no play()/goLive() call.
+    expect(transport.snapshot().status).toBe("playing");
+
+    // Advance a mocked wall clock a few tick-durations into the match.
+    let now = 0;
+    for (let i = 0; i < 5; i += 1) {
+      transport.frame(now);
+      now += 100;
+    }
+
+    const snap = transport.snapshot();
+    // The cursor is somewhere in 0..maxTick, mid-playback — the whole point of
+    // the fix: it did NOT jump to the buffer end on the first frame.
+    expect(snap.cursorTick).toBeGreaterThanOrEqual(0);
+    expect(snap.cursorTick).toBeLessThan(maxTick);
+    expect(snap.atEnd).toBe(false);
+    expect(snap.ended).toBe(false);
+    // And it actually started from the top: the setup frame released first.
+    expect(released[0]?.event_type).toBe("match_started");
+    expect(released.every((e) => e.tick <= snap.cursorTick)).toBe(true);
+  });
+
+  it("drives the paced replay to the finished match's final tick and offers REPLAY", () => {
+    const maxTick = Math.max(...stream.map((e) => e.tick));
+    const transport = new MatchTransport({ msPerTick: 1 });
+    for (const env of stream) transport.ingest(env);
+    expect(transport.snapshot().matchComplete).toBe(true);
+
+    // Enough frames (1ms/tick) to walk past every tick boundary.
+    for (let now = 0; now <= (maxTick + 2) * 2; now += 1) transport.frame(now);
+
+    const snap = transport.snapshot();
+    expect(snap.cursorTick).toBe(maxTick); // rested on the final tick
+    expect(snap.atEnd).toBe(true);
+    expect(snap.ended).toBe(true); // REPLAY affordance is live
+  });
 });
 
 describe("golden replay — arena state (BUG A)", () => {

@@ -71,6 +71,33 @@ describe("HeaderTransport — play/pause", () => {
   });
 });
 
+describe("HeaderTransport — finished replay (rule 3)", () => {
+  it("shows REPLAY and restarts from tick 0 when the match has ended", () => {
+    const props = renderRail({ ended: true, playing: true, live: false });
+    const btn = screen.getByTestId("transport-play");
+    expect(btn).toHaveTextContent("REPLAY");
+    expect(btn).toHaveAttribute("aria-label", "Replay from tick 0");
+    expect(btn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(btn);
+    // The play control now restarts — it must NOT toggle play/pause.
+    expect(props.onRestart).toHaveBeenCalledTimes(1);
+    expect(props.onTogglePlay).not.toHaveBeenCalled();
+  });
+
+  it("shows the normal play/pause label while not ended", () => {
+    renderRail({ ended: false, playing: true, live: false });
+    expect(screen.getByTestId("transport-play")).toHaveTextContent("PLAY");
+  });
+
+  it("falls back to the play toggle when ended but no restart handler is wired", () => {
+    const props = renderRail({ ended: true, onRestart: undefined });
+    const btn = screen.getByTestId("transport-play");
+    expect(btn).not.toHaveTextContent("REPLAY");
+    fireEvent.click(btn);
+    expect(props.onTogglePlay).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("HeaderTransport — speed", () => {
   it("marks the active speed pressed and reports the chosen speed", () => {
     const props = renderRail({ speed: 2 });

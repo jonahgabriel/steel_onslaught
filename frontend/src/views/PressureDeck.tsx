@@ -418,6 +418,7 @@ export default function PressureDeck({
         <HeaderTransport
           playing={playing}
           live={isLive}
+          ended={transport?.ended ?? false}
           speed={speed}
           matches={transport?.matches ?? []}
           activeMatchId={transport?.activeMatchId ?? null}

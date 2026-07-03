@@ -30,8 +30,13 @@ export type TransportSpeed = 1 | 2 | 4;
 export const TRANSPORT_SPEEDS: readonly TransportSpeed[] = [1, 2, 4];
 
 /**
- * - `live`    — follow the buffer end; every ingested frame is released at once.
- * - `playing` — advance the cursor one tick per `BASE_MS_PER_TICK / speed` ms.
+ * - `live`    — opt-in: follow the buffer end; every ingested frame is released
+ *   at once. Entered only by an explicit LIVE action.
+ * - `playing` — the DEFAULT: advance the cursor one tick per
+ *   `BASE_MS_PER_TICK / speed` ms as a paced replay from tick 0. If the cursor
+ *   catches the buffer head of a still-streaming match it holds there and
+ *   resumes as more frames arrive; on a finished match it stops on the final
+ *   tick (see {@link TransportSnapshot.ended}).
  * - `paused`  — cursor frozen; nothing releases.
  */
 export type TransportStatus = "live" | "playing" | "paused";
@@ -61,6 +66,15 @@ export interface TransportSnapshot {
   bufferedCount: number;
   /** Cursor sits at (or past) the buffer end — nothing left to play. */
   atEnd: boolean;
+  /** The active match has streamed a terminal (`match_ended`/`victory_declared`). */
+  matchComplete: boolean;
+  /**
+   * Paced replay has reached the final tick of a *finished* match — playback is
+   * over and the play control should offer REPLAY (restart from tick 0). False
+   * while still buffering (cursor merely holding at the head of a live match)
+   * and false in LIVE mode (there the operator is deliberately following the end).
+   */
+  ended: boolean;
 }
 
 /**
@@ -81,6 +95,8 @@ interface MatchBuffer {
   maxTick: number;
   redLabel: string;
   blueLabel: string;
+  /** A terminal event (`match_ended`/`victory_declared`) has been ingested. */
+  complete: boolean;
 }
 
 export interface MatchTransportOptions {
@@ -95,7 +111,8 @@ export class MatchTransport {
 
   private activeMatchId: string | null = null;
   private releasedCount = 0;
-  private status: TransportStatus = "live";
+  // Default = paced auto-play replay from tick 0 at ×1. LIVE is opt-in.
+  private status: TransportStatus = "playing";
   private speed: TransportSpeed = 1;
 
   private lastReleaseTime = 0;
@@ -147,9 +164,10 @@ export class MatchTransport {
     const matchId = env.match_id;
     let buf = this.buffers.get(matchId);
     if (buf === undefined) {
-      buf = { events: [], maxTick: -1, redLabel: "", blueLabel: "" };
+      buf = { events: [], maxTick: -1, redLabel: "", blueLabel: "", complete: false };
       this.buffers.set(matchId, buf);
       this.order.push(matchId);
+      // Default selection = the FIRST match to arrive.
       if (this.activeMatchId === null) this.activeMatchId = matchId;
     }
     buf.events.push(env);
@@ -157,6 +175,9 @@ export class MatchTransport {
     if (env.event_type === "match_started") {
       buf.redLabel = env.payload.mechs[0]?.mech_id ?? "";
       buf.blueLabel = env.payload.mechs[1]?.mech_id ?? "";
+    }
+    if (env.event_type === "match_ended" || env.event_type === "victory_declared") {
+      buf.complete = true;
     }
     this.notifyState();
   }
@@ -236,6 +257,13 @@ export class MatchTransport {
         this.releaseTickInto(buf, batch);
         this.lastReleaseTime += dur;
         guard += 1;
+      }
+      // Caught up to the head of a still-streaming match: re-anchor the clock to
+      // `now` so newly ingested frames resume paced (no catch-up burst) instead
+      // of dumping the backlog the instant more data arrives. A finished match
+      // is left alone — it simply stops on its final tick (see `ended`).
+      if (this.releasedCount >= events.length && !buf.complete) {
+        this.lastReleaseTime = now;
       }
     }
     this.primeImmediate = false;
@@ -323,35 +351,19 @@ export class MatchTransport {
   }
 
   /**
-   * Switch the active match. Folds reset and the buffer replays through the
-   * current transport settings (LIVE → instant full state; playing → from the
-   * top at the current speed; paused → held at tick 0).
+   * Switch the active match. Folds reset and the new buffer AUTO-PLAYS from
+   * tick 0 at the current speed (rule 4 — same paced replay as the default),
+   * regardless of the prior mode (a match switch always leaves LIVE).
    */
   selectMatch(matchId: string): void {
     const buf = this.buffers.get(matchId);
     if (buf === undefined || matchId === this.activeMatchId) return;
     this.activeMatchId = matchId;
-    // LIVE jumps to the end; every other mode reveals the setup tick (tick 0)
-    // immediately so the new match's board is visible even while paused, then
-    // replays forward under the current transport settings.
-    this.releasedCount = this.status === "live" ? buf.events.length : this.firstTickCount(buf);
+    this.releasedCount = 0;
+    this.status = "playing";
     this.pendingReset = true;
     this.primeImmediate = true;
     this.notifyState();
-  }
-
-  /** Number of events in the first (setup) tick of a buffer. */
-  private firstTickCount(buf: MatchBuffer): number {
-    const events = buf.events;
-    const head = events[0];
-    if (head === undefined) return 0;
-    let n = 0;
-    let ev: SOEventEnvelope | undefined = head;
-    while (ev !== undefined && ev.tick === head.tick) {
-      n += 1;
-      ev = events[n];
-    }
-    return n;
   }
 
   // -- snapshot -----------------------------------------------------------
@@ -381,6 +393,12 @@ export class MatchTransport {
     const buf = this.activeBuffer();
     const events = buf?.events ?? [];
     const cursorTick = this.releasedCount > 0 ? (events[this.releasedCount - 1]?.tick ?? -1) : -1;
+    const atEnd = this.releasedCount >= events.length;
+    const matchComplete = buf?.complete ?? false;
+    // Finished replay: paced cursor rested on the last tick of a completed match
+    // and there is real content behind it. Not in LIVE (deliberate follow) and
+    // not on an empty buffer (nothing has streamed yet).
+    const ended = this.status !== "live" && atEnd && matchComplete && this.releasedCount > 0;
     return {
       status: this.status,
       speed: this.speed,
@@ -390,7 +408,9 @@ export class MatchTransport {
       bufferedTick: buf?.maxTick ?? -1,
       releasedCount: this.releasedCount,
       bufferedCount: events.length,
-      atEnd: this.releasedCount >= events.length,
+      atEnd,
+      matchComplete,
+      ended,
     };
   }
 
@@ -399,7 +419,7 @@ export class MatchTransport {
     const matchSig = s.matches
       .map((m) => `${m.matchId}:${m.tickCount}:${m.redLabel}:${m.blueLabel}`)
       .join("|");
-    return `${s.status};${s.speed};${s.activeMatchId};${s.cursorTick};${s.atEnd};${matchSig}`;
+    return `${s.status};${s.speed};${s.activeMatchId};${s.cursorTick};${s.atEnd};${s.ended};${s.matchComplete};${matchSig}`;
   }
 
   private notifyState(): void {

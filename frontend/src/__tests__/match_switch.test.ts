@@ -67,15 +67,18 @@ describe("transport match switch — deck fold reset (two interleaved matches)",
         .sort(),
     ).toEqual([idA, idB].sort());
 
-    // Active = A (first seen), live → folds all of match A.
+    // Active = A (first seen). Opt into LIVE to fold the WHOLE of match A in one
+    // frame (the default paced replay would only reveal tick 0 here).
+    transport.goLive();
     transport.frame(0);
     expect(deck.matchId).toBe(idA);
     expect(deck.rows.length).toBeGreaterThan(0);
     expect(deck.rows.every((r) => r.env.match_id === idA)).toBe(true);
     const aRowCount = deck.rows.length;
 
-    // Switch to B → fold resets, replays only B.
+    // Switch to B → fold resets; follow it live to fold all of B.
     transport.selectMatch(idB);
+    transport.goLive();
     transport.frame(1);
     expect(deck.matchId).toBe(idB);
     expect(deck.rows.length).toBeGreaterThan(0);
@@ -86,6 +89,7 @@ describe("transport match switch — deck fold reset (two interleaved matches)",
 
     // Switch back to A → fold resets again, replays only A.
     transport.selectMatch(idA);
+    transport.goLive();
     transport.frame(2);
     expect(deck.matchId).toBe(idA);
     expect(deck.rows.every((r) => r.env.match_id === idA)).toBe(true);

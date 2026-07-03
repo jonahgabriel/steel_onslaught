@@ -26,6 +26,8 @@ function matchLabel(m: MatchSummary): string {
 export interface HeaderTransportProps {
   playing: boolean;
   live: boolean;
+  /** Paced replay has stopped on the final tick of a finished match. */
+  ended?: boolean;
   speed: TransportSpeed;
   matches: readonly MatchSummary[];
   activeMatchId: string | null;
@@ -42,6 +44,7 @@ export default function HeaderTransport(props: HeaderTransportProps): React.JSX.
   const {
     playing,
     live,
+    ended,
     speed,
     matches,
     activeMatchId,
@@ -54,7 +57,11 @@ export default function HeaderTransport(props: HeaderTransportProps): React.JSX.
     onSelectMatch,
   } = props;
 
-  const playLabel = playing ? (live ? "▶ LIVE" : "▶ PLAY") : "∥ HELD";
+  // A finished replay turns the play control into a REPLAY (↺) affordance that
+  // restarts from tick 0; until then it is the usual play/pause/LIVE toggle.
+  const replayMode = ended === true && onRestart !== undefined;
+  const playLabel = replayMode ? "↺ REPLAY" : playing ? (live ? "▶ LIVE" : "▶ PLAY") : "∥ HELD";
+  const playAria = replayMode ? "Replay from tick 0" : playing ? "Pause" : "Play";
 
   return (
     <div className="pd-transport" data-testid="transport">
@@ -91,9 +98,10 @@ export default function HeaderTransport(props: HeaderTransportProps): React.JSX.
       <button
         type="button"
         className="pd-tbtn"
-        aria-pressed={playing}
-        aria-label={playing ? "Pause" : "Play"}
-        onClick={onTogglePlay}
+        aria-pressed={replayMode ? false : playing}
+        aria-label={playAria}
+        data-replay={replayMode ? "true" : undefined}
+        onClick={replayMode && onRestart !== undefined ? onRestart : onTogglePlay}
         data-testid="transport-play"
       >
         {playLabel}

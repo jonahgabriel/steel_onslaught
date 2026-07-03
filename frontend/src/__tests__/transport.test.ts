@@ -137,18 +137,70 @@ describe("MatchTransport — step ±1 tick", () => {
   });
 });
 
-describe("MatchTransport — LIVE follows the buffer end", () => {
-  it("releases everything buffered and keeps following new frames", () => {
+describe("MatchTransport — default auto-play replay (rule 1)", () => {
+  it("auto-plays from tick 0 at ×1 without any explicit play() call", () => {
+    const t = new MatchTransport({ msPerTick: 100 });
+    for (const e of tickStream("m", 5)) t.ingest(e);
+    const rec = recordingSink();
+    t.setSink(rec.sink);
+
+    // No play()/goLive() — the engine defaults to a paced replay.
+    expect(t.snapshot().status).toBe("playing");
+    expect(t.snapshot().speed).toBe(1);
+
+    t.frame(0); // primeImmediate reveals only tick 0 — NOT the whole buffer
+    expect(t.snapshot().cursorTick).toBe(0);
+    expect(rec.released.map((e) => e.tick)).toEqual([0]);
+    expect(t.snapshot().atEnd).toBe(false);
+
+    t.frame(100); // one tick-duration → tick 1
+    expect(t.snapshot().cursorTick).toBe(1);
+    // Still mid-playback, cursor has NOT jumped to the buffer end.
+    expect(t.snapshot().cursorTick).toBeLessThan(t.snapshot().bufferedTick);
+  });
+
+  it("holds at the buffer head of a still-streaming match, then resumes as frames arrive", () => {
+    const t = new MatchTransport({ msPerTick: 100 });
+    // Only ticks 0..2 buffered so far; the match is NOT finished.
+    for (const e of tickStream("m", 3)) t.ingest(e);
+    const rec = recordingSink();
+    t.setSink(rec.sink);
+
+    t.frame(0); // tick 0
+    t.frame(100); // tick 1
+    t.frame(200); // tick 2 — caught up to the buffer head
+    expect(t.snapshot().cursorTick).toBe(2);
+    expect(t.snapshot().atEnd).toBe(true);
+    expect(t.snapshot().ended).toBe(false); // holding, not finished
+
+    // A huge wall-clock jump while at the head must NOT force anything (no data).
+    t.frame(10_000);
+    expect(t.snapshot().cursorTick).toBe(2);
+
+    // New frames stream in; playback resumes paced from `now` (no catch-up burst).
+    t.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 3 }));
+    t.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 4 }));
+    t.frame(10_050); // < one tick-duration since re-anchor → nothing yet
+    expect(t.snapshot().cursorTick).toBe(2);
+    t.frame(10_100); // one tick-duration later → tick 3
+    expect(t.snapshot().cursorTick).toBe(3);
+  });
+});
+
+describe("MatchTransport — LIVE is opt-in (rule 2)", () => {
+  it("goLive() jumps to the buffer end and follows new frames", () => {
     const t = new MatchTransport();
     const stream = tickStream("m", 3);
     for (const e of stream) t.ingest(e);
     const rec = recordingSink();
     t.setSink(rec.sink);
 
-    // Default status is live → first frame releases the whole buffer.
-    t.frame(0);
+    // LIVE must be entered explicitly — the default no longer jumps to the end.
+    t.goLive();
+    t.frame(0); // live → releases the whole buffer at once
     expect(rec.released).toHaveLength(3);
     expect(t.snapshot().cursorTick).toBe(2);
+    expect(t.snapshot().status).toBe("live");
 
     // A late frame arrives; the next animation frame follows it.
     t.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 3 }));
@@ -158,9 +210,82 @@ describe("MatchTransport — LIVE follows the buffer end", () => {
   });
 });
 
-describe("MatchTransport — match switch resets and replays", () => {
-  it("switching active match resets the fold and replays only that buffer", () => {
+describe("MatchTransport — finished match stops with a REPLAY affordance (rule 3)", () => {
+  it("stops on the final tick and flags `ended`; restart replays from tick 0", () => {
+    const t = new MatchTransport({ msPerTick: 10 });
+    const stream: SOEventEnvelope[] = [
+      makeEnvelope(
+        "match_started",
+        { seed: 1, max_ticks: 3, mechs: [] },
+        { matchId: "m", tick: 0 },
+      ),
+      makeEnvelope("match_tick", {}, { matchId: "m", tick: 1 }),
+      makeEnvelope(
+        "victory_declared",
+        { winner_player_id: "player.red", reason: "pilot_killed" },
+        {
+          matchId: "m",
+          tick: 2,
+        },
+      ),
+      makeEnvelope(
+        "match_ended",
+        { reason: "pilot_killed", winner_id: "mech.red.01" },
+        {
+          matchId: "m",
+          tick: 2,
+        },
+      ),
+    ];
+    for (const e of stream) t.ingest(e);
+    const rec = recordingSink();
+    t.setSink(rec.sink);
+    expect(t.snapshot().matchComplete).toBe(true);
+
+    // Drive the paced replay to the end.
+    for (let now = 0; now <= 60; now += 10) t.frame(now);
+    expect(t.snapshot().atEnd).toBe(true);
+    expect(t.snapshot().cursorTick).toBe(2); // rested on the final tick
+    expect(t.snapshot().ended).toBe(true); // REPLAY affordance is live
+
+    // Further frames do nothing — playback has stopped.
+    const releasedAtEnd = rec.released.length;
+    t.frame(100_000);
+    expect(rec.released.length).toBe(releasedAtEnd);
+
+    // Restart replays from tick 0 and clears `ended`.
+    const resetsBefore = rec.resets;
+    t.restart();
+    t.frame(100_010);
+    expect(rec.resets).toBe(resetsBefore + 1);
+    expect(t.snapshot().cursorTick).toBe(0);
+    expect(t.snapshot().ended).toBe(false);
+    expect(t.snapshot().status).toBe("playing");
+  });
+
+  it("does not flag `ended` while a live-followed match sits at its end", () => {
     const t = new MatchTransport();
+    const stream: SOEventEnvelope[] = [
+      ...tickStream("m", 2),
+      makeEnvelope(
+        "match_ended",
+        { reason: "pilot_killed", winner_id: null },
+        { matchId: "m", tick: 1 },
+      ),
+    ];
+    for (const e of stream) t.ingest(e);
+    t.goLive();
+    t.frame(0);
+    expect(t.snapshot().atEnd).toBe(true);
+    expect(t.snapshot().matchComplete).toBe(true);
+    // LIVE is a deliberate follow — no REPLAY affordance.
+    expect(t.snapshot().ended).toBe(false);
+  });
+});
+
+describe("MatchTransport — match switch auto-plays the new match (rule 4)", () => {
+  it("switching active match resets the fold and auto-plays that buffer from tick 0", () => {
+    const t = new MatchTransport({ msPerTick: 100 });
     const a = tickStream("match.alpha", 3);
     const b = tickStream("match.bravo", 4);
     // Interleaved ingest — buffers must stay separate.
@@ -173,7 +298,7 @@ describe("MatchTransport — match switch resets and replays", () => {
     const rec = recordingSink();
     t.setSink(rec.sink);
 
-    // Active = alpha (first seen), live → releases alpha in full.
+    // Active = alpha (first seen); default paced replay reveals alpha's tick 0.
     t.frame(0);
     expect(rec.released.every((e) => e.match_id === "match.alpha")).toBe(true);
 
@@ -184,25 +309,38 @@ describe("MatchTransport — match switch resets and replays", () => {
     expect(rec.resets).toBe(resetsBefore + 1); // fold was cleared
     expect(rec.released.length).toBeGreaterThan(0);
     expect(rec.released.every((e) => e.match_id === "match.bravo")).toBe(true);
-    // The replay begins with the match's setup frame.
+    // The replay begins at tick 0 with the match's setup frame …
     expect(rec.released[0]?.event_type).toBe("match_started");
+    expect(t.snapshot().cursorTick).toBe(0);
+    // … and it is a paced auto-play (playing), not a jump-to-end.
+    expect(t.snapshot().status).toBe("playing");
     expect(t.snapshot().activeMatchId).toBe("match.bravo");
+
+    // Paced playback continues on subsequent frames.
+    t.frame(101);
+    expect(t.snapshot().cursorTick).toBe(1);
   });
 
-  it("switching while paused reveals the new match's setup tick immediately", () => {
+  it("auto-plays from tick 0 even when the prior mode was LIVE", () => {
     const t = new MatchTransport();
     for (const e of tickStream("match.alpha", 3)) t.ingest(e);
-    for (const e of tickStream("match.bravo", 3)) t.ingest(e);
+    for (const e of tickStream("match.bravo", 5)) t.ingest(e);
     const rec = recordingSink();
     t.setSink(rec.sink);
 
-    t.pause();
-    t.selectMatch("match.bravo");
+    // Operator was following alpha live …
+    t.goLive();
     t.frame(0);
-    // Even paused, the operator sees bravo's tick 0 board (not a blank deck).
+    expect(t.snapshot().status).toBe("live");
+
+    // … switching leaves LIVE and starts bravo as a paced replay from tick 0.
+    t.selectMatch("match.bravo");
+    t.frame(1);
     expect(rec.released.map((e) => e.match_id)).toEqual(["match.bravo"]);
     expect(rec.released[0]?.event_type).toBe("match_started");
+    expect(t.snapshot().status).toBe("playing");
     expect(t.snapshot().cursorTick).toBe(0);
+    expect(t.snapshot().atEnd).toBe(false); // did NOT jump to bravo's end
   });
 });
 
