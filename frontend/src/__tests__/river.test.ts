@@ -2,7 +2,7 @@
  * Event River logic tests — PRESSURE DECK (spec §constraints-4).
  *
  * Covers: ordering by (tick, sequence_in_tick); tick grouping; per-group
- * filter toggles; LLM-evidence `payload.kind` discrimination + pairing; side
+ * filter toggles; LLM-evidence event-type discrimination + pairing; side
  * attribution; windowing.
  */
 import { describe, expect, it } from "vitest";
@@ -24,7 +24,13 @@ import {
   summarizeEnvelope,
   windowRows,
 } from "../lib/river";
-import { makeDecision, makeEnvelope, makeLlmRequest, makeLlmResolved } from "./helpers";
+import {
+  makeDecision,
+  makeEnvelope,
+  makeLlmFailed,
+  makeLlmRequest,
+  makeLlmResolved,
+} from "./helpers";
 
 function row(env: RiverRow["env"], arrival: number): RiverRow {
   return { env, arrival };
@@ -108,9 +114,14 @@ describe("filter groups", () => {
         }),
       ),
     ).toBe("thermal");
-    expect(groupOf(makeEnvelope("victory_declared", { winner_player_id: "p", reason: "r" }))).toBe(
-      "lifecycle",
-    );
+    expect(
+      groupOf(
+        makeEnvelope("victory_declared", {
+          winner_player_id: "p",
+          reason: "last_mech_standing",
+        }),
+      ),
+    ).toBe("lifecycle");
   });
 
   it("LLM evidence overrides the underlying event type", () => {
@@ -148,27 +159,76 @@ describe("filter groups", () => {
 });
 
 describe("LLM evidence discrimination + pairing", () => {
-  it("discriminates on payload.kind, not on a new enum member", () => {
-    expect(makeLlmRequest().event_type).toBe("sensor_observation");
+  it("discriminates on the first-class LLM event type", () => {
+    expect(makeLlmRequest().event_type).toBe("llm_completion_requested");
+    expect(makeLlmResolved().event_type).toBe("llm_completion_resolved");
+    expect(makeLlmFailed().event_type).toBe("llm_completion_failed");
     expect(llmEvidenceKind(makeLlmRequest())).toBe("requested");
     expect(llmEvidenceKind(makeLlmResolved())).toBe("resolved");
+    expect(llmEvidenceKind(makeLlmFailed())).toBe("failed");
     expect(
       llmEvidenceKind(
         makeEnvelope("sensor_observation", {
           enemy_mech_id: "mech.blue.01",
           distance_estimate: 5,
           confidence: 0.9,
+          heat_estimate: null,
+          mode_estimate: null,
         }),
       ),
     ).toBeNull();
   });
 
-  it("pairs a request with the next resolve for the same mech", () => {
+  it("pairs a resolved terminal to the request named by causation_id", () => {
     const req = makeLlmRequest({ mechId: "mech.red.01", messageId: "req1" });
-    const res = makeLlmResolved({ mechId: "mech.red.01", model: "provider.glm.flash" });
+    const res = makeLlmResolved({
+      mechId: "mech.red.01",
+      model: "provider.glm.flash",
+      causationId: "req1",
+    });
     const { pairs, unresolved } = pairLlmEvidence([req, res]);
     expect(pairs).toHaveLength(1);
-    expect(pairs[0]?.resolved).not.toBeNull();
+    expect(res.envelope.causation_id).toBe(req.envelope.message_id);
+    expect(pairs[0]?.resolved).toBe(res);
+    expect(unresolved.size).toBe(0);
+  });
+
+  it("pairs a failed terminal to the request named by causation_id", () => {
+    const req = makeLlmRequest({ mechId: "mech.red.01", messageId: "req1" });
+    const failed = makeLlmFailed({ mechId: "mech.red.01", causationId: "req1" });
+    const { pairs, unresolved } = pairLlmEvidence([req, failed]);
+    expect(pairs).toHaveLength(1);
+    expect(failed.envelope.causation_id).toBe(req.envelope.message_id);
+    expect(pairs[0]?.resolved?.event_type).toBe("llm_completion_failed");
+    expect(unresolved.size).toBe(0);
+  });
+
+  it("pairs interleaved terminals by causation rather than mech or arrival", () => {
+    const first = makeLlmRequest({ mechId: "mech.red.01", messageId: "req1" });
+    const second = makeLlmRequest({ mechId: "mech.red.01", messageId: "req2" });
+    const secondTerminal = makeLlmResolved({ mechId: "mech.red.01", causationId: "req2" });
+    const firstTerminal = makeLlmFailed({ mechId: "mech.red.01", causationId: "req1" });
+    const { pairs, unresolved } = pairLlmEvidence([first, second, secondTerminal, firstTerminal]);
+    expect(pairs).toHaveLength(2);
+    expect(pairs[0]?.resolved).toBe(firstTerminal);
+    expect(pairs[1]?.resolved).toBe(secondTerminal);
+    expect(unresolved.size).toBe(0);
+  });
+
+  it("surfaces an orphan terminal as a lone terminal row", () => {
+    const orphan = makeLlmResolved({ causationId: "missing-request" });
+    const { pairs, unresolved } = pairLlmEvidence([orphan]);
+    expect(pairs).toEqual([{ requested: orphan, resolved: orphan }]);
+    expect(unresolved.size).toBe(0);
+  });
+
+  it("keeps the first terminal when duplicate terminal evidence arrives", () => {
+    const req = makeLlmRequest({ messageId: "req1" });
+    const first = makeLlmResolved({ causationId: "req1" });
+    const duplicate = makeLlmFailed({ causationId: "req1" });
+    const { pairs, unresolved } = pairLlmEvidence([req, first, duplicate]);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]?.resolved).toBe(first);
     expect(unresolved.size).toBe(0);
   });
 
@@ -214,7 +274,9 @@ describe("windowing + glyphs + danger", () => {
   });
 
   it("flags danger events and picks glyphs", () => {
-    expect(isDangerEvent(makeEnvelope("mech_destroyed", { cause: "boiler" }))).toBe(true);
+    expect(
+      isDangerEvent(makeEnvelope("mech_destroyed", { cause: "boiler", source_mech_id: null })),
+    ).toBe(true);
     expect(isDangerEvent(makeDecision())).toBe(false);
     expect(glyphOf(makeLlmRequest())).toBe("❯");
     expect(glyphOf(makeDecision())).toBe("◇");

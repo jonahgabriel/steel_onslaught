@@ -9,7 +9,13 @@ import "./setup-dom";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import EventRow from "../views/EventRow";
-import { makeDecision, makeEnvelope, makeLlmRequest, makeLlmResolved } from "./helpers";
+import {
+  makeDecision,
+  makeEnvelope,
+  makeLlmFailed,
+  makeLlmRequest,
+  makeLlmResolved,
+} from "./helpers";
 
 afterEach(cleanup);
 
@@ -45,7 +51,7 @@ describe("EventRow — decisions", () => {
     const env = makeEnvelope("pilot_decision_made", {
       action: "remain",
       action_params: { fallback_class: "aggressor" },
-      reason_code: "llm_fallback_timeout",
+      reason_code: "llm_fallback",
       confidence: 0.1,
       considered_actions: [],
       rationale: null,
@@ -78,11 +84,18 @@ describe("EventRow — LLM evidence", () => {
   });
 
   it("renders a resolved usage strip with token counts", () => {
-    const env = makeLlmResolved({ promptTokens: 120, completionTokens: 48, costUsd: 0.0004 });
+    const env = makeLlmResolved({ promptTokens: 120, completionTokens: 48 });
     row(env);
     const usage = screen.getByTestId("llm-usage");
     expect(usage.textContent).toContain("120");
     expect(usage.textContent).toContain("48");
+  });
+
+  it("renders sanitized failure evidence with optional cost", () => {
+    const env = makeLlmFailed({ costUsd: 0.0004 });
+    row(env);
+    const usage = screen.getByTestId("llm-usage");
+    expect(usage.textContent).toContain("consumer_error");
     expect(usage.textContent).toContain("$0.0004");
   });
 });

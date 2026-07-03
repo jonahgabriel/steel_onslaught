@@ -2,7 +2,7 @@
  * EventRow — PRESSURE DECK.
  *
  * One punch-card river row.  Three shapes, discriminated purely on data:
- *  - LLM evidence (payload.kind) → a bracketed request/resolve strip.
+ *  - LLM evidence (event_type)   → a bracketed request/terminal strip.
  *  - pilot_decision_made         → an expanded decision row (rationale,
  *                                   confidence meter, reason chip, fallback).
  *  - everything else             → a single-line telemetry row.
@@ -18,9 +18,6 @@ import {
   glyphOf,
   groupOf,
   isDangerEvent,
-  llmEvidenceKind,
-  payloadNumber,
-  payloadString,
   type Side,
   summarizeEnvelope,
 } from "../lib/river";
@@ -84,32 +81,38 @@ function CausationCell({
   );
 }
 
-function LlmContent({ env }: { env: SOEventEnvelope }): React.JSX.Element {
-  const kind = llmEvidenceKind(env);
-  if (kind === "requested") {
-    const persona = payloadString(env, "persona") || "pilot";
+function LlmContent({ env }: { env: SOEventEnvelope }): React.JSX.Element | null {
+  if (env.event_type === "llm_completion_requested") {
     return (
       <>
         <span className="pd-type">LLM ▸ REQUEST</span>
-        <span className="pd-summary">persona {persona} · thinking…</span>
+        <span className="pd-summary">persona {env.payload.persona_id} · thinking…</span>
       </>
     );
   }
-  const model = payloadString(env, "model") || "model";
-  const pt = payloadNumber(env, "prompt_tokens") ?? 0;
-  const ct = payloadNumber(env, "completion_tokens") ?? 0;
-  const cost = payloadNumber(env, "cost_usd") ?? 0;
+  if (env.event_type === "llm_completion_failed") {
+    return (
+      <>
+        <span className="pd-type">LLM ▸ FAILED</span>
+        <span className="pd-usage" data-testid="llm-usage">
+          {env.payload.model} · {env.payload.reason_code}
+          {env.payload.cost_usd !== null ? (
+            <>
+              {" "}
+              · <b>${env.payload.cost_usd.toFixed(4)}</b>
+            </>
+          ) : null}
+        </span>
+      </>
+    );
+  }
+  if (env.event_type !== "llm_completion_resolved") return null;
   return (
     <>
       <span className="pd-type">LLM ▸ RESOLVED</span>
       <span className="pd-usage" data-testid="llm-usage">
-        {model} · <b>{pt}</b>→<b>{ct}</b> tok
-        {cost > 0 ? (
-          <>
-            {" "}
-            · <b>${cost.toFixed(4)}</b>
-          </>
-        ) : null}
+        {env.payload.model} · <b>{env.payload.prompt_tokens}</b>→
+        <b>{env.payload.completion_tokens}</b> tok
       </span>
     </>
   );

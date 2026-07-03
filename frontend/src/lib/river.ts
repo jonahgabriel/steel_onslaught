@@ -5,13 +5,13 @@
  * ordered, tick-grouped, side-attributed, filterable river the UI renders.
  * No React, no DOM — unit-tested directly (`__tests__/river.test.ts`).
  *
- * LLM evidence discrimination is intentionally structural: the effect node
- * (`steel_onslaught/llm/effect.py`) piggybacks a `kind` marker onto an
- * existing telemetry event type rather than adding a `SOEventType` member (a
- * pinned-member-set test forbids new members).  We read `payload.kind`
- * defensively so no enum change is ever required.
+ * LLM evidence is carried by three first-class `SOEventType` members
+ * (`llm_completion_requested` / `llm_completion_resolved` /
+ * `llm_completion_failed`) emitted by the
+ * effect node (`steel_onslaught/llm/effect.py`). We discriminate solely on
+ * the canonical `event_type` field.
  */
-import type { JsonValue, SOEventEnvelope } from "../types";
+import type { SOEventEnvelope } from "../types";
 
 // ---------------------------------------------------------------------------
 // Side attribution
@@ -57,43 +57,22 @@ export function sideOf(env: SOEventEnvelope, sides: SideMap = EMPTY_SIDE_MAP): S
 }
 
 // ---------------------------------------------------------------------------
-// LLM evidence discrimination (payload.kind — never a new enum member)
+// LLM evidence discrimination (first-class event_type)
 // ---------------------------------------------------------------------------
 
-export type LlmEvidenceKind = "requested" | "resolved";
+export type LlmEvidenceKind = "requested" | "resolved" | "failed";
 
-const LLM_REQUEST_KIND = "llm_completion_requested";
-const LLM_RESOLVED_KIND = "llm_completion_resolved";
-
-function payloadRecord(env: SOEventEnvelope): Record<string, JsonValue> {
-  // Every payload is a JSON object; open-record payloads carry the `kind`
-  // marker the effect node stamps.  A single narrowing cast, no `any`.
-  return env.payload as unknown as Record<string, JsonValue>;
-}
-
-/** Read a string field from an (open) payload, or undefined. */
-export function payloadString(env: SOEventEnvelope, key: string): string | undefined {
-  const v = payloadRecord(env)[key];
-  return typeof v === "string" ? v : undefined;
-}
-
-/** Read a numeric field from an (open) payload, or undefined. */
-export function payloadNumber(env: SOEventEnvelope, key: string): number | undefined {
-  const v = payloadRecord(env)[key];
-  return typeof v === "number" ? v : undefined;
-}
-
-/** Discriminate LLM evidence purely on `payload.kind`. */
+/** Discriminate LLM evidence solely on the first-class `event_type`. */
 export function llmEvidenceKind(env: SOEventEnvelope): LlmEvidenceKind | null {
-  const kind = payloadRecord(env)["kind"];
-  if (kind === LLM_REQUEST_KIND) return "requested";
-  if (kind === LLM_RESOLVED_KIND) return "resolved";
+  if (env.event_type === "llm_completion_requested") return "requested";
+  if (env.event_type === "llm_completion_resolved") return "resolved";
+  if (env.event_type === "llm_completion_failed") return "failed";
   return null;
 }
 
 export interface LlmPair {
   readonly requested: SOEventEnvelope;
-  /** null while the request is unresolved (the LLM is "thinking"). */
+  /** null while the request has no resolved-or-failed terminal evidence. */
   readonly resolved: SOEventEnvelope | null;
 }
 
@@ -104,33 +83,33 @@ export interface LlmPairing {
 }
 
 /**
- * Pair `llm_completion_requested` with the next `llm_completion_resolved` for
- * the same mech, in stream order.  Unmatched requests remain "thinking".
+ * Pair a terminal with the request named by its `causation_id`. Unmatched
+ * requests remain "thinking"; orphan terminals remain visible as lone rows.
+ * The first terminal wins if duplicate evidence arrives.
  */
 export function pairLlmEvidence(envelopes: readonly SOEventEnvelope[]): LlmPairing {
   const pairs: LlmPair[] = [];
-  const openByMech = new Map<string, number>(); // mech_id → index into pairs
+  const pairByRequestId = new Map<string, number>();
   const unresolved = new Set<string>();
 
   for (const env of envelopes) {
     const kind = llmEvidenceKind(env);
     if (kind === null) continue;
-    const mech = env.subject.mech_id;
     if (kind === "requested") {
-      openByMech.set(mech, pairs.length);
+      pairByRequestId.set(env.envelope.message_id, pairs.length);
       pairs.push({ requested: env, resolved: null });
       unresolved.add(env.envelope.message_id);
     } else {
-      const idx = openByMech.get(mech);
+      const causationId = env.envelope.causation_id;
+      const idx = causationId === null ? undefined : pairByRequestId.get(causationId);
       if (idx !== undefined) {
         const open = pairs[idx];
-        if (open !== undefined) {
+        if (open !== undefined && open.resolved === null) {
           pairs[idx] = { requested: open.requested, resolved: env };
           unresolved.delete(open.requested.envelope.message_id);
-          openByMech.delete(mech);
         }
       } else {
-        // Resolution with no visible request — surface it as a lone resolve.
+        // Terminal with no visible request — surface it as a lone terminal.
         pairs.push({ requested: env, resolved: env });
       }
     }
@@ -287,17 +266,11 @@ function shortId(id: string): string {
 
 /** A human, one-line summary of an envelope's payload. */
 export function summarizeEnvelope(env: SOEventEnvelope): string {
-  const llm = llmEvidenceKind(env);
-  if (llm === "requested") {
-    const persona = payloadString(env, "persona") || "pilot";
-    return `LLM request · ${persona}`;
-  }
-  if (llm === "resolved") {
-    const model = payloadString(env, "model") || "model";
-    const pt = payloadNumber(env, "prompt_tokens") ?? 0;
-    const ct = payloadNumber(env, "completion_tokens") ?? 0;
-    return `LLM resolved · ${shortId(model)} · ${pt}→${ct} tok`;
-  }
+  if (env.event_type === "llm_completion_requested")
+    return `LLM request · ${env.payload.persona_id}`;
+  if (env.event_type === "llm_completion_resolved")
+    return `LLM resolved · ${shortId(env.payload.model)} · ${env.payload.prompt_tokens}→${env.payload.completion_tokens} tok`;
+  if (env.event_type === "llm_completion_failed") return `LLM failed · ${env.payload.reason_code}`;
 
   switch (env.event_type) {
     case "match_started":
