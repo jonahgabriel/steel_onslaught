@@ -8,7 +8,7 @@
  */
 import type React from "react";
 import { ChassisSprite, LampCooldown, LampReady, WEAPON_CLASS_GLYPH } from "../assets";
-import { type GaugeState, type MechStatus, mechStateOf } from "../lib/gauges";
+import { type GaugeState, type MechStatus, mechStateOf, pilotDescriptor } from "../lib/gauges";
 import type { Side } from "../lib/river";
 import { weaponClassOf, weaponLabel } from "../lib/weapons";
 import HeatBar from "./HeatBar";
@@ -135,10 +135,7 @@ function MechSpec({ g }: { g: GaugeState }): React.JSX.Element {
       ? Math.max(0, Math.min(100, (g.redlineThreshold / g.ruptureThreshold) * 100))
       : 0;
   const spriteState = mechStateOf(g.hp, g.hpMax, g.status !== "destroyed");
-  const pilotLine =
-    g.persona !== null
-      ? `${g.persona}${g.model !== null ? ` · ${g.model}` : ""}`
-      : g.pilotId.replace(/^pilot\./, "");
+  const pilot = pilotDescriptor(g);
   const weapons = Object.entries(g.weaponCooldowns);
 
   return (
@@ -166,7 +163,7 @@ function MechSpec({ g }: { g: GaugeState }): React.JSX.Element {
             <span className="pd-chip pd-classchip">{CLASS_CHIP[g.chassisClass]}</span>
           </div>
           <div className="pd-spec-pilot" data-testid={`spec-pilot-${g.mechId}`}>
-            {g.persona !== null ? "LLM" : "HEURISTIC"} · {pilotLine}
+            {pilot.kind} · {pilot.label}
           </div>
         </div>
         <span className="pd-lamp" data-status={g.status} data-testid={`spec-status-${g.mechId}`}>

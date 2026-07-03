@@ -261,8 +261,8 @@ body {
 }
 .pd-arena-unit {
   position: absolute;
-  width: 9%;
-  height: 9%;
+  width: 10%;
+  height: 10%;
   transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
@@ -283,6 +283,57 @@ body {
 }
 .pd-arena-unit[data-selected="true"] {
   filter: drop-shadow(0 0 6px var(--phosphor));
+}
+/* Side-colored glow ring, painted behind the sprite (unit z-index 4 clamps the
+   negative z into the unit's own stacking context, above the arena grid). */
+.pd-arena-glow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 165%;
+  height: 165%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: -1;
+}
+.pd-arena-unit[data-side="red"] .pd-arena-glow {
+  background: radial-gradient(
+    circle,
+    rgba(255, 93, 64, 0.5) 0%,
+    rgba(255, 93, 64, 0.14) 46%,
+    transparent 70%
+  );
+}
+.pd-arena-unit[data-side="blue"] .pd-arena-glow {
+  background: radial-gradient(
+    circle,
+    rgba(88, 182, 255, 0.5) 0%,
+    rgba(88, 182, 255, 0.14) 46%,
+    transparent 70%
+  );
+}
+/* Name tag (A-01 / B-01) under each sprite. */
+.pd-arena-tag {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translate(-50%, 1px);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 1px 4px;
+  white-space: nowrap;
+  background: rgba(5, 6, 8, 0.68);
+  pointer-events: none;
+}
+.pd-arena-unit[data-side="red"] .pd-arena-tag {
+  color: var(--ember);
+}
+.pd-arena-unit[data-side="blue"] .pd-arena-tag {
+  color: var(--arc);
 }
 .pd-arena-shimmer {
   position: absolute;
@@ -318,7 +369,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(5, 6, 8, 0.72);
+  /* Lighter wash than before (was 0.72): the final mech positions must stay
+     visible under the banner (D2). */
+  background: radial-gradient(
+    ellipse at center,
+    rgba(5, 6, 8, 0.5) 0%,
+    rgba(5, 6, 8, 0.28) 60%,
+    rgba(5, 6, 8, 0.16) 100%
+  );
   font-family: var(--font-stencil);
   font-weight: 700;
   font-size: 2.4rem;
@@ -679,15 +737,23 @@ body {
   min-height: 34px;
   font-family: var(--font-mono);
   font-size: 0.68rem;
+  /* D3: clamp the flex row to its 1fr grid track. Without min-width:0 the grid
+     item's default `auto` min-width lets the nowrap content grow past the fixed
+     river column, so the side badge + summary tail were clipped at the viewport
+     edge. The shrinking rules below then keep the summary (ellipsis) and the
+     SYS/RED/BLUE badge inside the row. */
+  min-width: 0;
 }
 .pd-stamp {
   color: var(--ash);
   font-size: 0.62rem;
   min-width: 4.5ch;
+  flex-shrink: 0;
 }
 .pd-glyph {
   color: var(--phosphor);
   font-size: 0.85rem;
+  flex-shrink: 0;
 }
 .pd-row[data-group="thermal"] .pd-glyph {
   color: var(--vent);
@@ -700,6 +766,8 @@ body {
   text-transform: uppercase;
   font-weight: 700;
   color: var(--phosphor);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .pd-row[data-group="thermal"] .pd-type {
   color: var(--vent);
@@ -717,6 +785,10 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* The flexible element: shrinks first and ellipsises so fixed siblings
+     (type, confidence meter, chips, side badge) always fit the river column. */
+  flex: 1 1 0;
+  min-width: 0;
 }
 .pd-side {
   margin-left: auto;
@@ -725,6 +797,8 @@ body {
   padding: 0.05rem 0.35rem;
   border: 1px solid var(--seam);
   color: var(--ash);
+  /* Never clip the SYS/RED/BLUE badge — it pins to the right of every row. */
+  flex-shrink: 0;
 }
 .pd-side[data-side="red"] {
   color: var(--ember);
@@ -749,6 +823,7 @@ body {
   display: inline-flex;
   gap: 2px;
   margin-left: 0.3rem;
+  flex-shrink: 0;
 }
 .pd-conf i {
   width: 7px;
@@ -766,6 +841,14 @@ body {
   color: var(--ash);
   padding: 0.03rem 0.35rem;
   text-transform: uppercase;
+  /* Reason-code chips can be long (e.g. TARGET_IN_RANGE); cap + ellipsis so
+     they never shove the side badge off the row (D3). */
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .pd-chip[data-fallback="true"] {
   color: var(--danger);
@@ -783,6 +866,12 @@ body {
 .pd-usage {
   color: var(--ash);
   font-size: 0.64rem;
+  /* Same flexible-shrink contract as .pd-summary (LLM RESOLVED token strip). */
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .pd-usage b {
   color: var(--phosphor);
@@ -954,7 +1043,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(5, 6, 8, 0.72);
+  /* Lighter, center-weighted wash (was a flat 0.72): keeps the stencil legible
+     while the arena's final positions remain visible beneath it (D2). */
+  background: radial-gradient(
+    ellipse at center,
+    rgba(5, 6, 8, 0.58) 0%,
+    rgba(5, 6, 8, 0.32) 55%,
+    rgba(5, 6, 8, 0.2) 100%
+  );
   animation: pd-stamp 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .pd-victory span {

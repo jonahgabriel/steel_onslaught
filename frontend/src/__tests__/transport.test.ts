@@ -344,6 +344,134 @@ describe("MatchTransport — match switch auto-plays the new match (rule 4)", ()
   });
 });
 
+/** A complete match 0..(n-1); the final tick carries a `match_ended` terminal. */
+function completeMatch(matchId: string, n: number): SOEventEnvelope[] {
+  const out: SOEventEnvelope[] = [
+    makeEnvelope("match_started", { seed: 1, max_ticks: n, mechs: [] }, { matchId, tick: 0 }),
+  ];
+  for (let t = 1; t < n - 1; t += 1) {
+    out.push(makeEnvelope("match_tick", {}, { matchId, tick: t }));
+  }
+  out.push(
+    makeEnvelope(
+      "match_ended",
+      { reason: "pilot_killed", winner_id: null },
+      { matchId, tick: n - 1 },
+    ),
+  );
+  return out;
+}
+
+describe("MatchTransport — StrictMode double-connect (D1 pacing-burst race)", () => {
+  it("dedupes a full duplicate re-stream after a partial one and stays paced", () => {
+    // Exact StrictMode sequence: transport created → sink set → rAF frames pumped
+    // with realistic epochs (start at 5000ms, NOT 0) → partial ingest (stream #1
+    // that closed early) → sink unset/reset (unmount) → full duplicate ingest
+    // (stream #2 re-streaming ALL events) → assert paced release with no burst and
+    // no duplicate rows downstream.
+    const t = new MatchTransport({ msPerTick: 500 });
+    const rec = recordingSink();
+    let unsink = t.setSink(rec.sink);
+
+    // The server's canonical stream for a 6-tick match, built once so the
+    // duplicate re-stream reuses identical envelope `message_id`s.
+    const full = completeMatch("m", 6); // ticks 0..5, ended at 5
+
+    // --- stream #1: delivered ticks 0,1,2 then the socket closed early. ---
+    for (const e of full.slice(0, 3)) t.ingest(e);
+
+    let now = 5000; // realistic performance.now() epoch, not 0
+    t.frame(now); // prime → tick 0
+    expect(t.snapshot().cursorTick).toBe(0);
+    now += 500;
+    t.frame(now); // tick 1
+    now += 500;
+    t.frame(now); // tick 2 — caught up to the partial head
+    expect(t.snapshot().cursorTick).toBe(2);
+
+    // Idle wall-clock passes while the cursor holds at the partial head (rAF keeps
+    // pumping). Unanchored, this accrued time is what floods out as a burst.
+    for (let k = 0; k < 20; k += 1) {
+      now += 500;
+      t.frame(now);
+    }
+    expect(t.snapshot().cursorTick).toBe(2); // still holding, no burst
+
+    // --- unmount (sink unset) then remount (sink re-set); stream #2 re-streams
+    //     the ENTIRE match — every envelope duplicated. ---
+    unsink();
+    unsink = t.setSink(rec.sink);
+    for (const e of full) t.ingest(e); // dup of 0,1,2 + new 3,4,5
+
+    // Dedup: the duplicate re-stream must NOT have doubled the buffer.
+    expect(t.snapshot().bufferedCount).toBe(full.length); // 6, not 9
+
+    // Resume: the remaining ticks release paced — one per ~500ms — and the
+    // accrued idle time does NOT flood.
+    const releasedBefore = rec.released.length;
+    now += 16;
+    t.frame(now); // < one tick-duration since resume-anchor → nothing yet
+    expect(rec.released.length).toBe(releasedBefore);
+    now += 500;
+    t.frame(now);
+    expect(t.snapshot().cursorTick).toBe(3);
+    now += 500;
+    t.frame(now);
+    expect(t.snapshot().cursorTick).toBe(4);
+    now += 500;
+    t.frame(now);
+    expect(t.snapshot().cursorTick).toBe(5);
+
+    // No duplicate rows downstream: each tick appears exactly once, in order.
+    expect(rec.released.map((e) => e.tick)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it("re-anchors the clock after resting on a finished match (no owed-time burst)", () => {
+    // Guards the removal of the old `!buf.complete` re-anchor guard: even when a
+    // reconnect carries FRESH message_ids (dedup can't drop them), the wall-clock
+    // time accrued while the cursor rested on a completed match must not flood.
+    const t = new MatchTransport({ msPerTick: 500 });
+    const rec = recordingSink();
+    t.setSink(rec.sink);
+
+    for (const e of completeMatch("m", 6) /* 0..5 */) t.ingest(e);
+
+    // Pace to the end; the match is complete and the cursor rests on tick 5.
+    let now = 5000;
+    for (let tick = 0; tick < 6; tick += 1) {
+      t.frame(now);
+      now += 500;
+    }
+    expect(t.snapshot().cursorTick).toBe(5);
+    expect(t.snapshot().ended).toBe(true);
+
+    // Long idle rest — many frames, no new data. lastReleaseTime must track `now`.
+    for (let k = 0; k < 20; k += 1) {
+      t.frame(now);
+      now += 500;
+    }
+    const lastIdleNow = now - 500; // wall-clock of the final idle frame
+
+    // A reconnect appends a continuation with FRESH ids (not deduped).
+    t.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 6 }));
+    t.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 7 }));
+
+    // The first resume frame is sub-tick after the last idle anchor: nothing
+    // floods despite ~10s of rest (the old !complete guard dumped both owed ticks
+    // here, jumping straight to the buffer end).
+    const before = rec.released.length;
+    t.frame(lastIdleNow + 16);
+    expect(rec.released.length).toBe(before);
+    expect(t.snapshot().cursorTick).toBe(5);
+
+    // Then it resumes strictly paced, one tick per tick-duration.
+    t.frame(lastIdleNow + 500);
+    expect(t.snapshot().cursorTick).toBe(6);
+    t.frame(lastIdleNow + 1000);
+    expect(t.snapshot().cursorTick).toBe(7);
+  });
+});
+
 describe("MatchTransport — restart", () => {
   it("rewinds to tick 0 and plays forward", () => {
     const t = new MatchTransport({ msPerTick: 100 });

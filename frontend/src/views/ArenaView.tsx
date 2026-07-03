@@ -16,13 +16,15 @@ import { useEffect, useReducer } from "react";
 import { ChassisSprite, Tracer } from "../assets";
 import type { WeaponClass } from "../assets/theme";
 import type { EnvelopeHandler } from "../lib/event_stream";
-import { mechStateOf } from "../lib/gauges";
+import { displayNameOf, mechStateOf } from "../lib/gauges";
 import { weaponClassOf } from "../lib/weapons";
 import type { SOEventEnvelope, SOMechRuntimeState, SOPosition } from "../types";
 
 export const GRID_CELLS = 40;
-/** Sector grid lines every 4 cells — keyed by coordinate, not array index. */
-const SECTORS = Array.from({ length: GRID_CELLS / 4 + 1 }, (_, i) => i * 4);
+/** Minor grid lines every 2 cells (subtle) — keyed by coordinate, not index. */
+const MINOR = Array.from({ length: GRID_CELLS / 2 + 1 }, (_, i) => i * 2);
+/** Sector marks every 8 cells (brighter) — the readable coarse grid. */
+const SECTORS = Array.from({ length: GRID_CELLS / 8 + 1 }, (_, i) => i * 8);
 const TRAIL_MAX = 8;
 const TRACER_TTL_MS = 700;
 const FIRING_TTL_MS = 420;
@@ -302,7 +304,31 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
       >
         <title>Arena plotting grid</title>
         <rect x={0} y={0} width={GRID_CELLS} height={GRID_CELLS} fill="var(--coal)" />
-        <g stroke="var(--seam)" strokeWidth={0.6} opacity={0.5}>
+        {/* Minor grid — subtle, at the seam level (every 2 cells). */}
+        <g stroke="var(--seam)" strokeWidth={1} opacity={0.32}>
+          {MINOR.map((c) => (
+            <line
+              key={`mv-${c}`}
+              x1={c}
+              y1={0}
+              x2={c}
+              y2={GRID_CELLS}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+          {MINOR.map((c) => (
+            <line
+              key={`mh-${c}`}
+              x1={0}
+              y1={c}
+              x2={GRID_CELLS}
+              y2={c}
+              vectorEffect="non-scaling-stroke"
+            />
+          ))}
+        </g>
+        {/* Sector marks — brighter coarse grid (every 8 cells) so the arena reads. */}
+        <g stroke="var(--ash)" strokeWidth={1.2} opacity={0.5}>
           {SECTORS.map((c) => (
             <line
               key={`v-${c}`}
@@ -335,9 +361,9 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
               data-testid={`arena-trail-${mech.mechId}`}
               cx={p.x + 0.5}
               cy={p.y + 0.5}
-              r={0.32}
+              r={0.5}
               fill={mech.playerId === mechs[0]?.playerId ? "var(--ember)" : "var(--arc)"}
-              opacity={0.08 + (i / TRAIL_MAX) * 0.35}
+              opacity={0.16 + (i / TRAIL_MAX) * 0.5}
             />
           ));
         })}
@@ -391,8 +417,12 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
             data-chassis-class={mech.chassisClass}
             data-state={spriteState}
             data-selected={selectedNow}
+            data-side={side}
             style={{ left: pct(mech.position.x), top: pct(mech.position.y) }}
           >
+            {/* Side-colored glow ring under the sprite — makes each unit read
+                against the dark arena and encodes its side at a glance. */}
+            <span className="pd-arena-glow" data-side={side} aria-hidden="true" />
             <button
               type="button"
               className="pd-arena-unit-btn"
@@ -410,6 +440,14 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
                 size={40}
               />
             </button>
+            {/* Name tag (A-01 / B-01) under the sprite. */}
+            <span
+              className="pd-arena-tag"
+              data-side={side}
+              data-testid={`arena-tag-${mech.mechId}`}
+            >
+              {displayNameOf(mech.mechId)}
+            </span>
             {!mech.alive ? <SteamBurst mechId={mech.mechId} /> : null}
           </div>
         );

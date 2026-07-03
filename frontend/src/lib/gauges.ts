@@ -45,6 +45,15 @@ export interface GaugeState {
   readonly chassisClass: ChassisClass;
   readonly chassisId: string;
   readonly pilotId: string;
+  /**
+   * True when this mech is driven by an LLM pilot. Classified at MATCH_STARTED
+   * from the `pilot_id` (an LLM pilot spec id carries an `llm` segment, e.g.
+   * `pilot.llm.berserker`) so the label is honest from tick 0 — before the first
+   * `llm_completion_requested` event folds. A `pilot_decision_made` with an
+   * `llm_*` reason_code (LLM_DECISION / LLM_FALLBACK) is an equivalent, later
+   * signal and also flips this on (the stream-derived fallback the spec asks for).
+   */
+  readonly isLlm: boolean;
   /** LLM persona (from llm_completion_requested), else null (heuristic pilot). */
   readonly persona: string | null;
   /** LLM provider/model (from llm_completion_resolved), else null. */
@@ -86,6 +95,36 @@ export function displayNameOf(mechId: string): string {
   return (parts.length > 0 ? parts.join("-") : mechId).toUpperCase();
 }
 
+/** An LLM pilot spec id carries an `llm` segment (`pilot.llm.berserker`). */
+function isLlmPilotId(pilotId: string): boolean {
+  return pilotId.split(".").includes("llm");
+}
+
+/** Persona encoded in an LLM pilot id: the segment after `llm` (`…llm.berserker` → `berserker`). */
+function personaFromPilotId(pilotId: string): string | null {
+  const parts = pilotId.split(".");
+  const i = parts.indexOf("llm");
+  return i >= 0 && i + 1 < parts.length ? (parts[i + 1] ?? null) : null;
+}
+
+/**
+ * Honest pilot descriptor for the spec panel (D4). LLM pilots read
+ * `LLM · <persona> · <provider>` (e.g. `LLM · berserker · stub`); heuristic
+ * pilots read `HEURISTIC · <archetype>`. Persona + provider come from the
+ * `llm_completion_*` evidence events; until the first one folds we fall back to
+ * the persona encoded in the pilot_id, so an LLM pilot is never mislabelled
+ * `HEURISTIC` during the opening ticks (the reported bug). Provider is omitted
+ * until a resolved event supplies the model.
+ */
+export function pilotDescriptor(g: GaugeState): { kind: "LLM" | "HEURISTIC"; label: string } {
+  const isLlm = g.isLlm || g.persona !== null || g.model !== null;
+  if (isLlm) {
+    const persona = g.persona ?? personaFromPilotId(g.pilotId) ?? g.pilotId.replace(/^pilot\./, "");
+    return { kind: "LLM", label: g.model !== null ? `${persona} · ${g.model}` : persona };
+  }
+  return { kind: "HEURISTIC", label: g.pilotId.replace(/^pilot\./, "") };
+}
+
 function fromRuntime(state: SOMechRuntimeState, sides: SideMap): GaugeState {
   return {
     mechId: state.mech_id,
@@ -95,6 +134,7 @@ function fromRuntime(state: SOMechRuntimeState, sides: SideMap): GaugeState {
     chassisClass: state.chassis_class,
     chassisId: state.chassis_id,
     pilotId: state.pilot_id,
+    isLlm: isLlmPilotId(state.pilot_id),
     persona: null,
     model: null,
     heat: state.boiler.heat_current,
@@ -171,10 +211,17 @@ export function applyGaugeEvent(gauges: Gauges, env: SOEventEnvelope): Gauges {
       return patch(env.subject.mech_id, {
         shotsFired: (gauges[env.subject.mech_id]?.shotsFired ?? 0) + 1,
       });
-    case "pilot_decision_made":
+    case "pilot_decision_made": {
+      // An `llm_*` reason_code (LLM_DECISION / LLM_FALLBACK) is a stream-derived
+      // confirmation that this mech is LLM-driven — the fallback classifier for a
+      // pilot_id that did not encode `llm`.
+      const isLlmDecision = env.payload.reason_code.startsWith("llm_");
+      const cur = gauges[env.subject.mech_id];
       return patch(env.subject.mech_id, {
-        decisions: (gauges[env.subject.mech_id]?.decisions ?? 0) + 1,
+        decisions: (cur?.decisions ?? 0) + 1,
+        ...(isLlmDecision ? { isLlm: true } : {}),
       });
+    }
     case "boiler_overloaded":
       return patch(env.subject.mech_id, {
         overloaded: true,

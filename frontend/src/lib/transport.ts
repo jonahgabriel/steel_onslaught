@@ -97,6 +97,14 @@ interface MatchBuffer {
   blueLabel: string;
   /** A terminal event (`match_ended`/`victory_declared`) has been ingested. */
   complete: boolean;
+  /**
+   * Envelope `message_id`s already appended to this buffer. React StrictMode
+   * double-mounts the effect that opens the WebSocket, and the server re-streams
+   * ALL events per connection — so the same envelopes can ingest twice. Dedup by
+   * the ONEX message identity keeps each envelope in the buffer exactly once (no
+   * duplicate rows downstream, no doubled tick boundaries). See D1.
+   */
+  seen: Set<string>;
 }
 
 export interface MatchTransportOptions {
@@ -164,12 +172,24 @@ export class MatchTransport {
     const matchId = env.match_id;
     let buf = this.buffers.get(matchId);
     if (buf === undefined) {
-      buf = { events: [], maxTick: -1, redLabel: "", blueLabel: "", complete: false };
+      buf = {
+        events: [],
+        maxTick: -1,
+        redLabel: "",
+        blueLabel: "",
+        complete: false,
+        seen: new Set<string>(),
+      };
       this.buffers.set(matchId, buf);
       this.order.push(matchId);
       // Default selection = the FIRST match to arrive.
       if (this.activeMatchId === null) this.activeMatchId = matchId;
     }
+    // Dedup a StrictMode / reconnect re-stream: the same envelope must never land
+    // in the buffer twice (it would duplicate rows and corrupt tick boundaries).
+    const messageId = env.envelope.message_id;
+    if (buf.seen.has(messageId)) return;
+    buf.seen.add(messageId);
     buf.events.push(env);
     if (env.tick > buf.maxTick) buf.maxTick = env.tick;
     if (env.event_type === "match_started") {
@@ -258,11 +278,16 @@ export class MatchTransport {
         this.lastReleaseTime += dur;
         guard += 1;
       }
-      // Caught up to the head of a still-streaming match: re-anchor the clock to
-      // `now` so newly ingested frames resume paced (no catch-up burst) instead
-      // of dumping the backlog the instant more data arrives. A finished match
-      // is left alone — it simply stops on its final tick (see `ended`).
-      if (this.releasedCount >= events.length && !buf.complete) {
+      // Caught up to the buffer head: re-anchor the clock to `now` so that when
+      // more frames arrive playback resumes paced (no catch-up burst) instead of
+      // dumping the wall-clock backlog the instant more data lands. This must
+      // fire REGARDLESS of `buf.complete` (D1): the old `!buf.complete` guard
+      // froze `lastReleaseTime` while the cursor rested on a finished match, so a
+      // StrictMode / reconnect re-stream that appended events dumped every "owed"
+      // tick accrued during the rest at once — the pacing-burst race. The dedup
+      // in `ingest` stops an identical re-stream from adding events at all; this
+      // re-anchor keeps pacing honest even when the re-stream carries fresh ids.
+      if (this.releasedCount >= events.length) {
         this.lastReleaseTime = now;
       }
     }

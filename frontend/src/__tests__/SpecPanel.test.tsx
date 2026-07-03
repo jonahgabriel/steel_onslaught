@@ -166,6 +166,7 @@ describe("SpecPanel — synthetic state", () => {
       chassisClass: "heavy",
       chassisId: "chassis.heavy.ironclad_mk1",
       pilotId: "pilot.tactician",
+      isLlm: false,
       persona: null,
       model: null,
       heat: 20,
@@ -198,6 +199,16 @@ describe("SpecPanel — synthetic state", () => {
     expect(row).toHaveAttribute("data-ready", "false");
     expect(row).toHaveAttribute("data-cooldown", "2");
     expect(row.textContent).toContain("2t");
+  });
+
+  it("labels an LLM pilot from its pilot_id before any LLM evidence folds (D4)", () => {
+    // pilot.llm.berserker classified LLM at match_started — must NOT read
+    // "HEURISTIC · llm.berserker" during the opening ticks (the reported bug).
+    render(<SpecPanel gauges={[gauge({ pilotId: "pilot.llm.berserker", isLlm: true })]} />);
+    const pilot = screen.getByTestId("spec-pilot-mech.x.01");
+    expect(pilot.textContent).toContain("LLM");
+    expect(pilot.textContent).toContain("berserker");
+    expect(pilot.textContent).not.toContain("HEURISTIC");
   });
 
   it("shows a heuristic pilot archetype when there is no LLM evidence", () => {
