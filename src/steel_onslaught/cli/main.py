@@ -17,7 +17,9 @@ from pathlib import Path
 
 import click
 
+from steel_onslaught.cli.adaptation import adaptation_command
 from steel_onslaught.cli.balance import balance_command
+from steel_onslaught.cli.experiment import learn_experiment_command
 from steel_onslaught.cli.learn import learn_command
 from steel_onslaught.cli.serve import serve_command
 from steel_onslaught.match.composition import (
@@ -39,6 +41,8 @@ def main() -> None:
 main.add_command(serve_command)
 main.add_command(balance_command)
 main.add_command(learn_command)
+main.add_command(learn_experiment_command)
+main.add_command(adaptation_command)
 
 
 @main.command(name="run")

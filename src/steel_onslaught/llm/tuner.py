@@ -21,7 +21,7 @@ from typing import Any
 from steel_onslaught.contracts.lineage import ParamDict
 from steel_onslaught.learning.protocols import BoundsDict
 from steel_onslaught.llm.context_arms import ContextArm, assemble_arm_context
-from steel_onslaught.llm.schemas import ProtocolLlmClient
+from steel_onslaught.llm.schemas import LlmUsage, ProtocolLlmClient
 
 _LOG = logging.getLogger(__name__)
 
@@ -80,15 +80,45 @@ def tune(
     Returns (candidates, generator_id) where candidates is a list of
     (ParamDict, selection_reason) tuples ready for ``run_learning_loop``.
 
-    All proposals are snapped to the lattice, validated, and deduped before
-    return. On any failure (LLM error, unparseable JSON), returns an empty list
-    — the loop will then report "no candidate" (honest, not a crash).
+    Thin wrapper over :func:`tune_with_usage` for callers that do not need the
+    per-call token/cost accounting (e.g. ``so learn``).
+    """
+    candidates, generator_id, _usage = tune_with_usage(
+        client=client,
+        arm=arm,
+        archetype=archetype,
+        parent_params=parent_params,
+        bounds=bounds,
+        n_proposals=n_proposals,
+        **arm_kwargs,
+    )
+    return candidates, generator_id
+
+
+def tune_with_usage(
+    *,
+    client: ProtocolLlmClient,
+    arm: ContextArm,
+    archetype: str,
+    parent_params: ParamDict,
+    bounds: BoundsDict,
+    n_proposals: int,
+    **arm_kwargs: Any,
+) -> tuple[list[tuple[ParamDict, str]], str, LlmUsage]:
+    """Propose candidate parameter sets via one LLM call, returning usage.
+
+    Returns (candidates, generator_id, usage). ``usage`` is the token/cost
+    accounting of the single ``complete()`` call — the source of truth for the
+    experiment harness's ``cost_per_promotion`` metric. On any failure (LLM
+    error, unparseable JSON) the candidate list is empty and usage is whatever
+    was accounted (zero on a failed call) — honest, not a crash.
     """
     ctx = assemble_arm_context(
         arm, archetype=archetype, parent_params=parent_params, bounds=bounds, **arm_kwargs
     )
     prompt = ctx.prompt_addendum + _PROPOSAL_PROMPT.format(n=n_proposals)
     model = "stub"
+    usage = LlmUsage()
 
     try:
         response = client.complete(
@@ -98,9 +128,10 @@ def tune(
             json_mode=True,
         )
         model = response.model
+        usage = response.usage
     except Exception as exc:
         _LOG.warning("LLM tuner call failed: %s", exc)
-        return [], f"llm.{model}@{arm.value}"
+        return [], f"llm.{model}@{arm.value}", usage
 
     # Parse the JSON array of proposals.
     try:
@@ -109,7 +140,7 @@ def tune(
             proposals_raw = []
     except (json.JSONDecodeError, TypeError):
         _LOG.warning("LLM tuner returned unparseable JSON")
-        return [], f"llm.{model}@{arm.value}"
+        return [], f"llm.{model}@{arm.value}", usage
 
     # Snap + validate + dedupe.
     seen_hashes: set[str] = set()
@@ -162,7 +193,7 @@ def tune(
         candidates.append((snapped, "llm_proposal:snapped"))
 
     generator_id = f"llm.{model}@{arm.value}"
-    return candidates, generator_id
+    return candidates, generator_id, usage
 
 
-__all__ = ["tune"]
+__all__ = ["tune", "tune_with_usage"]
