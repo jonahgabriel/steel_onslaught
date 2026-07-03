@@ -1,0 +1,10 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.deepseek
+display_name: "DeepSeek-V4 (M2 Ultra)"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: opportunist
+  provider: deepseek

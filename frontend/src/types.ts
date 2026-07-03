@@ -192,6 +192,7 @@ export interface PilotDecisionMadePayload {
   reason_code: SOPilotReasonCode;
   confidence: number;
   considered_actions: ConsideredAction[];
+  rationale: string | null;
 }
 
 export interface MoveIntentPayload {
@@ -1000,7 +1001,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(
       record,
-      ["action", "action_params", "reason_code", "confidence", "considered_actions"],
+      ["action", "action_params", "reason_code", "confidence", "considered_actions", "rationale"],
       context,
     );
     const considered = record["considered_actions"];
@@ -1027,6 +1028,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       reason_code: parsePilotReason(record["reason_code"], `${context}.reason_code`),
       confidence: Math.min(1, Math.max(0, confidence)),
       considered_actions,
+      rationale: nullableStr(record, "rationale", context),
     };
   },
   move_intent: (value, context) => {

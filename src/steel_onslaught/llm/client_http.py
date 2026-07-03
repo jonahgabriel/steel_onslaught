@@ -117,4 +117,21 @@ class OpenAICompatibleClient:
         )
 
 
-__all__ = ["OpenAICompatibleClient"]
+__all__ = ["PROVIDER_ENDPOINTS", "OpenAICompatibleClient", "client_for_provider"]
+
+
+# Provider registry: maps provider ids to (base_url, model) for the AI PC lab.
+# These are the live-probed endpoints (2026-07-02). To add a model, add an entry.
+PROVIDER_ENDPOINTS: dict[str, tuple[str, str]] = {
+    "stub": ("", ""),
+    "openai-compat": (_DEFAULT_BASE_URL, _DEFAULT_MODEL),
+    "qwen35": ("http://100.109.203.94:8000/v1", "Qwen3.6-35B-A3B"),
+    "qwen27": ("http://100.109.203.94:8001/v1", "Qwen3.6-27B-MTP-IQ4_XS.gguf"),
+    "deepseek": ("http://100.99.174.19:8101/v1", "deepseek-v4-pro"),
+}
+
+
+def client_for_provider(provider: str) -> OpenAICompatibleClient:
+    """Build an OpenAICompatibleClient from a provider id (registry lookup)."""
+    base_url, model = PROVIDER_ENDPOINTS.get(provider, (_DEFAULT_BASE_URL, _DEFAULT_MODEL))
+    return OpenAICompatibleClient(base_url=base_url, model=model)
