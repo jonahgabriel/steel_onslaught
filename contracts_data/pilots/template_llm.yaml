@@ -1,0 +1,10 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.template.llm
+display_name: "LLM Pilot (Stub, Berserker)"
+archetype: llm
+lineage:
+  parent: null
+parameters:
+  persona: berserker
+  provider: stub

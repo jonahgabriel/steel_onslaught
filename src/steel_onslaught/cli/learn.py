@@ -21,13 +21,14 @@ Phase 2 meta is the parent pairing; pool-wide metas arrive with populations
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
 import click
 from pydantic import ValidationError
 
-from steel_onslaught.contracts.lineage import spec_hash
+from steel_onslaught.contracts.lineage import ParamDict, spec_hash
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.learning.artifacts import LearningArtifactStore
@@ -67,6 +68,8 @@ def _run_learn(
     recorded_at: datetime,
     duel_executor: DuelExecutor,
     artifacts: LearningArtifactStore,
+    candidates: Sequence[tuple[ParamDict, str]] | None = None,
+    generator_id: str | None = None,
 ) -> tuple[ModelSOLearnResult, Path | None]:
     """The testable composition; the caller injects the clock.
 
@@ -101,6 +104,8 @@ def _run_learn(
         evaluator=evaluator,
         opponent_spec_hashes=[spec_hash(archetype, parent_params)],
         config=config,
+        candidates=candidates,
+        generator_id=generator_id,
     )
     record_path: Path | None = None
     if result.record is not None:

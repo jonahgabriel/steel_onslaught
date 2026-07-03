@@ -100,9 +100,54 @@ def _sniper_decision(user_prompt: str) -> str:
     )
 
 
+def _tuner_decision(user_prompt: str) -> str:
+    """Tuner stub: propose parameter sets that differ from the parent.
+
+    Parses the parent params from the prompt and returns 2 proposals with
+    slightly different values (within the declared bounds). This gives the
+    tuner a working offline path.
+    """
+
+    # Extract parent params from the "Current parent parameters:" line.
+    # The format is: "Current parent parameters: k=v, k=v, ..."
+    p1: dict[str, object] = {}
+    p2: dict[str, object] = {}
+    for line in user_prompt.splitlines():
+        if "Current parent parameters:" not in line:
+            continue
+        params_str = line.split("Current parent parameters:")[1].strip()
+        for pair in params_str.split(","):
+            pair = pair.strip()
+            if "=" not in pair:
+                continue
+            name, val = pair.split("=", 1)
+            name, val = name.strip(), val.strip().strip("'\"")
+            try:
+                v: object = float(val) if "." in val else int(val)
+            except ValueError:
+                v = val
+            p1[name] = v
+            p2[name] = v
+        break
+    # Modify one numeric param in each proposal
+    for pname in list(p1):
+        pval = p1[pname]
+        if isinstance(pval, (int, float)) and pval != 0:
+            p1[pname] = max(0, pval - 1)  # small step down
+            break
+    for pname in list(p2):
+        pval = p2[pname]
+        if isinstance(pval, (int, float)):
+            p2[pname] = pval + 1  # small step up
+            break
+    proposals = [p1, p2]
+    return json.dumps(proposals)
+
+
 _PERSONA_STUBS: dict[str, _StubDecisionFn] = {
     "berserker": _berserker_decision,
     "sniper": _sniper_decision,
+    "tuner": _tuner_decision,
 }
 
 

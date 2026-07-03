@@ -1,0 +1,38 @@
+---
+# ONEX Node Contract — LLM pilot archetype (effect node, impure).
+#
+# Unlike the heuristic pilots (compute/pure), the LLM pilot performs network
+# I/O in decide() — so its honest archetype is effect, not compute. The LLM
+# call is wrapped (failures degrade to REMAIN), and the fold ignores
+# PILOT_DECISION_MADE events, so replay-validity holds regardless.
+name: llm_pilot_effect
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: effect
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  LLM pilot archetype — consults an LLM for each decide(observation) call via
+  the ProtocolLlmClient seam. Nondeterministic by design (LLM sampling), but
+  replay-validity holds (the fold ignores decision events; the recorded ledger
+  replays identically). Any failure (timeout, malformed JSON, invalid action)
+  degrades to REMAIN — never crashes the match.
+
+handler:
+  module: steel_onslaught.llm.pilot
+  class: LLMPilot
+
+handler_routing:
+  default_handler: steel_onslaught.llm.pilot:LLMPilot
+
+descriptor:
+  node_archetype: effect
+  purity: impure
+  idempotent: false
+  timeout_ms: 30000
+
+event_bus:
+  subscribe_topics: []
+  publish_topics: []
+
+metadata:
+  transport_type: in_process

@@ -62,7 +62,19 @@ Wall-clock is permitted only outside the determinism surface:
    (`cli/learn.py`, learning-loop Decision #4), which is excluded from record
    identity (the digest is taken over the inner record *without* `recorded_at`),
    so re-runs are idempotent (first-write-wins).
+3. **The `llm/` module** — a declared nondeterminism + wall-clock boundary.
+   LLM sampling and request timing live in the LLM client/effect nodes
+   (`llm/client_http.py`, `llm/effect.py`), never in the pure fold or the
+   learning loop's `learning/` directory. LLM pilots are nondeterministic
+   (cross-run: two matches with the same seed produce different ledgers), but
+   **replay-validity holds** — the fold ignores `PILOT_DECISION_MADE` events,
+   and the recorded ledger replays identically regardless of how the decision
+   was generated (the StarCraft-replay principle). The LLM tuner's
+   nondeterminism is confined to candidate *selection*; every lineage record
+   pins `candidate_params` + `spec_hash`, so any recorded evaluation is exactly
+   re-runnable after the fact.
 
-Both are verified by source-scan purity tests
+Both (1) and (2) are verified by source-scan purity tests
 (`tests/learning/test_loop.py`, `tests/cli/test_learn.py`) that confine
-`datetime.now` to exactly these boundary sites.
+`datetime.now` to exactly these boundary sites. The `llm/` module (3) is
+outside the source-scan's scope by design — it is the declared I/O boundary.

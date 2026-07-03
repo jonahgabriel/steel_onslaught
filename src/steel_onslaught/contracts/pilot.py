@@ -77,10 +77,28 @@ class ModelSOPredictivePilotParams(BaseModel):
     regen_pressure_floor: int = Field(ge=0, le=60)
 
 
+class ModelSOLlmPilotParams(BaseModel):
+    """Identity params for the LLM archetype (categorical, not tunable).
+
+    The LLM's behavior is shaped by its persona prompt, not numeric thresholds.
+    These fields identify which persona and provider to use; they are not a
+    search space for the learning loop (the tuner tunes heuristic archetypes).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    persona: str = Field(min_length=1, description="Persona id (berserker|sniper|opportunist|...)")
+    provider: str = Field(
+        min_length=1,
+        description="Provider id selected by the application overlay",
+    )
+
+
 _ARCHETYPE_PARAMS: dict[str, type[BaseModel]] = {
     "aggressive": ModelSOAggressivePilotParams,
     "defensive": ModelSODefensivePilotParams,
     "predictive": ModelSOPredictivePilotParams,
+    "llm": ModelSOLlmPilotParams,
 }
 
 
@@ -94,10 +112,13 @@ class ModelSOPilotSpec(BaseModel):
 
     id: PilotId
     display_name: str = Field(min_length=1)
-    archetype: Literal["aggressive", "defensive", "predictive"]
+    archetype: Literal["aggressive", "defensive", "predictive", "llm"]
     lineage: ModelSOPilotLineage
     parameters: (
-        ModelSOAggressivePilotParams | ModelSODefensivePilotParams | ModelSOPredictivePilotParams
+        ModelSOAggressivePilotParams
+        | ModelSODefensivePilotParams
+        | ModelSOPredictivePilotParams
+        | ModelSOLlmPilotParams
     )
 
     @model_validator(mode="after")

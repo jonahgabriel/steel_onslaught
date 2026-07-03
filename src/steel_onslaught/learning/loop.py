@@ -53,6 +53,7 @@ class SOSearchStrategy(StrEnum):
     GRID = "grid"
     HILL_CLIMB = "hill_climb"
     RANDOM_RESTART = "random_restart"
+    EXTERNAL = "external"  # Phase 3: candidates provided externally (e.g. LLM tuner)
 
 
 class ModelSOLearnConfig(BaseModel):
@@ -166,6 +167,8 @@ def run_learning_loop(
     evaluator: EvaluatorProtocol,
     opponent_spec_hashes: Sequence[str],
     config: ModelSOLearnConfig,
+    candidates: Sequence[tuple[ParamDict, str]] | None = None,
+    generator_id: str | None = None,
 ) -> ModelSOLearnResult:
     search_seeds, holdout_seeds = derive_seed_batteries(
         config.master_seed, config.n_search_seeds, config.n_holdout_seeds
@@ -300,6 +303,13 @@ def run_learning_loop(
         )
     elif config.strategy is SOSearchStrategy.HILL_CLIMB:
         record = run_hill_climb()
+    elif config.strategy is SOSearchStrategy.EXTERNAL:
+        # Phase 3: externally-provided candidates (e.g. LLM tuner). The
+        # candidates must be fully materialized before this call (no lazy I/O
+        # inside the pure loop — adversarial verdict C3). Fail loud if missing.
+        if candidates is None or generator_id is None:
+            raise ValueError("EXTERNAL strategy requires both `candidates` and `generator_id`")
+        record = run_enumeration(candidates, generator_id)
     else:
         record = run_enumeration(
             (
