@@ -1,14 +1,16 @@
 /**
  * PressureDeck — PRESSURE DECK root.
  *
- * Owns the single envelope subscription and folds it into every panel:
- * gauges (left), the Event River (centre), the radar (top-right) and the
- * inspector drawer. Incoming envelopes are buffered and flushed once per
- * animation frame (never setState-per-envelope) so a recorded match that
- * arrives faster than paint still renders correctly.
+ * Owns the single envelope subscription and folds it into every panel of the
+ * Rev 2 layout: mech SPEC panels (left rail), the ARENA (centre, dominant),
+ * the Event River (right column) and the inspector drawer. Incoming envelopes
+ * are buffered and flushed once per animation frame (never setState-per-
+ * envelope) so a recorded match that arrives faster than paint still renders
+ * correctly.
  */
 import type React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { AwaitingTransmission, Wordmark } from "../assets";
 import {
   ancestryOf,
   assignLanes,
@@ -34,10 +36,10 @@ import {
   windowRows,
 } from "../lib/river";
 import type { SOEventEnvelope } from "../types";
+import ArenaView from "./ArenaView";
 import EnvelopeInspector from "./EnvelopeInspector";
 import EventRiver from "./EventRiver";
-import GaugeRail from "./GaugeRail";
-import RadarPanel from "./RadarPanel";
+import SpecPanel from "./SpecPanel";
 import Ticker from "./Ticker";
 
 const MAX_STORED = 5000;
@@ -372,7 +374,7 @@ export default function PressureDeck({ subscribe }: PressureDeckProps): React.JS
       <div className="pd-grain" aria-hidden="true" />
 
       <header className="pd-header">
-        <span className="pd-wordmark">STEEL ONSLAUGHT</span>
+        <Wordmark height={30} className="pd-wordmark" />
         <span className="pd-matchid" data-testid="match-id">
           ▮ {state.matchId || "no match"}
         </span>
@@ -402,7 +404,15 @@ export default function PressureDeck({ subscribe }: PressureDeckProps): React.JS
       </header>
 
       <div className="pd-body">
-        <GaugeRail gauges={gaugeList} />
+        <SpecPanel gauges={gaugeList} />
+
+        <div className="pd-arena-cell" data-testid="arena-cell">
+          {gaugeList.length > 0 ? (
+            <ArenaView subscribe={subscribe} />
+          ) : (
+            <AwaitingTransmission className="pd-arena-empty" />
+          )}
+        </div>
 
         <EventRiver
           groups={groups}
@@ -416,10 +426,6 @@ export default function PressureDeck({ subscribe }: PressureDeckProps): React.JS
           onSelect={onSelect}
           onHover={onHover}
         />
-
-        <div className="pd-right">
-          <RadarPanel subscribe={subscribe} />
-        </div>
 
         {selected !== null ? (
           <EnvelopeInspector

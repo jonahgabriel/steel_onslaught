@@ -29,10 +29,11 @@ const SIDE_COLOR: Record<Side, string> = {
   neutral: "var(--ash)",
 };
 
-const GUTTER_W = 48;
-const ROW_H = 40;
-const LANE_STEP = 7;
-const LANE_X0 = 6;
+// Rev 2: causation gutter narrowed to ~32px for the right-column river.
+const GUTTER_W = 32;
+const ROW_H = 34;
+const LANE_STEP = 5;
+const LANE_X0 = 5;
 
 function laneX(lane: number): number {
   return LANE_X0 + lane * LANE_STEP;
