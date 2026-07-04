@@ -5,13 +5,15 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # Python lint + type-check + backend test suite.
+  python-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history: the learn e2e suite diffs the PoL test file against
-          # the merge base with origin/main, which a shallow clone cannot resolve.
+          # Full history: the learn e2e suite AND the evidence tamper-guard test
+          # diff files against the merge base with origin/main, which a shallow
+          # clone cannot resolve.
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v3
         with:
@@ -20,14 +22,6 @@ jobs:
         run: uv python install 3.13
       - name: Install
         run: uv sync --extra dev
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install frontend deps
-        run: npm ci
-        working-directory: frontend
       - name: Install Playwright chromium
         run: uv run playwright install --with-deps chromium
       - name: Lint
@@ -38,9 +32,53 @@ jobs:
         run: uv run mypy src/ tests/
       - name: Tests
         run: uv run pytest -m "unit or integration" -v
+
+  # Frontend (Vite + React) lint + test + build.
+  frontend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: frontend
+      - name: Frontend lint
+        run: npm run lint
+        working-directory: frontend
       - name: Frontend tests
         run: npm test
         working-directory: frontend
       - name: Frontend build
         run: npm run build
         working-directory: frontend
+
+  # Public-repo leak gate: scans every tracked text file for absolute
+  # developer-machine paths, private Tailscale/LAN IP literals, and embedded
+  # ssh host recipes. Stdlib-only, so no project install is needed.
+  sanitize-text:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sanitization gate
+        run: python3 scripts/check_sanitization.py --all
+
+  # Evidence-ticket schema gate: validates every evidence/SO-*.md against the
+  # pinned schema (§3c of the evidence-tickets design). Needs the project's
+  # pydantic + pyyaml, so it uses a light uv sync (core deps only).
+  evidence-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.13
+      - name: Install (core deps only)
+        run: uv sync
+      - name: Evidence schema gate
+        run: uv run python scripts/check_evidence_schema.py

@@ -14,7 +14,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { SO_EVENT_TYPES, parseEnvelope } from "../types";
+import { parseEnvelope, SO_EVENT_TYPES } from "../types";
 
 const FIXTURES_DIR = fileURLToPath(new URL("./fixtures", import.meta.url));
 
@@ -39,9 +39,7 @@ describe("types parity against Python-emitted fixtures", () => {
   }
 
   it("rejects an unknown envelope field", () => {
-    const raw: unknown = JSON.parse(
-      readFileSync(join(FIXTURES_DIR, "match_tick.json"), "utf-8"),
-    );
+    const raw: unknown = JSON.parse(readFileSync(join(FIXTURES_DIR, "match_tick.json"), "utf-8"));
     const corrupted = { ...(raw as Record<string, unknown>), bogus_field: 1 };
     expect(() => parseEnvelope(corrupted)).toThrow(/bogus_field/);
   });

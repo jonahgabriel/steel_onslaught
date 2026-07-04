@@ -10,7 +10,7 @@
  * - `onChange` is called only when the new tick differs from `currentTick`.
  */
 
-import React from "react";
+import type React from "react";
 
 export interface TickStepperProps {
   /** The tick currently displayed in the inspector. */
@@ -51,6 +51,7 @@ export function TickStepper({
       style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontFamily: "monospace" }}
     >
       <button
+        type="button"
         data-testid="tick-first"
         onClick={handleFirst}
         disabled={atStart}
@@ -60,6 +61,7 @@ export function TickStepper({
         «
       </button>
       <button
+        type="button"
         data-testid="tick-prev"
         onClick={handlePrev}
         disabled={atStart}
@@ -75,6 +77,7 @@ export function TickStepper({
         {currentTick}
       </span>
       <button
+        type="button"
         data-testid="tick-next"
         onClick={handleNext}
         disabled={atEnd}
@@ -84,6 +87,7 @@ export function TickStepper({
         ›
       </button>
       <button
+        type="button"
         data-testid="tick-last"
         onClick={handleLast}
         disabled={atEnd}
