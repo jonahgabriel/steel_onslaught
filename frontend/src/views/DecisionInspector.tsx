@@ -14,8 +14,8 @@
  * - `onTickChange` is forwarded from the internal TickStepper.
  */
 
-import React from "react";
-import type { SOEventEnvelope, ConsideredAction } from "../types";
+import type React from "react";
+import type { ConsideredAction, SOEventEnvelope } from "../types";
 import { TickStepper } from "./TickStepper";
 
 /** A PILOT_DECISION_MADE envelope narrowed to its specific event_type. */
@@ -37,15 +37,9 @@ export interface DecisionInspectorProps {
   onTickChange: (tick: number) => void;
 }
 
-function ConsideredActionsTable({
-  items,
-}: {
-  items: ConsideredAction[];
-}): React.ReactElement {
+function ConsideredActionsTable({ items }: { items: ConsideredAction[] }): React.ReactElement {
   return (
-    <table
-      style={{ borderCollapse: "collapse", fontSize: "0.85em", marginTop: "0.25rem" }}
-    >
+    <table style={{ borderCollapse: "collapse", fontSize: "0.85em", marginTop: "0.25rem" }}>
       <thead>
         <tr>
           <th style={{ textAlign: "left", paddingRight: "1rem" }}>action</th>
@@ -53,12 +47,10 @@ function ConsideredActionsTable({
         </tr>
       </thead>
       <tbody>
-        {items.map((item, idx) => (
-          <tr key={idx}>
+        {items.map((item) => (
+          <tr key={item.action}>
             <td style={{ paddingRight: "1rem", fontFamily: "monospace" }}>{item.action}</td>
-            <td style={{ textAlign: "right", fontFamily: "monospace" }}>
-              {item.score.toFixed(2)}
-            </td>
+            <td style={{ textAlign: "right", fontFamily: "monospace" }}>{item.score.toFixed(2)}</td>
           </tr>
         ))}
       </tbody>
@@ -66,11 +58,7 @@ function ConsideredActionsTable({
   );
 }
 
-function DecisionCard({
-  envelope,
-}: {
-  envelope: DecisionEnvelope;
-}): React.ReactElement {
+function DecisionCard({ envelope }: { envelope: DecisionEnvelope }): React.ReactElement {
   const { payload, subject } = envelope;
 
   return (
@@ -86,8 +74,7 @@ function DecisionCard({
       }}
     >
       <div style={{ fontWeight: "bold", marginBottom: "0.25rem" }}>
-        <span data-testid="decision-mech-id">{subject.mech_id}</span>
-        {" "}
+        <span data-testid="decision-mech-id">{subject.mech_id}</span>{" "}
         <span style={{ fontSize: "0.8em", color: "#aaa" }}>({subject.player_id})</span>
       </div>
       <div>
@@ -127,26 +114,19 @@ export function DecisionInspector({
       style={{ padding: "0.75rem", fontFamily: "sans-serif", color: "#ddd" }}
     >
       <div style={{ marginBottom: "0.75rem" }}>
-        <TickStepper
-          currentTick={currentTick}
-          finalTick={finalTick}
-          onChange={onTickChange}
-        />
+        <TickStepper currentTick={currentTick} finalTick={finalTick} onChange={onTickChange} />
       </div>
       <div style={{ fontSize: "0.8em", color: "#888", marginBottom: "0.5rem" }}>
         {matchId} — tick {currentTick}
       </div>
       {decisions.length === 0 ? (
-        <div
-          data-testid="no-decisions"
-          style={{ fontStyle: "italic", color: "#888" }}
-        >
+        <div data-testid="no-decisions" style={{ fontStyle: "italic", color: "#888" }}>
           No decisions this tick.
         </div>
       ) : (
         <div>
-          {decisions.map((env, idx) => (
-            <DecisionCard key={`${env.subject.mech_id}-${idx}`} envelope={env} />
+          {decisions.map((env) => (
+            <DecisionCard key={env.subject.mech_id} envelope={env} />
           ))}
         </div>
       )}

@@ -367,10 +367,7 @@ export type SOEventEnvelope = {
   [K in SOEventType]: EnvelopeBase & { event_type: K; payload: PayloadMap[K] };
 }[SOEventType];
 
-export type SOEventEnvelopeOf<K extends SOEventType> = Extract<
-  SOEventEnvelope,
-  { event_type: K }
->;
+export type SOEventEnvelopeOf<K extends SOEventType> = Extract<SOEventEnvelope, { event_type: K }>;
 
 // ---------------------------------------------------------------------------
 // Parsing primitives
@@ -425,11 +422,7 @@ function bool(record: Record<string, unknown>, key: string, context: string): bo
   return value;
 }
 
-function nullableStr(
-  record: Record<string, unknown>,
-  key: string,
-  context: string,
-): string | null {
+function nullableStr(record: Record<string, unknown>, key: string, context: string): string | null {
   const value = record[key];
   if (value === null || value === undefined) {
     return null;
@@ -686,7 +679,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     rejectUnknown(record, ["seed", "max_ticks", "mechs"], context);
     const mechs = record["mechs"];
     if (!Array.isArray(mechs)) {
-      fail(context, "field \"mechs\" must be an array");
+      fail(context, 'field "mechs" must be an array');
     }
     return {
       seed: num(record, "seed", context),
@@ -731,7 +724,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     );
     const considered = record["considered_actions"];
     if (!Array.isArray(considered)) {
-      fail(context, "field \"considered_actions\" must be an array");
+      fail(context, 'field "considered_actions" must be an array');
     }
     return {
       action: str(record, "action", context),

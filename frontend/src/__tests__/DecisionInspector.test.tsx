@@ -14,11 +14,11 @@
  * @vitest-environment jsdom
  */
 
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
 import type { PilotDecisionMadePayload, SOEventEnvelope } from "../types";
-import { TickStepper } from "../views/TickStepper";
 import { DecisionInspector } from "../views/DecisionInspector";
+import { TickStepper } from "../views/TickStepper";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -99,9 +99,7 @@ describe("TickStepper", () => {
 
   it("first button jumps to tick 0", () => {
     const onChange = vi.fn();
-    render(
-      <TickStepper currentTick={10} finalTick={20} onChange={onChange} />,
-    );
+    render(<TickStepper currentTick={10} finalTick={20} onChange={onChange} />);
     fireEvent.click(screen.getByTestId("tick-first"));
     expect(onChange).toHaveBeenCalledWith(0);
   });
@@ -155,9 +153,7 @@ describe("DecisionInspector", () => {
   });
 
   it("renders confidence for each decision", () => {
-    const decisions = [
-      makeDecisionEnvelope(5, "mech.red.01", "player.red", "VENT"),
-    ];
+    const decisions = [makeDecisionEnvelope(5, "mech.red.01", "player.red", "VENT")];
     render(
       <DecisionInspector
         matchId="match.test.001"
@@ -172,9 +168,7 @@ describe("DecisionInspector", () => {
   });
 
   it("renders considered_actions entries", () => {
-    const decisions = [
-      makeDecisionEnvelope(5, "mech.red.01", "player.red", "FIRE_WEAPON"),
-    ];
+    const decisions = [makeDecisionEnvelope(5, "mech.red.01", "player.red", "FIRE_WEAPON")];
     render(
       <DecisionInspector
         matchId="match.test.001"

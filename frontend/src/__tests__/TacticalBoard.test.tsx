@@ -11,9 +11,9 @@
  *  - The component never issues any write (pure projection — no fetch/POST).
  */
 import "./setup-dom";
-import { cleanup, render, screen, act } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EnvelopeHandler, WebSocketLike } from "../lib/event_stream";
 import { EventStream } from "../lib/event_stream";

@@ -8,7 +8,7 @@
  * mount always receives the complete event sequence (Task 34 Proof of Life).
  */
 import { useCallback, useEffect, useRef } from "react";
-import { EventStream, type EnvelopeHandler } from "./lib/event_stream";
+import { type EnvelopeHandler, EventStream } from "./lib/event_stream";
 import TacticalBoard from "./views/TacticalBoard";
 
 export default function App(): React.JSX.Element {

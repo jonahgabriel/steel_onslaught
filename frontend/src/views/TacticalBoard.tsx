@@ -17,11 +17,7 @@
  */
 import { useEffect, useReducer } from "react";
 import type { EnvelopeHandler } from "../lib/event_stream";
-import type {
-  SOMechRuntimeState,
-  SOEventEnvelope,
-  SOPosition,
-} from "../types";
+import type { SOEventEnvelope, SOMechRuntimeState, SOPosition } from "../types";
 import MechMarker from "./MechMarker";
 
 // ---------------------------------------------------------------------------
@@ -238,25 +234,14 @@ export default function TacticalBoard({ subscribe }: TacticalBoardProps): React.
         height={BOARD_SIZE}
         style={{ background: "#111827", display: "block" }}
       >
-        {/* Grid lines */}
+        <title>Tactical board</title>
+        {/* Grid lines — keyed on the grid coordinate itself (stable identity) */}
         <g stroke="#1f2937" strokeWidth={0.5} opacity={0.6}>
-          {Array.from({ length: GRID_CELLS + 1 }, (_, i) => (
-            <line
-              key={`v${i}`}
-              x1={i * CELL_SIZE}
-              y1={0}
-              x2={i * CELL_SIZE}
-              y2={BOARD_SIZE}
-            />
+          {Array.from({ length: GRID_CELLS + 1 }, (_, i) => i).map((c) => (
+            <line key={`v${c}`} x1={c * CELL_SIZE} y1={0} x2={c * CELL_SIZE} y2={BOARD_SIZE} />
           ))}
-          {Array.from({ length: GRID_CELLS + 1 }, (_, i) => (
-            <line
-              key={`h${i}`}
-              x1={0}
-              y1={i * CELL_SIZE}
-              x2={BOARD_SIZE}
-              y2={i * CELL_SIZE}
-            />
+          {Array.from({ length: GRID_CELLS + 1 }, (_, i) => i).map((c) => (
+            <line key={`h${c}`} x1={0} y1={c * CELL_SIZE} x2={BOARD_SIZE} y2={c * CELL_SIZE} />
           ))}
         </g>
 

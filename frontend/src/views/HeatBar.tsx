@@ -25,9 +25,9 @@ function heatLevel(heat: number, redline: number): HeatLevel {
 }
 
 const HEAT_COLORS: Record<HeatLevel, string> = {
-  normal: "#22c55e",   // green-500
-  warning: "#f59e0b",  // amber-500
-  redline: "#ef4444",  // red-500
+  normal: "#22c55e", // green-500
+  warning: "#f59e0b", // amber-500
+  redline: "#ef4444", // red-500
 };
 
 export default function HeatBar({

@@ -35,9 +35,9 @@ const CLASS_LABELS: Record<"light" | "medium" | "heavy", string> = {
 };
 
 const CLASS_COLORS: Record<"light" | "medium" | "heavy", string> = {
-  light: "#a3e635",   // lime-400
-  medium: "#fb923c",  // orange-400
-  heavy: "#a78bfa",   // violet-400
+  light: "#a3e635", // lime-400
+  medium: "#fb923c", // orange-400
+  heavy: "#a78bfa", // violet-400
 };
 
 export default function MechMarker({
