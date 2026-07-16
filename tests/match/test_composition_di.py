@@ -58,6 +58,9 @@ class _Ledger:
     def read_all(self, match_id: str) -> Iterator[ModelSOEventEnvelope]:
         return iter(event for event in self.events if event.match_id == match_id)
 
+    def read_match_ids(self) -> Iterator[str]:
+        return iter(sorted({event.match_id for event in self.events}))
+
     def read_after(self, match_id: str, after_tick: int) -> Iterator[ModelSOEventEnvelope]:
         return iter(
             event for event in self.events if event.match_id == match_id and event.tick > after_tick
