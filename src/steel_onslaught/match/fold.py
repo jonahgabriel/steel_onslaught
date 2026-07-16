@@ -51,7 +51,7 @@ from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.gizmo import GizmoCategory, ModelSOGizmoSpec
 from steel_onslaught.contracts.mode import ModelSOModeTransition
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
-from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
+from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -79,9 +79,9 @@ _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 class MatchContractCatalog:
     """Static contract indexes a match needs at runtime AND at replay time.
 
-    The catalog is loaded from ``contracts_data/`` once per match (or per
-    replay) — contracts are content-addressed static files, so live fold and
-    replay fold see identical data.
+    The catalog is constructed by the application composition root and
+    injected explicitly. Live execution and replay must receive the same
+    validated contract snapshot.
     """
 
     def __init__(
@@ -117,8 +117,8 @@ class MatchStateFold:
         bus:      Live path: fold-produced events are published here after the
                   state delta commits.  Replay path: ``None`` (no emission —
                   the same events arrive from the ledger and fold as no-ops).
-        catalog:  Static contract indexes; defaults to ``contracts_data/``
-                  relative to the package tree.
+        catalog:  Required injected static contract indexes. The fold does
+                  not discover or load contracts from the filesystem.
     """
 
     def __init__(
@@ -292,10 +292,14 @@ class MatchStateFold:
         if mech is not None:
             weapon_id = str(event.payload["weapon_id"])
             spec = self._catalog.weapons.get(weapon_id)
-            cooldown = spec.cooldown_ticks if spec is not None else 0
+            if spec is None:
+                raise UnknownWeaponError(weapon_id, owner_id=mech_id)
             mech = mech.model_copy(
                 update={
-                    "weapon_cooldowns": {**mech.weapon_cooldowns, weapon_id: cooldown},
+                    "weapon_cooldowns": {
+                        **mech.weapon_cooldowns,
+                        weapon_id: spec.cooldown_ticks,
+                    },
                     # The overload penalty applies to the next firing only.
                     "accuracy_penalty_next_fire": 0.0,
                 }

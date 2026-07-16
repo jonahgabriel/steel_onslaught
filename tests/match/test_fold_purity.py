@@ -24,6 +24,7 @@ import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
 from steel_onslaught.match.fold import MatchStateFold
 from tests.runtime import runtime_dependencies
@@ -127,6 +128,30 @@ def test_delta_returns_intents_list() -> None:
     fold = _fold()
     produced = fold.delta(_match_started_env())
     assert isinstance(produced, list)
+
+
+@pytest.mark.unit
+def test_fold_fails_closed_on_unknown_weapon_contract() -> None:
+    fold = _fold()
+    fold.apply(_match_started_env())
+    event = ModelSOEventEnvelope(
+        event_id="01JPUREPUREPUREPUREPUREP99",
+        match_id=_MATCH_ID,
+        tick=1,
+        sequence_in_tick=0,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a"),
+        event_type=SOEventType.WEAPON_FIRED,
+        payload={
+            "weapon_id": "weapon.unknown",
+            "pressure_cost": 0,
+            "heat_generated": 0,
+        },
+        envelope=ModelEnvelope(correlation_id=uuid4(), entity_id=_MATCH_ID),
+    )
+
+    with pytest.raises(UnknownWeaponError, match=r"weapon\.unknown"):
+        fold.apply(event)
 
 
 @pytest.mark.unit

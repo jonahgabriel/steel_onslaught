@@ -40,6 +40,18 @@ class ModelSOFilesystemLearningArtifactsBinding(_ClosedBinding):
     lineage_root: Path
 
 
+class ModelSOSQLiteEvaluationStorageBinding(_ClosedBinding):
+    """Evaluation-local event and projection storage selected by the operator."""
+
+    kind: Literal["sqlite"]
+    root: Path
+    journal_mode: Literal["WAL"]
+    check_same_thread: bool
+    transaction_mode: Literal["autocommit"]
+    event_schema: Literal["canonical_event_v1"]
+    leaderboard_schema: Literal["leaderboard_v1"]
+
+
 class ModelSOContractBindings(_ClosedBinding):
     catalog_dir: Path
     pilot_registry_dir: Path
@@ -59,6 +71,9 @@ LeaderboardBinding = Annotated[ModelSOSQLiteLeaderboardBinding, Field(discrimina
 LearningArtifactsBinding = Annotated[
     ModelSOFilesystemLearningArtifactsBinding, Field(discriminator="kind")
 ]
+EvaluationStorageBinding = Annotated[
+    ModelSOSQLiteEvaluationStorageBinding, Field(discriminator="kind")
+]
 ClockBinding = Annotated[ModelSOSystemClockBinding, Field(discriminator="kind")]
 IdentityBinding = Annotated[ModelSOSystemIdentityBinding, Field(discriminator="kind")]
 
@@ -71,6 +86,7 @@ class ModelSOApplicationOverlay(_ClosedBinding):
     event_ledger: EventLedgerBinding
     leaderboard: LeaderboardBinding
     learning_artifacts: LearningArtifactsBinding
+    evaluation_storage: EvaluationStorageBinding
     contracts: ModelSOContractBindings
     clock: ClockBinding
     identity: IdentityBinding
@@ -81,6 +97,7 @@ __all__ = [
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOInProcessBusBinding",
+    "ModelSOSQLiteEvaluationStorageBinding",
     "ModelSOSQLiteEventLedgerBinding",
     "ModelSOSQLiteLeaderboardBinding",
     "ModelSOSystemClockBinding",

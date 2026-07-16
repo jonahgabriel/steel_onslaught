@@ -23,6 +23,7 @@ from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
+from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
 from steel_onslaught.match.composition import load_loadout, pilot_from_spec
 from steel_onslaught.pilots.schemas import ModelSOPosition
@@ -211,6 +212,58 @@ def test_resolve_move_raises_on_missing_direction() -> None:
     )
     with pytest.raises(ReducerError, match="unknown/missing direction"):
         runner._resolve_move(no_dir_intent, runner.fold.state, mech)
+
+
+@pytest.mark.unit
+def test_resolve_weapon_fire_raises_on_unknown_weapon_id() -> None:
+    bus = InProcessEventBus()
+    runner, _runtime = match_runner(
+        bus=bus,
+        match_id=MATCH_ID,
+        seed=1,
+        loadout_a=load_loadout(LOADOUT_AGGRESSIVE),
+        loadout_b=load_loadout(LOADOUT_AGGRESSIVE),
+        max_ticks=2,
+    )
+    bus.publish(
+        ModelSOEventEnvelope(
+            event_id=ulid.new().str,
+            match_id=MATCH_ID,
+            tick=0,
+            sequence_in_tick=0,
+            event_type=SOEventType.MATCH_STARTED,
+            producer_node="node.test",
+            subject=_MATCH_SUBJECT,
+            payload={
+                "seed": 1,
+                "max_ticks": 2,
+                "mechs": [
+                    _mech_payload("mech.a.01", "player.a"),
+                    _mech_payload("mech.b.01", "player.b"),
+                ],
+            },
+            envelope=_onex_envelope(MATCH_ID),
+        )
+    )
+    mech = runner.fold.state.mech_states["mech.a.01"]
+    unknown_id = "weapon.light.absent"
+    intent = ModelSOEventEnvelope(
+        event_id=ulid.new().str,
+        match_id=MATCH_ID,
+        tick=1,
+        sequence_in_tick=0,
+        event_type=SOEventType.WEAPON_FIRE_INTENT,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
+        payload={"weapon_id": unknown_id},
+        envelope=_onex_envelope(MATCH_ID),
+    )
+
+    with pytest.raises(UnknownWeaponError) as raised:
+        runner._resolve_weapon_fire(intent, runner.fold.state, mech)
+
+    assert raised.value.weapon_id == unknown_id
+    assert raised.value.owner_id == mech.mech_id
 
 
 @pytest.mark.unit

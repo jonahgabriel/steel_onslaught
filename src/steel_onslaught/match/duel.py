@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.events.envelope import ModelSOEventEnvelope
 from steel_onslaught.match.runner import MatchIdentity
@@ -24,6 +26,15 @@ class DuelResult:
     events: tuple[ModelSOEventEnvelope, ...]
 
 
+class ModelSOEvaluationStorageKey(BaseModel):
+    """Validated logical key resolved by the composition root, never a raw path."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    namespace: str = Field(pattern=r"^[a-z0-9][a-z0-9_.-]*$")
+    duel: str = Field(pattern=r"^[a-z0-9][a-z0-9_.-]*$")
+
+
 class DuelExecutor(Protocol):
     """Outer-root capability supplied to learning and balance workflows."""
 
@@ -34,7 +45,7 @@ class DuelExecutor(Protocol):
         loadout_b: ModelSOLoadout,
         seed: int,
         max_ticks: int,
-        ledger_path: Path,
+        storage: ModelSOEvaluationStorageKey,
         match_id: str,
         loadout_path_a: Path | None,
         loadout_path_b: Path | None,
@@ -76,4 +87,4 @@ def run_duel(
     return DuelResult(final_state=final, events=tuple(events))
 
 
-__all__ = ["DuelExecutor", "DuelResult", "run_duel"]
+__all__ = ["DuelExecutor", "DuelResult", "ModelSOEvaluationStorageKey", "run_duel"]

@@ -17,13 +17,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PILOTS_DIR = _REPO_ROOT / "contracts_data" / "pilots"
 _LOADOUTS_DIR = _REPO_ROOT / "contracts_data" / "loadouts"
 
-_CHARACTERIZATION: dict[str, str] = {
-    "example_aggressive_light.yaml": "aggressive",
-    "example_predictive_heavy.yaml": "predictive",
-    "proof_blue_aggressive_hunter.yaml": "aggressive",
-    "proof_blue_defensive_passive.yaml": "defensive",
-    "proof_red_defensive_passive.yaml": "defensive",
-    "proof_red_predictive_ironclad.yaml": "predictive",
+_PINNED_LOADOUT_PILOT_IDS: dict[str, str] = {
+    "example_aggressive_light.yaml": "pilot.template.aggressive",
+    "example_predictive_heavy.yaml": "pilot.template.predictive",
+    "proof_blue_aggressive_hunter.yaml": "pilot.template.aggressive",
+    "proof_blue_defensive_passive.yaml": "pilot.template.defensive",
+    "proof_red_defensive_passive.yaml": "pilot.template.defensive",
+    "proof_red_predictive_ironclad.yaml": "pilot.template.predictive",
+    "tuned_aggressive_hunter.yaml": "pilot.tuned.aggressive_hot_v1",
 }
 
 
@@ -86,15 +87,15 @@ def test_pilot_spec_path_is_rejected_by_pure_registry(registry: PilotSpecRegistr
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(("loadout_yaml", "archetype"), sorted(_CHARACTERIZATION.items()))
-def test_shipped_loadout_exact_ids_preserve_archetype_mapping(
-    registry: PilotSpecRegistry, loadout_yaml: str, archetype: str
+@pytest.mark.parametrize(("loadout_yaml", "pilot_id"), sorted(_PINNED_LOADOUT_PILOT_IDS.items()))
+def test_shipped_loadout_filename_has_pinned_exact_pilot_id(
+    registry: PilotSpecRegistry, loadout_yaml: str, pilot_id: str
 ) -> None:
     raw = _load_loadout_dict(loadout_yaml)
     loadout = ModelSOLoadout.model_validate(raw)
     spec = registry.resolve(loadout)
-    assert spec.id == loadout.pilot_id
-    assert spec.archetype == archetype
+    assert loadout.pilot_id == pilot_id
+    assert spec.id == pilot_id
 
 
 @pytest.mark.unit
@@ -123,9 +124,10 @@ def test_all_shipped_loadouts_have_exact_registered_provenance(
     registry: PilotSpecRegistry,
 ) -> None:
     yaml_paths = sorted(_LOADOUTS_DIR.glob("*.yaml"))
-    assert len(yaml_paths) >= 7  # 4 PoL + 2 examples + the tuned fork loadout
+    assert {path.name for path in yaml_paths} == set(_PINNED_LOADOUT_PILOT_IDS)
     for path in yaml_paths:
         loadout = ModelSOLoadout.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        assert loadout.pilot_id == _PINNED_LOADOUT_PILOT_IDS[path.name]
         assert loadout.pilot_spec_path is None  # no shipped YAML uses the field
         spec = registry.resolve(loadout)
         assert isinstance(spec, ModelSOPilotSpec)

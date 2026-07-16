@@ -89,7 +89,7 @@ def _write_overlay(tmp_path: Path) -> Path:
                 "bus": {"kind": "in_process"},
                 "event_ledger": {
                     "kind": "sqlite",
-                    "path": str(tmp_path / "runtime.sqlite"),
+                    "path": str(tmp_path / "global-events.sqlite"),
                     "journal_mode": "WAL",
                     "check_same_thread": False,
                     "transaction_mode": "autocommit",
@@ -97,7 +97,7 @@ def _write_overlay(tmp_path: Path) -> Path:
                 },
                 "leaderboard": {
                     "kind": "sqlite",
-                    "path": str(tmp_path / "runtime.sqlite"),
+                    "path": str(tmp_path / "global-leaderboard.sqlite"),
                     "journal_mode": "WAL",
                     "check_same_thread": False,
                     "transaction_mode": "autocommit",
@@ -107,6 +107,15 @@ def _write_overlay(tmp_path: Path) -> Path:
                     "kind": "filesystem_yaml",
                     "evaluation_root": str(tmp_path / "work"),
                     "lineage_root": str(tmp_path / "lineage"),
+                },
+                "evaluation_storage": {
+                    "kind": "sqlite",
+                    "root": str(tmp_path / "work"),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                    "leaderboard_schema": "leaderboard_v1",
                 },
                 "contracts": {
                     "catalog_dir": str(Path("contracts_data").resolve()),
@@ -257,6 +266,38 @@ class TestLearnCompletedRuns:
             (tmp_path / "lineage").rglob("*.yaml")
         )
 
+    @pytest.mark.parametrize("preexisting", [False, True])
+    def test_learning_never_opens_global_runtime_stores(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        preexisting: bool,
+    ) -> None:
+        case_root = tmp_path / ("sentinel" if preexisting else "missing")
+        case_root.mkdir()
+        event_store = case_root / "global-events.sqlite"
+        leaderboard_store = case_root / "global-leaderboard.sqlite"
+        sentinel = b"not-a-sqlite-runtime-store"
+        if preexisting:
+            event_store.write_bytes(sentinel)
+            leaderboard_store.write_bytes(sentinel)
+
+        exit_code, output = _scripted_run(
+            case_root,
+            monkeypatch,
+            search_winner=SOSeedWinner.PARENT,
+            script_holdout=False,
+        )
+
+        assert exit_code == 0, output
+        if preexisting:
+            assert event_store.read_bytes() == sentinel
+            assert leaderboard_store.read_bytes() == sentinel
+        else:
+            assert not event_store.exists()
+            assert not leaderboard_store.exists()
+
 
 # ---------------------------------------------------------------------------
 # Persisted record: path printed, loadable, batteries match, recorded_at UTC
@@ -342,3 +383,5 @@ class TestLearnSmokeE2E:
             assert len(records) == 1
         # Evaluation scratch stays inside the overlay-selected artifact root (Decision #6).
         assert (tmp_path / "work").exists()
+        assert not (tmp_path / "global-events.sqlite").exists()
+        assert not (tmp_path / "global-leaderboard.sqlite").exists()

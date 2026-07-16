@@ -87,6 +87,7 @@ from steel_onslaught.match.composition import (
     load_loadout,
     load_pilot_spec,
 )
+from steel_onslaught.match.duel import ModelSOEvaluationStorageKey
 from steel_onslaught.replay.engine import ReplayEngine
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -231,6 +232,15 @@ def _overlay(root: Path, *, ledger_path: Path | None = None) -> ModelSOApplicati
                 "kind": "filesystem_yaml",
                 "evaluation_root": root / "work",
                 "lineage_root": root / "lineage",
+            },
+            "evaluation_storage": {
+                "kind": "sqlite",
+                "root": root / "work",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+                "leaderboard_schema": "leaderboard_v1",
             },
             "contracts": {
                 "catalog_dir": _CONTRACTS_DATA,
@@ -564,7 +574,7 @@ def test_replay_equals_live_fold_on_retained_gate_ledger(
         loadout_b=load_loadout(parent_loadouts[0]),
         seed=seed,
         max_ticks=_MAX_TICKS,
-        ledger_path=tmp_path / "live_rerun.sqlite3",
+        storage=ModelSOEvaluationStorageKey(namespace="live_rerun", duel="duel"),
         match_id=match_id,
         loadout_path_a=candidate_loadouts[0],
         loadout_path_b=parent_loadouts[0],

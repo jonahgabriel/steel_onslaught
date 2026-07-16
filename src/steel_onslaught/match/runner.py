@@ -33,6 +33,7 @@ from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -372,7 +373,7 @@ class MatchRunner:
         weapon_id = str(intent.payload.get("weapon_id", ""))
         spec = self._catalog.weapons.get(weapon_id)
         if spec is None:
-            return
+            raise UnknownWeaponError(weapon_id, owner_id=mech.mech_id)
 
         target_param = intent.payload.get("target_mech_id")
         target = (
@@ -550,6 +551,8 @@ class MatchRunner:
     ) -> ModelSOMechRuntimeState:
         chassis = self._catalog.chassis[loadout.chassis_id]
         boiler_spec = self._catalog.boilers[loadout.boiler_id]
+        for weapon_id in loadout.modules.weapons:
+            _require_weapon_spec(self._catalog, weapon_id, owner_id=loadout.id)
         boiler = ModelSOBoilerState(
             match_id=self._match_id,
             mech_id=mech_id,
@@ -674,7 +677,7 @@ def _module_budgets(
         )
     entries: list[ModelSOModuleBudget] = []
     for weapon_id in loadout.modules.weapons:
-        weapon = catalog.weapons[weapon_id]
+        weapon = _require_weapon_spec(catalog, weapon_id, owner_id=loadout.id)
         entries.append(
             ModelSOModuleBudget(
                 module_id=weapon_id,
@@ -716,6 +719,19 @@ def _module_budgets(
             )
         )
     return entries
+
+
+def _require_weapon_spec(
+    catalog: MatchContractCatalog,
+    weapon_id: str,
+    *,
+    owner_id: str,
+) -> ModelSOWeaponSpec:
+    """Resolve one weapon contract or fail with a stable typed error."""
+    spec = catalog.weapons.get(weapon_id)
+    if spec is None:
+        raise UnknownWeaponError(weapon_id, owner_id=owner_id)
+    return spec
 
 
 def _require_valid_budgets(loadout: ModelSOLoadout, catalog: MatchContractCatalog) -> None:

@@ -34,7 +34,12 @@ from steel_onslaught.learning.filesystem_artifacts import (
 )
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
-from steel_onslaught.match.duel import DuelExecutor, DuelResult, run_duel
+from steel_onslaught.match.duel import (
+    DuelExecutor,
+    DuelResult,
+    ModelSOEvaluationStorageKey,
+    run_duel,
+)
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import (
     ARENA_SIZE_CELLS,
@@ -88,7 +93,14 @@ class RuntimeDependencies:
     catalog: MatchContractCatalog
     pilot_registry: PilotSpecRegistry
     pilot_factory: PilotFactory
-    learning_artifacts: LearningArtifactStore
+
+
+@dataclass(frozen=True)
+class LearningDependencies:
+    """Ports required by offline learning without opening live runtime stores."""
+
+    clock: Clock
+    artifacts: LearningArtifactStore
 
 
 @dataclass(frozen=True)
@@ -135,12 +147,16 @@ def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
             "lineage_root": resolved(overlay.learning_artifacts.lineage_root),
         }
     )
+    evaluation_storage = overlay.evaluation_storage.model_copy(
+        update={"root": resolved(overlay.evaluation_storage.root)}
+    )
     return overlay.model_copy(
         update={
             "event_ledger": event_ledger,
             "leaderboard": leaderboard,
             "contracts": contracts,
             "learning_artifacts": learning_artifacts,
+            "evaluation_storage": evaluation_storage,
         }
     )
 
@@ -244,7 +260,14 @@ def build_runtime_dependencies(overlay: ModelSOApplicationOverlay) -> RuntimeDep
         catalog=load_match_contract_catalog(overlay.contracts.catalog_dir),
         pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
         pilot_factory=pilot_from_spec,
-        learning_artifacts=YamlFilesystemLearningArtifactStore(
+    )
+
+
+def build_learning_dependencies(overlay: ModelSOApplicationOverlay) -> LearningDependencies:
+    """Bind only learning ports; global event and leaderboard stores stay unopened."""
+    return LearningDependencies(
+        clock=SystemClock(),
+        artifacts=YamlFilesystemLearningArtifactStore(
             ModelSOFilesystemLearningArtifactsConfig(
                 evaluation_root=overlay.learning_artifacts.evaluation_root,
                 lineage_root=overlay.learning_artifacts.lineage_root,
@@ -255,6 +278,7 @@ def build_runtime_dependencies(overlay: ModelSOApplicationOverlay) -> RuntimeDep
 
 def build_duel_executor(overlay: ModelSOApplicationOverlay) -> DuelExecutor:
     """Bind the learning/balance duel capability at the sole adapter root."""
+    storage_namespaces: dict[str, Path] = {}
 
     def execute(
         *,
@@ -262,15 +286,47 @@ def build_duel_executor(overlay: ModelSOApplicationOverlay) -> DuelExecutor:
         loadout_b: ModelSOLoadout,
         seed: int,
         max_ticks: int,
-        ledger_path: Path,
+        storage: ModelSOEvaluationStorageKey,
         match_id: str,
         loadout_path_a: Path | None,
         loadout_path_b: Path | None,
         side_a: str,
         side_b: str,
     ) -> DuelResult:
-        ledger_binding = overlay.event_ledger.model_copy(update={"path": ledger_path})
-        leaderboard_binding = overlay.leaderboard.model_copy(update={"path": ledger_path})
+        storage_root = storage_namespaces.get(storage.namespace)
+        if storage_root is None:
+            base = overlay.evaluation_storage.root / storage.namespace
+            storage_root = base
+            suffix = 1
+            while (storage_root / f"{storage.duel}.sqlite3").exists():
+                suffix += 1
+                storage_root = base.with_name(f"{base.name}_{suffix:04d}")
+            storage_namespaces[storage.namespace] = storage_root
+        storage_root.mkdir(parents=True, exist_ok=True)
+        ledger_path = storage_root / f"{storage.duel}.sqlite3"
+        if ledger_path.exists():
+            raise FileExistsError(
+                f"evaluation storage already exists: {storage.namespace}/{storage.duel}"
+            )
+        evaluation = overlay.evaluation_storage
+        ledger_binding = overlay.event_ledger.model_copy(
+            update={
+                "path": ledger_path,
+                "journal_mode": evaluation.journal_mode,
+                "check_same_thread": evaluation.check_same_thread,
+                "transaction_mode": evaluation.transaction_mode,
+                "event_schema": evaluation.event_schema,
+            }
+        )
+        leaderboard_binding = overlay.leaderboard.model_copy(
+            update={
+                "path": ledger_path,
+                "journal_mode": evaluation.journal_mode,
+                "check_same_thread": evaluation.check_same_thread,
+                "transaction_mode": evaluation.transaction_mode,
+                "storage_schema": evaluation.leaderboard_schema,
+            }
+        )
         duel_overlay = overlay.model_copy(
             update={
                 "event_ledger": ledger_binding,
@@ -442,11 +498,13 @@ def run_composed_match(
 
 
 __all__ = [
+    "LearningDependencies",
     "LiveMatchStack",
     "RuntimeDependencies",
     "assemble_match_live",
     "assemble_match_with_dependencies",
     "build_duel_executor",
+    "build_learning_dependencies",
     "build_runtime_dependencies",
     "load_application_overlay",
     "load_loadout",

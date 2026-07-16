@@ -25,10 +25,22 @@ class WeaponDamageType(StrEnum):
     PRESSURE = "pressure"
 
 
+class UnknownWeaponError(ValueError):
+    """A referenced weapon id is absent from the injected contract catalog."""
+
+    def __init__(self, weapon_id: str, *, owner_id: str) -> None:
+        self.weapon_id = weapon_id
+        self.owner_id = owner_id
+        super().__init__(
+            f"unknown_weapon_id: weapon {weapon_id!r} referenced by {owner_id!r} "
+            "is absent from the injected weapon catalog"
+        )
+
+
 class ModelSOAccuracyPoint(BaseModel):
     """A single point on the accuracy curve: hit probability at a given range bin."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     range: int = Field(ge=0)
     hit_probability: float = Field(ge=0.0, le=1.0)
@@ -37,7 +49,7 @@ class ModelSOAccuracyPoint(BaseModel):
 class ModelSOWeaponCompatibility(BaseModel):
     """Chassis classes that can mount this weapon."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     compatible_chassis_classes: list[str] = Field(min_length=1)
 
@@ -47,8 +59,8 @@ class ModelSOWeaponSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["0.1.0"] = "0.1.0"
-    kind: Literal["steel_onslaught.weapon"] = "steel_onslaught.weapon"
+    schema_version: Literal["0.1.0"]
+    kind: Literal["steel_onslaught.weapon"]
 
     id: str
     display_name: str
@@ -70,8 +82,6 @@ class ModelSOWeaponSpec(BaseModel):
     target_class_effectiveness: dict[str, float]
 
     # Damage type used to resolve armor effectiveness on a hit (Task 25).
-    # Defaults to STANDARD so existing weapons that omit the field behave
-    # unchanged; declared explicitly per weapon rather than inferred by id.
-    damage_type: WeaponDamageType = WeaponDamageType.STANDARD
+    damage_type: WeaponDamageType
 
     compatibility: ModelSOWeaponCompatibility

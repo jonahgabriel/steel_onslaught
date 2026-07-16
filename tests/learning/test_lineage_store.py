@@ -291,6 +291,19 @@ class TestWriteLineageRecord:
         assert len(records) == 1
         assert records[0].recorded_at == ts1  # first wins
 
+    def test_existing_target_with_tampered_record_fails_closed(self, tmp_path: Path) -> None:
+        """First-write-wins must validate existing bytes before returning."""
+        import yaml  # type: ignore[import-untyped]
+
+        rec = _make_record()
+        path = write_lineage_record(rec, root=tmp_path, recorded_at=_aware_now())
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["record"]["performance"]["p_value"] = 0.04
+        path.write_text(yaml.safe_dump(raw, sort_keys=True), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="record digest filename mismatch"):
+            write_lineage_record(rec, root=tmp_path, recorded_at=_aware_now())
+
     def test_different_inner_records_produce_different_paths(self, tmp_path: Path) -> None:
         rec_a = _make_record(parameters={"attack": 5, "defense": 3})
         rec_b = _make_record(parameters={"attack": 6, "defense": 3})
@@ -301,7 +314,7 @@ class TestWriteLineageRecord:
 
     def test_yaml_loads_via_safe_load(self, tmp_path: Path) -> None:
         """Written file must be parseable by yaml.safe_load — no custom tags."""
-        import yaml  # type: ignore[import-untyped]
+        import yaml
 
         rec = _make_record()
         path = write_lineage_record(rec, root=tmp_path, recorded_at=_aware_now())
@@ -392,6 +405,35 @@ class TestLoadLineageRecords:
         # Valid YAML structure but fails model validation
         bad_file.write_text("not_a_record_key: some_garbage_value\n")
         with pytest.raises((ValueError, ValidationError)):
+            load_lineage_records(tmp_path)
+
+    def test_tampered_record_digest_filename_raises(self, tmp_path: Path) -> None:
+        rec = _make_record()
+        original = write_lineage_record(rec, root=tmp_path, recorded_at=_aware_now())
+        tampered = original.with_name(f"{'0' * 64}.yaml")
+        original.rename(tampered)
+
+        with pytest.raises(ValueError, match="record digest filename mismatch"):
+            load_lineage_records(tmp_path)
+
+    def test_archetype_directory_mismatch_raises(self, tmp_path: Path) -> None:
+        rec = _make_record()
+        original = write_lineage_record(rec, root=tmp_path, recorded_at=_aware_now())
+        tampered = tmp_path / "defensive" / rec.spec_hash / original.name
+        tampered.parent.mkdir(parents=True)
+        original.rename(tampered)
+
+        with pytest.raises(ValueError, match="archetype directory mismatch"):
+            load_lineage_records(tmp_path)
+
+    def test_spec_hash_directory_mismatch_raises(self, tmp_path: Path) -> None:
+        rec = _make_record()
+        original = write_lineage_record(rec, root=tmp_path, recorded_at=_aware_now())
+        tampered = tmp_path / rec.archetype / ("0" * 64) / original.name
+        tampered.parent.mkdir(parents=True)
+        original.rename(tampered)
+
+        with pytest.raises(ValueError, match="spec_hash directory mismatch"):
             load_lineage_records(tmp_path)
 
     def test_frozen_model_equality(self, tmp_path: Path) -> None:

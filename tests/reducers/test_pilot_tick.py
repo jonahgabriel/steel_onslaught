@@ -24,6 +24,7 @@ import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -308,6 +309,23 @@ def test_constructor_requires_explicit_weapon_specs() -> None:
             correlation_id=_TEST_CORRELATION_ID,
             event_factory=_EVENT_FACTORY,
         )
+
+
+@pytest.mark.unit
+def test_missing_weapon_contract_fails_closed_with_typed_error() -> None:
+    unknown_id = "weapon.light.absent"
+    state = _match_state([_mech(weapon_cooldowns={unknown_id: 0})])
+    reducer, _emitted = _make_reducer(state, {MECH_RED: _StubPilot()})
+
+    with pytest.raises(UnknownWeaponError) as raised:
+        reducer.apply(_tick_event())
+
+    assert raised.value.weapon_id == unknown_id
+    assert raised.value.owner_id == MECH_RED
+    assert str(raised.value) == (
+        f"unknown_weapon_id: weapon {unknown_id!r} referenced by {MECH_RED!r} "
+        "is absent from the injected weapon catalog"
+    )
 
 
 @pytest.mark.unit

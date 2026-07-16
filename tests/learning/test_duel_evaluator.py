@@ -104,6 +104,15 @@ def _make_evaluator(workdir: Path, *, base_loadout: Path = _BASE_LOADOUT) -> Due
                 "evaluation_root": workdir,
                 "lineage_root": workdir / "lineage",
             },
+            "evaluation_storage": {
+                "kind": "sqlite",
+                "root": workdir,
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+                "leaderboard_schema": "leaderboard_v1",
+            },
             "contracts": {
                 "catalog_dir": _CONTRACTS_DATA,
                 "pilot_registry_dir": _CONTRACTS_DATA / "pilots",

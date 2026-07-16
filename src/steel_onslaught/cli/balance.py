@@ -11,16 +11,14 @@ Determinism: each match outcome is a pure function of
 ordering is a lexicographic sort, and the CSV carries no ULIDs or timestamps —
 so two runs with the same arguments produce byte-identical CSV output.
 
-The command never writes to any match ledger directory implicitly: matches
-run against a ledger inside a ``TemporaryDirectory`` that is deleted when the
-sweep finishes. The only persistent artifact is the explicitly requested
-``--csv`` file.
+The command writes duel evidence only beneath the overlay's explicit
+evaluation-storage root. The current working directory and configured live
+event/leaderboard stores are never storage fallbacks.
 """
 
 from __future__ import annotations
 
 import itertools
-import tempfile
 from pathlib import Path
 
 import click
@@ -31,6 +29,7 @@ from steel_onslaught.match.composition import (
     load_application_overlay,
     load_loadout,
 )
+from steel_onslaught.match.duel import ModelSOEvaluationStorageKey
 from steel_onslaught.projections.balance.matrix import (
     ModelSOBalanceMatrix,
     ModelSOBalancePairing,
@@ -116,47 +115,48 @@ def balance_command(
     execute_duel = build_duel_executor(overlay)
 
     pairings: list[ModelSOBalancePairing] = []
-    with tempfile.TemporaryDirectory(prefix="so-balance-") as tmp_dir:
-        ledger_path = Path(tmp_dir) / "balance_ledger.sqlite3"
-        for pairing_index, (
-            (config_a, loadout_a),
-            (config_b, loadout_b),
-        ) in enumerate(itertools.combinations(configs, 2), start=1):
-            wins_a = wins_b = draws = 0
-            for seed in range(1, seed_count + 1):
-                result = execute_duel(
-                    loadout_a=loadout_a,
-                    loadout_b=loadout_b,
-                    seed=seed,
-                    max_ticks=max_ticks,
-                    ledger_path=ledger_path,
-                    match_id=f"match.balance.{pairing_index}.{seed}",
-                    loadout_path_a=None,
-                    loadout_path_b=None,
-                    side_a=_SIDE_A,
-                    side_b=_SIDE_B,
-                )
-                final = result.final_state
-                winner_id = final.winner_id
-                if winner_id is None:
-                    draws += 1
-                elif winner_id == f"player.{_SIDE_A}":
-                    wins_a += 1
-                elif winner_id == f"player.{_SIDE_B}":
-                    wins_b += 1
-                else:  # pragma: no cover - lifecycle invariant violation
-                    raise click.ClickException(
-                        f"unrecognized winner_id {winner_id!r} for {config_a} vs {config_b}"
-                    )
-            pairings.append(
-                ModelSOBalancePairing(
-                    config_a=config_a,
-                    config_b=config_b,
-                    wins_a=wins_a,
-                    wins_b=wins_b,
-                    draws=draws,
-                )
+    for pairing_index, (
+        (config_a, loadout_a),
+        (config_b, loadout_b),
+    ) in enumerate(itertools.combinations(configs, 2), start=1):
+        wins_a = wins_b = draws = 0
+        for seed in range(1, seed_count + 1):
+            result = execute_duel(
+                loadout_a=loadout_a,
+                loadout_b=loadout_b,
+                seed=seed,
+                max_ticks=max_ticks,
+                storage=ModelSOEvaluationStorageKey(
+                    namespace="balance",
+                    duel=f"pairing_{pairing_index}_seed_{seed}",
+                ),
+                match_id=f"match.balance.{pairing_index}.{seed}",
+                loadout_path_a=None,
+                loadout_path_b=None,
+                side_a=_SIDE_A,
+                side_b=_SIDE_B,
             )
+            final = result.final_state
+            winner_id = final.winner_id
+            if winner_id is None:
+                draws += 1
+            elif winner_id == f"player.{_SIDE_A}":
+                wins_a += 1
+            elif winner_id == f"player.{_SIDE_B}":
+                wins_b += 1
+            else:  # pragma: no cover - lifecycle invariant violation
+                raise click.ClickException(
+                    f"unrecognized winner_id {winner_id!r} for {config_a} vs {config_b}"
+                )
+        pairings.append(
+            ModelSOBalancePairing(
+                config_a=config_a,
+                config_b=config_b,
+                wins_a=wins_a,
+                wins_b=wins_b,
+                draws=draws,
+            )
+        )
 
     matrix = ModelSOBalanceMatrix(seeds=seed_count, pairings=tuple(pairings))
 

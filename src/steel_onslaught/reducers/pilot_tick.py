@@ -36,7 +36,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
+from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -67,18 +67,20 @@ def _build_observation(
     # The cooldowns dict maps weapon_id -> remaining ticks.
     # We expose the weapons the mech *has cooldown entries for*; the pilot
     # only needs to know about weapons the match runner has registered.
-    # Stats come from the weapon contract index (Task 34); a weapon with no
-    # spec entry falls back to zeros (the Task 21 scope behavior).
+    # Stats come from the injected weapon contract index (Task 34). Missing
+    # entries are contract/provenance violations and fail closed.
     weapon_views: list[ModelSOPilotWeaponView] = []
     for weapon_id, cooldown in mech.weapon_cooldowns.items():
         spec = weapon_specs.get(weapon_id)
+        if spec is None:
+            raise UnknownWeaponError(weapon_id, owner_id=mech.mech_id)
         weapon_views.append(
             ModelSOPilotWeaponView(
                 weapon_id=weapon_id,
-                damage=spec.damage if spec is not None else 0,
-                range=spec.range if spec is not None else 0,
-                pressure_cost=spec.pressure_cost if spec is not None else 0,
-                heat_generated=spec.heat_generated if spec is not None else 0,
+                damage=spec.damage,
+                range=spec.range,
+                pressure_cost=spec.pressure_cost,
+                heat_generated=spec.heat_generated,
                 cooldown_remaining_ticks=cooldown,
             )
         )

@@ -8,7 +8,12 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
-from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, WeaponDamageType
+from steel_onslaught.contracts.weapon import (
+    ModelSOAccuracyPoint,
+    ModelSOWeaponCompatibility,
+    ModelSOWeaponSpec,
+    WeaponDamageType,
+)
 
 CONTRACTS_DATA = Path(__file__).parent.parent.parent / "contracts_data" / "weapons"
 
@@ -20,6 +25,25 @@ WEAPON_FILES = [
     "shrapnel_thrower.yaml",
     "harpoon_gun.yaml",
 ]
+
+
+def _valid_weapon_data() -> dict[str, object]:
+    return {
+        "schema_version": "0.1.0",
+        "kind": "steel_onslaught.weapon",
+        "id": "weapon.light.test",
+        "display_name": "Test Weapon",
+        "weapon_class": "light",
+        "range": 10,
+        "damage": 5,
+        "pressure_cost": 5,
+        "heat_generated": 3,
+        "cooldown_ticks": 1,
+        "accuracy_curve": [{"range": 5, "hit_probability": 0.8}],
+        "target_class_effectiveness": {"light": 1.0},
+        "damage_type": "standard",
+        "compatibility": {"compatible_chassis_classes": ["light"]},
+    }
 
 
 @pytest.mark.unit
@@ -65,6 +89,7 @@ def test_weapon_rejects_negative_damage() -> None:
                 "cooldown_ticks": 1,
                 "accuracy_curve": [{"range": 5, "hit_probability": 0.8}],
                 "target_class_effectiveness": {"light": 1.0},
+                "damage_type": "standard",
                 "compatibility": {"compatible_chassis_classes": ["light"]},
             }
         )
@@ -98,6 +123,7 @@ def test_weapon_rejects_invalid_weapon_class() -> None:
                 "cooldown_ticks": 1,
                 "accuracy_curve": [{"range": 5, "hit_probability": 0.8}],
                 "target_class_effectiveness": {"light": 1.0},
+                "damage_type": "standard",
                 "compatibility": {"compatible_chassis_classes": ["light"]},
             }
         )
@@ -131,26 +157,42 @@ def test_non_heat_weapons_are_standard(filename: str) -> None:
 
 
 @pytest.mark.unit
-def test_damage_type_defaults_to_standard_when_omitted() -> None:
-    """Backward-compat: a weapon YAML that omits damage_type validates as STANDARD."""
-    spec = ModelSOWeaponSpec.model_validate(
-        {
-            "schema_version": "0.1.0",
-            "kind": "steel_onslaught.weapon",
-            "id": "weapon.light.legacy",
-            "display_name": "Legacy",
-            "weapon_class": "light",
-            "range": 10,
-            "damage": 5,
-            "pressure_cost": 5,
-            "heat_generated": 3,
-            "cooldown_ticks": 1,
-            "accuracy_curve": [{"range": 5, "hit_probability": 0.8}],
-            "target_class_effectiveness": {"light": 1.0},
-            "compatibility": {"compatible_chassis_classes": ["light"]},
-        }
-    )
-    assert spec.damage_type is WeaponDamageType.STANDARD
+@pytest.mark.parametrize("field", ["schema_version", "kind", "damage_type"])
+def test_contract_identity_and_damage_type_are_required(field: str) -> None:
+    data = _valid_weapon_data()
+    del data[field]
+    with pytest.raises(ValidationError, match=field):
+        ModelSOWeaponSpec.model_validate(data)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("model", "data"),
+    [
+        (ModelSOAccuracyPoint, {"range": 5, "hit_probability": 0.8, "extra": True}),
+        (
+            ModelSOWeaponCompatibility,
+            {"compatible_chassis_classes": ["light"], "extra": True},
+        ),
+    ],
+)
+def test_nested_weapon_models_reject_extra_fields(
+    model: type[ModelSOAccuracyPoint] | type[ModelSOWeaponCompatibility],
+    data: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="extra"):
+        model.model_validate(data)
+
+
+@pytest.mark.unit
+def test_nested_weapon_models_are_frozen() -> None:
+    point = ModelSOAccuracyPoint(range=5, hit_probability=0.8)
+    compatibility = ModelSOWeaponCompatibility(compatible_chassis_classes=["light"])
+
+    with pytest.raises(ValidationError, match="frozen"):
+        point.range = 6
+    with pytest.raises(ValidationError, match="frozen"):
+        compatibility.compatible_chassis_classes = ["heavy"]
 
 
 @pytest.mark.unit

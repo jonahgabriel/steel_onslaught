@@ -143,9 +143,7 @@ class LeaderboardHandler:
         )
         try:
             if self._conn.isolation_level is not None:
-                raise RuntimeError(
-                    "leaderboard SQLite connection did not apply autocommit policy"
-                )
+                raise RuntimeError("leaderboard SQLite connection did not apply autocommit policy")
             row = self._conn.execute(f"PRAGMA journal_mode={config.journal_mode}").fetchone()
             if row is None or str(row[0]).upper() != config.journal_mode:
                 raise RuntimeError(

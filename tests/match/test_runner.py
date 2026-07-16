@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.composition import load_loadout
@@ -121,3 +122,33 @@ def test_unknown_pilot_archetype_fails_fast() -> None:
             loadout_b=load_loadout(LOADOUT_B),
             max_ticks=3,
         )[0].run()
+
+
+@pytest.mark.unit
+def test_unknown_loadout_weapon_fails_with_typed_deterministic_error() -> None:
+    loadout = load_loadout(LOADOUT_A)
+    unknown_id = "weapon.light.absent"
+    bad = loadout.model_copy(
+        update={
+            "modules": loadout.modules.model_copy(update={"weapons": [unknown_id]}),
+        }
+    )
+    bus = InProcessEventBus()
+    runner, _runtime = match_runner(
+        bus=bus,
+        match_id=MATCH_ID,
+        seed=1,
+        loadout_a=bad,
+        loadout_b=load_loadout(LOADOUT_B),
+        max_ticks=3,
+    )
+
+    with pytest.raises(UnknownWeaponError) as raised:
+        runner.run()
+
+    assert raised.value.weapon_id == unknown_id
+    assert raised.value.owner_id == loadout.id
+    assert str(raised.value) == (
+        f"unknown_weapon_id: weapon {unknown_id!r} referenced by {loadout.id!r} "
+        "is absent from the injected weapon catalog"
+    )

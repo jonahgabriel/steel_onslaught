@@ -64,15 +64,6 @@ class YamlFilesystemLearningArtifactStore:
         )
         return MaterializedLoadout(loadout=loadout, path=loadout_path)
 
-    def duel_ledger_path(
-        self,
-        workspace: EvaluationWorkspace,
-        *,
-        seed: int,
-        candidate_side: str,
-    ) -> Path:
-        return self._workspace_path(workspace) / f"seed_{seed}_cand_{candidate_side}.sqlite3"
-
     def write_lineage(
         self,
         record: ModelSOLineageRecord,

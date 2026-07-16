@@ -43,7 +43,7 @@ from steel_onslaught.learning.spec_adapter import PilotSpecView
 from steel_onslaught.learning.stats import wilson_interval
 from steel_onslaught.match.composition import (
     build_duel_executor,
-    build_runtime_dependencies,
+    build_learning_dependencies,
     load_application_overlay,
     load_loadout,
     load_pilot_spec,
@@ -237,7 +237,7 @@ def learn_command(
     """Bounded pilot-spec search with promotion gate and hidden-seed holdout."""
     try:
         overlay = load_application_overlay(overlay_path)
-        dependencies = build_runtime_dependencies(overlay)
+        dependencies = build_learning_dependencies(overlay)
         result, record_path = _run_learn(
             archetype=archetype,
             parent_spec=load_pilot_spec(parent_path),
@@ -250,7 +250,7 @@ def learn_command(
             max_ticks=max_ticks,
             recorded_at=dependencies.clock.now(),
             duel_executor=build_duel_executor(overlay),
-            artifacts=dependencies.learning_artifacts,
+            artifacts=dependencies.artifacts,
         )
     except (ValueError, ValidationError) as exc:
         raise click.ClickException(str(exc)) from exc

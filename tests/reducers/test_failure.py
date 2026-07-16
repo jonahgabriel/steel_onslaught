@@ -101,6 +101,17 @@ def _failure_reducer(
     )
 
 
+@pytest.mark.unit
+def test_constructor_requires_explicit_safety_gizmo_ids() -> None:
+    with pytest.raises(TypeError):
+        ReducerFailureCascade(  # type: ignore[call-arg]
+            _MATCH_ID,
+            _TEST_CORRELATION_ID,
+            emit=lambda _event: None,
+            event_factory=_EVENT_FACTORY,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

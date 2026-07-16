@@ -137,6 +137,15 @@ def _run(blue_loadout: Path, out_dir: Path) -> tuple[ModelSOMatchState, list[Can
                 "evaluation_root": out_dir / "evaluations",
                 "lineage_root": out_dir / "lineage",
             },
+            "evaluation_storage": {
+                "kind": "sqlite",
+                "root": out_dir / "evaluations",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+                "leaderboard_schema": "leaderboard_v1",
+            },
             "contracts": {
                 "catalog_dir": _REPO_ROOT / "contracts_data",
                 "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",

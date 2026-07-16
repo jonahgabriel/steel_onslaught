@@ -56,6 +56,15 @@ def _write_overlay(
                     "evaluation_root": str(tmp_path / "evaluations"),
                     "lineage_root": str(tmp_path / "lineage"),
                 },
+                "evaluation_storage": {
+                    "kind": "sqlite",
+                    "root": str(tmp_path / "evaluation_storage"),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                    "leaderboard_schema": "leaderboard_v1",
+                },
                 "contracts": {
                     "catalog_dir": str(_REPO_ROOT / "contracts_data"),
                     "pilot_registry_dir": str(_REPO_ROOT / "contracts_data/pilots"),

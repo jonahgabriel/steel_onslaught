@@ -14,7 +14,7 @@ from steel_onslaught.learning.artifacts import (
 )
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import spec_from_params
-from steel_onslaught.match.duel import DuelExecutor
+from steel_onslaught.match.duel import DuelExecutor, ModelSOEvaluationStorageKey
 
 _SIDE_RED = "red"
 _SIDE_BLUE = "blue"
@@ -166,17 +166,16 @@ class DuelEvaluator:
         parent_overloads) for this duel alone."""
         parent_side = _SIDE_BLUE if candidate_side == _SIDE_RED else _SIDE_RED
         match_id = f"match.learn.seed_{seed}.cand_{candidate_side}"
-        ledger_path = self._artifacts.duel_ledger_path(
-            workspace,
-            seed=seed,
-            candidate_side=candidate_side,
+        storage = ModelSOEvaluationStorageKey(
+            namespace=workspace.key,
+            duel=f"seed_{seed}_cand_{candidate_side}",
         )
         result = self._duel_executor(
             loadout_a=loadout_red.loadout,
             loadout_b=loadout_blue.loadout,
             seed=seed,
             max_ticks=self._max_ticks,
-            ledger_path=ledger_path,
+            storage=storage,
             match_id=match_id,
             loadout_path_a=loadout_red.path,
             loadout_path_b=loadout_blue.path,

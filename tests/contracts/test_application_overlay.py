@@ -34,6 +34,15 @@ def _overlay_data(tmp_path: Path) -> dict[str, object]:
             "evaluation_root": tmp_path / "evaluations",
             "lineage_root": tmp_path / "lineage",
         },
+        "evaluation_storage": {
+            "kind": "sqlite",
+            "root": tmp_path / "evaluation_storage",
+            "journal_mode": "WAL",
+            "check_same_thread": True,
+            "transaction_mode": "autocommit",
+            "event_schema": "canonical_event_v1",
+            "leaderboard_schema": "leaderboard_v1",
+        },
         "contracts": {
             "catalog_dir": tmp_path / "catalog",
             "pilot_registry_dir": tmp_path / "pilots",
@@ -81,6 +90,7 @@ def test_overlay_rejects_unsupported_adapter_kind(tmp_path: Path) -> None:
         "event_ledger",
         "leaderboard",
         "learning_artifacts",
+        "evaluation_storage",
         "contracts",
         "clock",
         "identity",
@@ -101,6 +111,7 @@ def test_overlay_requires_every_binding(tmp_path: Path, binding: str) -> None:
         ("event_ledger", {"kind": "postgres"}),
         ("leaderboard", {"kind": "memory"}),
         ("learning_artifacts", {"kind": "s3"}),
+        ("evaluation_storage", {"kind": "postgres"}),
         ("clock", {"kind": "local_time"}),
         ("identity", {"kind": "random_int"}),
     ],
@@ -127,3 +138,4 @@ def test_overlay_relative_paths_resolve_from_overlay_directory(tmp_path: Path) -
 
     assert overlay.event_ledger.path == tmp_path / "events.sqlite3"
     assert overlay.contracts.catalog_dir == tmp_path / "catalog"
+    assert overlay.evaluation_storage.root == tmp_path / "evaluation_storage"

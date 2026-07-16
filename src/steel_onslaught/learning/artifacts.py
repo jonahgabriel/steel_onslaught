@@ -35,14 +35,6 @@ class LearningArtifactStore(Protocol):
         role: str,
     ) -> MaterializedLoadout: ...
 
-    def duel_ledger_path(
-        self,
-        workspace: EvaluationWorkspace,
-        *,
-        seed: int,
-        candidate_side: str,
-    ) -> Path: ...
-
     def write_lineage(
         self,
         record: ModelSOLineageRecord,

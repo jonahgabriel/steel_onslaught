@@ -163,7 +163,6 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
         catalog=cast(MatchContractCatalog, _Catalog()),
         pilot_registry=cast(Any, _Registry()),
         pilot_factory=cast(Any, pilot_factory),
-        learning_artifacts=cast(Any, object()),
     )
     identity = MatchIdentity(
         match_id=identities.new_match_id(),

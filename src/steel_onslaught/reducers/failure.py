@@ -162,7 +162,7 @@ class ReducerFailureCascade:
         *,
         emit: EmitFn,
         event_factory: EventFactory,
-        safety_gizmo_ids: frozenset[str] = frozenset(),
+        safety_gizmo_ids: frozenset[str],
     ) -> None:
         self._match_id = match_id
         self._correlation_id = correlation_id

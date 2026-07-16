@@ -17,6 +17,7 @@ loadouts copied into a temp dir), marked ``slow``.
 from __future__ import annotations
 
 import csv
+import json
 import shutil
 from pathlib import Path
 
@@ -30,7 +31,8 @@ from steel_onslaught.projections.balance.matrix import (
     ModelSOBalancePairing,
 )
 
-_REPO_LOADOUTS = Path("contracts_data/loadouts")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_LOADOUTS = _REPO_ROOT / "contracts_data/loadouts"
 _REDUCED_LOADOUT_FILES = (
     "example_aggressive_light.yaml",
     "example_predictive_heavy.yaml",
@@ -51,6 +53,59 @@ def reduced_loadouts_dir(tmp_path: Path) -> Path:
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _write_overlay(tmp_path: Path, *, name: str) -> tuple[Path, Path, Path, Path]:
+    event_store = tmp_path / f"{name}-global-events.sqlite"
+    leaderboard_store = tmp_path / f"{name}-global-leaderboard.sqlite"
+    evaluation_root = tmp_path / f"{name}-evaluation"
+    overlay_path = tmp_path / f"{name}-application.json"
+    overlay_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "bus": {"kind": "in_process"},
+                "event_ledger": {
+                    "kind": "sqlite",
+                    "path": str(event_store),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                },
+                "leaderboard": {
+                    "kind": "sqlite",
+                    "path": str(leaderboard_store),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "storage_schema": "leaderboard_v1",
+                },
+                "learning_artifacts": {
+                    "kind": "filesystem_yaml",
+                    "evaluation_root": str(tmp_path / f"{name}-artifacts"),
+                    "lineage_root": str(tmp_path / f"{name}-lineage"),
+                },
+                "evaluation_storage": {
+                    "kind": "sqlite",
+                    "root": str(evaluation_root),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                    "leaderboard_schema": "leaderboard_v1",
+                },
+                "contracts": {
+                    "catalog_dir": str(_REPO_ROOT / "contracts_data"),
+                    "pilot_registry_dir": str(_REPO_ROOT / "contracts_data/pilots"),
+                },
+                "clock": {"kind": "system_utc"},
+                "identity": {"kind": "system"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return overlay_path, event_store, leaderboard_store, evaluation_root
 
 
 # ---------------------------------------------------------------------------
@@ -132,12 +187,17 @@ def test_matrix_shape_row_sums_and_no_implicit_ledger_writes(
     monkeypatch.chdir(workdir)
     seeds = 2
     csv_path = workdir / "out.csv"
+    overlay_path, event_store, leaderboard_store, evaluation_root = _write_overlay(
+        tmp_path, name="matrix"
+    )
 
     runner = CliRunner()
     result = runner.invoke(
         main,
         [
             "balance",
+            "--overlay",
+            str(overlay_path),
             "--seeds",
             str(seeds),
             "--loadouts-dir",
@@ -170,6 +230,9 @@ def test_matrix_shape_row_sums_and_no_implicit_ledger_writes(
 
     # No implicit writes: the working directory holds ONLY the requested CSV.
     assert {p.name for p in workdir.iterdir()} == {"out.csv"}
+    assert not event_store.exists()
+    assert not leaderboard_store.exists()
+    assert list(evaluation_root.rglob("*.sqlite3"))
 
 
 @pytest.mark.integration
@@ -179,12 +242,17 @@ def test_two_runs_with_seeds_3_produce_byte_identical_csv(
 ) -> None:
     runner = CliRunner()
     outputs: list[bytes] = []
+    overlay_path, event_store, leaderboard_store, evaluation_root = _write_overlay(
+        tmp_path, name="determinism"
+    )
     for run_index in (1, 2):
         csv_path = tmp_path / f"matrix_{run_index}.csv"
         result = runner.invoke(
             main,
             [
                 "balance",
+                "--overlay",
+                str(overlay_path),
                 "--seeds",
                 "3",
                 "--loadouts-dir",
@@ -197,10 +265,13 @@ def test_two_runs_with_seeds_3_produce_byte_identical_csv(
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
+        assert not event_store.exists()
+        assert not leaderboard_store.exists()
         outputs.append(csv_path.read_bytes())
 
     assert outputs[0] == outputs[1]
     assert outputs[0] != b""
+    assert {path.name for path in evaluation_root.iterdir()} == {"balance", "balance_0002"}
 
 
 @pytest.mark.integration
@@ -215,9 +286,18 @@ def test_proof_loadouts_are_excluded(tmp_path: Path) -> None:
     )
 
     runner = CliRunner()
+    overlay_path, _, _, _ = _write_overlay(tmp_path, name="proof-only")
     result = runner.invoke(
         main,
-        ["balance", "--seeds", "1", "--loadouts-dir", str(fixture_dir)],
+        [
+            "balance",
+            "--overlay",
+            str(overlay_path),
+            "--seeds",
+            "1",
+            "--loadouts-dir",
+            str(fixture_dir),
+        ],
     )
     assert result.exit_code != 0
     assert "no non-proof loadouts" in result.output
