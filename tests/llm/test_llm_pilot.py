@@ -7,6 +7,7 @@ import json
 import pytest
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.pilot import LLMPilot
 from steel_onslaught.llm.schemas import LlmResponse, LlmUsage, ModelSOLlmCompletionRequest
@@ -83,7 +84,7 @@ def _observation(
         match_elapsed_ticks=1,
         boiler=_boiler(heat=heat),
         weapons=weapons if weapons is not None else [_weapon()],
-        current_mode="assault",
+        current_mode=ModeId.ASSAULT,
         mode_lock_expired=True,
         position=ModelSOPosition(x=10, y=10),
         hp_percent=80.0,

@@ -8,6 +8,7 @@ import pytest
 
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
 from steel_onslaught.llm.adaptation import (
+    AdaptationResult,
     OpponentAwareClient,
     build_opponent_trace_block,
     run_adaptation_experiment,
@@ -173,7 +174,7 @@ class _PilotDuelRecorder:
         )
 
 
-def _run(executor: _PilotDuelRecorder, *, n_matches: int = 3):
+def _run(executor: _PilotDuelRecorder, *, n_matches: int = 3) -> AdaptationResult:
     return run_adaptation_experiment(
         provider="scripted",
         persona_a="berserker",

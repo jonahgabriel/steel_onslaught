@@ -18,6 +18,12 @@ from tests.overlay import complete_test_overlay
 _CONTRACTS_DATA = Path(__file__).parent.parent.parent / "contracts_data"
 
 
+def _require_object_dict(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    assert all(isinstance(key, str) for key in value)
+    return value
+
+
 def _overlay_data(tmp_path: Path) -> dict[str, object]:
     return complete_test_overlay(
         {
@@ -83,7 +89,7 @@ def _http_provider() -> dict[str, object]:
 
 def _with_http_provider(tmp_path: Path) -> dict[str, object]:
     raw = _overlay_data(tmp_path)
-    llm = dict(raw["llm"])  # type: ignore[arg-type]
+    llm = dict(_require_object_dict(raw["llm"]))
     llm["providers"] = [_http_provider()]
     llm["secret_resolver"] = {"kind": "injected"}
     raw["llm"] = llm
@@ -98,7 +104,7 @@ class _NamedGraphResolver:
 @pytest.mark.unit
 def test_full_named_provider_graph_resolves_every_shipped_llm_spec(tmp_path: Path) -> None:
     raw = _overlay_data(tmp_path)
-    llm = dict(raw["llm"])  # type: ignore[arg-type]
+    llm = dict(_require_object_dict(raw["llm"]))
     llm["providers"] = [
         {"kind": "stub", "provider_id": "stub", "model": "fixture-stub"},
         *[
@@ -128,7 +134,7 @@ def test_full_named_provider_graph_resolves_every_shipped_llm_spec(tmp_path: Pat
     overlay = ModelSOApplicationOverlay.model_validate(raw)
     dependencies = build_llm_dependencies(
         overlay,
-        secret_resolver=_NamedGraphResolver(),  # type: ignore[arg-type]
+        secret_resolver=_NamedGraphResolver(),
     )
     try:
         registry = load_pilot_registry(_CONTRACTS_DATA / "pilots")
@@ -278,7 +284,7 @@ def test_http_provider_requires_every_historical_field(tmp_path: Path, field: st
     raw = _with_http_provider(tmp_path)
     llm = raw["llm"]
     assert isinstance(llm, dict)
-    provider = dict(llm["providers"][0])  # type: ignore[index]
+    provider = dict(llm["providers"][0])
     del provider[field]
     llm["providers"] = [provider]
     with pytest.raises(ValueError, match=field):
@@ -308,11 +314,11 @@ def test_http_provider_rejects_coercion_and_non_finite_values(
     raw = _with_http_provider(tmp_path)
     llm = raw["llm"]
     assert isinstance(llm, dict)
-    provider = dict(llm["providers"][0])  # type: ignore[index]
+    provider = dict(llm["providers"][0])
     if len(path) == 1:
         provider[path[0]] = value
     else:
-        nested = dict(provider[path[0]])  # type: ignore[arg-type]
+        nested = dict(provider[path[0]])
         nested[path[1]] = value
         provider[path[0]] = nested
     llm["providers"] = [provider]
@@ -336,7 +342,7 @@ def test_http_provider_rejects_non_complete_or_credential_bearing_endpoint(
     raw = _with_http_provider(tmp_path)
     llm = raw["llm"]
     assert isinstance(llm, dict)
-    provider = dict(llm["providers"][0])  # type: ignore[index]
+    provider = dict(llm["providers"][0])
     provider["endpoint_url"] = endpoint
     llm["providers"] = [provider]
     with pytest.raises(ValueError, match="endpoint_url"):
@@ -376,7 +382,7 @@ def test_secret_bearing_provider_requires_injected_resolver_and_bounded_ref(tmp_
         ModelSOApplicationOverlay.model_validate(raw)
 
     llm["secret_resolver"] = {"kind": "injected"}
-    provider = dict(llm["providers"][0])  # type: ignore[index]
+    provider = dict(llm["providers"][0])
     provider["secret_ref"] = {"kind": "opaque", "ref": "sk-raw-secret"}
     llm["providers"] = [provider]
     with pytest.raises(ValueError, match="secret_ref"):
