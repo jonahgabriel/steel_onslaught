@@ -119,6 +119,57 @@ def test_provider_failure_emits_sanitized_failed_terminal() -> None:
 
 
 @pytest.mark.unit
+def test_generic_consumer_exception_emits_one_sanitized_failed_terminal() -> None:
+    raw_system_prompt = "raw-system-prompt-secret"
+    raw_user_prompt = "raw-user-prompt-secret"
+    raw_response = "raw-provider-response-secret"
+
+    class _RawResponseClient:
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            return LlmResponse(
+                text=raw_response,
+                usage=LlmUsage(prompt_tokens=13, completion_tokens=5, cost_usd=None),
+                model="consumer-fixture-model",
+                finish_reason="stop",
+            )
+
+    client, events = _observed(_RawResponseClient())
+    request = _request().model_copy(
+        update={
+            "system_prompt": raw_system_prompt,
+            "user_prompt": raw_user_prompt,
+        }
+    )
+
+    def explode_after_provider_response(response: LlmResponse) -> None:
+        assert response.text == raw_response
+        raise RuntimeError("consumer acceptance failed")
+
+    with pytest.raises(RuntimeError, match="consumer acceptance failed") as captured:
+        consume_llm_completion(
+            client=client,
+            request=request,
+            consumer=explode_after_provider_response,
+        )
+
+    _assert_chain(events, SOEventType.LLM_COMPLETION_FAILED)
+    requested, failed = events
+    assert failed.payload["reason_code"] == "consumer_error"
+    assert failed.payload["provider_id"] == requested.payload["provider_id"] == "provider.fixture"
+    assert failed.payload["model"] == "consumer-fixture-model"
+    assert failed.payload["prompt_tokens"] == 13
+    assert failed.payload["completion_tokens"] == 5
+    assert SOEventType.LLM_COMPLETION_RESOLVED not in {event.event_type for event in events}
+    assert sum(event.event_type is SOEventType.LLM_COMPLETION_FAILED for event in events) == 1
+
+    serialized_evidence = "\n".join(event.model_dump_json() for event in events)
+    exception_text = repr(captured.value)
+    for raw_text in (raw_system_prompt, raw_user_prompt, raw_response):
+        assert raw_text not in serialized_evidence
+        assert raw_text not in exception_text
+
+
+@pytest.mark.unit
 def test_abandoned_attempt_emits_failed_and_rejects_double_finalization() -> None:
     client, events = _observed(_ResponseClient())
     with client.begin_attempt(_request()):
