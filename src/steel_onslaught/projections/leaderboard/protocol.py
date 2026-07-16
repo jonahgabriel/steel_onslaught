@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
 
 
 class ModelSOLeaderboardEntry(BaseModel):
@@ -25,7 +27,7 @@ class ModelSOLeaderboardEntry(BaseModel):
 
 
 class LeaderboardRepository(Protocol):
-    def on_match_scored(self, payload: dict[str, Any]) -> None:
+    def on_match_scored(self, payload: ModelSOMatchScoredPayload) -> None:
         """Materialize one canonical MATCH_SCORED payload."""
         ...
 

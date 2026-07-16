@@ -17,8 +17,10 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.payloads import ModelSOMatchStartedPayload
 from steel_onslaught.projections.cli.renderer import CliTextRenderer
 from steel_onslaught.reducers.lifecycle import ReducerMatchLifecycle
+from tests.fixtures.event_samples import build_sample_envelopes
 from tests.runtime import runtime_dependencies
 
 MATCH_ID = "match.2026-04-30.renderer-test"
@@ -63,22 +65,17 @@ def _renderer() -> tuple[CliTextRenderer, io.StringIO]:
 
 
 def _match_started_payload() -> dict[str, Any]:
-    return {
-        "seed": 12345,
-        "max_ticks": 200,
-        "mechs": [
-            {
-                "mech_id": "mech.red.01",
-                "chassis_id": "chassis.heavy.ironclad_mk1",
-                "pilot_id": "pilot.example.predictive_v1",
-            },
-            {
-                "mech_id": "mech.blue.01",
-                "chassis_id": "chassis.light.scout_mk1",
-                "pilot_id": "pilot.example.aggressive_v1",
-            },
-        ],
-    }
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    payload = ModelSOMatchStartedPayload.model_validate(sample.payload).model_dump(mode="json")
+    payload["seed"] = 12345
+    payload["max_ticks"] = 200
+    for mech, side in zip(payload["mechs"], ("red", "blue"), strict=True):
+        mech_id = f"mech.{side}.01"
+        mech["mech_id"] = mech_id
+        mech["player_id"] = f"player.{side}"
+        mech["boiler"]["match_id"] = MATCH_ID
+        mech["boiler"]["mech_id"] = mech_id
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -143,13 +140,13 @@ def test_decision_line_with_mode_detail_and_labels() -> None:
                 "action_params": {"target_mode": "assault"},
                 "reason_code": "mode_advantage",
                 "confidence": 0.81,
-                "considered_actions": [],
+                "considered_actions": [{"action": "switch_mode", "score": 0.81}],
             },
             tick=142,
         )
     )
     assert out.getvalue() == (
-        "[Tick 142] mech.red.01 (Heavy Ironclad Mk1, Predictive V1) "
+        "[Tick 142] mech.red.01 (Light Scout Mk1, Aggressive) "
         "decided: SWITCH_MODE → assault (conf 0.81)\n"
     )
 
@@ -165,7 +162,7 @@ def test_decision_line_without_labels_or_params() -> None:
                 "action_params": {},
                 "reason_code": "heat_critical",
                 "confidence": 1.0,
-                "considered_actions": [],
+                "considered_actions": [{"action": "vent", "score": 1.0}],
             },
             tick=7,
         )
@@ -184,7 +181,7 @@ def test_decision_line_with_weapon_detail() -> None:
                 "action_params": {"weapon_id": "weapon.light.machine_gun"},
                 "reason_code": "target_in_range",
                 "confidence": 0.9,
-                "considered_actions": [],
+                "considered_actions": [{"action": "fire_weapon", "score": 0.9}],
             },
             tick=9,
         )
@@ -222,6 +219,8 @@ def test_weapon_fired_line() -> None:
                 "weapon_id": "weapon.light.machine_gun",
                 "target_id": "mech.blue.01",
                 "hit_probability": 0.59,
+                "pressure_cost": 4,
+                "heat_generated": 6,
             },
             tick=148,
         )
@@ -237,7 +236,12 @@ def test_damage_applied_line() -> None:
     renderer.handle(
         _env(
             SOEventType.DAMAGE_APPLIED,
-            {"target_id": "mech.blue.01", "damage": 5},
+            {
+                "target_id": "mech.blue.01",
+                "damage": 5,
+                "cause": "weapon_hit",
+                "hp_after": 95,
+            },
             tick=149,
             mech_id="mech.blue.01",
             player_id="player.blue",
@@ -272,10 +276,52 @@ def test_redline_lines() -> None:
 @pytest.mark.unit
 def test_destruction_and_rupture_lines() -> None:
     renderer, out = _renderer()
-    renderer.handle(_env(SOEventType.BOILER_OVERLOADED, {}, tick=20))
-    renderer.handle(_env(SOEventType.BOILER_RUPTURED, {"cause": "heat"}, tick=21))
-    renderer.handle(_env(SOEventType.PILOT_KILLED, {}, tick=21))
-    renderer.handle(_env(SOEventType.MECH_DESTROYED, {}, tick=21))
+    renderer.handle(
+        _env(
+            SOEventType.BOILER_OVERLOADED,
+            {
+                "heat": 80,
+                "redline_threshold": 70,
+                "redline_consecutive_ticks": 3,
+                "accuracy_penalty_next_fire": 0.2,
+                "mode_switch_disabled_until": 23,
+            },
+            tick=20,
+        )
+    )
+    renderer.handle(
+        _env(
+            SOEventType.BOILER_RUPTURED,
+            {
+                "cause": "heat_threshold",
+                "heat": 100,
+                "rupture_threshold": 100,
+                "direct_damage": 40,
+                "area_damage": 15,
+                "area_radius_cells": 3,
+            },
+            tick=21,
+        )
+    )
+    renderer.handle(
+        _env(
+            SOEventType.PILOT_KILLED,
+            {
+                "mech_id": "mech.red.01",
+                "survival_probability": 0.7,
+                "roll": 0.95,
+                "safety_gizmos_equipped": 1,
+            },
+            tick=21,
+        )
+    )
+    renderer.handle(
+        _env(
+            SOEventType.MECH_DESTROYED,
+            {"cause": "boiler_rupture", "source_mech_id": None},
+            tick=21,
+        )
+    )
     assert out.getvalue() == (
         "[Tick 20] mech.red.01 boiler OVERLOADED\n"
         "[Tick 21] mech.red.01 BOILER RUPTURED\n"

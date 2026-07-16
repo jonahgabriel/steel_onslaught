@@ -42,6 +42,9 @@ while the match is still RUNNING):
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal, TypeVar
 from uuid import UUID
 
@@ -62,6 +65,15 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOArmorAbsorbedPayload,
+    ModelSODamageAppliedPayload,
+    ModelSOMatchStartedPayload,
+    ModelSOMechDestroyedPayload,
+    ModelSOPilotKilledPayload,
+    ModelSOWeaponFiredPayload,
+)
+from steel_onslaught.immutable import freeze_mapping
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
@@ -70,7 +82,7 @@ from steel_onslaught.match.state import (
 )
 from steel_onslaught.reducers.boiler import ReducerBoiler
 from steel_onslaught.reducers.failure import ReducerFailureCascade
-from steel_onslaught.reducers.lifecycle import ModelSOMatchStartedPayload, ReducerMatchLifecycle
+from steel_onslaught.reducers.lifecycle import ReducerMatchLifecycle
 from steel_onslaught.reducers.mode import build_mode_transition_completed_event
 from steel_onslaught.reducers.movement import ReducerMovement, mode_effective_speed
 
@@ -123,6 +135,7 @@ class MatchContractStateMismatchError(ValueError):
         )
 
 
+@dataclass(frozen=True, init=False)
 class MatchContractCatalog:
     """Static contract indexes a match needs at runtime AND at replay time.
 
@@ -131,25 +144,36 @@ class MatchContractCatalog:
     validated contract snapshot.
     """
 
+    chassis: Mapping[str, ModelSOChassisSpec]
+    boilers: Mapping[str, ModelSOBoilerSpec]
+    sensors: Mapping[str, ModelSOSensorSpec]
+    weapons: Mapping[str, ModelSOWeaponSpec]
+    gizmos: Mapping[str, ModelSOGizmoSpec]
+    transitions: Mapping[tuple[ModeId, ModeId], ModelSOModeTransition]
+    safety_gizmo_ids: frozenset[str]
+
     def __init__(
         self,
         *,
-        chassis: dict[str, ModelSOChassisSpec],
-        boilers: dict[str, ModelSOBoilerSpec],
-        sensors: dict[str, ModelSOSensorSpec],
-        weapons: dict[str, ModelSOWeaponSpec],
-        gizmos: dict[str, ModelSOGizmoSpec],
-        transitions: dict[tuple[ModeId, ModeId], ModelSOModeTransition],
+        chassis: Mapping[str, ModelSOChassisSpec],
+        boilers: Mapping[str, ModelSOBoilerSpec],
+        sensors: Mapping[str, ModelSOSensorSpec],
+        weapons: Mapping[str, ModelSOWeaponSpec],
+        gizmos: Mapping[str, ModelSOGizmoSpec],
+        transitions: Mapping[tuple[ModeId, ModeId], ModelSOModeTransition],
     ) -> None:
-        self.chassis = chassis
-        self.boilers = boilers
-        self.sensors = sensors
-        self.weapons = weapons
-        self.gizmos = gizmos
-        self.transitions = transitions
-        self.safety_gizmo_ids: frozenset[str] = frozenset(
-            gizmo_id for gizmo_id, spec in gizmos.items() if spec.category is GizmoCategory.SAFETY
+        object.__setattr__(self, "chassis", MappingProxyType(dict(chassis)))
+        object.__setattr__(self, "boilers", MappingProxyType(dict(boilers)))
+        object.__setattr__(self, "sensors", MappingProxyType(dict(sensors)))
+        object.__setattr__(self, "weapons", MappingProxyType(dict(weapons)))
+        object.__setattr__(self, "gizmos", MappingProxyType(dict(gizmos)))
+        object.__setattr__(self, "transitions", MappingProxyType(dict(transitions)))
+        safety_gizmo_ids = frozenset(
+            gizmo_id
+            for gizmo_id, spec in self.gizmos.items()
+            if spec.category is GizmoCategory.SAFETY
         )
+        object.__setattr__(self, "safety_gizmo_ids", safety_gizmo_ids)
 
 
 class MatchStateFold:
@@ -279,8 +303,10 @@ class MatchStateFold:
                 case SOEventType.ARMOR_ABSORBED:
                     self._on_armor_absorbed(event)
                 case SOEventType.MECH_DESTROYED:
+                    ModelSOMechDestroyedPayload.model_validate(event.payload)
                     self._on_flag_drop(event, field="alive")
                 case SOEventType.PILOT_KILLED:
+                    ModelSOPilotKilledPayload.model_validate(event.payload)
                     self._on_flag_drop(event, field="pilot_alive")
                 case _:
                     pass  # intents, observations, telemetry: no state delta
@@ -303,7 +329,7 @@ class MatchStateFold:
 
     def _require_contract(
         self,
-        contracts: dict[str, _ContractT],
+        contracts: Mapping[str, _ContractT],
         contract_kind: Literal["chassis", "weapon", "sensor", "gizmo"],
         contract_id: str,
         *,
@@ -420,6 +446,7 @@ class MatchStateFold:
         self._mech_states = dict(new_state.mech_states)
 
     def _on_weapon_fired(self, event: ModelSOEventEnvelope) -> None:
+        payload = ModelSOWeaponFiredPayload.model_validate(event.payload)
         mech_id = event.subject.mech_id
         working = self.state
         boiler = self._boilers.get(mech_id)
@@ -427,16 +454,18 @@ class MatchStateFold:
             working = boiler.apply(event, working)
         mech = working.mech_states.get(mech_id)
         if mech is not None:
-            weapon_id = str(event.payload["weapon_id"])
+            weapon_id = payload.weapon_id
             spec = self._catalog.weapons.get(weapon_id)
             if spec is None:
                 raise UnknownWeaponError(weapon_id, owner_id=mech_id)
             mech = mech.model_copy(
                 update={
-                    "weapon_cooldowns": {
-                        **mech.weapon_cooldowns,
-                        weapon_id: spec.cooldown_ticks,
-                    },
+                    "weapon_cooldowns": freeze_mapping(
+                        {
+                            **mech.weapon_cooldowns,
+                            weapon_id: spec.cooldown_ticks,
+                        }
+                    ),
                     # The overload penalty applies to the next firing only.
                     "accuracy_penalty_next_fire": 0.0,
                 }
@@ -495,10 +524,11 @@ class MatchStateFold:
         self._mech_states = dict(working.mech_states)
 
     def _on_damage_applied(self, event: ModelSOEventEnvelope) -> None:
+        payload = ModelSODamageAppliedPayload.model_validate(event.payload)
         mech = self._mech_states.get(event.subject.mech_id)
         if mech is None:
             return
-        hp_after = int(event.payload["hp_after"])
+        hp_after = payload.hp_after
         if mech.hp == hp_after:
             return  # idempotent re-statement (e.g. rupture loop-back)
         self._mech_states = {
@@ -513,10 +543,11 @@ class MatchStateFold:
         the fold applies it so canonical state tracks the degrading pool.
         Idempotent if the value is already current.
         """
+        payload = ModelSOArmorAbsorbedPayload.model_validate(event.payload)
         mech = self._mech_states.get(event.subject.mech_id)
         if mech is None:
             return
-        armor_after = int(event.payload["armor_after"])
+        armor_after = payload.armor_after
         if mech.armor_value == armor_after:
             return  # idempotent re-statement
         self._mech_states = {
@@ -589,7 +620,7 @@ class MatchStateFold:
             ):
                 mech = mech.model_copy(
                     update={
-                        "weapon_cooldowns": new_cooldowns,
+                        "weapon_cooldowns": freeze_mapping(new_cooldowns),
                         "sensor_dropout_ticks_remaining": new_dropout,
                     }
                 )

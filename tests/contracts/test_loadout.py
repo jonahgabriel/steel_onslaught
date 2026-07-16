@@ -69,11 +69,11 @@ def test_example_predictive_heavy_loads() -> None:
 @pytest.mark.unit
 def test_all_module_ids_concatenates_every_category() -> None:
     modules = ModelSOLoadoutModules(
-        weapons=["weapon.light.machine_gun"],
-        sensors=["sensor.short_range_scanner"],
-        cooling=["cooling.auxiliary_vent"],
-        armor=["armor.reinforced_plating"],
-        gizmos=["gizmo.control.targeting_assist"],
+        weapons=("weapon.light.machine_gun",),
+        sensors=("sensor.short_range_scanner",),
+        cooling=("cooling.auxiliary_vent",),
+        armor=("armor.reinforced_plating",),
+        gizmos=("gizmo.control.targeting_assist",),
     )
     assert modules.all_module_ids() == (
         "weapon.light.machine_gun",
@@ -93,15 +93,15 @@ def test_all_module_ids_concatenates_every_category() -> None:
 def test_duplicate_module_id_across_categories_rejected() -> None:
     with pytest.raises(ValidationError, match="duplicate"):
         ModelSOLoadoutModules(
-            weapons=["weapon.light.machine_gun"],
-            sensors=["weapon.light.machine_gun"],  # duplicate across categories
+            weapons=("weapon.light.machine_gun",),
+            sensors=("weapon.light.machine_gun",),  # duplicate across categories
         )
 
 
 @pytest.mark.unit
 def test_duplicate_module_id_within_category_rejected() -> None:
     with pytest.raises(ValidationError, match="duplicate"):
-        ModelSOLoadoutModules(weapons=["weapon.light.machine_gun", "weapon.light.machine_gun"])
+        ModelSOLoadoutModules(weapons=("weapon.light.machine_gun", "weapon.light.machine_gun"))
 
 
 @pytest.mark.unit
@@ -112,7 +112,7 @@ def test_bad_loadout_id_rejected() -> None:
             chassis_id="chassis.light.scout_mk1",
             boiler_id="boiler.compact.v1",
             pilot_id="pilot.example.aggressive_v1",
-            modules=ModelSOLoadoutModules(weapons=["weapon.light.machine_gun"]),
+            modules=ModelSOLoadoutModules(weapons=("weapon.light.machine_gun",)),
             budgets=_budgets(),
         )
 
@@ -125,7 +125,7 @@ def test_chassis_id_namespace_enforced() -> None:
             chassis_id="boiler.compact.v1",  # wrong namespace
             boiler_id="boiler.compact.v1",
             pilot_id="pilot.example.aggressive_v1",
-            modules=ModelSOLoadoutModules(weapons=["weapon.light.machine_gun"]),
+            modules=ModelSOLoadoutModules(weapons=("weapon.light.machine_gun",)),
             budgets=_budgets(),
         )
 
@@ -151,6 +151,26 @@ def test_loadout_is_frozen() -> None:
     loadout = _load("example_aggressive_light.yaml")
     with pytest.raises(ValidationError):
         loadout.id = "loadout.example.mutated"
+
+
+@pytest.mark.unit
+def test_loadout_module_collections_are_immutable_and_detached() -> None:
+    source = ["weapon.light.machine_gun"]
+    modules = ModelSOLoadoutModules.model_validate({"weapons": source})
+    source.append("weapon.light.shrapnel_thrower")
+
+    assert modules.weapons == ("weapon.light.machine_gun",)
+    with pytest.raises(AttributeError):
+        modules.weapons.append("weapon.light.shrapnel_thrower")  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+def test_loadout_tuple_collections_preserve_json_array_shape() -> None:
+    raw = yaml.safe_load((_DATA / "example_aggressive_light.yaml").read_text())
+    loadout = ModelSOLoadout.model_validate(raw)
+
+    assert loadout.model_dump(mode="json") == {**raw, "pilot_spec_path": None}
+    assert ModelSOLoadout.model_validate_json(loadout.model_dump_json()) == loadout
 
 
 @pytest.mark.unit

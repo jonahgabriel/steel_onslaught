@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from steel_onslaught.events.factory import Clock
+from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
 from steel_onslaught.projections.leaderboard.protocol import ModelSOLeaderboardEntry
 
 
@@ -159,37 +160,23 @@ class LeaderboardHandler:
     def db_path(self) -> Path:
         return self._config.path
 
-    def on_match_scored(self, payload: dict[str, Any]) -> None:
-        """Process a MATCH_SCORED payload dict and upsert a leaderboard row.
-
-        Expected keys: match_id, winner_player_id, winner_loadout_id,
-        winner_score, loser_player_id, loser_score, duration_ticks,
-        scored_at, is_draw (optional, defaults to False).
-        """
-        match_id = str(payload["match_id"])
-        winner_player_id = str(payload["winner_player_id"])
-        winner_loadout_id = str(payload["winner_loadout_id"])
-        winner_score = int(str(payload["winner_score"]))
-        loser_player_id = str(payload["loser_player_id"])
-        loser_score = int(str(payload["loser_score"]))
-        duration_ticks = int(str(payload["duration_ticks"]))
-        scored_at = str(payload["scored_at"])
-        is_draw = bool(payload.get("is_draw", False))
+    def on_match_scored(self, payload: ModelSOMatchScoredPayload) -> None:
+        """Upsert one already-validated canonical MATCH_SCORED payload."""
         created_at = self._clock.now().isoformat()
 
         self._conn.execute(
             _UPSERT_SQL,
             (
-                match_id,
-                winner_player_id,
-                winner_loadout_id,
-                winner_score,
-                loser_player_id,
-                loser_score,
-                duration_ticks,
-                scored_at,
+                payload.match_id,
+                payload.winner_player_id,
+                payload.winner_loadout_id,
+                payload.winner_score,
+                payload.loser_player_id,
+                payload.loser_score,
+                payload.duration_ticks,
+                payload.scored_at,
                 created_at,
-                1 if is_draw else 0,
+                1 if payload.is_draw else 0,
             ),
         )
 

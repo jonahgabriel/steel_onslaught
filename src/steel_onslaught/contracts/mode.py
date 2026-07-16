@@ -13,9 +13,20 @@ Invariants enforced at validation time:
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
+
+from steel_onslaught.immutable import FrozenJSONMapping
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -42,9 +53,11 @@ class ModelSOModeTransitionCosts(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    pressure: int = Field(ge=0, description="Pressure consumed on switch")
-    heat: int = Field(ge=0, description="Heat added on switch")
-    transition_ticks: int = Field(ge=1, description="Ticks the mech spends in transition state")
+    pressure: StrictInt = Field(ge=0, description="Pressure consumed on switch")
+    heat: StrictInt = Field(ge=0, description="Heat added on switch")
+    transition_ticks: StrictInt = Field(
+        ge=1, description="Ticks the mech spends in transition state"
+    )
 
 
 class ModelSOModeTransitionRestrictions(BaseModel):
@@ -52,17 +65,17 @@ class ModelSOModeTransitionRestrictions(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    minimum_lock_ticks_after_switch: int = Field(
+    minimum_lock_ticks_after_switch: StrictInt = Field(
         ge=0, description="Ticks the mode is locked after switching into it"
     )
-    cannot_switch_if_heat_above: int | None = Field(
+    cannot_switch_if_heat_above: StrictInt | None = Field(
         default=None,
         description=(
             "Block switch if current heat exceeds this value. "
             "Must be strictly less than rupture_threshold (100) so the guard can actually fire."
         ),
     )
-    cannot_switch_if_boiler_disabled: bool = Field(
+    cannot_switch_if_boiler_disabled: StrictBool = Field(
         default=False, description="Block switch when boiler is disabled/ruptured"
     )
 
@@ -83,13 +96,13 @@ class ModelSOModeTransitionVulnerability(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    evasion_penalty_during_transition: float = Field(
+    evasion_penalty_during_transition: StrictFloat = Field(
         ge=0.0,
         description=(
             "Multiplicative evasion penalty applied while in transition (0 = no penalty added)"
         ),
     )
-    sensor_dropout_ticks: int = Field(
+    sensor_dropout_ticks: StrictInt = Field(
         ge=0, description="Ticks that sensors go dark at the start of the transition"
     )
 
@@ -108,15 +121,16 @@ class ModelSOModeSpec(BaseModel):
     kind: Literal["steel_onslaught.mode"]
     id: str = Field(description="Canonical mode identifier, e.g. mode.recon")
     display_name: str
-    active_systems: list[str] = Field(
+    active_systems: tuple[str, ...] = Field(
         min_length=1,
         description="Module categories that are powered/active in this mode (non-empty)",
     )
-    passive_modifiers: dict[str, Any] = Field(
+    passive_modifiers: FrozenJSONMapping = Field(
         default_factory=dict,
+        validate_default=True,
         description="Stat multipliers/addends applied while this mode is active",
     )
-    default_priorities: list[str] = Field(
+    default_priorities: tuple[str, ...] = Field(
         min_length=1,
         description="Ordered pilot priority hints for this mode (non-empty)",
     )
@@ -173,15 +187,6 @@ class ModelSOModeSwitchIntentPayload(BaseModel):
     target_mode: ModeId
 
 
-class ModelSOLegacyModeSwitchIntentPayload(BaseModel):
-    """Closed payload consumed only by the legacy standalone mode reducer."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    from_mode: ModeId
-    to_mode: ModeId
-
-
 class ModelSOModeTransitionStartedPayload(BaseModel):
     """Closed canonical MODE_TRANSITION_STARTED payload."""
 
@@ -190,8 +195,8 @@ class ModelSOModeTransitionStartedPayload(BaseModel):
     from_mode: ModeId
     to_mode: ModeId
     costs: ModelSOModeTransitionCosts
-    sensor_dropout_ticks: int = Field(ge=0)
-    evasion_penalty: float = Field(ge=0.0)
+    sensor_dropout_ticks: StrictInt = Field(ge=0)
+    evasion_penalty: StrictFloat = Field(ge=0.0)
 
 
 class ModelSOModeTransitionCompletedPayload(BaseModel):
@@ -201,4 +206,4 @@ class ModelSOModeTransitionCompletedPayload(BaseModel):
 
     from_mode: ModeId
     new_mode: ModeId
-    mode_lock_until: int = Field(ge=0)
+    mode_lock_until: StrictInt = Field(ge=0)

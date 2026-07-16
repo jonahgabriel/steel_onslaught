@@ -127,7 +127,6 @@ def _match_started_with_mech_updates(**updates: object) -> ModelSOEventEnvelope:
     event = _match_started_env()
     payload = dict(event.payload)
     raw_mechs = payload["mechs"]
-    assert isinstance(raw_mechs, list)
     mechs = [dict(mech) for mech in raw_mechs]
     mechs[0].update(updates)
     payload["mechs"] = mechs
@@ -181,6 +180,8 @@ def test_fold_fails_closed_on_unknown_weapon_contract() -> None:
         event_type=SOEventType.WEAPON_FIRED,
         payload={
             "weapon_id": "weapon.unknown",
+            "target_id": "mech.b.01",
+            "hit_probability": 0.5,
             "pressure_cost": 0,
             "heat_generated": 0,
         },
@@ -189,6 +190,40 @@ def test_fold_fails_closed_on_unknown_weapon_contract() -> None:
 
     with pytest.raises(UnknownWeaponError, match=r"weapon\.unknown"):
         fold.apply(event)
+
+
+@pytest.mark.unit
+def test_weapon_cooldowns_remain_frozen_after_fire_and_tick_updates() -> None:
+    fold = _fold()
+    fold.apply(_match_started_env())
+    fold.apply(
+        ModelSOEventEnvelope(
+            event_id="01JPUREPUREPUREPUREPUREP98",
+            match_id=_MATCH_ID,
+            tick=1,
+            sequence_in_tick=0,
+            producer_node="node.test",
+            subject=ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a"),
+            event_type=SOEventType.WEAPON_FIRED,
+            payload={
+                "weapon_id": "weapon.light.machine_gun",
+                "target_id": "mech.b.01",
+                "hit_probability": 0.5,
+                "pressure_cost": 0,
+                "heat_generated": 0,
+            },
+            envelope=ModelEnvelope(correlation_id=uuid4(), entity_id=_MATCH_ID),
+        )
+    )
+
+    after_fire = fold.state.mech_states["mech.a.01"].weapon_cooldowns
+    with pytest.raises(TypeError):
+        after_fire["weapon.forged"] = 1  # type: ignore[index]
+
+    fold.apply(_tick_env(1))
+    after_tick = fold.state.mech_states["mech.a.01"].weapon_cooldowns
+    with pytest.raises(TypeError):
+        after_tick["weapon.forged"] = 1  # type: ignore[index]
 
 
 @pytest.mark.unit

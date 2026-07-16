@@ -255,12 +255,12 @@ def test_nested_weapon_models_reject_extra_fields(
 @pytest.mark.unit
 def test_nested_weapon_models_are_frozen() -> None:
     point = ModelSOAccuracyPoint(range=5, hit_probability=0.8)
-    compatibility = ModelSOWeaponCompatibility(compatible_chassis_classes=["light"])
+    compatibility = ModelSOWeaponCompatibility(compatible_chassis_classes=("light",))
 
     with pytest.raises(ValidationError, match="frozen"):
         point.range = 6
     with pytest.raises(ValidationError, match="frozen"):
-        compatibility.compatible_chassis_classes = ["heavy"]
+        compatibility.compatible_chassis_classes = ("heavy",)
 
 
 @pytest.mark.unit

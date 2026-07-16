@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -49,6 +50,7 @@ def _make_env(
     sequence_in_tick: int = 0,
     event_type: SOEventType = SOEventType.PILOT_DECISION_MADE,
     match_id: str = "match.test.001",
+    payload: Mapping[str, object] | None = None,
 ) -> ModelSOEventEnvelope:
     return ModelSOEventEnvelope(
         event_id=event_id,
@@ -58,7 +60,7 @@ def _make_env(
         event_type=event_type,
         producer_node="node.test",
         subject=ModelSOEventSubject(mech_id="mech.red.01", player_id="player.1"),
-        payload={"test": True},
+        payload=payload if payload is not None else {"test": True},
         envelope=_onex_envelope(match_id),
     )
 
@@ -181,6 +183,30 @@ def test_append_and_read_all_round_trip(tmp_path: Path) -> None:
         "SELECT envelope_json FROM events WHERE event_id = ?", (_EID1,)
     ).fetchone()[0]
     assert stored_json == dump_persisted_event(env)
+
+
+@pytest.mark.unit
+def test_append_thaws_immutable_nested_payload_without_changing_canonical_json(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "decision": {"action": "switch_mode", "target_mode": "assault"},
+        "considered": [{"action": "switch_mode", "score": 0.9}],
+    }
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
+    env = _make_env(_EID1, payload=payload)
+
+    ledger.append(env)
+
+    restored = next(iter(ledger.read_all(env.match_id)))
+    stored = ledger._conn.execute(
+        "SELECT payload_json, envelope_json FROM events WHERE event_id = ?",
+        (_EID1,),
+    ).fetchone()
+    assert restored == env
+    assert json.loads(stored[0]) == payload
+    assert stored[1] == dump_persisted_event(env)
+    assert dump_persisted_event(restored) == dump_persisted_event(env)
 
 
 @pytest.mark.unit

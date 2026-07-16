@@ -12,9 +12,24 @@ with the same seed produce byte-identical output.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, TextIO
 
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.events.payloads import (
+    ModelSOBoilerOverloadedPayload,
+    ModelSOBoilerRupturedPayload,
+    ModelSOBoilerUpdatedPayload,
+    ModelSODamageAppliedPayload,
+    ModelSOHeatRedlinePayload,
+    ModelSOMatchEndedPayload,
+    ModelSOMatchStartedPayload,
+    ModelSOMechDestroyedPayload,
+    ModelSOPilotDecisionPayload,
+    ModelSOPilotKilledPayload,
+    ModelSOVictoryDeclaredPayload,
+    ModelSOWeaponFiredPayload,
+)
 
 if TYPE_CHECKING:
     from steel_onslaught.bus.protocol import EventBus, HandlerToken
@@ -52,7 +67,7 @@ def _reason_text(reason: str) -> str:
     return reason.replace("_", " ")
 
 
-def _decision_detail(params: dict[str, Any]) -> str:
+def _decision_detail(params: Mapping[str, Any]) -> str:
     """Human detail for a pilot decision, from its ``action_params``."""
     if "target_mode" in params:
         return str(params["target_mode"])
@@ -99,75 +114,92 @@ class CliTextRenderer:
     def _render(self, event: ModelSOEventEnvelope) -> str | None:
         tick = f"[Tick {event.tick}]"
         mech = event.subject.mech_id
-        payload = event.payload
 
         match event.event_type:
             case SOEventType.MATCH_STARTED:
-                self._learn_labels(payload)
+                started_payload = ModelSOMatchStartedPayload.model_validate(event.payload)
+                self._learn_labels(started_payload)
                 return (
                     f"{tick} MATCH STARTED "
-                    f"(seed {payload['seed']}, max_ticks {payload['max_ticks']})"
+                    f"(seed {started_payload.seed}, max_ticks {started_payload.max_ticks})"
                 )
             case SOEventType.PILOT_DECISION_MADE:
+                decision_payload = ModelSOPilotDecisionPayload.model_validate(event.payload)
                 labels = self._labels.get(mech)
                 who = f"{mech} ({labels[0]}, {labels[1]})" if labels is not None else mech
-                action = str(payload["action"]).upper()
-                detail = _decision_detail(payload["action_params"])
+                action = decision_payload.action.value.upper()
+                detail = _decision_detail(decision_payload.action_params)
                 arrow = f" → {detail}" if detail else ""
-                conf = float(payload["confidence"])
+                conf = decision_payload.confidence
                 return f"{tick} {who} decided: {action}{arrow} (conf {conf:.2f})"
             case SOEventType.BOILER_UPDATED:
+                boiler_payload = ModelSOBoilerUpdatedPayload.model_validate(event.payload)
                 return (
                     f"{tick} {mech} boiler: "
-                    f"pressure {payload['pressure_before']} → {payload['pressure_after']}, "
-                    f"heat {payload['heat_before']} → {payload['heat_after']}"
+                    f"pressure {boiler_payload.pressure_before} → {boiler_payload.pressure_after}, "
+                    f"heat {boiler_payload.heat_before} → {boiler_payload.heat_after}"
                 )
             case SOEventType.HEAT_REDLINE_ENTERED:
+                entered_payload = ModelSOHeatRedlinePayload.model_validate(event.payload)
                 return self._paint(
                     f"{tick} {mech} REDLINE entered "
-                    f"(heat {payload['heat']} ≥ {payload['redline_threshold']})",
+                    f"(heat {entered_payload.heat} ≥ {entered_payload.redline_threshold})",
                     _YELLOW,
                 )
             case SOEventType.HEAT_REDLINE_EXITED:
+                exited_payload = ModelSOHeatRedlinePayload.model_validate(event.payload)
                 return (
                     f"{tick} {mech} redline exited "
-                    f"(heat {payload['heat']} < {payload['redline_threshold']})"
+                    f"(heat {exited_payload.heat} < {exited_payload.redline_threshold})"
                 )
             case SOEventType.WEAPON_FIRED:
-                weapon = _last_segment(str(payload["weapon_id"]))
-                probability = float(payload["hit_probability"])
+                weapon_payload = ModelSOWeaponFiredPayload.model_validate(event.payload)
+                weapon = _last_segment(weapon_payload.weapon_id)
                 return (
-                    f"{tick} {mech} fired {weapon} at {payload['target_id']} — "
-                    f"predicted hit {probability:.2f}"
+                    f"{tick} {mech} fired {weapon} at {weapon_payload.target_id} — "
+                    f"predicted hit {weapon_payload.hit_probability:.2f}"
                 )
             case SOEventType.DAMAGE_APPLIED:
+                damage_payload = ModelSODamageAppliedPayload.model_validate(event.payload)
                 return self._paint(
-                    f"{tick} HIT {payload['target_id']} took {payload['damage']} dmg",
+                    f"{tick} HIT {damage_payload.target_id} took {damage_payload.damage} dmg",
                     _RED,
                 )
             case SOEventType.BOILER_OVERLOADED:
+                ModelSOBoilerOverloadedPayload.model_validate(event.payload)
                 return self._paint(f"{tick} {mech} boiler OVERLOADED", _YELLOW, _BOLD)
             case SOEventType.BOILER_RUPTURED:
+                ModelSOBoilerRupturedPayload.model_validate(event.payload)
                 return self._paint(f"{tick} {mech} BOILER RUPTURED", _RED, _BOLD)
             case SOEventType.PILOT_KILLED:
+                ModelSOPilotKilledPayload.model_validate(event.payload)
                 return self._paint(f"{tick} {mech} PILOT KILLED", _RED, _BOLD)
             case SOEventType.MECH_DESTROYED:
+                ModelSOMechDestroyedPayload.model_validate(event.payload)
                 return self._paint(f"{tick} {mech} DESTROYED", _RED, _BOLD)
             case SOEventType.VICTORY_DECLARED:
-                winner = payload["winner_player_id"]
-                reason = _reason_text(str(payload["reason"]))
-                return self._paint(f"{tick} VICTORY: {winner} ({reason})", _GREEN, _BOLD)
+                victory_payload = ModelSOVictoryDeclaredPayload.model_validate(event.payload)
+                reason = _reason_text(victory_payload.reason.value)
+                return self._paint(
+                    f"{tick} VICTORY: {victory_payload.winner_player_id} ({reason})",
+                    _GREEN,
+                    _BOLD,
+                )
             case SOEventType.MATCH_ENDED:
-                reason = _reason_text(str(payload["reason"]))
-                winner = payload["winner_id"]
-                suffix = f", winner {winner}" if winner is not None else ""
+                ended_payload = ModelSOMatchEndedPayload.model_validate(event.payload)
+                reason = _reason_text(ended_payload.reason.value)
+                suffix = (
+                    f", winner {ended_payload.winner_id}"
+                    if ended_payload.winner_id is not None
+                    else ""
+                )
                 return f"{tick} MATCH ENDED ({reason}{suffix})"
             case _:
                 return None  # ticks, intents, observations, scores: not rendered
 
-    def _learn_labels(self, payload: dict[str, Any]) -> None:
-        for mech in payload["mechs"]:
-            self._labels[str(mech["mech_id"])] = (
-                _chassis_label(str(mech["chassis_id"])),
-                _pilot_label(str(mech["pilot_id"])),
+    def _learn_labels(self, payload: ModelSOMatchStartedPayload) -> None:
+        for mech in payload.mechs:
+            self._labels[mech.mech_id] = (
+                _chassis_label(mech.chassis_id),
+                _pilot_label(mech.pilot_id),
             )

@@ -2,24 +2,26 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from steel_onslaught.immutable import FrozenMapping
+
 ParamValue = int | float | str
 ParamDict = dict[str, ParamValue]
 
 
-def spec_hash(archetype: str, parameters: ParamDict) -> str:
+def spec_hash(archetype: str, parameters: Mapping[str, ParamValue]) -> str:
     """Canonical content hash of a pilot spec's tunable identity.
 
     Identity = (archetype, parameters) serialized as canonical JSON
     (sorted keys, compact separators). A changed spec is a new identity;
     history does not transfer (design addendum section 6).
     """
-    payload = {"archetype": archetype, "parameters": parameters}
+    payload = {"archetype": archetype, "parameters": dict(parameters)}
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -103,7 +105,7 @@ class ModelSOLineageRecord(BaseModel):
     schema_version: Literal["0.1.0"] = "0.1.0"
     kind: Literal["steel_onslaught.lineage_record"] = "steel_onslaught.lineage_record"
     archetype: str = Field(min_length=1)
-    parameters: ParamDict
+    parameters: FrozenMapping[ParamValue]
     spec_hash: str = Field(min_length=64, max_length=64)
     parent_hash: str = Field(min_length=64, max_length=64)
     meta_hash: str = Field(min_length=64, max_length=64)

@@ -111,6 +111,19 @@ def _decision(
     )
 
 
+@pytest.mark.unit
+def test_default_action_params_are_deeply_immutable() -> None:
+    decision = ModelSOPilotDecision(
+        action=SOPilotAction.REMAIN,
+        reason_code=SOPilotReasonCode.NO_VIABLE_ACTION,
+        confidence=0.5,
+        considered_actions=[ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=1.0)],
+    )
+
+    with pytest.raises(TypeError):
+        decision.action_params["forged"] = True  # type: ignore[index]
+
+
 # ---------------------------------------------------------------------------
 # Action enum
 # ---------------------------------------------------------------------------

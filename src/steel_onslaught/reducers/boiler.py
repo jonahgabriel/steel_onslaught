@@ -34,6 +34,11 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOModeTransitionStartedPayload,
+    ModelSOWeaponFiredPayload,
+)
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 
 _PRODUCER_NODE = "node.reducer.boiler"
@@ -124,6 +129,7 @@ class ReducerBoiler:
         mech: ModelSOMechRuntimeState,
     ) -> ModelSOMatchState:
         """MATCH_TICK: regen pressure, vent heat."""
+        ModelSOEmptyPayload.model_validate(event.payload)
         boiler = mech.boiler
 
         new_pressure = min(
@@ -142,14 +148,13 @@ class ReducerBoiler:
     ) -> ModelSOMatchState:
         """WEAPON_FIRED: deduct pressure cost, add heat."""
         boiler = mech.boiler
-        pressure_cost: int = int(event.payload.get("pressure_cost", 0))
-        heat_generated: int = int(event.payload.get("heat_generated", 0))
+        payload = ModelSOWeaponFiredPayload.model_validate(event.payload)
 
-        new_pressure = max(boiler.pressure_current - pressure_cost, 0)
+        new_pressure = max(boiler.pressure_current - payload.pressure_cost, 0)
         # heat is capped at rupture_threshold by the boiler state validator;
         # we floor here; the validator prevents us from exceeding rupture.
         new_heat = min(
-            boiler.heat_current + heat_generated,
+            boiler.heat_current + payload.heat_generated,
             boiler.heat_rupture_threshold,
         )
 
@@ -163,13 +168,11 @@ class ReducerBoiler:
     ) -> ModelSOMatchState:
         """MODE_TRANSITION_STARTED: deduct pressure and add heat from costs."""
         boiler = mech.boiler
-        costs: dict[str, Any] = event.payload.get("costs", {})
-        pressure_cost: int = int(costs.get("pressure", 0))
-        heat_cost: int = int(costs.get("heat", 0))
+        payload = ModelSOModeTransitionStartedPayload.model_validate(event.payload)
 
-        new_pressure = max(boiler.pressure_current - pressure_cost, 0)
+        new_pressure = max(boiler.pressure_current - payload.costs.pressure, 0)
         new_heat = min(
-            boiler.heat_current + heat_cost,
+            boiler.heat_current + payload.costs.heat,
             boiler.heat_rupture_threshold,
         )
 

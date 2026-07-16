@@ -27,6 +27,7 @@ from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import Clock, EventFactory, IdentityProvider
+from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
 from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
@@ -433,8 +434,8 @@ def assemble_match_with_dependencies(
     dependencies.bus.subscribe(scoring.handle)
 
     def _on_match_scored(event: ModelSOEventEnvelope) -> None:
-        if event.payload.get("kind") == "steel_onslaught.match_scored":
-            dependencies.leaderboard.on_match_scored(event.payload)
+        payload = ModelSOMatchScoredPayload.model_validate(event.payload)
+        dependencies.leaderboard.on_match_scored(payload)
 
     dependencies.bus.subscribe(_on_match_scored, event_types=[SOEventType.MATCH_SCORED])
     return LiveMatchStack(

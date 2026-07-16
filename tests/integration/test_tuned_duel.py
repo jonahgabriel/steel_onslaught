@@ -89,9 +89,11 @@ def _canonical_rows(ledger_path: Path, match_id: str) -> list[CanonicalRow]:
     """Decision #3 canonical rows: drop event_id/emitted_at, normalize match_id."""
     rows: list[CanonicalRow] = []
     for event in open_sqlite_ledger(ledger_path).read_all(match_id):
-        payload_json = json.dumps(event.payload, sort_keys=True, separators=(",", ":")).replace(
-            match_id, "<match>"
-        )
+        payload_json = json.dumps(
+            event.model_dump(mode="json")["payload"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).replace(match_id, "<match>")
         subject_json = json.dumps(
             {"mech_id": event.subject.mech_id, "player_id": event.subject.player_id},
             sort_keys=True,

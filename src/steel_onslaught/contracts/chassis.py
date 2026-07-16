@@ -34,9 +34,9 @@ class ModelSOChassisCompatibility(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    weapon_classes: list[str] = Field(min_length=1)
-    boiler_classes: list[str] = Field(min_length=1)
-    mobility_classes: list[str] = Field(min_length=1)
+    weapon_classes: tuple[str, ...] = Field(min_length=1)
+    boiler_classes: tuple[str, ...] = Field(min_length=1)
+    mobility_classes: tuple[str, ...] = Field(min_length=1)
 
 
 class ModelSOChassisPenalties(BaseModel):

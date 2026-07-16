@@ -26,7 +26,7 @@ def _load_spec(name: str) -> ModelSOBoilerSpec:
 
 
 def _compat(*classes: str) -> ModelSOBoilerCompatibility:
-    return ModelSOBoilerCompatibility(compatible_chassis_classes=list(classes))
+    return ModelSOBoilerCompatibility(compatible_chassis_classes=classes)
 
 
 def _minimal_spec(**overrides: object) -> ModelSOBoilerSpec:

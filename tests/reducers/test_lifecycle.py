@@ -271,7 +271,7 @@ def test_match_tick_past_max_ticks_rejected() -> None:
 
 
 @pytest.mark.unit
-def test_max_ticks_draw_ends_match_and_emits_scored() -> None:
+def test_max_ticks_draw_ends_match_without_forging_score_payload() -> None:
     bus = InProcessEventBus()
     collected: list[ModelSOEventEnvelope] = []
     bus.subscribe(collected.append)
@@ -290,19 +290,12 @@ def test_max_ticks_draw_ends_match_and_emits_scored() -> None:
 
     types = [e.event_type for e in collected]
     ended_idx = types.index(SOEventType.MATCH_ENDED)
-    scored_idx = types.index(SOEventType.MATCH_SCORED)
-    assert ended_idx < scored_idx, "MATCH_ENDED must precede MATCH_SCORED"
+    assert SOEventType.MATCH_SCORED not in types
 
     ended = collected[ended_idx]
     assert ended.tick == 3
     assert ended.payload["reason"] == "draw_max_ticks"
     assert ended.payload["winner_id"] is None
-
-    scored = collected[scored_idx]
-    assert scored.payload["scores"] == {
-        "player.red": {"victory": 0},
-        "player.blue": {"victory": 0},
-    }
 
 
 @pytest.mark.unit

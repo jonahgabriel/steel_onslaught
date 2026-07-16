@@ -51,7 +51,7 @@ class ModelSOWeaponCompatibility(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    compatible_chassis_classes: list[str] = Field(min_length=1)
+    compatible_chassis_classes: tuple[str, ...] = Field(min_length=1)
 
 
 class ModelSOTargetClassEffectiveness(BaseModel):
@@ -95,7 +95,7 @@ class ModelSOWeaponSpec(BaseModel):
     cooldown_ticks: int = Field(ge=0)
 
     # Accuracy at range bins; interpolated linearly by the combat resolver (Task 24).
-    accuracy_curve: list[ModelSOAccuracyPoint] = Field(min_length=1)
+    accuracy_curve: tuple[ModelSOAccuracyPoint, ...] = Field(min_length=1)
 
     # Multiplier applied to base damage against each chassis class.
     target_class_effectiveness: ModelSOTargetClassEffectiveness

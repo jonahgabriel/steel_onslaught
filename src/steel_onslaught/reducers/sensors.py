@@ -36,7 +36,7 @@ Design notes
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 from uuid import UUID
 
@@ -47,6 +47,7 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import ModelSOEmptyPayload
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
@@ -98,7 +99,7 @@ class ReducerSensors:
         self,
         match_id: str,
         state: ModelSOMatchState,
-        sensor_specs: dict[str, ModelSOSensorSpec],
+        sensor_specs: Mapping[str, ModelSOSensorSpec],
         emit: Callable[[ModelSOEventEnvelope], None],
         *,
         correlation_id: UUID,
@@ -129,6 +130,7 @@ class ReducerSensors:
             return self._state
 
         if event.event_type == SOEventType.MATCH_TICK:
+            ModelSOEmptyPayload.model_validate(event.payload)
             self._process_tick(event.tick)
 
         return self._state

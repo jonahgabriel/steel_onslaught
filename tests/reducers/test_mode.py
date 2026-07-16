@@ -223,7 +223,7 @@ def _intent_env(
         event_type=SOEventType.MODE_SWITCH_INTENT,
         producer_node="node.pilot.red.01",
         subject=ModelSOEventSubject(mech_id=mech_id, player_id=_PLAYER_ID),
-        payload={"from_mode": from_mode, "to_mode": to_mode},
+        payload={"target_mode": to_mode},
         envelope=ModelEnvelope(
             message_id=uuid4(),
             correlation_id=uuid4(),
@@ -243,7 +243,7 @@ def _tick_env(tick: int) -> ModelSOEventEnvelope:
         event_type=SOEventType.MATCH_TICK,
         producer_node="node.reducer.lifecycle",
         subject=ModelSOEventSubject(mech_id="*", player_id="*"),
-        payload={"tick": tick},
+        payload={},
         envelope=ModelEnvelope(
             message_id=uuid4(),
             correlation_id=uuid4(),
@@ -396,8 +396,8 @@ def test_intent_rejected_insufficient_pressure() -> None:
 
 
 @pytest.mark.unit
-def test_intent_rejected_wrong_from_mode() -> None:
-    """Intent rejected when from_mode doesn't match mech's current_mode."""
+def test_intent_fails_typed_when_current_mode_transition_is_missing() -> None:
+    """The reducer derives from_mode from state and fails if that edge is absent."""
     transitions: dict[tuple[str, str], ModelSOModeTransition] = {
         ("recon", "assault"): _transition()
     }
@@ -409,7 +409,8 @@ def test_intent_rejected_wrong_from_mode() -> None:
 
     reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
-    reducer.apply(_intent_env("recon", "assault", tick=5))
+    with pytest.raises(MissingModeTransitionError):
+        reducer.apply(_intent_env("recon", "assault", tick=5))
 
     assert SOEventType.MODE_TRANSITION_STARTED not in emitted
 

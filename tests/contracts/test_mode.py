@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -78,17 +79,18 @@ def test_evasion_has_mobility_in_active_systems() -> None:
 
 
 @pytest.mark.unit
-def test_mode_passive_modifiers_are_dict() -> None:
+def test_mode_passive_modifiers_are_immutable_mappings() -> None:
     for fname in ("recon.yaml", "assault.yaml", "evasion.yaml"):
         spec = _load_mode(fname)
-        assert isinstance(spec.passive_modifiers, dict)
+        assert isinstance(spec.passive_modifiers, Mapping)
+        assert not isinstance(spec.passive_modifiers, dict)
 
 
 @pytest.mark.unit
-def test_mode_default_priorities_are_list() -> None:
+def test_mode_default_priorities_are_tuples() -> None:
     for fname in ("recon.yaml", "assault.yaml", "evasion.yaml"):
         spec = _load_mode(fname)
-        assert isinstance(spec.default_priorities, list)
+        assert isinstance(spec.default_priorities, tuple)
         assert len(spec.default_priorities) > 0
 
 

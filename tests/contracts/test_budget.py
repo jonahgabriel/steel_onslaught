@@ -49,7 +49,7 @@ def _make_loadout(module_ids: list[str], chassis_id: str, boiler_id: str) -> Mod
         chassis_id=chassis_id,
         boiler_id=boiler_id,
         pilot_id="pilot.test.synthetic_v1",
-        modules=ModelSOLoadoutModules(weapons=module_ids),
+        modules=ModelSOLoadoutModules(weapons=tuple(module_ids)),
         budgets=ModelSOLoadoutBudgets(
             points_used=0,
             points_max=100,

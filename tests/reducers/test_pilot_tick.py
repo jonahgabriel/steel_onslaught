@@ -224,7 +224,7 @@ class _MovePilot:
     def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
         return ModelSOPilotDecision(
             action=SOPilotAction.MOVE,
-            action_params={"direction": "forward"},
+            action_params={"direction": "toward_enemy"},
             reason_code=SOPilotReasonCode.CLOSING_DISTANCE,
             confidence=0.7,
             considered_actions=[ModelSOConsideredAction(action=SOPilotAction.MOVE, score=0.7)],

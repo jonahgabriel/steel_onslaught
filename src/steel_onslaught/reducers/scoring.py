@@ -45,10 +45,7 @@ flattening requires exactly two players.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal
 from uuid import UUID
-
-from pydantic import BaseModel, ConfigDict, Field
 
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -56,11 +53,24 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOBoilerOverloadedPayload,
+    ModelSOBoilerRupturedPayload,
+    ModelSOBoilerUpdatedPayload,
+    ModelSOHitResolvedPayload,
+    ModelSOMatchEndedPayload,
+    ModelSOMatchScoredPayload,
+    ModelSOMatchStartedPayload,
+    ModelSOModeTransitionStartedPayload,
+    ModelSOPlayerScore,
+    ModelSOScoredWinner,
+    ModelSOVictoryDeclaredPayload,
+    ModelSOWeaponFiredPayload,
+)
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.state import ModelSOMatchState
 from steel_onslaught.reducers.errors import ReducerError
-from steel_onslaught.reducers.lifecycle import ModelSOMatchStartedPayload
 from steel_onslaught.replay.engine import ReplayEngine
 
 _PRODUCER_NODE = "node.reducer.scoring"
@@ -94,79 +104,6 @@ OVERLOAD_PENALTY_POINTS = 100
 
 EmitFn = Callable[[ModelSOEventEnvelope], None]
 ReplayValidityCheck = Callable[[], bool]
-
-
-# ---------------------------------------------------------------------------
-# Typed payload models
-# ---------------------------------------------------------------------------
-
-
-class ModelSOHitResult(BaseModel):
-    """``HIT_RESOLVED`` ``result`` block (design §20; additive keys tolerated)."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    hit: bool
-    damage_after_armor: int = Field(ge=0)
-
-
-class ModelSOHitResolvedPayload(BaseModel):
-    """``HIT_RESOLVED`` payload (design §20; additive keys tolerated)."""
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    attacker_id: str
-    defender_id: str
-    result: ModelSOHitResult
-
-
-class ModelSOPlayerScore(BaseModel):
-    """Per-player score block of the MATCH_SCORED payload (design §22.2)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    victory: int = Field(ge=0, le=1)
-    damage_dealt: int = Field(ge=0)
-    damage_efficiency: float = Field(ge=0.0)
-    pressure_efficiency: float = Field(ge=0.0, le=1.0)
-    overload_penalty: int = Field(ge=0)
-    replay_validity: int = Field(ge=0, le=1)
-    final_score: int = Field(ge=0)
-
-
-class ModelSOScoredWinner(BaseModel):
-    """``winner`` block of the MATCH_SCORED payload (design §22.2)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    player_id: str
-    mech_id: str
-
-
-class ModelSOMatchScoredPayload(BaseModel):
-    """MATCH_SCORED payload: design §22.2 structure + Task 30 leaderboard keys.
-
-    ``winner`` is ``None`` on draws; the flattened ``winner_*`` slots then
-    carry the alphabetically-first player (Task 30 draw convention) with
-    ``is_draw`` set so rankings can exclude the row.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    kind: Literal["steel_onslaught.match_scored"] = "steel_onslaught.match_scored"
-    match_id: str
-    winner: ModelSOScoredWinner | None
-    scores: dict[str, ModelSOPlayerScore]
-
-    # Flattened leaderboard-projection keys (Task 30 handler contract).
-    winner_player_id: str
-    winner_loadout_id: str
-    winner_score: int = Field(ge=0)
-    loser_player_id: str
-    loser_score: int = Field(ge=0)
-    duration_ticks: int = Field(gt=0)
-    scored_at: str
-    is_draw: bool
 
 
 # ---------------------------------------------------------------------------
@@ -302,30 +239,31 @@ class ReducerScoring:
             case SOEventType.MATCH_STARTED:
                 self._register_roster(event)
             case SOEventType.WEAPON_FIRED:
-                cost = int(event.payload.get("pressure_cost", 0))
-                self._drain_pressure(event.subject.mech_id, cost)
+                weapon_payload = ModelSOWeaponFiredPayload.model_validate(event.payload)
+                self._drain_pressure(event.subject.mech_id, weapon_payload.pressure_cost)
             case SOEventType.MODE_TRANSITION_STARTED:
-                costs: dict[str, Any] = event.payload.get("costs", {})
-                self._drain_pressure(event.subject.mech_id, int(costs.get("pressure", 0)))
+                mode_payload = ModelSOModeTransitionStartedPayload.model_validate(event.payload)
+                self._drain_pressure(event.subject.mech_id, mode_payload.costs.pressure)
             case SOEventType.HIT_RESOLVED:
                 self._accumulate_damage(event)
             case SOEventType.BOILER_UPDATED:
+                boiler_payload = ModelSOBoilerUpdatedPayload.model_validate(event.payload)
                 if event.subject.mech_id in self._mech_player:
-                    self._heat[event.subject.mech_id] = int(event.payload["heat_after"])
+                    self._heat[event.subject.mech_id] = boiler_payload.heat_after
             case SOEventType.BOILER_RUPTURED:
+                ModelSOBoilerRupturedPayload.model_validate(event.payload)
                 self._disabled.add(event.subject.mech_id)
             case SOEventType.BOILER_OVERLOADED:
+                ModelSOBoilerOverloadedPayload.model_validate(event.payload)
                 player = self._mech_player.get(event.subject.mech_id)
                 if player is not None:
                     self._overloads[player] += 1
             case SOEventType.VICTORY_DECLARED:
-                self._score(
-                    tick=event.tick, winner_player_id=str(event.payload["winner_player_id"])
-                )
+                victory_payload = ModelSOVictoryDeclaredPayload.model_validate(event.payload)
+                self._score(tick=event.tick, winner_player_id=victory_payload.winner_player_id)
             case SOEventType.MATCH_ENDED:
-                winner_raw = event.payload.get("winner_id")
-                winner = None if winner_raw is None else str(winner_raw)
-                self._score(tick=event.tick, winner_player_id=winner)
+                ended_payload = ModelSOMatchEndedPayload.model_validate(event.payload)
+                self._score(tick=event.tick, winner_player_id=ended_payload.winner_id)
             case _:
                 pass  # not a scoring input
 
@@ -468,3 +406,13 @@ class ReducerScoring:
                 overload_penalty=overload_penalty,
             ),
         )
+
+
+__all__ = [
+    "ModelSOMatchScoredPayload",
+    "ModelSOPlayerScore",
+    "ModelSOScoredWinner",
+    "ReducerScoring",
+    "compute_final_score",
+    "verify_replay_validity",
+]

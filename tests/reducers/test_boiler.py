@@ -167,6 +167,18 @@ def _env(
     eid: str = "01JABCDE0123456789ABCDEFG1",
     tick: int = 1,
 ) -> ModelSOEventEnvelope:
+    if event_type is SOEventType.WEAPON_FIRED:
+        payload = {
+            "target_id": "mech.blue.01",
+            "hit_probability": 0.5,
+            **payload,
+        }
+    elif event_type is SOEventType.MODE_TRANSITION_STARTED:
+        payload = {
+            "sensor_dropout_ticks": 0,
+            "evasion_penalty": 0.0,
+            **payload,
+        }
     return ModelSOEventEnvelope(
         event_id=eid,
         match_id="match.001",
@@ -366,7 +378,6 @@ def test_mode_transition_started_costs_applied() -> None:
             "from_mode": "recon",
             "to_mode": "assault",
             "costs": {"pressure": 10, "heat": 8, "transition_ticks": 2},
-            "transition_ticks": 2,
         },
         eid="01JABCDE0123456789ABCDEFG4",
     )

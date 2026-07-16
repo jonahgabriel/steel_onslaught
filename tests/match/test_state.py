@@ -140,6 +140,16 @@ def test_mech_runtime_state_is_frozen() -> None:
 
 
 @pytest.mark.unit
+def test_default_weapon_cooldowns_are_immutable() -> None:
+    kwargs = _mech_kwargs()
+    del kwargs["weapon_cooldowns"]
+    mech = ModelSOMechRuntimeState(**kwargs)
+
+    with pytest.raises(TypeError):
+        mech.weapon_cooldowns["weapon.forged"] = 1  # type: ignore[index]
+
+
+@pytest.mark.unit
 def test_facing_must_be_below_360() -> None:
     with pytest.raises(ValidationError):
         _mech(facing=360)

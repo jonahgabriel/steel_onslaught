@@ -13,6 +13,7 @@ from steel_onslaught.bus.protocol import EventHandler
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
 from steel_onslaught.match import composition
 from steel_onslaught.match.composition import RuntimeDependencies
 from steel_onslaught.match.fold import MatchContractCatalog
@@ -80,7 +81,7 @@ class _Ledger:
 
 
 class _Leaderboard:
-    def on_match_scored(self, payload: dict[str, Any]) -> None:
+    def on_match_scored(self, payload: ModelSOMatchScoredPayload) -> None:
         del payload
 
     def top_n(self, n: int) -> list[ModelSOLeaderboardEntry]:

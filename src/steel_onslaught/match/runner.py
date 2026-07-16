@@ -43,6 +43,12 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOMoveIntentPayload,
+    ModelSOSensorObservationPayload,
+    ModelSOWeaponFireIntentPayload,
+)
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.initiative import order_by_initiative
 from steel_onslaught.match.rng import MatchRng
@@ -298,8 +304,10 @@ class MatchRunner:
                 self._resolve_weapon_fire(intent, state, mech)
             case SOEventType.MODE_SWITCH_INTENT:
                 self._resolve_mode_switch(intent, state, mech)
+            case SOEventType.VENT_INTENT:
+                ModelSOEmptyPayload.model_validate(intent.payload)
             case _:
-                pass  # VENT_INTENT: ambient venting only (boiler vents per tick)
+                pass
 
     def _living_opponent(
         self, state: ModelSOMatchState, mech: ModelSOMechRuntimeState
@@ -315,16 +323,8 @@ class MatchRunner:
         state: ModelSOMatchState,
         mech: ModelSOMechRuntimeState,
     ) -> None:
-        direction = str(intent.payload.get("direction", ""))
-        if direction not in {"toward_enemy", "defensive"}:
-            # A MOVE_INTENT always originates from a pilot's MOVE/DISENGAGE
-            # decision, which must name a recognized direction. Failing loud
-            # here (rather than silently holding position) surfaces pilot
-            # contract violations — the same discipline as the scoring gate.
-            raise ReducerError(
-                f"MOVE_INTENT for mech {mech.mech_id!r} at tick {state.tick} carries "
-                f"unknown/missing direction {direction!r}; expected 'toward_enemy' or 'defensive'"
-            )
+        payload = ModelSOMoveIntentPayload.model_validate(intent.payload)
+        direction = payload.direction
         enemy = self._living_opponent(state, mech)
         if enemy is None:
             return
@@ -373,14 +373,15 @@ class MatchRunner:
         state: ModelSOMatchState,
         mech: ModelSOMechRuntimeState,
     ) -> None:
-        weapon_id = str(intent.payload.get("weapon_id", ""))
+        payload = ModelSOWeaponFireIntentPayload.model_validate(intent.payload)
+        weapon_id = payload.weapon_id
         spec = self._catalog.weapons.get(weapon_id)
         if spec is None:
             raise UnknownWeaponError(weapon_id, owner_id=mech.mech_id)
 
-        target_param = intent.payload.get("target_mech_id")
+        target_param = payload.target_mech_id
         target = (
-            state.mech_states.get(str(target_param))
+            state.mech_states.get(target_param)
             if target_param is not None
             else self._living_opponent(state, mech)
         )
@@ -403,15 +404,13 @@ class MatchRunner:
 
         curve = [(point.range, point.hit_probability) for point in spec.accuracy_curve]
         base_accuracy = interpolate_accuracy(curve, distance)
-        lock_confidence = max(
-            (
-                float(observation.payload["confidence"])
-                for observation in self._sensor_buffer
-                if observation.subject.mech_id == mech.mech_id
-                and str(observation.payload.get("enemy_mech_id")) == target.mech_id
-            ),
-            default=0.0,
-        )
+        lock_confidence = 0.0
+        for observation in self._sensor_buffer:
+            if observation.subject.mech_id != mech.mech_id:
+                continue
+            sensor_payload = ModelSOSensorObservationPayload.model_validate(observation.payload)
+            if sensor_payload.enemy_mech_id == target.mech_id:
+                lock_confidence = max(lock_confidence, sensor_payload.confidence)
         hit_probability = resolve_hit_probability(
             base_accuracy,
             lock_confidence,

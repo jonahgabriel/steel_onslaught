@@ -8,7 +8,7 @@ Emission vs replay
 ------------------
 When constructed with a bus, the reducer emits the terminal events the plan
 assigns to it (VICTORY_DECLARED on a single survivor at the bound; otherwise
-MATCH_ENDED + MATCH_SCORED for a draw). The terminal state transition is
+MATCH_ENDED for a draw). The terminal state transition is
 applied inline *before* emission, so a bus-less reducer (the replay path,
 Task 27) reaches the identical final state from the same event sequence —
 the emitted events are then idempotent re-statements when they come back
@@ -20,8 +20,6 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -29,9 +27,14 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOMatchEndedPayload,
+    ModelSOMatchStartedPayload,
+    ModelSOVictoryDeclaredPayload,
+)
 from steel_onslaught.match.state import (
     ModelSOMatchState,
-    ModelSOMechRuntimeState,
     SOMatchEndReason,
     SOMatchStatus,
 )
@@ -46,52 +49,6 @@ _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 # the real seed and max_ticks from its payload.
 _PENDING_SEED = 0
 _DEFAULT_MAX_TICKS = 200
-
-
-# ---------------------------------------------------------------------------
-# Typed payloads
-# ---------------------------------------------------------------------------
-
-
-class ModelSOMatchStartedPayload(BaseModel):
-    """MATCH_STARTED payload: seed + match config + initial mech states.
-
-    The publisher (match runner) is responsible for building the initial
-    ``ModelSOMechRuntimeState`` per mech from its loadout; the reducer only
-    validates, so replay needs nothing beyond the ledger.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    seed: int = Field(ge=0)
-    max_ticks: int = Field(gt=0)
-    mechs: tuple[ModelSOMechRuntimeState, ...] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def _mech_ids_unique(self) -> ModelSOMatchStartedPayload:
-        ids = [mech.mech_id for mech in self.mechs]
-        duplicates = sorted({mid for mid in ids if ids.count(mid) > 1})
-        if duplicates:
-            raise ValueError(f"duplicate mech_ids in match_started payload: {duplicates}")
-        return self
-
-
-class ModelSOVictoryDeclaredPayload(BaseModel):
-    """Closed VICTORY_DECLARED payload."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    winner_player_id: str
-    reason: SOMatchEndReason
-
-
-class ModelSOMatchEndedPayload(BaseModel):
-    """Closed MATCH_ENDED final re-statement."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    reason: SOMatchEndReason
-    winner_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +127,7 @@ class ReducerMatchLifecycle:
         )
 
     def _apply_match_tick(self, event: ModelSOEventEnvelope) -> None:
+        ModelSOEmptyPayload.model_validate(event.payload)
         state = self._state
         if state.status is not SOMatchStatus.RUNNING:
             raise ReducerError(
@@ -209,12 +167,6 @@ class ReducerMatchLifecycle:
         self._emit(
             SOEventType.MATCH_ENDED,
             {"reason": SOMatchEndReason.DRAW_MAX_TICKS.value, "winner_id": None},
-        )
-        # Draw scoring backstop: the scoring reducer (Task 29) zeroes the
-        # victory term for both players on draw_max_ticks.
-        self._emit(
-            SOEventType.MATCH_SCORED,
-            {"scores": {player_id: {"victory": 0} for player_id in sorted(state.player_ids())}},
         )
 
     def _apply_victory_declared(self, event: ModelSOEventEnvelope) -> None:

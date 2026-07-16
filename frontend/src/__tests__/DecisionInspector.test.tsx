@@ -16,7 +16,7 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PilotDecisionMadePayload, SOEventEnvelope } from "../types";
+import type { PilotDecisionMadePayload, SOEventEnvelope, SOPilotAction } from "../types";
 import { DecisionInspector } from "../views/DecisionInspector";
 import { TickStepper } from "../views/TickStepper";
 
@@ -28,16 +28,16 @@ function makeDecisionEnvelope(
   tick: number,
   mechId: string,
   playerId: string,
-  action: string,
+  action: SOPilotAction,
 ): SOEventEnvelope & { event_type: "pilot_decision_made" } {
   const payload: PilotDecisionMadePayload = {
     action,
     action_params: {},
-    reason_code: "enemy_in_range",
+    reason_code: "target_in_range",
     confidence: 0.85,
     considered_actions: [
       { action, score: 0.85 },
-      { action: "VENT", score: 0.2 },
+      { action: "remain", score: 0.2 },
     ],
   };
   return {
@@ -138,8 +138,8 @@ describe("DecisionInspector", () => {
 
   it("renders one row per pilot decision", () => {
     const decisions = [
-      makeDecisionEnvelope(5, "mech.red.01", "player.red", "FIRE_WEAPON"),
-      makeDecisionEnvelope(5, "mech.blue.01", "player.blue", "MOVE"),
+      makeDecisionEnvelope(5, "mech.red.01", "player.red", "fire_weapon"),
+      makeDecisionEnvelope(5, "mech.blue.01", "player.blue", "move"),
     ];
     render(
       <DecisionInspector
@@ -157,7 +157,7 @@ describe("DecisionInspector", () => {
   });
 
   it("renders confidence for each decision", () => {
-    const decisions = [makeDecisionEnvelope(5, "mech.red.01", "player.red", "VENT")];
+    const decisions = [makeDecisionEnvelope(5, "mech.red.01", "player.red", "vent")];
     render(
       <DecisionInspector
         matchId="match.test.001"
@@ -172,7 +172,7 @@ describe("DecisionInspector", () => {
   });
 
   it("renders considered_actions entries", () => {
-    const decisions = [makeDecisionEnvelope(5, "mech.red.01", "player.red", "FIRE_WEAPON")];
+    const decisions = [makeDecisionEnvelope(5, "mech.red.01", "player.red", "fire_weapon")];
     render(
       <DecisionInspector
         matchId="match.test.001"
@@ -184,7 +184,7 @@ describe("DecisionInspector", () => {
     );
     // Both considered actions from makeDecisionEnvelope should appear.
     expect(screen.getAllByText(/FIRE_WEAPON/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/VENT/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/REMAIN/i).length).toBeGreaterThan(0);
   });
 
   it("passes tick changes from TickStepper to onTickChange", () => {

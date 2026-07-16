@@ -16,7 +16,7 @@ class ModelSOBoilerCompatibility(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    compatible_chassis_classes: list[str] = Field(min_length=1)
+    compatible_chassis_classes: tuple[str, ...] = Field(min_length=1)
 
 
 class ModelSOBoilerSpec(BaseModel):
@@ -87,7 +87,7 @@ class ModelSOBoilerState(BaseModel):
     not a steady state.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: Literal["0.1.0"] = "0.1.0"
     kind: Literal["steel_onslaught.boiler_state"] = "steel_onslaught.boiler_state"

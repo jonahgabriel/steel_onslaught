@@ -21,13 +21,14 @@ When ``transition_ticks_remaining`` reaches 0, it emits
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.mode import (
     ModeId,
-    ModelSOLegacyModeSwitchIntentPayload,
+    ModelSOModeSwitchIntentPayload,
     ModelSOModeTransition,
     ModelSOModeTransitionCompletedPayload,
     ModelSOModeTransitionStartedPayload,
@@ -38,6 +39,7 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import ModelSOEmptyPayload
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 
 _PRODUCER_NODE = "node.reducer.mode"
@@ -183,7 +185,7 @@ class ReducerModeTransition:
     def __init__(
         self,
         match_id: str,
-        transitions: dict[tuple[ModeId, ModeId], ModelSOModeTransition],
+        transitions: Mapping[tuple[ModeId, ModeId], ModelSOModeTransition],
         *,
         correlation_id: UUID,
         event_factory: EventFactory,
@@ -246,6 +248,7 @@ class ReducerModeTransition:
             case SOEventType.MODE_SWITCH_INTENT:
                 self._handle_intent(event)
             case SOEventType.MATCH_TICK:
+                ModelSOEmptyPayload.model_validate(event.payload)
                 self._current_tick = event.tick
                 self._tick_transitions()
             case _:
@@ -264,9 +267,9 @@ class ReducerModeTransition:
         if not mech.alive or not mech.pilot_alive:
             return  # dead mechs cannot switch modes
 
-        payload = ModelSOLegacyModeSwitchIntentPayload.model_validate(event.payload)
-        from_mode = payload.from_mode
-        to_mode = payload.to_mode
+        payload = ModelSOModeSwitchIntentPayload.model_validate(event.payload)
+        from_mode = mech.current_mode
+        to_mode = payload.target_mode
 
         # Validate — all failures are silent drops (the pilot_decision_made
         # event already records the attempted mode switch with a reason code).

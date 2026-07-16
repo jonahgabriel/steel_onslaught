@@ -22,7 +22,7 @@ Invariants covered:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -726,7 +726,12 @@ def test_external_pilot_killed_folds_and_declares_victory() -> None:
         SOEventType.PILOT_KILLED,
         tick=4,
         subject=ModelSOEventSubject(mech_id="mech.red.01", player_id="player.a"),
-        payload={},
+        payload={
+            "mech_id": "mech.red.01",
+            "survival_probability": 0.7,
+            "roll": 0.95,
+            "safety_gizmos_equipped": 1,
+        },
     )
     new_state = reducer.apply(killed_env, state)
 
@@ -750,7 +755,7 @@ def test_replay_produces_identical_outcomes() -> None:
     """Invariant: two replays of the same event sequence produce identical
     rupture/survival outcomes and identical final state."""
 
-    def run() -> tuple[ModelSOMatchState, list[tuple[SOEventType, dict[str, Any]]]]:
+    def run() -> tuple[ModelSOMatchState, list[tuple[SOEventType, Mapping[str, Any]]]]:
         red = _make_mech("mech.red.01", "player.a", heat_current=75)
         near = _make_mech("mech.red.02", "player.a", hp=10, position=ModelSOPosition(x=2, y=2))
         blue = _make_mech("mech.blue.01", "player.b", position=ModelSOPosition(x=9, y=9))

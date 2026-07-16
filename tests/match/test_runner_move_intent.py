@@ -20,6 +20,7 @@ import pytest
 import ulid
 import yaml  # type: ignore[import-untyped]
 from omnibase_core.models.common.model_envelope import ModelEnvelope
+from pydantic import ValidationError
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
@@ -27,7 +28,6 @@ from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
 from steel_onslaught.match.composition import load_loadout, pilot_from_spec
 from steel_onslaught.pilots.schemas import ModelSOPosition
-from steel_onslaught.reducers.errors import ReducerError
 from tests.runtime import match_runner
 
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
@@ -162,7 +162,7 @@ def test_resolve_move_raises_on_unknown_direction() -> None:
         payload={"direction": "sideways"},  # not a recognized direction
         envelope=_onex_envelope(MATCH_ID),
     )
-    with pytest.raises(ReducerError, match="unknown/missing direction"):
+    with pytest.raises(ValidationError, match="direction"):
         runner._resolve_move(bad_intent, runner.fold.state, mech)
 
 
@@ -210,7 +210,7 @@ def test_resolve_move_raises_on_missing_direction() -> None:
         payload={},  # no direction at all
         envelope=_onex_envelope(MATCH_ID),
     )
-    with pytest.raises(ReducerError, match="unknown/missing direction"):
+    with pytest.raises(ValidationError, match="direction"):
         runner._resolve_move(no_dir_intent, runner.fold.state, mech)
 
 

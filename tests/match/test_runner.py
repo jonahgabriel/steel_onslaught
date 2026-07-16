@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +81,7 @@ def test_same_seed_produces_identical_event_stream() -> None:
 
     def fingerprint(
         events: list[ModelSOEventEnvelope],
-    ) -> list[tuple[int, int, SOEventType, dict[str, Any]]]:
+    ) -> list[tuple[int, int, SOEventType, Mapping[str, Any]]]:
         return [(e.tick, e.sequence_in_tick, e.event_type, e.payload) for e in events]
 
     assert fingerprint(events_one) == fingerprint(events_two)

@@ -125,6 +125,7 @@ class SQLiteLedger(QueryableEventLedger):
     def append(self, event: ModelSOEventEnvelope) -> None:
         """Append one complete canonical event and commit it immediately."""
         canonical_json = dump_persisted_event(event)
+        serialized = event.model_dump(mode="json")
         self._conn.execute(
             _INSERT_SQL,
             (
@@ -137,7 +138,7 @@ class SQLiteLedger(QueryableEventLedger):
                 str(event.causation_id) if event.causation_id is not None else None,
                 event.producer_node,
                 event.subject.model_dump_json(),
-                json.dumps(event.payload, separators=(",", ":"), ensure_ascii=False),
+                json.dumps(serialized["payload"], separators=(",", ":"), ensure_ascii=False),
                 event.emitted_at,
                 event.schema_version,
                 canonical_json,

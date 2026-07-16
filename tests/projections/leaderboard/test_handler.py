@@ -18,6 +18,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from steel_onslaught.events.payloads import (
+    ModelSOMatchScoredPayload,
+    ModelSOPlayerScore,
+    ModelSOScoredWinner,
+)
 from steel_onslaught.projections.leaderboard.handler import (
     LeaderboardHandler,
     ModelSOSQLiteLeaderboardConfig,
@@ -74,18 +79,44 @@ def _scored_payload(
     duration_ticks: int,
     scored_at: str,
     is_draw: bool = False,
-) -> dict[str, object]:
-    return {
-        "match_id": match_id,
-        "winner_player_id": winner_player_id,
-        "winner_loadout_id": winner_loadout_id,
-        "winner_score": winner_score,
-        "loser_player_id": loser_player_id,
-        "loser_score": loser_score,
-        "duration_ticks": duration_ticks,
-        "scored_at": scored_at,
-        "is_draw": is_draw,
-    }
+) -> ModelSOMatchScoredPayload:
+    return ModelSOMatchScoredPayload(
+        match_id=match_id,
+        winner=None
+        if is_draw
+        else ModelSOScoredWinner(
+            player_id=winner_player_id,
+            mech_id=f"mech.{winner_player_id}",
+        ),
+        scores={
+            winner_player_id: ModelSOPlayerScore(
+                victory=0 if is_draw else 1,
+                damage_dealt=0,
+                damage_efficiency=0.0,
+                pressure_efficiency=1.0,
+                overload_penalty=0,
+                replay_validity=1,
+                final_score=winner_score,
+            ),
+            loser_player_id: ModelSOPlayerScore(
+                victory=0,
+                damage_dealt=0,
+                damage_efficiency=0.0,
+                pressure_efficiency=1.0,
+                overload_penalty=0,
+                replay_validity=1,
+                final_score=loser_score,
+            ),
+        },
+        winner_player_id=winner_player_id,
+        winner_loadout_id=winner_loadout_id,
+        winner_score=winner_score,
+        loser_player_id=loser_player_id,
+        loser_score=loser_score,
+        duration_ticks=duration_ticks,
+        scored_at=scored_at,
+        is_draw=is_draw,
+    )
 
 
 @pytest.mark.unit

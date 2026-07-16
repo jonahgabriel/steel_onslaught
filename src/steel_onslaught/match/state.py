@@ -15,10 +15,11 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.immutable import FrozenMapping
 from steel_onslaught.pilots.schemas import ModelSOPosition
 
 # ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ class ModelSOMechRuntimeState(BaseModel):
         ``overloaded_consecutive_ticks``, ``gizmo_ids``, ``pilot_alive``
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: Literal["0.1.0"] = "0.1.0"
     kind: Literal["steel_onslaught.mech_runtime_state"] = "steel_onslaught.mech_runtime_state"
@@ -120,8 +121,10 @@ class ModelSOMechRuntimeState(BaseModel):
     )
 
     # Combat.
-    weapon_cooldowns: dict[str, int] = Field(
-        default_factory=dict, description="weapon_id -> cooldown ticks remaining (0 = ready)"
+    weapon_cooldowns: FrozenMapping[int] = Field(
+        default_factory=dict,
+        validate_default=True,
+        description="weapon_id -> cooldown ticks remaining (0 = ready)",
     )
     evasion: float = Field(default=0.0, ge=0.0, le=1.0)
     accuracy_penalty_next_fire: float = Field(
@@ -135,6 +138,15 @@ class ModelSOMechRuntimeState(BaseModel):
     redline_consecutive_ticks: int = Field(default=0, ge=0)
     overloaded: bool = False
     overloaded_consecutive_ticks: int = Field(default=0, ge=0)
+
+    @field_validator("current_mode", "transition_to_mode", mode="before")
+    @classmethod
+    def _parse_mode_ids(cls, value: object) -> object:
+        if value is None or isinstance(value, ModeId):
+            return value
+        if isinstance(value, str):
+            return ModeId(value)
+        return value
 
     @property
     def hp_percent(self) -> float:

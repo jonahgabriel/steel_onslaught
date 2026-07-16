@@ -1,3 +1,5 @@
+import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -83,6 +85,22 @@ def test_envelope_round_trip() -> None:
     blob = env.model_dump_json()
     parsed = ModelSOEventEnvelope.model_validate_json(blob)
     assert parsed == env
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_envelope_rejects_non_finite_payload_numbers(value: float) -> None:
+    with pytest.raises(ValidationError, match="finite"):
+        ModelSOEventEnvelope(**_base_kwargs(payload={"nested": {"value": value}}))
+
+
+@pytest.mark.unit
+def test_envelope_preserves_finite_float_payload_round_trip() -> None:
+    raw_payload = {"nested": [0.25, {"value": -12.5}]}
+    env = ModelSOEventEnvelope(**_base_kwargs(payload=raw_payload))
+
+    assert env.model_dump(mode="json")["payload"] == raw_payload
+    assert ModelSOEventEnvelope.model_validate_json(env.model_dump_json()) == env
 
 
 @pytest.mark.unit
@@ -241,6 +259,54 @@ def test_envelope_is_frozen() -> None:
     env = ModelSOEventEnvelope(**_base_kwargs())
     with pytest.raises((TypeError, ValidationError)):
         env.tick = 99
+
+
+@pytest.mark.unit
+def test_subject_is_frozen() -> None:
+    subject = ModelSOEventSubject(mech_id="mech.red.01", player_id="player.17")
+    with pytest.raises(ValidationError, match="frozen"):
+        subject.mech_id = "mech.blue.01"
+
+
+@pytest.mark.unit
+def test_payload_is_deeply_immutable_and_detached_from_input() -> None:
+    source = {
+        "action": "switch_mode",
+        "details": {"target_mode": "assault"},
+        "considered": [{"action": "switch_mode", "score": 0.9}],
+    }
+    env = ModelSOEventEnvelope(**_base_kwargs(payload=source))
+    source["action"] = "vent"
+    source["details"]["target_mode"] = "evasion"  # type: ignore[index]
+
+    assert not isinstance(env.payload, dict)
+    assert env.payload["action"] == "switch_mode"
+    details = env.payload["details"]
+    assert isinstance(details, Mapping)
+    assert details["target_mode"] == "assault"
+    considered = env.payload["considered"]
+    assert isinstance(considered, tuple)
+
+    with pytest.raises(TypeError):
+        env.payload["action"] = "vent"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        details["target_mode"] = "evasion"  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        considered.append({"action": "vent"})  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+def test_deeply_immutable_payload_preserves_canonical_json_shape() -> None:
+    payload = {
+        "action": "switch_mode",
+        "details": {"target_mode": "assault"},
+        "considered": [{"action": "switch_mode", "score": 0.9}],
+    }
+    env = ModelSOEventEnvelope(**_base_kwargs(payload=payload))
+
+    assert env.model_dump(mode="json")["payload"] == payload
+    assert json.loads(env.model_dump_json())["payload"] == payload
+    assert ModelSOEventEnvelope.model_validate_json(env.model_dump_json()) == env
 
 
 @pytest.mark.unit

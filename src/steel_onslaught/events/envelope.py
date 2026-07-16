@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -7,6 +8,8 @@ from uuid import UUID
 
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from steel_onslaught.immutable import FrozenJSONMapping
 
 
 class SOEventType(StrEnum):
@@ -47,7 +50,7 @@ class SOEventType(StrEnum):
 
 
 class ModelSOEventSubject(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     mech_id: str
     player_id: str
@@ -78,7 +81,7 @@ class ModelSOEventEnvelope(BaseModel):
     producer_node: str
     subject: ModelSOEventSubject
     event_type: SOEventType
-    payload: dict[str, Any]
+    payload: FrozenJSONMapping
     # The ONEX canonical envelope: tracing identity + causation chain.
     # entity_id is the match_id (partition key); message_id is a fresh UUID
     # per event (distinct from the application-level ULID event_id).
@@ -137,7 +140,7 @@ def make_event(
     event_type: SOEventType,
     producer_node: str,
     subject: ModelSOEventSubject,
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
     correlation_id: UUID,
     causation_id: UUID | None = None,
     event_id: str,
@@ -184,7 +187,7 @@ def caused_by(
     event_type: SOEventType,
     producer_node: str,
     subject: ModelSOEventSubject,
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
     event_id: str,
     message_id: UUID,
     emitted_at: datetime,

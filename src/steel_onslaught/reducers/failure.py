@@ -56,6 +56,11 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOMechDestroyedPayload,
+    ModelSOPilotKilledPayload,
+)
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
     ModelSOMatchState,
@@ -190,10 +195,13 @@ class ReducerFailureCascade:
 
         match event.event_type:
             case SOEventType.MATCH_TICK:
+                ModelSOEmptyPayload.model_validate(event.payload)
                 return self._apply_tick(event, state)
             case SOEventType.MECH_DESTROYED:
+                ModelSOMechDestroyedPayload.model_validate(event.payload)
                 return self._fold_flag(event, state, field="alive")
             case SOEventType.PILOT_KILLED:
+                ModelSOPilotKilledPayload.model_validate(event.payload)
                 return self._fold_flag(event, state, field="pilot_alive")
             case _:
                 return state

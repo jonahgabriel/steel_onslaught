@@ -32,7 +32,7 @@ Design notes
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 from uuid import UUID
 
@@ -44,6 +44,12 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOMoveIntentPayload,
+    ModelSOSensorObservationPayload,
+    ModelSOWeaponFireIntentPayload,
+)
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotDecision,
@@ -61,7 +67,7 @@ def _build_observation(
     mech: ModelSOMechRuntimeState,
     state: ModelSOMatchState,
     sensor_events: list[ModelSOEventEnvelope],
-    weapon_specs: dict[str, ModelSOWeaponSpec],
+    weapon_specs: Mapping[str, ModelSOWeaponSpec],
 ) -> ModelSOPilotObservation:
     """Build the observation passed to a pilot for one tick."""
     # Weapon views — empty if no weapon_cooldowns recorded on the mech.
@@ -93,15 +99,15 @@ def _build_observation(
             continue
         if evt.subject.mech_id != mech.mech_id:
             continue
-        payload = evt.payload
+        payload = ModelSOSensorObservationPayload.model_validate(evt.payload)
         enemy_readings.append(
             ModelSOSensorReading(
-                enemy_mech_id=payload["enemy_mech_id"],
+                enemy_mech_id=payload.enemy_mech_id,
                 tick=evt.tick,
-                distance_estimate=float(payload["distance_estimate"]),
-                confidence=float(payload["confidence"]),
-                heat_estimate=payload.get("heat_estimate"),
-                mode_estimate=payload.get("mode_estimate"),
+                distance_estimate=payload.distance_estimate,
+                confidence=payload.confidence,
+                heat_estimate=payload.heat_estimate,
+                mode_estimate=payload.mode_estimate,
             )
         )
     # Newest last (events are already in ledger order; sensor_events passed in
@@ -140,14 +146,17 @@ def _intent_for(decision: ModelSOPilotDecision) -> tuple[SOEventType, dict[str, 
     match decision.action:
         case SOPilotAction.MOVE | SOPilotAction.DISENGAGE:
             # DISENGAGE is a directional move (away); treated as a MOVE_INTENT.
-            return SOEventType.MOVE_INTENT, dict(decision.action_params)
+            move_payload = ModelSOMoveIntentPayload.model_validate(decision.action_params)
+            return SOEventType.MOVE_INTENT, move_payload.model_dump(mode="json", exclude_none=True)
         case SOPilotAction.FIRE_WEAPON:
-            return SOEventType.WEAPON_FIRE_INTENT, dict(decision.action_params)
+            fire_payload = ModelSOWeaponFireIntentPayload.model_validate(decision.action_params)
+            return SOEventType.WEAPON_FIRE_INTENT, fire_payload.model_dump(mode="json")
         case SOPilotAction.SWITCH_MODE:
-            payload = ModelSOModeSwitchIntentPayload.model_validate(decision.action_params)
-            return SOEventType.MODE_SWITCH_INTENT, payload.model_dump(mode="json")
+            mode_payload = ModelSOModeSwitchIntentPayload.model_validate(decision.action_params)
+            return SOEventType.MODE_SWITCH_INTENT, mode_payload.model_dump(mode="json")
         case SOPilotAction.VENT:
-            return SOEventType.VENT_INTENT, dict(decision.action_params)
+            vent_payload = ModelSOEmptyPayload.model_validate(decision.action_params)
+            return SOEventType.VENT_INTENT, vent_payload.model_dump(mode="json")
         case _:
             # REMAIN, ACTIVATE_MODULE, EMERGENCY_SHUTDOWN: no intent event.
             return None
@@ -183,7 +192,7 @@ class ReducerPilotTick:
         pilots: dict[str, PilotProtocol],
         sensor_events: list[ModelSOEventEnvelope],
         emit: Callable[[ModelSOEventEnvelope], None],
-        weapon_specs: dict[str, ModelSOWeaponSpec],
+        weapon_specs: Mapping[str, ModelSOWeaponSpec],
         *,
         correlation_id: UUID,
         event_factory: EventFactory,
@@ -215,6 +224,7 @@ class ReducerPilotTick:
         if event.event_type != SOEventType.MATCH_TICK:
             return self._state
 
+        ModelSOEmptyPayload.model_validate(event.payload)
         self._process_tick()
         return self._state
 
