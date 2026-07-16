@@ -38,6 +38,10 @@ from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.lineage import ParamDict, spec_hash
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.learning.duel_evaluator import DuelEvaluator, aggregate_pair
+from steel_onslaught.learning.filesystem_artifacts import (
+    ModelSOFilesystemLearningArtifactsConfig,
+    YamlFilesystemLearningArtifactStore,
+)
 from steel_onslaught.learning.protocols import EvaluatorProtocol, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import params_from_spec
 from steel_onslaught.match.composition import (
@@ -92,6 +96,13 @@ def _make_evaluator(workdir: Path, *, base_loadout: Path = _BASE_LOADOUT) -> Due
                 "path": workdir / "leaderboard.sqlite3",
                 "journal_mode": "WAL",
                 "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "storage_schema": "leaderboard_v1",
+            },
+            "learning_artifacts": {
+                "kind": "filesystem_yaml",
+                "evaluation_root": workdir,
+                "lineage_root": workdir / "lineage",
             },
             "contracts": {
                 "catalog_dir": _CONTRACTS_DATA,
@@ -104,9 +115,14 @@ def _make_evaluator(workdir: Path, *, base_loadout: Path = _BASE_LOADOUT) -> Due
     return DuelEvaluator(
         archetype="aggressive",
         base_loadout=load_loadout(base_loadout),
-        workdir=workdir,
         max_ticks=_MAX_TICKS,
         duel_executor=build_duel_executor(overlay),
+        artifacts=YamlFilesystemLearningArtifactStore(
+            ModelSOFilesystemLearningArtifactsConfig(
+                evaluation_root=workdir,
+                lineage_root=workdir / "lineage",
+            )
+        ),
     )
 
 

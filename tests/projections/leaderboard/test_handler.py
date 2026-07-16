@@ -12,6 +12,7 @@ Invariants asserted:
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -19,14 +20,48 @@ from pydantic import ValidationError
 
 from steel_onslaught.projections.leaderboard.handler import (
     LeaderboardHandler,
-    LeaderboardProjection,
-    ModelSOLeaderboardEntry,
+    ModelSOSQLiteLeaderboardConfig,
 )
+from steel_onslaught.projections.leaderboard.protocol import ModelSOLeaderboardEntry
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
 
 
 def _make_handler(tmp_path: Path) -> LeaderboardHandler:
     db_path = tmp_path / "leaderboard.sqlite"
-    return LeaderboardHandler(db_path)
+    return LeaderboardHandler(
+        ModelSOSQLiteLeaderboardConfig(
+            path=db_path,
+            journal_mode="WAL",
+            check_same_thread=True,
+            transaction_mode="autocommit",
+            storage_schema="leaderboard_v1",
+        ),
+        clock=_FixedClock(),
+    )
+
+
+@pytest.mark.unit
+def test_leaderboard_applies_explicit_autocommit_policy(tmp_path: Path) -> None:
+    handler = _make_handler(tmp_path)
+
+    assert handler._conn.isolation_level is None
+    handler.on_match_scored(
+        _scored_payload(
+            "match.autocommit",
+            "player.red",
+            "loadout.red",
+            10,
+            "player.blue",
+            5,
+            3,
+            "2026-07-16T12:00:00+00:00",
+        )
+    )
+    assert handler._conn.in_transaction is False
 
 
 def _scored_payload(
@@ -68,7 +103,7 @@ def test_single_insert(tmp_path: Path) -> None:
     )
     handler.on_match_scored(payload)
 
-    lb = LeaderboardProjection(handler.db_path)
+    lb = handler
     entries = lb.top_n(10)
     assert len(entries) == 1
     entry = entries[0]
@@ -148,7 +183,7 @@ def test_top_n_ordering(tmp_path: Path) -> None:
             )
         )
 
-    lb = LeaderboardProjection(handler.db_path)
+    lb = handler
     top5 = lb.top_n(5)
     assert len(top5) == 5
     winner_scores = [e.winner_score for e in top5]
@@ -189,7 +224,7 @@ def test_top_n_excludes_draws(tmp_path: Path) -> None:
         )
     )
 
-    lb = LeaderboardProjection(handler.db_path)
+    lb = handler
     top = lb.top_n(10)
     # Only the decisive match appears.
     assert len(top) == 1
@@ -227,7 +262,7 @@ def test_draw_count(tmp_path: Path) -> None:
             is_draw=True,
         )
     )
-    lb = LeaderboardProjection(handler.db_path)
+    lb = handler
     assert lb.draw_count() == 2
 
 
@@ -274,7 +309,7 @@ def test_player_record(tmp_path: Path) -> None:
         )
     )
 
-    lb = LeaderboardProjection(handler.db_path)
+    lb = handler
     record = lb.player_record("player.a")
     assert record["wins"] == 2
     assert record["losses"] == 1

@@ -6,6 +6,7 @@ produces byte-identical stdout.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -15,15 +16,69 @@ from click.testing import CliRunner
 
 from steel_onslaught.cli.main import main
 
-LOADOUT_A = "contracts_data/loadouts/example_aggressive_light.yaml"
-LOADOUT_B = "contracts_data/loadouts/example_predictive_heavy.yaml"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+LOADOUT_A = str(_REPO_ROOT / "contracts_data/loadouts/example_aggressive_light.yaml")
+LOADOUT_B = str(_REPO_ROOT / "contracts_data/loadouts/example_predictive_heavy.yaml")
+
+
+def _write_overlay(
+    tmp_path: Path,
+    *,
+    ledger_path: Path | None = None,
+    leaderboard_path: Path | None = None,
+) -> Path:
+    ledger = ledger_path or tmp_path / "events.sqlite"
+    leaderboard = leaderboard_path or tmp_path / "leaderboard.sqlite"
+    overlay_path = tmp_path / "application.json"
+    overlay_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "bus": {"kind": "in_process"},
+                "event_ledger": {
+                    "kind": "sqlite",
+                    "path": str(ledger),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                },
+                "leaderboard": {
+                    "kind": "sqlite",
+                    "path": str(leaderboard),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "storage_schema": "leaderboard_v1",
+                },
+                "learning_artifacts": {
+                    "kind": "filesystem_yaml",
+                    "evaluation_root": str(tmp_path / "evaluations"),
+                    "lineage_root": str(tmp_path / "lineage"),
+                },
+                "contracts": {
+                    "catalog_dir": str(_REPO_ROOT / "contracts_data"),
+                    "pilot_registry_dir": str(_REPO_ROOT / "contracts_data/pilots"),
+                },
+                "clock": {"kind": "system_utc"},
+                "identity": {"kind": "system"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return overlay_path
 
 
 def _run_args(
-    *, seed: int = 12345, max_ticks: int = 10, extra: list[str] | None = None
+    overlay_path: Path,
+    *,
+    seed: int = 12345,
+    max_ticks: int = 10,
 ) -> list[str]:
-    args = [
+    return [
         "run",
+        "--overlay",
+        str(overlay_path),
         "--loadout-a",
         LOADOUT_A,
         "--loadout-b",
@@ -33,7 +88,6 @@ def _run_args(
         "--max-ticks",
         str(max_ticks),
     ]
-    return args + (extra or [])
 
 
 def _extract_match_id(stderr: str) -> str:
@@ -48,10 +102,11 @@ def _extract_match_id(stderr: str) -> str:
 
 
 @pytest.mark.integration
-def test_run_same_seed_byte_identical_stdout() -> None:
+def test_run_same_seed_byte_identical_stdout(tmp_path: Path) -> None:
     runner = CliRunner()
-    one = runner.invoke(main, _run_args(), catch_exceptions=False)
-    two = runner.invoke(main, _run_args(), catch_exceptions=False)
+    args = _run_args(_write_overlay(tmp_path))
+    one = runner.invoke(main, args, catch_exceptions=False)
+    two = runner.invoke(main, args, catch_exceptions=False)
     assert one.exit_code == 0
     assert two.exit_code == 0
     assert one.stdout != ""
@@ -59,18 +114,26 @@ def test_run_same_seed_byte_identical_stdout() -> None:
 
 
 @pytest.mark.integration
-def test_run_renders_match_started_and_ended() -> None:
+def test_run_renders_match_started_and_ended(tmp_path: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(main, _run_args(seed=99, max_ticks=5), catch_exceptions=False)
+    result = runner.invoke(
+        main,
+        _run_args(_write_overlay(tmp_path), seed=99, max_ticks=5),
+        catch_exceptions=False,
+    )
     assert result.exit_code == 0
     assert "[Tick 0] MATCH STARTED (seed 99, max_ticks 5)" in result.stdout
     assert "MATCH ENDED (draw max ticks)" in result.stdout
 
 
 @pytest.mark.integration
-def test_run_emits_match_id_on_stderr_not_stdout() -> None:
+def test_run_emits_match_id_on_stderr_not_stdout(tmp_path: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(main, _run_args(max_ticks=3), catch_exceptions=False)
+    result = runner.invoke(
+        main,
+        _run_args(_write_overlay(tmp_path), max_ticks=3),
+        catch_exceptions=False,
+    )
     assert result.exit_code == 0
     match_id = _extract_match_id(result.stderr)
     assert match_id.startswith("match.")
@@ -85,10 +148,11 @@ def test_run_emits_match_id_on_stderr_not_stdout() -> None:
 @pytest.mark.integration
 def test_replay_reproduces_run_stdout(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.sqlite"
+    overlay_path = _write_overlay(tmp_path, ledger_path=ledger)
     runner = CliRunner()
     live = runner.invoke(
         main,
-        _run_args(extra=["--ledger-path", str(ledger)]),
+        _run_args(overlay_path),
         catch_exceptions=False,
     )
     assert live.exit_code == 0
@@ -96,7 +160,7 @@ def test_replay_reproduces_run_stdout(tmp_path: Path) -> None:
 
     replayed = runner.invoke(
         main,
-        ["replay", "--ledger", str(ledger), "--match", match_id],
+        ["replay", "--overlay", str(overlay_path), "--match", match_id],
         catch_exceptions=False,
     )
     assert replayed.exit_code == 0
@@ -106,10 +170,11 @@ def test_replay_reproduces_run_stdout(tmp_path: Path) -> None:
 @pytest.mark.integration
 def test_replay_tick_window_filters_lines(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.sqlite"
+    overlay_path = _write_overlay(tmp_path, ledger_path=ledger)
     runner = CliRunner()
     live = runner.invoke(
         main,
-        _run_args(extra=["--ledger-path", str(ledger)]),
+        _run_args(overlay_path),
         catch_exceptions=False,
     )
     match_id = _extract_match_id(live.stderr)
@@ -118,8 +183,8 @@ def test_replay_tick_window_filters_lines(tmp_path: Path) -> None:
         main,
         [
             "replay",
-            "--ledger",
-            str(ledger),
+            "--overlay",
+            str(overlay_path),
             "--match",
             match_id,
             "--from",
@@ -143,15 +208,22 @@ def test_replay_tick_window_filters_lines(tmp_path: Path) -> None:
 @pytest.mark.integration
 def test_replay_unknown_match_fails(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.sqlite"
+    overlay_path = _write_overlay(tmp_path, ledger_path=ledger)
     runner = CliRunner()
     runner.invoke(
         main,
-        _run_args(max_ticks=3, extra=["--ledger-path", str(ledger)]),
+        _run_args(overlay_path, max_ticks=3),
         catch_exceptions=False,
     )
     result = runner.invoke(
         main,
-        ["replay", "--ledger", str(ledger), "--match", "match.does-not-exist"],
+        [
+            "replay",
+            "--overlay",
+            str(overlay_path),
+            "--match",
+            "match.does-not-exist",
+        ],
     )
     assert result.exit_code != 0
     assert "no events" in result.stderr
@@ -210,10 +282,11 @@ def _seed_leaderboard(path: Path) -> None:
 def test_leaderboard_top_n_orders_by_score_and_skips_draws(tmp_path: Path) -> None:
     db = tmp_path / "ledger.sqlite"
     _seed_leaderboard(db)
+    overlay_path = _write_overlay(tmp_path, leaderboard_path=db)
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["leaderboard", "--ledger", str(db), "--top", "2"],
+        ["leaderboard", "--overlay", str(overlay_path), "--top", "2"],
         catch_exceptions=False,
     )
     assert result.exit_code == 0
@@ -225,10 +298,14 @@ def test_leaderboard_top_n_orders_by_score_and_skips_draws(tmp_path: Path) -> No
 
 
 @pytest.mark.integration
-def test_leaderboard_missing_table_fails(tmp_path: Path) -> None:
+def test_leaderboard_empty_database_reports_empty(tmp_path: Path) -> None:
     db = tmp_path / "empty.sqlite"
-    sqlite3.connect(db).close()
+    overlay_path = _write_overlay(tmp_path, leaderboard_path=db)
     runner = CliRunner()
-    result = runner.invoke(main, ["leaderboard", "--ledger", str(db), "--top", "5"])
-    assert result.exit_code != 0
-    assert "leaderboard" in result.stderr
+    result = runner.invoke(
+        main,
+        ["leaderboard", "--overlay", str(overlay_path), "--top", "5"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert result.stdout == "leaderboard is empty\n"

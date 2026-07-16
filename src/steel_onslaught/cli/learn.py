@@ -30,8 +30,8 @@ from pydantic import ValidationError
 from steel_onslaught.contracts.lineage import spec_hash
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
+from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.duel_evaluator import DuelEvaluator
-from steel_onslaught.learning.lineage_store import write_lineage_record
 from steel_onslaught.learning.loop import (
     ModelSOLearnConfig,
     ModelSOLearnResult,
@@ -50,10 +50,7 @@ from steel_onslaught.match.composition import (
 )
 from steel_onslaught.match.duel import DuelExecutor
 
-DEFAULT_LINEAGE_ROOT = Path(__file__).parent.parent.parent.parent / "contracts_data" / "lineage"
-
 _EXISTING_FILE = click.Path(exists=True, dir_okay=False, path_type=Path)
-_DIR_PATH = click.Path(file_okay=False, path_type=Path)
 
 
 def _run_learn(
@@ -67,10 +64,9 @@ def _run_learn(
     master_seed: int,
     base_loadout: ModelSOLoadout,
     max_ticks: int,
-    lineage_root: Path,
-    workdir: Path,
     recorded_at: datetime,
     duel_executor: DuelExecutor,
+    artifacts: LearningArtifactStore,
 ) -> tuple[ModelSOLearnResult, Path | None]:
     """The testable composition; the caller injects the clock.
 
@@ -87,9 +83,9 @@ def _run_learn(
     evaluator = DuelEvaluator(
         archetype=archetype,
         base_loadout=base_loadout,
-        workdir=workdir,
         max_ticks=max_ticks,
         duel_executor=duel_executor,
+        artifacts=artifacts,
     )
     config = ModelSOLearnConfig(
         strategy=strategy,
@@ -108,8 +104,9 @@ def _run_learn(
     )
     record_path: Path | None = None
     if result.record is not None:
-        record_path = write_lineage_record(
-            result.record, root=lineage_root, recorded_at=recorded_at
+        record_path = artifacts.write_lineage(
+            result.record,
+            recorded_at=recorded_at,
         )
     return result, record_path
 
@@ -225,18 +222,6 @@ def _print_summary(result: ModelSOLearnResult, record_path: Path | None) -> None
     help="Loadout both sides field; only the pilot parameters differ.",
 )
 @click.option("--max-ticks", type=click.IntRange(min=1), default=200, show_default=True)
-@click.option(
-    "--lineage-root",
-    type=_DIR_PATH,
-    default=DEFAULT_LINEAGE_ROOT,
-    help="Lineage record store (default: shipped contracts_data/lineage).",
-)
-@click.option(
-    "--workdir",
-    type=_DIR_PATH,
-    required=True,
-    help="Evaluation scratch; retains gate ledgers as replay evidence.",
-)
 def learn_command(
     overlay_path: Path,
     archetype: str,
@@ -248,8 +233,6 @@ def learn_command(
     master_seed: int,
     base_loadout: Path,
     max_ticks: int,
-    lineage_root: Path,
-    workdir: Path,
 ) -> None:
     """Bounded pilot-spec search with promotion gate and hidden-seed holdout."""
     try:
@@ -265,10 +248,9 @@ def learn_command(
             master_seed=master_seed,
             base_loadout=load_loadout(base_loadout),
             max_ticks=max_ticks,
-            lineage_root=lineage_root,
-            workdir=workdir,
             recorded_at=dependencies.clock.now(),
             duel_executor=build_duel_executor(overlay),
+            artifacts=dependencies.learning_artifacts,
         )
     except (ValueError, ValidationError) as exc:
         raise click.ClickException(str(exc)) from exc

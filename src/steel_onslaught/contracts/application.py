@@ -30,6 +30,14 @@ class ModelSOSQLiteLeaderboardBinding(_ClosedBinding):
     path: Path
     journal_mode: Literal["WAL"]
     check_same_thread: bool
+    transaction_mode: Literal["autocommit"]
+    storage_schema: Literal["leaderboard_v1"]
+
+
+class ModelSOFilesystemLearningArtifactsBinding(_ClosedBinding):
+    kind: Literal["filesystem_yaml"]
+    evaluation_root: Path
+    lineage_root: Path
 
 
 class ModelSOContractBindings(_ClosedBinding):
@@ -48,6 +56,9 @@ class ModelSOSystemIdentityBinding(_ClosedBinding):
 BusBinding = Annotated[ModelSOInProcessBusBinding, Field(discriminator="kind")]
 EventLedgerBinding = Annotated[ModelSOSQLiteEventLedgerBinding, Field(discriminator="kind")]
 LeaderboardBinding = Annotated[ModelSOSQLiteLeaderboardBinding, Field(discriminator="kind")]
+LearningArtifactsBinding = Annotated[
+    ModelSOFilesystemLearningArtifactsBinding, Field(discriminator="kind")
+]
 ClockBinding = Annotated[ModelSOSystemClockBinding, Field(discriminator="kind")]
 IdentityBinding = Annotated[ModelSOSystemIdentityBinding, Field(discriminator="kind")]
 
@@ -59,6 +70,7 @@ class ModelSOApplicationOverlay(_ClosedBinding):
     bus: BusBinding
     event_ledger: EventLedgerBinding
     leaderboard: LeaderboardBinding
+    learning_artifacts: LearningArtifactsBinding
     contracts: ModelSOContractBindings
     clock: ClockBinding
     identity: IdentityBinding
@@ -67,6 +79,7 @@ class ModelSOApplicationOverlay(_ClosedBinding):
 __all__ = [
     "ModelSOApplicationOverlay",
     "ModelSOContractBindings",
+    "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOInProcessBusBinding",
     "ModelSOSQLiteEventLedgerBinding",
     "ModelSOSQLiteLeaderboardBinding",

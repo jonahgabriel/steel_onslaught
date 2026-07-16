@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import ulid
@@ -17,6 +17,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import (
     ModelSOMechRuntimeState,
     SOMatchEndReason,
@@ -27,6 +28,39 @@ from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.lifecycle import ReducerMatchLifecycle
 
 MATCH_ID = "match.2026-04-30.test"
+_TEST_CORRELATION_ID = UUID(int=1)
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+
+
+class _FixedIdentities:
+    def new_match_id(self) -> str:
+        return "match.test.fixed"
+
+    def new_correlation_id(self) -> UUID:
+        return _TEST_CORRELATION_ID
+
+    def new_event_id(self) -> str:
+        return "01JABCDE0123456789ABCDEFGX"
+
+    def new_message_id(self) -> UUID:
+        return UUID(int=2)
+
+
+_EVENT_FACTORY = EventFactory(clock=_FixedClock(), identities=_FixedIdentities())
+
+
+def _lifecycle(bus: InProcessEventBus | None = None) -> ReducerMatchLifecycle:
+    return ReducerMatchLifecycle(
+        MATCH_ID,
+        _TEST_CORRELATION_ID,
+        event_factory=_EVENT_FACTORY,
+        bus=bus,
+    )
+
 
 _LIFECYCLE_TYPES = [
     SOEventType.MATCH_STARTED,
@@ -114,16 +148,15 @@ def _envelope(
 def _started(
     mechs: list[ModelSOMechRuntimeState] | None = None,
     seed: int = 42,
-    max_ticks: int | None = None,
+    max_ticks: int = 200,
 ) -> ModelSOEventEnvelope:
     if mechs is None:
         mechs = [_mech("mech.red.01", "player.red"), _mech("mech.blue.01", "player.blue")]
     payload: dict[str, Any] = {
         "seed": seed,
+        "max_ticks": max_ticks,
         "mechs": [m.model_dump(mode="json") for m in mechs],
     }
-    if max_ticks is not None:
-        payload["max_ticks"] = max_ticks
     return _envelope(SOEventType.MATCH_STARTED, payload)
 
 
@@ -148,7 +181,7 @@ def _victory(
 
 @pytest.mark.unit
 def test_match_started_initializes_state() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     state = reducer.apply(_started(seed=1234, max_ticks=50))
     assert state.status is SOMatchStatus.RUNNING
     assert state.seed == 1234
@@ -159,15 +192,15 @@ def test_match_started_initializes_state() -> None:
 
 
 @pytest.mark.unit
-def test_match_started_default_max_ticks_is_200() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+def test_match_started_records_explicit_max_ticks_200() -> None:
+    reducer = _lifecycle()
     state = reducer.apply(_started())
     assert state.max_ticks == 200
 
 
 @pytest.mark.unit
 def test_duplicate_match_started_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     with pytest.raises(ReducerError, match="match_already_started"):
         reducer.apply(_started())
@@ -175,7 +208,7 @@ def test_duplicate_match_started_rejected() -> None:
 
 @pytest.mark.unit
 def test_match_id_mismatch_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     with pytest.raises(ReducerError, match="match_id_mismatch"):
         reducer.apply(_envelope(SOEventType.MATCH_STARTED, {"seed": 1}, match_id="match.other"))
 
@@ -187,14 +220,14 @@ def test_match_id_mismatch_rejected() -> None:
 
 @pytest.mark.unit
 def test_match_tick_on_pending_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     with pytest.raises(ReducerError, match="match_not_running"):
         reducer.apply(_tick(1))
 
 
 @pytest.mark.unit
 def test_match_tick_on_ended_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     reducer.apply(_victory())
     with pytest.raises(ReducerError, match="match_not_running"):
@@ -203,7 +236,7 @@ def test_match_tick_on_ended_rejected() -> None:
 
 @pytest.mark.unit
 def test_tick_increments_exactly_plus_one() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     for t in (1, 2, 3):
         state = reducer.apply(_tick(t))
@@ -213,7 +246,7 @@ def test_tick_increments_exactly_plus_one() -> None:
 
 @pytest.mark.unit
 def test_tick_skip_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     reducer.apply(_tick(1))
     with pytest.raises(ReducerError, match="tick_skip"):
@@ -222,7 +255,7 @@ def test_tick_skip_rejected() -> None:
 
 @pytest.mark.unit
 def test_match_tick_past_max_ticks_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started(max_ticks=2))
     reducer.apply(_tick(1))
     reducer.apply(_tick(2))  # terminates the match at the bound
@@ -241,7 +274,7 @@ def test_max_ticks_draw_ends_match_and_emits_scored() -> None:
     bus = InProcessEventBus()
     collected: list[ModelSOEventEnvelope] = []
     bus.subscribe(collected.append)
-    reducer = ReducerMatchLifecycle(MATCH_ID, bus=bus)
+    reducer = _lifecycle(bus)
     bus.subscribe(reducer.handle, event_types=_LIFECYCLE_TYPES)
 
     bus.publish(_started(max_ticks=3))
@@ -276,7 +309,7 @@ def test_max_ticks_single_survivor_declares_victory() -> None:
     bus = InProcessEventBus()
     collected: list[ModelSOEventEnvelope] = []
     bus.subscribe(collected.append)
-    reducer = ReducerMatchLifecycle(MATCH_ID, bus=bus)
+    reducer = _lifecycle(bus)
     bus.subscribe(reducer.handle, event_types=_LIFECYCLE_TYPES)
 
     mechs = [
@@ -303,7 +336,7 @@ def test_max_ticks_single_survivor_declares_victory() -> None:
 @pytest.mark.unit
 def test_max_ticks_draw_without_bus_still_ends_match() -> None:
     """Replay path: bus=None means no emission, but state must still terminate."""
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started(max_ticks=1))
     state = reducer.apply(_tick(1))
     assert state.status is SOMatchStatus.ENDED
@@ -318,7 +351,7 @@ def test_max_ticks_draw_without_bus_still_ends_match() -> None:
 
 @pytest.mark.unit
 def test_victory_declared_ends_match_with_winner() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     reducer.apply(_tick(1))
     state = reducer.apply(_victory("player.blue", "last_mech_standing"))
@@ -330,14 +363,14 @@ def test_victory_declared_ends_match_with_winner() -> None:
 
 @pytest.mark.unit
 def test_victory_declared_on_pending_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     with pytest.raises(ReducerError, match="match_not_started"):
         reducer.apply(_victory())
 
 
 @pytest.mark.unit
 def test_victory_declared_idempotent_restatement() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     first = reducer.apply(_victory("player.red", "pilot_killed"))
     second = reducer.apply(_victory("player.red", "pilot_killed"))
@@ -346,7 +379,7 @@ def test_victory_declared_idempotent_restatement() -> None:
 
 @pytest.mark.unit
 def test_conflicting_victory_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     reducer.apply(_victory("player.red"))
     with pytest.raises(ReducerError, match="conflicting_terminal_state"):
@@ -360,7 +393,7 @@ def test_conflicting_victory_rejected() -> None:
 
 @pytest.mark.unit
 def test_match_ended_on_running_records_draw() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     state = reducer.apply(
         _envelope(SOEventType.MATCH_ENDED, {"reason": "aborted", "winner_id": None})
@@ -372,7 +405,7 @@ def test_match_ended_on_running_records_draw() -> None:
 
 @pytest.mark.unit
 def test_match_ended_idempotent_restatement() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started(max_ticks=1))
     first = reducer.apply(_tick(1))  # draw at the bound
     second = reducer.apply(
@@ -383,7 +416,7 @@ def test_match_ended_idempotent_restatement() -> None:
 
 @pytest.mark.unit
 def test_match_ended_conflicting_restatement_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started(max_ticks=1))
     reducer.apply(_tick(1))  # draw at the bound
     with pytest.raises(ReducerError, match="conflicting_terminal_state"):
@@ -394,7 +427,7 @@ def test_match_ended_conflicting_restatement_rejected() -> None:
 
 @pytest.mark.unit
 def test_match_ended_on_pending_rejected() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     with pytest.raises(ReducerError, match="match_not_started"):
         reducer.apply(_envelope(SOEventType.MATCH_ENDED, {"reason": "aborted"}))
 
@@ -409,7 +442,7 @@ def test_replaying_same_events_twice_produces_identical_state() -> None:
     events = [_started(max_ticks=3), _tick(1), _tick(2), _tick(3)]
 
     def run() -> object:
-        reducer = ReducerMatchLifecycle(MATCH_ID)
+        reducer = _lifecycle()
         for event in events:
             reducer.apply(event)
         return reducer.state
@@ -421,8 +454,47 @@ def test_replaying_same_events_twice_produces_identical_state() -> None:
 
 @pytest.mark.unit
 def test_non_lifecycle_events_are_ignored() -> None:
-    reducer = ReducerMatchLifecycle(MATCH_ID)
+    reducer = _lifecycle()
     reducer.apply(_started())
     before = reducer.state
     after = reducer.apply(_envelope(SOEventType.WEAPON_FIRED, {"weapon_id": "weapon.machine_gun"}))
     assert after == before
+
+
+@pytest.mark.unit
+def test_match_started_missing_max_ticks_fails_closed() -> None:
+    reducer = _lifecycle()
+    event = _started()
+    payload = dict(event.payload)
+    del payload["max_ticks"]
+
+    with pytest.raises(ValueError, match="max_ticks"):
+        reducer.apply(event.model_copy(update={"payload": payload}))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    [
+        (
+            SOEventType.VICTORY_DECLARED,
+            {
+                "winner_player_id": "player.red",
+                "reason": "last_mech_standing",
+                "unexpected": True,
+            },
+        ),
+        (
+            SOEventType.MATCH_ENDED,
+            {"reason": "aborted", "winner_id": None, "unexpected": True},
+        ),
+    ],
+)
+def test_terminal_payload_unknown_fields_fail_closed(
+    event_type: SOEventType,
+    payload: dict[str, object],
+) -> None:
+    reducer = _lifecycle()
+    reducer.apply(_started())
+    with pytest.raises(ValueError, match="unexpected"):
+        reducer.apply(_envelope(event_type, payload))

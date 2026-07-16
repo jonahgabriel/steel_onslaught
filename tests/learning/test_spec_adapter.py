@@ -39,7 +39,6 @@ from steel_onslaught.contracts.pilot import (
     ModelSOPilotSpec,
     ModelSOPredictivePilotParams,
 )
-from steel_onslaught.contracts.pilot_registry import load_pilot_spec
 from steel_onslaught.learning.protocols import (
     ModelSOCategoricalBound,
     ModelSONumericBound,
@@ -53,6 +52,7 @@ from steel_onslaught.learning.spec_adapter import (
     params_from_spec,
     spec_from_params,
 )
+from steel_onslaught.match.composition import load_pilot_spec
 
 _CONTRACTS_DATA = Path(__file__).parent.parent.parent / "contracts_data" / "pilots"
 

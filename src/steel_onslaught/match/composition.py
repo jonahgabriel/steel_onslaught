@@ -27,6 +27,11 @@ from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import Clock, EventFactory, IdentityProvider
+from steel_onslaught.learning.artifacts import LearningArtifactStore
+from steel_onslaught.learning.filesystem_artifacts import (
+    ModelSOFilesystemLearningArtifactsConfig,
+    YamlFilesystemLearningArtifactStore,
+)
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.match.duel import DuelExecutor, DuelResult, run_duel
@@ -83,6 +88,7 @@ class RuntimeDependencies:
     catalog: MatchContractCatalog
     pilot_registry: PilotSpecRegistry
     pilot_factory: PilotFactory
+    learning_artifacts: LearningArtifactStore
 
 
 @dataclass(frozen=True)
@@ -123,11 +129,18 @@ def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
             "pilot_registry_dir": resolved(overlay.contracts.pilot_registry_dir),
         }
     )
+    learning_artifacts = overlay.learning_artifacts.model_copy(
+        update={
+            "evaluation_root": resolved(overlay.learning_artifacts.evaluation_root),
+            "lineage_root": resolved(overlay.learning_artifacts.lineage_root),
+        }
+    )
     return overlay.model_copy(
         update={
             "event_ledger": event_ledger,
             "leaderboard": leaderboard,
             "contracts": contracts,
+            "learning_artifacts": learning_artifacts,
         }
     )
 
@@ -216,6 +229,8 @@ def build_runtime_dependencies(overlay: ModelSOApplicationOverlay) -> RuntimeDep
             path=overlay.leaderboard.path,
             journal_mode=overlay.leaderboard.journal_mode,
             check_same_thread=overlay.leaderboard.check_same_thread,
+            transaction_mode=overlay.leaderboard.transaction_mode,
+            storage_schema=overlay.leaderboard.storage_schema,
         ),
         clock=clock,
     )
@@ -229,6 +244,12 @@ def build_runtime_dependencies(overlay: ModelSOApplicationOverlay) -> RuntimeDep
         catalog=load_match_contract_catalog(overlay.contracts.catalog_dir),
         pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
         pilot_factory=pilot_from_spec,
+        learning_artifacts=YamlFilesystemLearningArtifactStore(
+            ModelSOFilesystemLearningArtifactsConfig(
+                evaluation_root=overlay.learning_artifacts.evaluation_root,
+                lineage_root=overlay.learning_artifacts.lineage_root,
+            )
+        ),
     )
 
 
@@ -249,7 +270,13 @@ def build_duel_executor(overlay: ModelSOApplicationOverlay) -> DuelExecutor:
         side_b: str,
     ) -> DuelResult:
         ledger_binding = overlay.event_ledger.model_copy(update={"path": ledger_path})
-        duel_overlay = overlay.model_copy(update={"event_ledger": ledger_binding})
+        leaderboard_binding = overlay.leaderboard.model_copy(update={"path": ledger_path})
+        duel_overlay = overlay.model_copy(
+            update={
+                "event_ledger": ledger_binding,
+                "leaderboard": leaderboard_binding,
+            }
+        )
         dependencies = build_runtime_dependencies(duel_overlay)
         identity = MatchIdentity(
             match_id=match_id,

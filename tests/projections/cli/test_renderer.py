@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import ulid
@@ -19,6 +19,7 @@ from steel_onslaught.events.envelope import (
 )
 from steel_onslaught.projections.cli.renderer import CliTextRenderer
 from steel_onslaught.reducers.lifecycle import ReducerMatchLifecycle
+from tests.runtime import runtime_dependencies
 
 MATCH_ID = "match.2026-04-30.renderer-test"
 
@@ -399,7 +400,13 @@ def test_renderer_does_not_modify_match_state() -> None:
         if with_renderer:
             renderer = CliTextRenderer(out=io.StringIO(), color=False)
             renderer.attach(bus)
-        lifecycle = ReducerMatchLifecycle(MATCH_ID, bus=bus)
+        runtime = runtime_dependencies()
+        lifecycle = ReducerMatchLifecycle(
+            MATCH_ID,
+            UUID("11111111-1111-1111-1111-111111111111"),
+            event_factory=runtime.event_factory,
+            bus=bus,
+        )
         bus.subscribe(lifecycle.handle)
         mech = {
             "mech_id": "mech.red.01",

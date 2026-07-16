@@ -18,14 +18,15 @@ import ast
 import inspect
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
-from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
+from steel_onslaught.match.fold import MatchStateFold
+from tests.runtime import runtime_dependencies
 
 _MATCH_ID = "match.test.fold-purity"
 _SOURCE = Path(MatchStateFold.__module__.replace(".", "/") + ".py")
@@ -34,7 +35,14 @@ _SOURCE_PATH = Path(inspect.getsourcefile(MatchStateFold))  # type: ignore[arg-t
 
 
 def _fold(bus: InProcessEventBus | None = None) -> MatchStateFold:
-    return MatchStateFold(_MATCH_ID, bus=bus, catalog=MatchContractCatalog.load())
+    runtime = runtime_dependencies()
+    return MatchStateFold(
+        _MATCH_ID,
+        UUID("11111111-1111-1111-1111-111111111111"),
+        bus=bus,
+        event_factory=runtime.event_factory,
+        catalog=runtime.catalog,
+    )
 
 
 def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:

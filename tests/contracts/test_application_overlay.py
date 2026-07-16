@@ -26,6 +26,13 @@ def _overlay_data(tmp_path: Path) -> dict[str, object]:
             "path": tmp_path / "leaderboard.sqlite3",
             "journal_mode": "WAL",
             "check_same_thread": True,
+            "transaction_mode": "autocommit",
+            "storage_schema": "leaderboard_v1",
+        },
+        "learning_artifacts": {
+            "kind": "filesystem_yaml",
+            "evaluation_root": tmp_path / "evaluations",
+            "lineage_root": tmp_path / "lineage",
         },
         "contracts": {
             "catalog_dir": tmp_path / "catalog",
@@ -63,6 +70,49 @@ def test_overlay_rejects_unsupported_adapter_kind(tmp_path: Path) -> None:
     raw["bus"] = {"kind": "redis"}
 
     with pytest.raises(ValueError, match="in_process"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "bus",
+        "event_ledger",
+        "leaderboard",
+        "learning_artifacts",
+        "contracts",
+        "clock",
+        "identity",
+    ],
+)
+def test_overlay_requires_every_binding(tmp_path: Path, binding: str) -> None:
+    raw = _overlay_data(tmp_path)
+    del raw[binding]
+    with pytest.raises(ValueError, match=binding):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("binding", "unsupported"),
+    [
+        ("bus", {"kind": "redis"}),
+        ("event_ledger", {"kind": "postgres"}),
+        ("leaderboard", {"kind": "memory"}),
+        ("learning_artifacts", {"kind": "s3"}),
+        ("clock", {"kind": "local_time"}),
+        ("identity", {"kind": "random_int"}),
+    ],
+)
+def test_overlay_rejects_every_unsupported_binding_kind(
+    tmp_path: Path,
+    binding: str,
+    unsupported: dict[str, str],
+) -> None:
+    raw = _overlay_data(tmp_path)
+    raw[binding] = unsupported
+    with pytest.raises(ValueError, match="kind"):
         ModelSOApplicationOverlay.model_validate(raw)
 
 

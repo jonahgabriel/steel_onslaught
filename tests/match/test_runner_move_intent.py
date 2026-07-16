@@ -24,9 +24,10 @@ from omnibase_core.models.common.model_envelope import ModelEnvelope
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
-from steel_onslaught.match.runner import MatchRunner, _pilot_from_spec, load_loadout
+from steel_onslaught.match.composition import load_loadout, pilot_from_spec
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.errors import ReducerError
+from tests.runtime import match_runner
 
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 
@@ -59,12 +60,12 @@ def _run_defensive_match(*, seed: int = 12345, max_ticks: int = 6) -> list[Model
     bus = InProcessEventBus()
     collected: list[ModelSOEventEnvelope] = []
     bus.subscribe(collected.append)
-    runner = MatchRunner(
+    runner, _runtime = match_runner(
+        bus=bus,
         match_id=MATCH_ID,
         seed=seed,
         loadout_a=load_loadout(LOADOUT_DEFENSIVE),
         loadout_b=load_loadout(LOADOUT_AGGRESSIVE),
-        bus=bus,
         max_ticks=max_ticks,
         spawn_a=ModelSOPosition(x=20, y=20),
         spawn_b=ModelSOPosition(x=30, y=30),
@@ -119,12 +120,12 @@ def test_resolve_move_raises_on_unknown_direction() -> None:
     contract violation.  We synthesize a minimal intent and feed it directly.
     """
     bus = InProcessEventBus()
-    runner = MatchRunner(
+    runner, _runtime = match_runner(
+        bus=bus,
         match_id=MATCH_ID,
         seed=1,
         loadout_a=load_loadout(LOADOUT_AGGRESSIVE),
         loadout_b=load_loadout(LOADOUT_AGGRESSIVE),
-        bus=bus,
         max_ticks=2,
     )
     # Drive a MATCH_STARTED so the fold has mechs to resolve against.
@@ -168,12 +169,12 @@ def test_resolve_move_raises_on_unknown_direction() -> None:
 def test_resolve_move_raises_on_missing_direction() -> None:
     """A MOVE_INTENT with no direction key at all also fails loud."""
     bus = InProcessEventBus()
-    runner = MatchRunner(
+    runner, _runtime = match_runner(
+        bus=bus,
         match_id=MATCH_ID,
         seed=1,
         loadout_a=load_loadout(LOADOUT_AGGRESSIVE),
         loadout_b=load_loadout(LOADOUT_AGGRESSIVE),
-        bus=bus,
         max_ticks=2,
     )
     bus.publish(
@@ -231,7 +232,7 @@ def test_pilot_from_spec_raises_on_unknown_archetype() -> None:
         parameters=None,
     )
     with pytest.raises(ValueError, match="unknown pilot archetype"):
-        _pilot_from_spec(spec)
+        pilot_from_spec(spec)
 
 
 # ---------------------------------------------------------------------------

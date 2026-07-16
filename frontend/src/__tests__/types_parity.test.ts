@@ -79,4 +79,18 @@ describe("types parity against Python-emitted fixtures", () => {
     delete payload["winner_player_id"];
     expect(() => parseEnvelope({ ...record, payload })).toThrow(/winner_player_id/);
   });
+
+  for (const eventType of ["victory_declared", "match_ended"] as const) {
+    it(`rejects an unknown ${eventType} terminal field`, () => {
+      const raw: unknown = JSON.parse(
+        readFileSync(join(FIXTURES_DIR, `${eventType}.json`), "utf-8"),
+      );
+      const record = raw as Record<string, unknown>;
+      const payload = {
+        ...(record["payload"] as Record<string, unknown>),
+        unexpected: true,
+      };
+      expect(() => parseEnvelope({ ...record, payload })).toThrow(/unexpected/);
+    });
+  }
 });

@@ -40,7 +40,6 @@ from steel_onslaught.cli.main import main as cli_main
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.match.composition import assemble_match_live
 from steel_onslaught.match.state import SOMatchEndReason, SOMatchStatus
-from steel_onslaught.projections.leaderboard.handler import LeaderboardProjection
 from steel_onslaught.replay.engine import ReplayEngine
 from tests.sqlite_ledger import open_sqlite_ledger
 
@@ -76,6 +75,13 @@ def _write_overlay(
                 "path": leaderboard_path,
                 "journal_mode": "WAL",
                 "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "storage_schema": "leaderboard_v1",
+            },
+            "learning_artifacts": {
+                "kind": "filesystem_yaml",
+                "evaluation_root": tmp_path / "evaluations",
+                "lineage_root": tmp_path / "lineage",
             },
             "contracts": {
                 "catalog_dir": _REPO_ROOT / "contracts_data",
@@ -165,8 +171,7 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
     assert reconstructed == live_state, "replay must reproduce canonical state exactly"
 
     # 3) Leaderboard updated correctly (winning entry, not a draw).
-    lb = LeaderboardProjection(leaderboard_path)
-    top = lb.top_n(1)
+    top = stack.leaderboard.top_n(1)
     assert len(top) == 1
     assert top[0].match_id == live_state.match_id
     assert top[0].winner_player_id == live_state.winner_id
@@ -236,9 +241,8 @@ def test_proof_of_life_draw_max_ticks(tmp_path: Path) -> None:
     assert live_state.winner_id is None
 
     # The leaderboard records the draw with is_draw=True; top_n(N) excludes it.
-    lb = LeaderboardProjection(leaderboard_path)
-    assert lb.top_n(10) == []  # no decisive entries
-    assert lb.draw_count() == 1
+    assert stack.leaderboard.top_n(10) == []  # no decisive entries
+    assert stack.leaderboard.draw_count() == 1
 
     # The draw replays exactly, too (same fold, same ledger discipline).
     replay = ReplayEngine(

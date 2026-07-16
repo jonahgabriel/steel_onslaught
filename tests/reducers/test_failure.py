@@ -22,9 +22,10 @@ Invariants covered:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
@@ -35,6 +36,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
     ModelSOMatchState,
@@ -60,6 +62,44 @@ from steel_onslaught.reducers.failure import (
 
 _MATCH_ID = "match.001"
 _SAFETY_GIZMO = "gizmo.cooling.emergency_condenser"
+_TEST_CORRELATION_ID = UUID(int=1)
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+
+
+class _FixedIdentities:
+    def new_match_id(self) -> str:
+        return "match.test.fixed"
+
+    def new_correlation_id(self) -> UUID:
+        return _TEST_CORRELATION_ID
+
+    def new_event_id(self) -> str:
+        return "01JABCDE0123456789ABCDEFGX"
+
+    def new_message_id(self) -> UUID:
+        return UUID(int=2)
+
+
+_EVENT_FACTORY = EventFactory(clock=_FixedClock(), identities=_FixedIdentities())
+
+
+def _failure_reducer(
+    emit: Callable[[ModelSOEventEnvelope], None],
+    *,
+    safety_gizmo_ids: frozenset[str] = frozenset(),
+) -> ReducerFailureCascade:
+    return ReducerFailureCascade(
+        _MATCH_ID,
+        _TEST_CORRELATION_ID,
+        emit=emit,
+        event_factory=_EVENT_FACTORY,
+        safety_gizmo_ids=safety_gizmo_ids,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -210,7 +250,7 @@ def test_no_redline_no_emissions() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=10)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = _run_ticks(reducer, state, range(1, 4))
 
@@ -224,7 +264,7 @@ def test_redline_tick_increments_counter_without_overload() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=75)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -239,7 +279,7 @@ def test_overload_after_three_consecutive_redline_ticks() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=75)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = _run_ticks(reducer, state, range(1, OVERLOAD_REDLINE_TICKS + 1))
 
@@ -263,7 +303,7 @@ def test_overload_not_re_emitted_while_overloaded() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=75)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = _run_ticks(reducer, state, range(1, OVERLOAD_REDLINE_TICKS + 2))
 
@@ -284,7 +324,7 @@ def test_redline_exit_resets_counters_and_clears_overload() -> None:
     )
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -300,7 +340,7 @@ def test_two_redline_ticks_then_exit_never_overloads() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=75)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     state = _run_ticks(reducer, state, range(1, 3))  # two redline ticks
 
@@ -333,7 +373,7 @@ def test_rupture_on_heat_at_rupture_threshold() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     reducer.apply(_tick(1), state)
 
@@ -349,7 +389,7 @@ def test_rupture_after_five_sustained_overload_ticks() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=75)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     rupture_tick = OVERLOAD_REDLINE_TICKS + RUPTURE_OVERLOAD_TICKS - 1  # 7
     state = _run_ticks(reducer, state, range(1, rupture_tick))
@@ -368,7 +408,7 @@ def test_rupture_applies_direct_damage_and_destroys_mech() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100, hp=100)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -393,7 +433,7 @@ def test_cascade_order_overload_before_rupture_before_destruction() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=75)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     _run_ticks(reducer, state, range(1, 8))
 
@@ -409,7 +449,7 @@ def test_dead_mech_skipped_by_cascade() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100, alive=False)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -428,7 +468,7 @@ def test_pilot_killed_on_failed_survival_roll() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=0)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -449,7 +489,7 @@ def test_pilot_survives_on_successful_roll() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -466,7 +506,7 @@ def test_survival_roll_matches_match_rng_contract(seed: int) -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=seed)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     reducer.apply(_tick(1), state)
 
@@ -486,8 +526,7 @@ def test_safety_gizmo_raises_survival_probability() -> None:
     )
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=0)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(
-        _MATCH_ID,
+    reducer = _failure_reducer(
         emit=emitted.append,
         safety_gizmo_ids=frozenset({_SAFETY_GIZMO}),
     )
@@ -507,8 +546,7 @@ def test_three_safety_gizmos_clamp_probability_to_one(seed: int) -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100, gizmo_ids=gizmos)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"), seed=seed)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(
-        _MATCH_ID,
+    reducer = _failure_reducer(
         emit=emitted.append,
         safety_gizmo_ids=frozenset(gizmos),
     )
@@ -531,7 +569,7 @@ def test_area_damage_within_three_cells_only() -> None:
     far = _make_mech("mech.blue.01", "player.b", position=ModelSOPosition(x=4, y=0))
     state = _make_match(exploder, near, far, seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -556,7 +594,7 @@ def test_area_damage_destroys_low_hp_neighbor() -> None:
     bystander = _make_mech("mech.blue.01", "player.b", position=ModelSOPosition(x=9, y=9))
     state = _make_match(exploder, weak, bystander, seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -586,7 +624,7 @@ def test_rupture_declares_victory_in_same_tick() -> None:
     survivor = _make_mech("mech.blue.01", "player.b", position=ModelSOPosition(x=9, y=9))
     state = _make_match(doomed, survivor, seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     tick_n = 5
     reducer.apply(_tick(tick_n), state)
@@ -610,7 +648,7 @@ def test_no_victory_when_no_survivors() -> None:
     )
     state = _make_match(red, blue, seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -625,7 +663,7 @@ def test_no_victory_when_multiple_players_survive() -> None:
     enemy = _make_mech("mech.blue.01", "player.b", position=ModelSOPosition(x=0, y=9))
     state = _make_match(doomed, ally, enemy, seed=1)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     reducer.apply(_tick(1), state)
 
@@ -643,7 +681,7 @@ def test_external_mech_destroyed_folds_and_declares_victory() -> None:
     blue = _make_mech("mech.blue.01", "player.b")
     state = _make_match(red, blue)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     destroyed_env = _env(
         SOEventType.MECH_DESTROYED,
@@ -670,7 +708,7 @@ def test_external_pilot_killed_folds_and_declares_victory() -> None:
     blue = _make_mech("mech.blue.01", "player.b")
     state = _make_match(red, blue)
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     killed_env = _env(
         SOEventType.PILOT_KILLED,
@@ -706,7 +744,7 @@ def test_replay_produces_identical_outcomes() -> None:
         blue = _make_mech("mech.blue.01", "player.b", position=ModelSOPosition(x=9, y=9))
         state = _make_match(red, near, blue, seed=0)
         emitted: list[ModelSOEventEnvelope] = []
-        reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+        reducer = _failure_reducer(emitted.append)
         state = _run_ticks(reducer, state, range(1, 8))
         return state, [(e.event_type, e.payload) for e in emitted]
 
@@ -728,7 +766,7 @@ def test_ignores_events_for_other_matches() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_env(SOEventType.MATCH_TICK, tick=1, match_id="match.other"), state)
 
@@ -746,7 +784,7 @@ def test_tick_on_non_running_match_is_ignored() -> None:
         end_reason=SOMatchEndReason.ABORTED,
     )
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(_tick(1), state)
 
@@ -759,7 +797,7 @@ def test_unrelated_events_are_ignored() -> None:
     mech = _make_mech("mech.red.01", "player.a", heat_current=100)
     state = _make_match(mech, _make_mech("mech.blue.01", "player.b"))
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerFailureCascade(_MATCH_ID, emit=emitted.append)
+    reducer = _failure_reducer(emitted.append)
 
     new_state = reducer.apply(
         _env(

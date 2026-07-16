@@ -12,8 +12,9 @@ Invariants verified:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
@@ -25,6 +26,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
@@ -42,6 +44,45 @@ MECH_RED = "mech.red.01"
 MECH_BLUE = "mech.blue.01"
 PLAYER_RED = "player.red"
 PLAYER_BLUE = "player.blue"
+_TEST_CORRELATION_ID = UUID(int=1)
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+
+
+class _FixedIdentities:
+    def new_match_id(self) -> str:
+        return "match.test.fixed"
+
+    def new_correlation_id(self) -> UUID:
+        return _TEST_CORRELATION_ID
+
+    def new_event_id(self) -> str:
+        return "01JABCDE0123456789ABCDEFGX"
+
+    def new_message_id(self) -> UUID:
+        return UUID(int=2)
+
+
+_EVENT_FACTORY = EventFactory(clock=_FixedClock(), identities=_FixedIdentities())
+
+
+def _sensors(
+    state: ModelSOMatchState,
+    sensor_specs: dict[str, ModelSOSensorSpec],
+    emit: Callable[[ModelSOEventEnvelope], None],
+) -> ReducerSensors:
+    return ReducerSensors(
+        MATCH_ID,
+        state,
+        sensor_specs,
+        emit,
+        correlation_id=_TEST_CORRELATION_ID,
+        event_factory=_EVENT_FACTORY,
+    )
+
 
 _SENSOR_RADAR = ModelSOSensorSpec(
     id="sensor.long_range_radar",
@@ -192,7 +233,7 @@ def test_in_range_target_emits_sensor_observation() -> None:
 
     sensor_specs = {_SENSOR_RADAR.id: _SENSOR_RADAR}
     state = _match_state()
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs_events = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -225,7 +266,7 @@ def test_out_of_range_target_emits_no_observations() -> None:
         sensor_ids=(),
     )
     state = _match_state(mech_red=red, mech_blue=blue)
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs_events = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -239,7 +280,7 @@ def test_confidence_in_zero_to_one_range() -> None:
 
     sensor_specs = {_SENSOR_RADAR.id: _SENSOR_RADAR}
     state = _match_state()
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs_events = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -256,11 +297,11 @@ def test_deterministic_noise_same_seed_same_result() -> None:
     state = _match_state()
 
     emitted_a: list[ModelSOEventEnvelope] = []
-    reducer_a = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted_a.append)
+    reducer_a = _sensors(state, sensor_specs, emitted_a.append)
     reducer_a.apply(_tick_event())
 
     emitted_b: list[ModelSOEventEnvelope] = []
-    reducer_b = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted_b.append)
+    reducer_b = _sensors(state, sensor_specs, emitted_b.append)
     reducer_b.apply(_tick_event())
 
     obs_a = [e for e in emitted_a if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -287,10 +328,10 @@ def test_different_seeds_produce_different_noise() -> None:
     )
 
     emitted_42: list[ModelSOEventEnvelope] = []
-    ReducerSensors(MATCH_ID, state_42, sensor_specs, emit=emitted_42.append).apply(_tick_event())
+    _sensors(state_42, sensor_specs, emitted_42.append).apply(_tick_event())
 
     emitted_99: list[ModelSOEventEnvelope] = []
-    ReducerSensors(MATCH_ID, state_99, sensor_specs, emit=emitted_99.append).apply(_tick_event())
+    _sensors(state_99, sensor_specs, emitted_99.append).apply(_tick_event())
 
     obs_42 = [
         e.payload["distance_estimate"]
@@ -321,7 +362,7 @@ def test_thermal_sensor_includes_heat_estimate_when_target_heat_ge_30() -> None:
         sensor_ids=(),
     )
     state = _match_state(mech_red=red, mech_blue=blue)
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -344,7 +385,7 @@ def test_thermal_sensor_omits_heat_estimate_when_target_heat_lt_30() -> None:
         sensor_ids=(),
     )
     state = _match_state(mech_red=red, mech_blue=blue)
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -367,7 +408,7 @@ def test_acoustic_sensor_includes_mode_estimate_when_target_speed_ge_2() -> None
         sensor_ids=(),
     )
     state = _match_state(mech_red=red, mech_blue=blue)
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -390,7 +431,7 @@ def test_acoustic_sensor_omits_mode_estimate_when_target_speed_lt_2() -> None:
         sensor_ids=(),
     )
     state = _match_state(mech_red=red, mech_blue=blue)
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -416,7 +457,7 @@ def test_sensor_dropout_emits_no_observations() -> None:
         sensor_ids=(),
     )
     state = _match_state(mech_red=red, mech_blue=blue)
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -433,16 +474,12 @@ def test_jamming_reduces_confidence() -> None:
     # No jamming
     red_clear = _mech(sensor_ids=(_SENSOR_RADAR.id,), jamming_intensity=0.0)
     state_clear = _match_state(mech_red=red_clear)
-    ReducerSensors(MATCH_ID, state_clear, sensor_specs, emit=emitted_clear.append).apply(
-        _tick_event()
-    )
+    _sensors(state_clear, sensor_specs, emitted_clear.append).apply(_tick_event())
 
     # With jamming
     red_jammed = _mech(sensor_ids=(_SENSOR_RADAR.id,), jamming_intensity=0.5)
     state_jammed = _match_state(mech_red=red_jammed)
-    ReducerSensors(MATCH_ID, state_jammed, sensor_specs, emit=emitted_jammed.append).apply(
-        _tick_event()
-    )
+    _sensors(state_jammed, sensor_specs, emitted_jammed.append).apply(_tick_event())
 
     obs_clear = [e for e in emitted_clear if e.event_type == SOEventType.SENSOR_OBSERVATION]
     obs_jammed = [e for e in emitted_jammed if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -466,7 +503,7 @@ def test_mech_without_sensors_emits_no_observations() -> None:
         sensor_ids=(),
     )
     state = _match_state(mech_red=red, mech_blue=blue)
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -489,7 +526,7 @@ def test_dead_mech_emits_no_observations() -> None:
         sensor_ids=(),
     )
     state = _match_state(mech_red=red_dead, mech_blue=blue)
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]
@@ -502,7 +539,7 @@ def test_observation_payload_has_required_fields() -> None:
     emitted: list[ModelSOEventEnvelope] = []
     sensor_specs = {_SENSOR_RADAR.id: _SENSOR_RADAR}
     state = _match_state()
-    reducer = ReducerSensors(MATCH_ID, state, sensor_specs, emit=emitted.append)
+    reducer = _sensors(state, sensor_specs, emitted.append)
     reducer.apply(_tick_event())
 
     obs = [e for e in emitted if e.event_type == SOEventType.SENSOR_OBSERVATION]

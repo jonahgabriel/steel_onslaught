@@ -33,5 +33,9 @@ class LeaderboardRepository(Protocol):
         """Return the top decisive entries."""
         ...
 
+    def player_record(self, player_id: str) -> dict[str, int]: ...
+
+    def draw_count(self) -> int: ...
+
 
 __all__ = ["LeaderboardRepository", "ModelSOLeaderboardEntry"]

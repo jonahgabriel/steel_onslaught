@@ -179,7 +179,7 @@ class ReducerPilotTick:
         pilots: dict[str, PilotProtocol],
         sensor_events: list[ModelSOEventEnvelope],
         emit: Callable[[ModelSOEventEnvelope], None],
-        weapon_specs: dict[str, ModelSOWeaponSpec] | None = None,
+        weapon_specs: dict[str, ModelSOWeaponSpec],
         *,
         correlation_id: UUID,
         event_factory: EventFactory,
@@ -191,7 +191,7 @@ class ReducerPilotTick:
         self._pilots = pilots
         self._sensor_events = sensor_events
         self._emit = emit
-        self._weapon_specs = weapon_specs if weapon_specs is not None else {}
+        self._weapon_specs = weapon_specs
 
     @property
     def state(self) -> ModelSOMatchState:

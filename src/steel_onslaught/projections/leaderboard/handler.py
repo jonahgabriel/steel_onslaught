@@ -10,10 +10,7 @@ match was first scored, not when it was re-scored.
 ``is_draw`` disambiguates draw entries from decisive wins: draws are stored
 but excluded from ``top_n`` rankings.
 
-Query helpers
--------------
-``LeaderboardProjection`` is a read-only view over the same database.
-``LeaderboardHandler`` owns the write path; both can target the same file.
+The injected repository owns both materialization and query methods.
 """
 
 from __future__ import annotations
@@ -34,6 +31,8 @@ class ModelSOSQLiteLeaderboardConfig(BaseModel):
     path: Path
     journal_mode: Literal["WAL"]
     check_same_thread: bool
+    transaction_mode: Literal["autocommit"]
+    storage_schema: Literal["leaderboard_v1"]
 
 
 # ---------------------------------------------------------------------------
@@ -137,14 +136,26 @@ class LeaderboardHandler:
     def __init__(self, config: ModelSOSQLiteLeaderboardConfig, *, clock: Clock) -> None:
         self._config = config
         self._clock = clock
-        self._conn = sqlite3.connect(config.path, check_same_thread=config.check_same_thread)
-        row = self._conn.execute(f"PRAGMA journal_mode={config.journal_mode}").fetchone()
-        if row is None or str(row[0]).upper() != config.journal_mode:
-            raise RuntimeError(
-                f"SQLite refused required journal mode {config.journal_mode!r}: {row!r}"
-            )
-        self._conn.executescript(_CREATE_SQL)
-        self._conn.commit()
+        self._conn = sqlite3.connect(
+            config.path,
+            check_same_thread=config.check_same_thread,
+            isolation_level={"autocommit": None}[config.transaction_mode],
+        )
+        try:
+            if self._conn.isolation_level is not None:
+                raise RuntimeError(
+                    "leaderboard SQLite connection did not apply autocommit policy"
+                )
+            row = self._conn.execute(f"PRAGMA journal_mode={config.journal_mode}").fetchone()
+            if row is None or str(row[0]).upper() != config.journal_mode:
+                raise RuntimeError(
+                    f"SQLite refused required journal mode {config.journal_mode!r}: {row!r}"
+                )
+            schema_sql = {"leaderboard_v1": _CREATE_SQL}[config.storage_schema]
+            self._conn.executescript(schema_sql)
+        except BaseException:
+            self._conn.close()
+            raise
 
     @property
     def db_path(self) -> Path:
@@ -183,33 +194,8 @@ class LeaderboardHandler:
                 1 if is_draw else 0,
             ),
         )
-        self._conn.commit()
 
     def top_n(self, n: int) -> list[ModelSOLeaderboardEntry]:
-        cursor = self._conn.execute(_TOP_N_SQL, (n,))
-        return [_row_to_entry(row) for row in cursor]
-
-
-# ---------------------------------------------------------------------------
-# Projection (read path)
-# ---------------------------------------------------------------------------
-
-
-class LeaderboardProjection:
-    """Read-only view over a leaderboard SQLite database.
-
-    Can target the same file as a ``LeaderboardHandler`` or a separate
-    read replica.
-    """
-
-    def __init__(self, db_path: Path) -> None:
-        self._conn = sqlite3.connect(db_path)
-
-    def top_n(self, n: int) -> list[ModelSOLeaderboardEntry]:
-        """Return the top *n* decisive matches ordered by winner_score DESC.
-
-        Draws (``is_draw = 1``) are excluded so they do not pollute rankings.
-        """
         cursor = self._conn.execute(_TOP_N_SQL, (n,))
         return [_row_to_entry(row) for row in cursor]
 

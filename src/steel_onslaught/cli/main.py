@@ -66,8 +66,12 @@ def run_command(
         max_ticks=max_ticks,
     )
     renderer = CliTextRenderer(out=click.get_text_stream("stdout"), color=not no_color)
-    renderer.attach(stack.bus)
     stack.runner.run()
+    # Render the durable canonical order. Re-entrant in-process dispatch can
+    # deliver derived events to a live observer before the outer event whose
+    # lower sequence number is already in the ledger.
+    for event in stack.ledger.read_all(stack.match_id):
+        renderer.handle(event)
     click.echo(f"match_id: {stack.match_id}", err=True)
 
 

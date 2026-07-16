@@ -20,14 +20,12 @@ driven over an ``EventBus``:
 All stochastic behaviour flows through ``MatchRng`` sub-seeds, so the full
 event stream is a pure function of ``(seed, loadouts, max_ticks, geometry)``.
 
-``run_match`` is a thin compatibility facade over the typed composition root.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
@@ -68,9 +66,6 @@ from steel_onslaught.reducers.weapons import (
     roll_hit,
     validate_weapon_fire_intent,
 )
-
-if TYPE_CHECKING:
-    from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 
 _PRODUCER_NODE = "node.match.runner"
 
@@ -737,28 +732,3 @@ def _require_valid_budgets(loadout: ModelSOLoadout, catalog: MatchContractCatalo
             for violation in violations
         )
         raise ValueError(f"loadout {loadout.id!r} violates budgets: {details}")
-
-
-# ---------------------------------------------------------------------------
-# Proof-of-Life entrypoint (Task 34)
-# ---------------------------------------------------------------------------
-
-
-def run_match(
-    *,
-    overlay: ModelSOApplicationOverlay,
-    red_loadout: str | Path,
-    blue_loadout: str | Path,
-    seed: int,
-    max_ticks: int,
-) -> ModelSOMatchState:
-    """Compatibility facade delegating to the sole production composition root."""
-    from steel_onslaught.match.composition import run_composed_match
-
-    return run_composed_match(
-        overlay=overlay,
-        red_loadout_path=Path(red_loadout),
-        blue_loadout_path=Path(blue_loadout),
-        seed=seed,
-        max_ticks=max_ticks,
-    )

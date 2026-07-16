@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
-
-import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.contracts.lineage import ParamDict, spec_hash
 from steel_onslaught.contracts.loadout import ModelSOLoadout
-from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.learning.artifacts import (
+    EvaluationWorkspace,
+    LearningArtifactStore,
+    MaterializedLoadout,
+)
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import spec_from_params
 from steel_onslaught.match.duel import DuelExecutor
@@ -47,15 +48,15 @@ class DuelEvaluator:
         *,
         archetype: str,
         base_loadout: ModelSOLoadout,
-        workdir: Path,  # ALL ledgers/specs/loadouts materialize under here
         max_ticks: int,
         duel_executor: DuelExecutor,
+        artifacts: LearningArtifactStore,
     ) -> None:
         self._archetype = archetype
-        self._workdir = workdir
         self._max_ticks = max_ticks
         self._base = base_loadout
         self._duel_executor = duel_executor
+        self._artifacts = artifacts
         # Per-instance evaluate counter: each call gets its own subdirectory so
         # ledgers from distinct calls never collide and the gate evaluation's
         # ledgers can be retained as replay evidence.
@@ -74,24 +75,23 @@ class DuelEvaluator:
             raise ValueError(f"duplicate seeds in evaluation battery: {duplicates}")
 
         self._eval_count += 1
-        eval_dir = self._workdir / f"eval_{self._eval_count:04d}"
-        eval_dir.mkdir(parents=True, exist_ok=True)
+        workspace = self._artifacts.prepare_evaluation(self._eval_count)
         candidate_loadout, parent_loadout = self._materialize(
-            eval_dir, candidate_params, parent_params
+            workspace, candidate_params, parent_params
         )
 
         outcomes: list[ModelSOSeedOutcome] = []
         for seed in seed_list:
             # Side-swapped pair (Decision #2): candidate fields red, then blue.
             first, cand_first, par_first = self._duel(
-                eval_dir,
+                workspace,
                 seed=seed,
                 loadout_red=candidate_loadout,
                 loadout_blue=parent_loadout,
                 candidate_side=_SIDE_RED,
             )
             second, cand_second, par_second = self._duel(
-                eval_dir,
+                workspace,
                 seed=seed,
                 loadout_red=parent_loadout,
                 loadout_blue=candidate_loadout,
@@ -112,8 +112,11 @@ class DuelEvaluator:
     # ------------------------------------------------------------------
 
     def _materialize(
-        self, eval_dir: Path, candidate_params: ParamDict, parent_params: ParamDict
-    ) -> tuple[ModelSOLoadout, ModelSOLoadout]:
+        self,
+        workspace: EvaluationWorkspace,
+        candidate_params: ParamDict,
+        parent_params: ParamDict,
+    ) -> tuple[MaterializedLoadout, MaterializedLoadout]:
         """Write the two pilot spec YAMLs + two derived loadout YAMLs (pinned).
 
         The parent spec's ``lineage.parent`` is the archetype's template id
@@ -136,54 +139,47 @@ class DuelEvaluator:
             parent_id=parent_spec.id,
             display_name=f"Learn candidate {candidate_hash[:12]}",
         )
-        candidate_loadout = self._write_pair(eval_dir, candidate_spec, role="cand")
-        parent_loadout = self._write_pair(eval_dir, parent_spec, role="par")
+        candidate_loadout = self._artifacts.materialize_loadout(
+            workspace,
+            base=self._base,
+            spec=candidate_spec,
+            role="cand",
+        )
+        parent_loadout = self._artifacts.materialize_loadout(
+            workspace,
+            base=self._base,
+            spec=parent_spec,
+            role="par",
+        )
         return candidate_loadout, parent_loadout
-
-    def _write_pair(self, eval_dir: Path, spec: ModelSOPilotSpec, *, role: str) -> ModelSOLoadout:
-        """Write one spec YAML + its derived loadout YAML; return the loadout."""
-        spec_path = eval_dir / f"{spec.id}.yaml"
-        spec_path.write_text(
-            yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False), encoding="utf-8"
-        )
-        hash_fragment = spec.id.rsplit("_", 1)[-1]
-        loadout = ModelSOLoadout.model_validate(
-            {
-                **self._base.model_dump(),
-                "id": f"loadout.learn.{role}_{hash_fragment}",
-                "pilot_id": spec.id,
-                "pilot_spec_path": spec_path.name,  # relative; resolved via eval_dir
-            }
-        )
-        loadout_path = eval_dir / f"{loadout.id}.yaml"
-        loadout_path.write_text(
-            yaml.safe_dump(loadout.model_dump(mode="json"), sort_keys=False), encoding="utf-8"
-        )
-        return loadout
 
     def _duel(
         self,
-        eval_dir: Path,
+        workspace: EvaluationWorkspace,
         *,
         seed: int,
-        loadout_red: ModelSOLoadout,
-        loadout_blue: ModelSOLoadout,
+        loadout_red: MaterializedLoadout,
+        loadout_blue: MaterializedLoadout,
         candidate_side: str,
     ) -> tuple[SOSeedWinner, int, int]:
         """Run one duel; return (side-normalized winner, candidate_overloads,
         parent_overloads) for this duel alone."""
         parent_side = _SIDE_BLUE if candidate_side == _SIDE_RED else _SIDE_RED
         match_id = f"match.learn.seed_{seed}.cand_{candidate_side}"
-        ledger_path = eval_dir / f"seed_{seed}_cand_{candidate_side}.sqlite3"
+        ledger_path = self._artifacts.duel_ledger_path(
+            workspace,
+            seed=seed,
+            candidate_side=candidate_side,
+        )
         result = self._duel_executor(
-            loadout_a=loadout_red,
-            loadout_b=loadout_blue,
+            loadout_a=loadout_red.loadout,
+            loadout_b=loadout_blue.loadout,
             seed=seed,
             max_ticks=self._max_ticks,
             ledger_path=ledger_path,
             match_id=match_id,
-            loadout_path_a=eval_dir / f"{loadout_red.id}.yaml",
-            loadout_path_b=eval_dir / f"{loadout_blue.id}.yaml",
+            loadout_path_a=loadout_red.path,
+            loadout_path_b=loadout_blue.path,
             side_a=_SIDE_RED,
             side_b=_SIDE_BLUE,
         )

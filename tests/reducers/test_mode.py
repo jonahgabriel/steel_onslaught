@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
@@ -41,6 +41,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState, SOMatchStatus
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.mode import ReducerModeTransition
@@ -52,6 +53,42 @@ from steel_onslaught.reducers.mode import ReducerModeTransition
 _MATCH_ID = "match.test.001"
 _MECH_ID = "mech.red.01"
 _PLAYER_ID = "player.red"
+_TEST_CORRELATION_ID = UUID(int=1)
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+
+
+class _FixedIdentities:
+    def new_match_id(self) -> str:
+        return "match.test.fixed"
+
+    def new_correlation_id(self) -> UUID:
+        return _TEST_CORRELATION_ID
+
+    def new_event_id(self) -> str:
+        return "01JABCDE0123456789ABCDEFGX"
+
+    def new_message_id(self) -> UUID:
+        return UUID(int=2)
+
+
+_EVENT_FACTORY = EventFactory(clock=_FixedClock(), identities=_FixedIdentities())
+
+
+def _mode_reducer(
+    transitions: dict[tuple[str, str], ModelSOModeTransition],
+    bus: InProcessEventBus | None = None,
+) -> ReducerModeTransition:
+    return ReducerModeTransition(
+        match_id=_MATCH_ID,
+        transitions=transitions,
+        correlation_id=_TEST_CORRELATION_ID,
+        event_factory=_EVENT_FACTORY,
+        bus=bus,
+    )
 
 
 def _boiler_state(
@@ -264,11 +301,7 @@ def test_intent_rejected_heat_at_limit() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e.event_type))
 
-    reducer = ReducerModeTransition(
-        match_id=_MATCH_ID,
-        transitions=transitions,
-        bus=bus,
-    )
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -293,7 +326,7 @@ def test_intent_rejected_leaves_boiler_unchanged() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e.event_type))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -314,7 +347,7 @@ def test_intent_rejected_mode_lock_not_expired() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e.event_type))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -332,7 +365,7 @@ def test_intent_rejected_boiler_disabled() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e.event_type))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -350,7 +383,7 @@ def test_intent_rejected_insufficient_pressure() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e.event_type))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -369,7 +402,7 @@ def test_intent_rejected_wrong_from_mode() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e.event_type))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -396,7 +429,7 @@ def test_valid_intent_starts_transition() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -423,7 +456,7 @@ def test_evasion_penalty_applied_during_transition() -> None:
         mech=_mech(boiler=_boiler_state()),
     )
     bus = InProcessEventBus()
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -452,7 +485,7 @@ def test_transition_completed_after_ticks() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -496,7 +529,7 @@ def test_no_orphan_completions() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -517,7 +550,7 @@ def test_no_stuck_transition_after_completion() -> None:
     transitions: dict[tuple[str, str], ModelSOModeTransition] = {("recon", "assault"): transition}
     match_state = _match(tick=5, mech=_mech(boiler=_boiler_state()))
     bus = InProcessEventBus()
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -537,7 +570,7 @@ def test_sensor_dropout_ticks_set_on_transition_start() -> None:
     transitions: dict[tuple[str, str], ModelSOModeTransition] = {("recon", "assault"): transition}
     match_state = _match(tick=5, mech=_mech(boiler=_boiler_state()))
     bus = InProcessEventBus()
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -556,7 +589,7 @@ def test_no_transition_for_dead_mech() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e.event_type))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
@@ -572,7 +605,7 @@ def test_unknown_transition_rejected() -> None:
     bus = InProcessEventBus()
     bus.subscribe(lambda e: emitted.append(e.event_type))
 
-    reducer = ReducerModeTransition(match_id=_MATCH_ID, transitions=transitions, bus=bus)
+    reducer = _mode_reducer(transitions, bus)
     reducer.update_state(match_state)
     reducer.apply(_intent_env("recon", "assault", tick=5))
 

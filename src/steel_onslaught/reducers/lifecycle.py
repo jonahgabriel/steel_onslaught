@@ -64,7 +64,7 @@ class ModelSOMatchStartedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     seed: int = Field(ge=0)
-    max_ticks: int = Field(default=_DEFAULT_MAX_TICKS, gt=0)
+    max_ticks: int = Field(gt=0)
     mechs: tuple[ModelSOMechRuntimeState, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -77,23 +77,18 @@ class ModelSOMatchStartedPayload(BaseModel):
 
 
 class ModelSOVictoryDeclaredPayload(BaseModel):
-    """VICTORY_DECLARED payload (also emitted by the failure cascade, Task 26).
+    """Closed VICTORY_DECLARED payload."""
 
-    ``extra="ignore"``: Tasks 24/26 emit this event in parallel work and may
-    attach additional telemetry keys; this reducer cannot be edited by them,
-    so it must tolerate additive payload evolution.
-    """
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     winner_player_id: str
     reason: SOMatchEndReason
 
 
 class ModelSOMatchEndedPayload(BaseModel):
-    """MATCH_ENDED payload — final re-statement (``extra="ignore"``, see above)."""
+    """Closed MATCH_ENDED final re-statement."""
 
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     reason: SOMatchEndReason
     winner_id: str | None = None

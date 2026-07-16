@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
@@ -29,6 +29,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
@@ -54,6 +55,29 @@ MECH_BLUE = "mech.blue.01"
 PLAYER_RED = "player.red"
 PLAYER_BLUE = "player.blue"
 ULID = "01JABCDE0123456789ABCDEFGX"
+_TEST_CORRELATION_ID = UUID(int=1)
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+
+
+class _FixedIdentities:
+    def new_match_id(self) -> str:
+        return "match.test.fixed"
+
+    def new_correlation_id(self) -> UUID:
+        return _TEST_CORRELATION_ID
+
+    def new_event_id(self) -> str:
+        return ULID
+
+    def new_message_id(self) -> UUID:
+        return UUID(int=2)
+
+
+_EVENT_FACTORY = EventFactory(clock=_FixedClock(), identities=_FixedIdentities())
 
 
 def _onex_envelope(
@@ -260,6 +284,9 @@ def _make_reducer(
         pilots=pilots,
         sensor_events=sensor_events or [],
         emit=emitted.append,
+        weapon_specs={},
+        correlation_id=_TEST_CORRELATION_ID,
+        event_factory=_EVENT_FACTORY,
     )
     return reducer, emitted
 
@@ -267,6 +294,20 @@ def _make_reducer(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_constructor_requires_explicit_weapon_specs() -> None:
+    with pytest.raises(TypeError):
+        ReducerPilotTick(  # type: ignore[call-arg]
+            match_id=MATCH_ID,
+            state=_match_state(),
+            pilots={},
+            sensor_events=[],
+            emit=lambda _event: None,
+            correlation_id=_TEST_CORRELATION_ID,
+            event_factory=_EVENT_FACTORY,
+        )
 
 
 @pytest.mark.unit

@@ -334,18 +334,14 @@ def test_storage_read_never_calls_event_clock_or_uuid_factory(
     event = _make_env(_EID1)
     ledger.append(event)
 
-    import steel_onslaught.events.envelope as event_module
+    from steel_onslaught.match.composition import SystemClock, SystemIdentityProvider
 
-    class _ForbiddenClock:
-        @classmethod
-        def now(cls, *_args: object, **_kwargs: object) -> None:
-            raise AssertionError("storage read must not consult a clock")
+    def _forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("storage read must not consult runtime identity or clock ports")
 
-    def _forbidden_uuid() -> None:
-        raise AssertionError("storage read must not generate a UUID")
-
-    monkeypatch.setattr(event_module, "datetime", _ForbiddenClock)
-    monkeypatch.setattr(event_module, "uuid4", _forbidden_uuid)
+    monkeypatch.setattr(SystemClock, "now", _forbidden)
+    monkeypatch.setattr(SystemIdentityProvider, "new_event_id", _forbidden)
+    monkeypatch.setattr(SystemIdentityProvider, "new_message_id", _forbidden)
 
     assert list(ledger.read_all(event.match_id)) == [event]
 

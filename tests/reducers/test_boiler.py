@@ -15,8 +15,9 @@ Invariants verified:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
@@ -27,9 +28,48 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState, SOMatchStatus
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.boiler import ReducerBoiler
+
+_TEST_CORRELATION_ID = UUID(int=1)
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+
+
+class _FixedIdentities:
+    def new_match_id(self) -> str:
+        return "match.test.fixed"
+
+    def new_correlation_id(self) -> UUID:
+        return _TEST_CORRELATION_ID
+
+    def new_event_id(self) -> str:
+        return "01JABCDE0123456789ABCDEFGX"
+
+    def new_message_id(self) -> UUID:
+        return UUID(int=2)
+
+
+_EVENT_FACTORY = EventFactory(clock=_FixedClock(), identities=_FixedIdentities())
+
+
+def _reducer(
+    mech_id: str,
+    state: ModelSOMatchState,
+    emit: Callable[[ModelSOEventEnvelope], None],
+) -> ReducerBoiler:
+    return ReducerBoiler(
+        mech_id,
+        state,
+        emit,
+        correlation_id=_TEST_CORRELATION_ID,
+        event_factory=_EVENT_FACTORY,
+    )
 
 
 def _onex_envelope(
@@ -152,7 +192,7 @@ def test_tick_regen_adds_pressure() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     tick_evt = _env(SOEventType.MATCH_TICK, {})
     new_state = reducer.apply(tick_evt, state)
@@ -172,7 +212,7 @@ def test_tick_vent_reduces_heat() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     tick_evt = _env(SOEventType.MATCH_TICK, {})
     new_state = reducer.apply(tick_evt, state)
@@ -189,7 +229,7 @@ def test_tick_heat_floored_at_zero() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     tick_evt = _env(SOEventType.MATCH_TICK, {})
     new_state = reducer.apply(tick_evt, state)
@@ -206,7 +246,7 @@ def test_tick_pressure_capped_at_maximum() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     tick_evt = _env(SOEventType.MATCH_TICK, {})
     new_state = reducer.apply(tick_evt, state)
@@ -230,7 +270,7 @@ def test_two_consecutive_ticks_no_actions() -> None:
 
     emitted: list[ModelSOEventEnvelope] = []
     emit = lambda e: emitted.append(e)  # noqa: E731
-    reducer = ReducerBoiler("mech.red.01", state, emit)
+    reducer = _reducer("mech.red.01", state, emit)
 
     tick1 = _env(SOEventType.MATCH_TICK, {}, eid="01JABCDE0123456789ABCDEFG1", tick=1)
     state = reducer.apply(tick1, state)
@@ -266,7 +306,7 @@ def test_weapon_fired_reduces_pressure_and_adds_heat() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     fire_evt = _env(
         SOEventType.WEAPON_FIRED,
@@ -291,7 +331,7 @@ def test_weapon_fired_pressure_never_negative() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     # Large cost but no ReducerError from boiler reducer — that's Task 24's job
     fire_evt = _env(
@@ -317,7 +357,7 @@ def test_mode_transition_started_costs_applied() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     mode_evt = _env(
         SOEventType.MODE_TRANSITION_STARTED,
@@ -353,7 +393,7 @@ def test_heat_redline_entered_emitted_when_crossing_upward() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     # Weapon fire generates 10 heat -> 65 + 10 = 75 (crosses redline at 70)
     fire_evt = _env(
@@ -383,7 +423,7 @@ def test_heat_redline_exited_emitted_when_crossing_downward() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     # One tick with vent_rate=10: 75 - 10 = 65, crosses downward past threshold 70
     tick_evt = _env(SOEventType.MATCH_TICK, {})
@@ -409,7 +449,7 @@ def test_heat_redline_not_emitted_when_already_at_redline() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     fire_evt = _env(
         SOEventType.WEAPON_FIRED,
@@ -439,7 +479,7 @@ def test_heat_redline_exited_not_emitted_when_not_in_redline() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     tick_evt = _env(SOEventType.MATCH_TICK, {})
     new_state = reducer.apply(tick_evt, state)
@@ -463,7 +503,7 @@ def test_boiler_updated_emitted_on_weapon_fire() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     fire_evt = _env(
         SOEventType.WEAPON_FIRED,
@@ -483,7 +523,7 @@ def test_boiler_updated_emitted_on_tick_regen() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     tick_evt = _env(SOEventType.MATCH_TICK, {})
     reducer.apply(tick_evt, state)
@@ -504,7 +544,7 @@ def test_unrelated_event_ignored() -> None:
     state = _make_match(mech)
 
     emitted: list[ModelSOEventEnvelope] = []
-    reducer = ReducerBoiler("mech.red.01", state, lambda e: emitted.append(e))
+    reducer = _reducer("mech.red.01", state, emitted.append)
 
     unrelated = _env(
         SOEventType.MOVEMENT_RESOLVED,

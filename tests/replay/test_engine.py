@@ -18,11 +18,11 @@ import pytest
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
-from steel_onslaught.match.fold import MatchContractCatalog
-from steel_onslaught.match.runner import MatchRunner, load_loadout
+from steel_onslaught.match.composition import load_loadout
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchStatus
 from steel_onslaught.replay.engine import ReplayEngine
 from tests.fixtures.event_samples import build_sample_envelopes
+from tests.runtime import match_runner, runtime_dependencies
 from tests.sqlite_ledger import open_sqlite_ledger
 
 LOADOUT_A = Path("contracts_data/loadouts/example_aggressive_light.yaml")
@@ -54,20 +54,27 @@ class _MemoryLedger:
 @pytest.mark.unit
 def test_replay_uses_injected_catalog_without_lookup() -> None:
     event = build_sample_envelopes()[SOEventType.MATCH_STARTED]
-    catalog = MatchContractCatalog.load(None)
+    runtime = runtime_dependencies()
 
-    replay = ReplayEngine(_MemoryLedger([event]), event.match_id, catalog=catalog)
+    replay = ReplayEngine(
+        _MemoryLedger([event]),
+        event.match_id,
+        catalog=runtime.catalog,
+        event_factory=runtime.event_factory,
+    )
 
-    assert replay._catalog is catalog
+    assert replay._catalog is runtime.catalog
 
 
 @pytest.mark.unit
 def test_replay_rejects_empty_stream_without_identity_fallback() -> None:
+    runtime = runtime_dependencies()
     with pytest.raises(ValueError, match="no events"):
         ReplayEngine(
             _MemoryLedger([]),
             "match.empty",
-            catalog=MatchContractCatalog.load(None),
+            catalog=runtime.catalog,
+            event_factory=runtime.event_factory,
         )
 
 
@@ -87,16 +94,26 @@ def _run_and_record(
     bus = InProcessEventBus()
     bus.subscribe(ledger.append)
 
-    runner = MatchRunner(
+    runner, _runtime = match_runner(
+        bus=bus,
         match_id=match_id,
         seed=seed,
         loadout_a=load_loadout(LOADOUT_A),
         loadout_b=load_loadout(LOADOUT_B),
-        bus=bus,
         max_ticks=max_ticks,
     )
     live_state = runner.run()
     return live_state, ledger
+
+
+def _replay(ledger: SQLiteLedger, match_id: str = MATCH_ID) -> ReplayEngine:
+    runtime = runtime_dependencies()
+    return ReplayEngine(
+        ledger,
+        match_id=match_id,
+        catalog=runtime.catalog,
+        event_factory=runtime.event_factory,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +125,7 @@ def _run_and_record(
 def test_replay_reproduces_live_state(tmp_path: Path) -> None:
     """reconstruct_at_tick(final_tick) must equal the live final state exactly."""
     live_state, ledger = _run_and_record(tmp_path)
-    replay = ReplayEngine(ledger, match_id=MATCH_ID, catalog=MatchContractCatalog.load(None))
+    replay = _replay(ledger)
     reconstructed = replay.reconstruct_at_tick(live_state.tick)
     assert reconstructed == live_state
 
@@ -122,7 +139,7 @@ def test_replay_reproduces_live_state(tmp_path: Path) -> None:
 def test_reconstruct_at_tick_has_correct_tick(tmp_path: Path) -> None:
     """Reconstructed state at tick N records tick == N."""
     live_state, ledger = _run_and_record(tmp_path)
-    replay = ReplayEngine(ledger, match_id=MATCH_ID, catalog=MatchContractCatalog.load(None))
+    replay = _replay(ledger)
     # Check a few intermediate ticks (match runs MAX_TICKS ticks, 0-indexed start)
     for t in range(1, live_state.tick + 1):
         state = replay.reconstruct_at_tick(t)
@@ -139,7 +156,7 @@ def test_step_forward_then_backward_round_trips(tmp_path: Path) -> None:
     """step_forward() then step_backward() must yield the same state as
     reconstruct_at_tick(original_tick)."""
     live_state, ledger = _run_and_record(tmp_path)
-    replay = ReplayEngine(ledger, match_id=MATCH_ID, catalog=MatchContractCatalog.load(None))
+    replay = _replay(ledger)
 
     final_tick = live_state.tick
     # Start in the middle so both directions have room.
@@ -167,7 +184,7 @@ def test_step_forward_then_backward_round_trips(tmp_path: Path) -> None:
 def test_all_ticks_returns_sorted_unique_list(tmp_path: Path) -> None:
     """all_ticks() returns a sorted list with no duplicates."""
     live_state, ledger = _run_and_record(tmp_path)
-    replay = ReplayEngine(ledger, match_id=MATCH_ID, catalog=MatchContractCatalog.load(None))
+    replay = _replay(ledger)
     ticks = replay.all_ticks()
 
     assert isinstance(ticks, list)
@@ -186,7 +203,7 @@ def test_events_at_tick_returns_events_in_canonical_order(tmp_path: Path) -> Non
     """events_at_tick(N) must return only events with tick==N, sorted by
     (sequence_in_tick ASC, event_id ASC)."""
     _live_state, ledger = _run_and_record(tmp_path)
-    replay = ReplayEngine(ledger, match_id=MATCH_ID, catalog=MatchContractCatalog.load(None))
+    replay = _replay(ledger)
 
     for tick in replay.all_ticks():
         events = replay.events_at_tick(tick)
@@ -204,7 +221,7 @@ def test_events_at_tick_returns_events_in_canonical_order(tmp_path: Path) -> Non
 def test_events_at_tick_returns_empty_for_nonexistent_tick(tmp_path: Path) -> None:
     """events_at_tick() for a tick not in the ledger returns an empty list."""
     live_state, ledger = _run_and_record(tmp_path)
-    replay = ReplayEngine(ledger, match_id=MATCH_ID, catalog=MatchContractCatalog.load(None))
+    replay = _replay(ledger)
     result = replay.events_at_tick(live_state.tick + 9999)
     assert result == []
 
@@ -218,7 +235,7 @@ def test_events_at_tick_returns_empty_for_nonexistent_tick(tmp_path: Path) -> No
 def test_step_forward_at_final_tick_returns_same_state(tmp_path: Path) -> None:
     """step_forward() at the last tick must return the same (final) state."""
     live_state, ledger = _run_and_record(tmp_path)
-    replay = ReplayEngine(ledger, match_id=MATCH_ID, catalog=MatchContractCatalog.load(None))
+    replay = _replay(ledger)
     replay.reconstruct_at_tick(live_state.tick)  # position at end
     at_end = replay.step_forward()
     assert at_end.status is SOMatchStatus.ENDED
@@ -229,7 +246,7 @@ def test_step_forward_at_final_tick_returns_same_state(tmp_path: Path) -> None:
 def test_step_backward_at_tick_zero_returns_same_state(tmp_path: Path) -> None:
     """step_backward() at tick 0 must not go below 0."""
     _live_state, ledger = _run_and_record(tmp_path)
-    replay = ReplayEngine(ledger, match_id=MATCH_ID, catalog=MatchContractCatalog.load(None))
+    replay = _replay(ledger)
     replay.reconstruct_at_tick(0)  # position at start
     at_start = replay.step_backward()
     assert at_start.tick == 0  # cannot go below 0

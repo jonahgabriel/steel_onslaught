@@ -192,11 +192,11 @@ def test_tick_delay_option_defaults_to_zero() -> None:
 
 @pytest.mark.unit
 def test_negative_tick_delay_rejected_by_click(tmp_path: Path) -> None:
-    ledger = tmp_path / "match.sqlite"
-    ledger.touch()
+    overlay = tmp_path / "application.json"
+    overlay.touch()
     result = CliRunner().invoke(
         serve_command,
-        ["--ledger", str(ledger), "--match", "m", "--tick-delay", "-0.5"],
+        ["--overlay", str(overlay), "--match", "m", "--tick-delay", "-0.5"],
     )
     assert result.exit_code == 2
     assert "--tick-delay" in result.output

@@ -22,8 +22,8 @@ piecewise (tiny batteries: 2 search seeds, 2 holdout seeds, budget 6, small
 - **No live-match mutation (§4.5 / Decision #6):** ``contracts_data/`` is
   byte-identical after the runs (lineage root is tmp-redirected, so zero
   additions), and ``SOEventType``'s member set equals the pinned pre-plan set.
-- **PoL untouched:** ``tests/integration/test_proof_of_life.py`` has no diff
-  against the merge base.
+- **PoL runtime anti-tamper:** learning leaves the hosted proof-of-life test's
+  pre-run SHA-256 unchanged.
 
 Chain-run design note (budget <= 6 forces this): the parent is the shipped
 aggressive template with ``weapon_preference`` flipped to ``lowest_heat`` and
@@ -59,7 +59,11 @@ from steel_onslaught.contracts.lineage import (
 )
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.learning.duel_evaluator import DuelEvaluator
-from steel_onslaught.learning.lineage_store import load_lineage_records, write_lineage_record
+from steel_onslaught.learning.filesystem_artifacts import (
+    ModelSOFilesystemLearningArtifactsConfig,
+    YamlFilesystemLearningArtifactStore,
+)
+from steel_onslaught.learning.lineage_store import load_lineage_records
 from steel_onslaught.learning.loop import (
     ModelSOLearnConfig,
     ModelSOLearnResult,
@@ -220,6 +224,13 @@ def _overlay(root: Path, *, ledger_path: Path | None = None) -> ModelSOApplicati
                 "path": root / "leaderboard.sqlite3",
                 "journal_mode": "WAL",
                 "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "storage_schema": "leaderboard_v1",
+            },
+            "learning_artifacts": {
+                "kind": "filesystem_yaml",
+                "evaluation_root": root / "work",
+                "lineage_root": root / "lineage",
             },
             "contracts": {
                 "catalog_dir": _CONTRACTS_DATA,
@@ -249,13 +260,19 @@ def _run_chain(tmp: Path, parent_params: ParamDict, bounds: BoundsDict) -> _Chai
     """One full search -> evaluate -> gate -> record -> persist execution."""
     workdir = tmp / "work"
     lineage_root = tmp / "lineage"
+    artifact_store = YamlFilesystemLearningArtifactStore(
+        ModelSOFilesystemLearningArtifactsConfig(
+            evaluation_root=workdir,
+            lineage_root=lineage_root,
+        )
+    )
     recorder = _RecordingEvaluator(
         DuelEvaluator(
             archetype=_ARCHETYPE,
             base_loadout=load_loadout(_BASE_LOADOUT),
-            workdir=workdir,
             max_ticks=_MAX_TICKS,
             duel_executor=build_duel_executor(_overlay(tmp)),
+            artifacts=artifact_store,
         )
     )
     evaluator: EvaluatorProtocol = recorder  # structural satisfaction, mypy-enforced
@@ -278,8 +295,9 @@ def _run_chain(tmp: Path, parent_params: ParamDict, bounds: BoundsDict) -> _Chai
     record_path: Path | None = None
     record_bytes: bytes | None = None
     if result.record is not None:
-        record_path = write_lineage_record(
-            result.record, root=lineage_root, recorded_at=_FIXED_RECORDED_AT
+        record_path = artifact_store.write_lineage(
+            result.record,
+            recorded_at=_FIXED_RECORDED_AT,
         )
         record_bytes = record_path.read_bytes()
     return _ChainRun(
@@ -309,12 +327,18 @@ def artifacts(tmp_path_factory: pytest.TempPathFactory) -> _E2EArtifacts:
 
     # Self-pairing real duels (parent vs itself) for the §23 guard proofs.
     search_seeds, holdout_seeds = derive_seed_batteries(_MASTER_SEED, _N_SEARCH, _N_HOLDOUT)
+    self_workdir = tmp_path_factory.mktemp("self_gate")
     self_evaluator = DuelEvaluator(
         archetype=_ARCHETYPE,
         base_loadout=load_loadout(_BASE_LOADOUT),
-        workdir=tmp_path_factory.mktemp("self_gate"),
         max_ticks=_MAX_TICKS,
         duel_executor=build_duel_executor(_overlay(tmp_path_factory.mktemp("self_gate_runtime"))),
+        artifacts=YamlFilesystemLearningArtifactStore(
+            ModelSOFilesystemLearningArtifactsConfig(
+                evaluation_root=self_workdir,
+                lineage_root=self_workdir / "lineage",
+            )
+        ),
     )
     self_search = tuple(
         self_evaluator.evaluate(dict(template_params), dict(template_params), search_seeds)
@@ -581,7 +605,7 @@ def test_soeventtype_member_set_unchanged() -> None:
 
 
 # ---------------------------------------------------------------------------
-# PoL untouched on this branch
+# PoL runtime anti-tamper
 # ---------------------------------------------------------------------------
 
 

@@ -10,8 +10,9 @@ import pytest
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
-from steel_onslaught.match.runner import MatchRunner, load_loadout
+from steel_onslaught.match.composition import load_loadout
 from steel_onslaught.match.state import SOMatchEndReason, SOMatchStatus
+from tests.runtime import match_runner
 from tests.sqlite_ledger import open_sqlite_ledger
 
 LOADOUT_A = Path("contracts_data/loadouts/example_aggressive_light.yaml")
@@ -31,12 +32,12 @@ def _run_match(
     bus.subscribe(collected.append)
     if ledger is not None:
         bus.subscribe(ledger.append)
-    runner = MatchRunner(
+    runner, _runtime = match_runner(
+        bus=bus,
         match_id=MATCH_ID,
         seed=seed,
         loadout_a=load_loadout(LOADOUT_A),
         loadout_b=load_loadout(LOADOUT_B),
-        bus=bus,
         max_ticks=max_ticks,
     )
     final = runner.run()
@@ -111,12 +112,12 @@ def test_unknown_pilot_archetype_fails_fast() -> None:
     loadout = load_loadout(LOADOUT_A)
     bad = loadout.model_copy(update={"pilot_id": "pilot.example.unknown_v1"})
     bus = InProcessEventBus()
-    with pytest.raises(ValueError, match="unknown pilot archetype"):
-        MatchRunner(
+    with pytest.raises(ValueError, match="unknown exact pilot_id"):
+        match_runner(
+            bus=bus,
             match_id=MATCH_ID,
             seed=1,
             loadout_a=bad,
             loadout_b=load_loadout(LOADOUT_B),
-            bus=bus,
             max_ticks=3,
-        ).run()
+        )[0].run()

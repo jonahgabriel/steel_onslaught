@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import ulid
@@ -25,8 +25,9 @@ from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
-from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
+from steel_onslaught.match.fold import MatchStateFold
 from steel_onslaught.match.state import SOMatchStatus
+from tests.runtime import runtime_dependencies
 
 _MATCH_ID = "match.test.victory-backstop"
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
@@ -132,9 +133,15 @@ def test_fold_declares_victory_even_with_cascade_neutered() -> None:
     bus = InProcessEventBus()
     captured: list[ModelSOEventEnvelope] = []
     bus.subscribe(captured.append)
-    catalog = MatchContractCatalog.load()
+    runtime = runtime_dependencies()
 
-    fold = MatchStateFold(_MATCH_ID, bus=bus, catalog=catalog)
+    fold = MatchStateFold(
+        _MATCH_ID,
+        UUID("11111111-1111-1111-1111-111111111111"),
+        bus=bus,
+        event_factory=runtime.event_factory,
+        catalog=runtime.catalog,
+    )
     fold._failure._maybe_declare_victory = lambda *args: None  # type: ignore[method-assign]
 
     _drive_to_two_mechs(fold)
@@ -164,9 +171,15 @@ def test_fold_does_not_double_declare_when_cascade_also_fires() -> None:
     bus = InProcessEventBus()
     captured: list[ModelSOEventEnvelope] = []
     bus.subscribe(captured.append)
-    catalog = MatchContractCatalog.load()
+    runtime = runtime_dependencies()
 
-    fold = MatchStateFold(_MATCH_ID, bus=bus, catalog=catalog)
+    fold = MatchStateFold(
+        _MATCH_ID,
+        UUID("11111111-1111-1111-1111-111111111111"),
+        bus=bus,
+        event_factory=runtime.event_factory,
+        catalog=runtime.catalog,
+    )
     _drive_to_two_mechs(fold)
     fold.apply(
         _env(

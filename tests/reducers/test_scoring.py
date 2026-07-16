@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import ulid
@@ -38,13 +38,19 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
-from steel_onslaught.match.fold import MatchContractCatalog
-from steel_onslaught.match.runner import MatchRunner, load_loadout
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.match.composition import (
+    load_loadout,
+    load_match_contract_catalog,
+    load_pilot_registry,
+    pilot_from_spec,
+)
+from steel_onslaught.match.runner import MatchIdentity, MatchRunner
 from steel_onslaught.match.state import ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.projections.leaderboard.handler import (
     LeaderboardHandler,
-    LeaderboardProjection,
+    ModelSOSQLiteLeaderboardConfig,
 )
 from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.scoring import (
@@ -62,6 +68,35 @@ _PLAYER_A = "player.a"
 _PLAYER_B = "player.b"
 
 _RUPTURE_THRESHOLD = 100
+_TEST_CORRELATION_ID = UUID(int=1)
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+
+
+class _FixedIdentities:
+    def __init__(self) -> None:
+        self._next = 0
+
+    def new_match_id(self) -> str:
+        return "match.test.fixed"
+
+    def new_correlation_id(self) -> UUID:
+        return _TEST_CORRELATION_ID
+
+    def new_event_id(self) -> str:
+        self._next += 1
+        return ulid.from_int(self._next).str
+
+    def new_message_id(self) -> UUID:
+        self._next += 1
+        return UUID(int=self._next)
+
+
+_CLOCK = _FixedClock()
+_EVENT_FACTORY = EventFactory(clock=_CLOCK, identities=_FixedIdentities())
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +260,9 @@ def _score_events(
     emitted: list[ModelSOEventEnvelope] = []
     reducer = ReducerScoring(
         match_id,
+        _TEST_CORRELATION_ID,
         emit=emitted.append,
+        event_factory=_EVENT_FACTORY,
         replay_validity_check=lambda: replay_valid,
     )
     for event in events:
@@ -539,7 +576,13 @@ def test_foreign_match_events_are_ignored() -> None:
 
 @pytest.mark.unit
 def test_match_ended_before_match_started_raises() -> None:
-    reducer = ReducerScoring(_MATCH_ID, emit=lambda _e: None, replay_validity_check=lambda: True)
+    reducer = ReducerScoring(
+        _MATCH_ID,
+        _TEST_CORRELATION_ID,
+        emit=lambda _e: None,
+        event_factory=_EVENT_FACTORY,
+        replay_validity_check=lambda: True,
+    )
     with pytest.raises(ReducerError, match="match_not_started"):
         reducer.apply(_match_ended(tick=2, winner_id=_PLAYER_A))
 
@@ -577,10 +620,19 @@ def test_draw_zeroes_victory_and_marks_is_draw() -> None:
 def test_payload_feeds_leaderboard_handler(tmp_path: Path) -> None:
     payload = _single_scored_payload(_standard_duel_events())
     db_path = tmp_path / "leaderboard.sqlite"
-    handler = LeaderboardHandler(db_path)
+    handler = LeaderboardHandler(
+        ModelSOSQLiteLeaderboardConfig(
+            path=db_path,
+            journal_mode="WAL",
+            check_same_thread=True,
+            transaction_mode="autocommit",
+            storage_schema="leaderboard_v1",
+        ),
+        clock=_CLOCK,
+    )
     handler.on_match_scored(payload)
 
-    rows = LeaderboardProjection(db_path).top_n(1)
+    rows = handler.top_n(1)
     assert len(rows) == 1
     row = rows[0]
     assert row.match_id == _MATCH_ID
@@ -604,19 +656,47 @@ def test_verify_replay_validity_for_real_match(tmp_path: Path) -> None:
     ledger = open_sqlite_ledger(tmp_path / f"{match_id}.sqlite")
     bus = InProcessEventBus()
     bus.subscribe(ledger.append)
+    event_factory = EventFactory(clock=_CLOCK, identities=_FixedIdentities())
+    catalog = load_match_contract_catalog(Path("contracts_data"))
+    registry = load_pilot_registry(Path("contracts_data/pilots"))
+    loadout_a = load_loadout(Path("contracts_data/loadouts/example_aggressive_light.yaml"))
+    loadout_b = load_loadout(Path("contracts_data/loadouts/example_predictive_heavy.yaml"))
 
     runner = MatchRunner(
-        match_id=match_id,
+        identity=MatchIdentity(match_id=match_id, correlation_id=_TEST_CORRELATION_ID),
         seed=99,
-        loadout_a=load_loadout(Path("contracts_data/loadouts/example_aggressive_light.yaml")),
-        loadout_b=load_loadout(Path("contracts_data/loadouts/example_predictive_heavy.yaml")),
+        loadout_a=loadout_a,
+        loadout_b=loadout_b,
         bus=bus,
+        event_factory=event_factory,
+        catalog=catalog,
+        pilots={
+            "mech.a.01": pilot_from_spec(registry.resolve(loadout_a)),
+            "mech.b.01": pilot_from_spec(registry.resolve(loadout_b)),
+        },
         max_ticks=5,
     )
     live_state = runner.run()
 
-    catalog = MatchContractCatalog.load(None)
-    assert verify_replay_validity(ledger, match_id, live_state, catalog=catalog) is True
+    assert (
+        verify_replay_validity(
+            ledger,
+            match_id,
+            live_state,
+            catalog=catalog,
+            event_factory=event_factory,
+        )
+        is True
+    )
     # A mismatched live state must yield False, not raise.
     tampered = live_state.model_copy(update={"seed": live_state.seed + 1})
-    assert verify_replay_validity(ledger, match_id, tampered, catalog=catalog) is False
+    assert (
+        verify_replay_validity(
+            ledger,
+            match_id,
+            tampered,
+            catalog=catalog,
+            event_factory=event_factory,
+        )
+        is False
+    )
