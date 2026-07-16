@@ -1,39 +1,4 @@
-"""DuelEvaluator — real deterministic duels behind ``EvaluatorProtocol`` (Phase 2 Task 2).
-
-Step 0 characterization (read from the LANDED tunable-pilots Task 5/6 code;
-the evaluator binds to exactly these mechanisms — Architectural Decision #1):
-
-(a) How a spec-fielded duel is launched: the loadout carries
-    ``pilot_spec_path`` (``contracts/loadout.py``); inside ``MatchRunner.run()``
-    (``match/runner.py``) the pilot is resolved via
-    ``PilotSpecRegistry.resolve(loadout, base_dir=loadout_dir)``
-    (``contracts/pilot_registry.py`` resolution step 1: the spec YAML at
-    ``pilot_spec_path``, resolved relative to the loadout file's directory,
-    must declare ``id == loadout.pilot_id``), and the resolved
-    ``ModelSOPilotSpec`` constructs the archetype implementation through
-    ``match/runner.py::_pilot_from_spec``.
-
-(b) Which helper runs one seeded pairing against a temp ledger: the balance
-    harness used the CLI-private ``cli/balance.py::_run_duel``
-    (InProcessEventBus + SQLiteLedger subscriber + MatchRunner with the
-    ``run_match`` duel geometry: spawns (5,5)/(35,35) on a 40x40 arena).
-    Because it landed CLI-private, this commit EXTRACTS it to the shared
-    ``match/duel.py::run_duel`` — extraction, never duplication — and both
-    the balance CLI and this evaluator now invoke that one helper.
-
-(c) The registry's non-null-parent rule (``pilot_registry.py`` resolve step
-    1): a spec resolved via ``pilot_spec_path`` MUST name a non-null
-    ``lineage.parent`` — only the three shipped templates are parentless.
-    Hence the materialized parent spec chains to ``pilot.template.<archetype>``
-    and the materialized candidate spec chains to the parent spec's id.
-
-Spec materialization (plan Task 2, pinned): per ``evaluate`` call the
-evaluator writes, under ``workdir``, two pilot spec YAMLs and two derived
-loadout YAMLs. Derived loadouts copy the base loadout except ``id``,
-``pilot_id`` and ``pilot_spec_path``. Spec ids embed the spec hash
-(``pilot.learn.cand_<first 12 hash chars>``) so ledger subjects are
-attributable and re-materialization is idempotent.
-"""
+"""Real deterministic duel evaluator over an injected duel capability."""
 
 from __future__ import annotations
 
@@ -45,17 +10,10 @@ import yaml  # type: ignore[import-untyped]
 from steel_onslaught.contracts.lineage import ParamDict, spec_hash
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
-from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
-from steel_onslaught.events.envelope import SOEventType
+from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import spec_from_params
-from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
-from steel_onslaught.match.duel import run_duel
-from steel_onslaught.match.fold import MatchContractCatalog
-
-# The same budget gate run_match applies (fail fast — plan invariant: an
-# invalid base loadout propagates run_match's validation error).
-from steel_onslaught.match.runner import _require_valid_budgets, load_loadout
+from steel_onslaught.match.duel import DuelExecutor
 
 _SIDE_RED = "red"
 _SIDE_BLUE = "blue"
@@ -88,20 +46,16 @@ class DuelEvaluator:
         self,
         *,
         archetype: str,
-        base_loadout: Path,  # a shipped loadout YAML; its pilot is replaced
+        base_loadout: ModelSOLoadout,
         workdir: Path,  # ALL ledgers/specs/loadouts materialize under here
         max_ticks: int,
-        contracts_data_dir: Path | None = None,
+        duel_executor: DuelExecutor,
     ) -> None:
         self._archetype = archetype
         self._workdir = workdir
         self._max_ticks = max_ticks
-        self._catalog = MatchContractCatalog.load(contracts_data_dir)
-        self._registry = PilotSpecRegistry.load(
-            contracts_data_dir / "pilots" if contracts_data_dir is not None else None
-        )
-        self._base = load_loadout(base_loadout)
-        _require_valid_budgets(self._base, self._catalog)
+        self._base = base_loadout
+        self._duel_executor = duel_executor
         # Per-instance evaluate counter: each call gets its own subdirectory so
         # ledgers from distinct calls never collide and the gate evaluation's
         # ledgers can be retained as replay evidence.
@@ -221,20 +175,19 @@ class DuelEvaluator:
         parent_side = _SIDE_BLUE if candidate_side == _SIDE_RED else _SIDE_RED
         match_id = f"match.learn.seed_{seed}.cand_{candidate_side}"
         ledger_path = eval_dir / f"seed_{seed}_cand_{candidate_side}.sqlite3"
-        final = run_duel(
+        result = self._duel_executor(
             loadout_a=loadout_red,
             loadout_b=loadout_blue,
             seed=seed,
             max_ticks=self._max_ticks,
-            catalog=self._catalog,
-            registry=self._registry,
             ledger_path=ledger_path,
             match_id=match_id,
-            loadout_dir_a=eval_dir,
-            loadout_dir_b=eval_dir,
+            loadout_path_a=eval_dir / f"{loadout_red.id}.yaml",
+            loadout_path_b=eval_dir / f"{loadout_blue.id}.yaml",
             side_a=_SIDE_RED,
             side_b=_SIDE_BLUE,
         )
+        final = result.final_state
         if final.winner_id is None:
             winner = SOSeedWinner.DRAW
         elif final.winner_id == f"player.{candidate_side}":
@@ -244,28 +197,17 @@ class DuelEvaluator:
         else:  # pragma: no cover - lifecycle invariant violation
             raise ValueError(f"unrecognized winner_id {final.winner_id!r} in {match_id}")
         candidate_overloads = self._count_overloads(
-            ledger_path, match_id, mech_id=f"mech.{candidate_side}.01"
+            result.events, mech_id=f"mech.{candidate_side}.01"
         )
-        parent_overloads = self._count_overloads(
-            ledger_path, match_id, mech_id=f"mech.{parent_side}.01"
-        )
+        parent_overloads = self._count_overloads(result.events, mech_id=f"mech.{parent_side}.01")
         return winner, candidate_overloads, parent_overloads
 
     @staticmethod
-    def _count_overloads(ledger_path: Path, match_id: str, *, mech_id: str) -> int:
+    def _count_overloads(events: tuple[ModelSOEventEnvelope, ...], *, mech_id: str) -> int:
         """Count BOILER_OVERLOADED ledger events for one mech in one duel."""
-        ledger = SQLiteLedger(
-            ModelSOSQLiteLedgerConfig(
-                path=ledger_path,
-                journal_mode="WAL",
-                check_same_thread=True,
-                transaction_mode="autocommit",
-                event_schema="canonical_event_v1",
-            )
-        )
         return sum(
             1
-            for envelope in ledger.read_all(match_id)
+            for envelope in events
             if envelope.event_type is SOEventType.BOILER_OVERLOADED
             and envelope.subject.mech_id == mech_id
         )

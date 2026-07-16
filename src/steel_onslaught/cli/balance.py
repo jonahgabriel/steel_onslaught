@@ -26,16 +26,15 @@ from pathlib import Path
 import click
 
 from steel_onslaught.contracts.loadout import ModelSOLoadout
-from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
-from steel_onslaught.match.duel import run_duel
-from steel_onslaught.match.fold import MatchContractCatalog
-from steel_onslaught.match.runner import load_loadout
+from steel_onslaught.match.composition import (
+    build_duel_executor,
+    load_application_overlay,
+    load_loadout,
+)
 from steel_onslaught.projections.balance.matrix import (
     ModelSOBalanceMatrix,
     ModelSOBalancePairing,
 )
-
-DEFAULT_LOADOUTS_DIR = Path(__file__).parent.parent.parent.parent / "contracts_data" / "loadouts"
 
 # The three canonical template pilot specs every loadout is re-piloted with.
 _TEMPLATE_PILOT_IDS: tuple[str, ...] = (
@@ -72,6 +71,12 @@ def _enumerate_configs(loadouts_dir: Path) -> list[tuple[str, ModelSOLoadout]]:
 
 @click.command(name="balance")
 @click.option(
+    "--overlay",
+    "overlay_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
     "--seeds",
     "seed_count",
     type=click.IntRange(min=1),
@@ -88,44 +93,50 @@ def _enumerate_configs(loadouts_dir: Path) -> list[tuple[str, ModelSOLoadout]]:
 @click.option(
     "--loadouts-dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    default=None,
-    help="Loadout contract directory (default: shipped contracts_data/loadouts/).",
+    required=True,
+    help="Explicit loadout contract directory.",
 )
 @click.option("--max-ticks", type=click.IntRange(min=1), default=200, show_default=True)
 def balance_command(
+    overlay_path: Path,
     seed_count: int,
     csv_path: Path | None,
-    loadouts_dir: Path | None,
+    loadouts_dir: Path,
     max_ticks: int,
 ) -> None:
     """Round-robin win matrix over template loadout x template pilot pairings."""
-    data_dir = loadouts_dir if loadouts_dir is not None else DEFAULT_LOADOUTS_DIR
-    configs = _enumerate_configs(data_dir)
+    configs = _enumerate_configs(loadouts_dir)
     if len(configs) < 2:
         raise click.ClickException(
-            f"no non-proof loadouts (need at least one, found {len(configs) // 3}) under {data_dir}"
+            "no non-proof loadouts "
+            f"(need at least one, found {len(configs) // 3}) under {loadouts_dir}"
         )
 
-    catalog = MatchContractCatalog.load()
-    registry = PilotSpecRegistry.load()
+    overlay = load_application_overlay(overlay_path)
+    execute_duel = build_duel_executor(overlay)
 
     pairings: list[ModelSOBalancePairing] = []
     with tempfile.TemporaryDirectory(prefix="so-balance-") as tmp_dir:
         ledger_path = Path(tmp_dir) / "balance_ledger.sqlite3"
-        for (config_a, loadout_a), (config_b, loadout_b) in itertools.combinations(configs, 2):
+        for pairing_index, (
+            (config_a, loadout_a),
+            (config_b, loadout_b),
+        ) in enumerate(itertools.combinations(configs, 2), start=1):
             wins_a = wins_b = draws = 0
             for seed in range(1, seed_count + 1):
-                final = run_duel(
+                result = execute_duel(
                     loadout_a=loadout_a,
                     loadout_b=loadout_b,
                     seed=seed,
                     max_ticks=max_ticks,
-                    catalog=catalog,
-                    registry=registry,
                     ledger_path=ledger_path,
+                    match_id=f"match.balance.{pairing_index}.{seed}",
+                    loadout_path_a=None,
+                    loadout_path_b=None,
                     side_a=_SIDE_A,
                     side_b=_SIDE_B,
                 )
+                final = result.final_state
                 winner_id = final.winner_id
                 if winner_id is None:
                     draws += 1

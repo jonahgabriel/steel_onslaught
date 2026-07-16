@@ -1043,6 +1043,14 @@ const ENVELOPE_FIELDS = [
   "envelope",
 ] as const;
 
+const ONEX_ENVELOPE_FIELDS = [
+  "message_id",
+  "correlation_id",
+  "causation_id",
+  "emitted_at",
+  "entity_id",
+] as const;
+
 function isEventType(value: string): value is SOEventType {
   return (SO_EVENT_TYPES as readonly string[]).includes(value);
 }
@@ -1077,18 +1085,27 @@ export function parseEnvelope(raw: unknown): SOEventEnvelope {
   }
 
   const onexRecord = asRecord(record["envelope"], `${context}.envelope`);
+  rejectUnknown(onexRecord, ONEX_ENVELOPE_FIELDS, `${context}.envelope`);
+  const matchId = str(record, "match_id", context);
+  const entityId = str(onexRecord, "entity_id", `${context}.envelope.entity_id`);
+  if (entityId !== matchId) {
+    fail(
+      `${context}.envelope.entity_id`,
+      `must equal match_id ${JSON.stringify(matchId)}, got ${JSON.stringify(entityId)}`,
+    );
+  }
   const onexEnvelope: OnexEnvelope = {
     message_id: str(onexRecord, "message_id", `${context}.envelope.message_id`),
     correlation_id: str(onexRecord, "correlation_id", `${context}.envelope.correlation_id`),
     causation_id: nullableStr(onexRecord, "causation_id", `${context}.envelope.causation_id`),
     emitted_at: str(onexRecord, "emitted_at", `${context}.envelope.emitted_at`),
-    entity_id: str(onexRecord, "entity_id", `${context}.envelope.entity_id`),
+    entity_id: entityId,
   };
 
   const base: EnvelopeBase = {
     schema_version: str(record, "schema_version", context),
     event_id: eventId,
-    match_id: str(record, "match_id", context),
+    match_id: matchId,
     tick: num(record, "tick", context),
     sequence_in_tick: num(record, "sequence_in_tick", context),
     producer_node: str(record, "producer_node", context),

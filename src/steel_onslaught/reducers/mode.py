@@ -22,7 +22,7 @@ When ``transition_ticks_remaining`` reaches 0, it emits
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.mode import ModelSOModeTransition
@@ -30,8 +30,8 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    make_event,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 
 _PRODUCER_NODE = "node.reducer.mode"
@@ -82,8 +82,9 @@ def validate_mode_switch(
 
 def build_mode_transition_started_event(
     *,
+    event_factory: EventFactory,
     match_id: str,
-    correlation_id: UUID | None = None,
+    correlation_id: UUID,
     causation_id: UUID | None = None,
     tick: int,
     mech: ModelSOMechRuntimeState,
@@ -94,9 +95,9 @@ def build_mode_transition_started_event(
     *causation_id* (when set) links this event to the MODE_SWITCH_INTENT that
     triggered it — the ONEX causation chain.
     """
-    return make_event(
+    return event_factory.make(
         match_id=match_id,
-        correlation_id=correlation_id if correlation_id is not None else uuid4(),
+        correlation_id=correlation_id,
         causation_id=causation_id,
         tick=tick,
         sequence_in_tick=0,  # bus re-stamps
@@ -119,8 +120,9 @@ def build_mode_transition_started_event(
 
 def build_mode_transition_completed_event(
     *,
+    event_factory: EventFactory,
     match_id: str,
-    correlation_id: UUID | None = None,
+    correlation_id: UUID,
     tick: int,
     mech_id: str,
     player_id: str,
@@ -129,9 +131,9 @@ def build_mode_transition_completed_event(
     mode_lock_until: int,
 ) -> ModelSOEventEnvelope:
     """Build the canonical MODE_TRANSITION_COMPLETED envelope."""
-    return make_event(
+    return event_factory.make(
         match_id=match_id,
-        correlation_id=correlation_id if correlation_id is not None else uuid4(),
+        correlation_id=correlation_id,
         tick=tick,
         sequence_in_tick=0,  # bus re-stamps
         event_type=SOEventType.MODE_TRANSITION_COMPLETED,
@@ -166,12 +168,14 @@ class ReducerModeTransition:
         self,
         match_id: str,
         transitions: dict[tuple[str, str], ModelSOModeTransition],
-        bus: EventBus | None = None,
         *,
-        correlation_id: UUID | None = None,
+        correlation_id: UUID,
+        event_factory: EventFactory,
+        bus: EventBus | None = None,
     ) -> None:
         self._match_id = match_id
-        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._transitions = transitions
         self._bus = bus
         # Mutable per-mech state cache, keyed by mech_id.  Seeded via
@@ -381,7 +385,7 @@ class ReducerModeTransition:
         if self._bus is None:
             return
         self._bus.publish(
-            make_event(
+            self._events.make(
                 match_id=self._match_id,
                 correlation_id=self._correlation_id,
                 tick=self._current_tick,

@@ -94,8 +94,11 @@ class SQLiteLedger(QueryableEventLedger):
         self._conn = sqlite3.connect(
             config.path,
             check_same_thread=config.check_same_thread,
+            isolation_level=None,
         )
         try:
+            if self._conn.isolation_level is not None:
+                raise RuntimeError("SQLite connection did not apply required autocommit policy")
             journal_mode = self._conn.execute(
                 f"PRAGMA journal_mode={config.journal_mode}"
             ).fetchone()
@@ -140,7 +143,6 @@ class SQLiteLedger(QueryableEventLedger):
                 canonical_json,
             ),
         )
-        self._conn.commit()
 
     def read_all(self, match_id: str) -> Iterator[ModelSOEventEnvelope]:
         cursor = self._conn.execute(

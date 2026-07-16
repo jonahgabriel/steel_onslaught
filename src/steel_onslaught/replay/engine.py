@@ -28,6 +28,7 @@ Usage::
 from __future__ import annotations
 
 from steel_onslaught.events.envelope import ModelSOEventEnvelope
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.state import ModelSOMatchState
@@ -53,10 +54,12 @@ class ReplayEngine:
         match_id: str,
         *,
         catalog: MatchContractCatalog,
+        event_factory: EventFactory,
     ) -> None:
         self._ledger = ledger
         self._match_id = match_id
         self._catalog = catalog
+        self._event_factory = event_factory
         # Cache the full canonical event list once.
         self._events: list[ModelSOEventEnvelope] = list(ledger.read_all(match_id))
         if not self._events:
@@ -146,7 +149,13 @@ class ReplayEngine:
         A fresh fold per call keeps reconstruction stateless and exact: the
         result is a pure function of the canonical event prefix.
         """
-        fold = MatchStateFold(self._match_id, self._correlation_id, bus=None, catalog=self._catalog)
+        fold = MatchStateFold(
+            self._match_id,
+            self._correlation_id,
+            bus=None,
+            event_factory=self._event_factory,
+            catalog=self._catalog,
+        )
         for event in self._events:
             if event.tick > target_tick:
                 break

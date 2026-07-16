@@ -452,6 +452,15 @@ def test_sqlite_config_rejects_unknown_fields(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_sqlite_applies_required_autocommit_policy(tmp_path: Path) -> None:
+    ledger = open_sqlite_ledger(tmp_path / "autocommit.sqlite")
+
+    assert ledger._conn.isolation_level is None
+    ledger.append(_make_env(_EID1))
+    assert ledger._conn.in_transaction is False
+
+
+@pytest.mark.unit
 def test_no_mutation_api() -> None:
     """SQLiteLedger public API is frozen to the allowlist — no update/delete/truncate."""
     allowed_public_methods = frozenset(

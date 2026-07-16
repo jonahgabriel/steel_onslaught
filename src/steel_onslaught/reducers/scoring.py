@@ -45,9 +45,8 @@ flattening requires exactly two players.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -55,8 +54,8 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    make_event,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.state import ModelSOMatchState
@@ -213,13 +212,19 @@ def verify_replay_validity(
     live_state: ModelSOMatchState,
     *,
     catalog: MatchContractCatalog,
+    event_factory: EventFactory,
 ) -> bool:
     """Return True when the replay engine reproduces *live_state* exactly.
 
     Implements the plan's definition:
     ``replay.reconstruct_at_tick(final_tick) == live_state``.
     """
-    engine = ReplayEngine(ledger, match_id, catalog=catalog)
+    engine = ReplayEngine(
+        ledger,
+        match_id,
+        catalog=catalog,
+        event_factory=event_factory,
+    )
     return engine.reconstruct_at_tick(live_state.tick) == live_state
 
 
@@ -246,14 +251,16 @@ class ReducerScoring:
     def __init__(
         self,
         match_id: str,
-        correlation_id: UUID | None = None,
+        correlation_id: UUID,
         *,
         emit: EmitFn,
+        event_factory: EventFactory,
         replay_validity_check: ReplayValidityCheck,
     ) -> None:
         self._match_id = match_id
-        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
+        self._correlation_id = correlation_id
         self._emit = emit
+        self._events = event_factory
         self._replay_validity_check = replay_validity_check
 
         # Roster (from MATCH_STARTED) — insertion order is deterministic.
@@ -418,11 +425,11 @@ class ReducerScoring:
             loser_player_id=loser_slot,
             loser_score=scores[loser_slot].final_score,
             duration_ticks=tick,
-            scored_at=datetime.now(UTC).isoformat(),
+            scored_at=self._events.clock.now().isoformat(),
             is_draw=is_draw,
         )
         self._emit(
-            make_event(
+            self._events.make(
                 match_id=self._match_id,
                 tick=tick,
                 sequence_in_tick=0,  # bus reassigns on publish

@@ -42,12 +42,8 @@ while the match is still RUNNING):
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Literal
-from uuid import UUID, uuid4
-
-import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel
+from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
@@ -60,8 +56,8 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    make_event,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
@@ -78,30 +74,6 @@ _PRODUCER_NODE = "node.match.fold"
 
 # Match-scoped events carry the wildcard subject (lifecycle convention).
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
-
-# Resolve contracts_data/ relative to this file's package tree:
-# src/steel_onslaught/match/fold.py -> project root is 4 levels up.
-DEFAULT_CONTRACTS_DATA_DIR = Path(__file__).parent.parent.parent.parent / "contracts_data"
-
-
-def _load_specs[ModelT: BaseModel](directory: Path, model: type[ModelT]) -> dict[str, ModelT]:
-    """Load every ``*.yaml`` contract under *directory*, keyed by its ``id``."""
-    index: dict[str, ModelT] = {}
-    for path in sorted(directory.glob("*.yaml")):
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        index[str(raw["id"])] = model.model_validate(raw)
-    return index
-
-
-def _load_transitions(directory: Path) -> dict[tuple[str, str], ModelSOModeTransition]:
-    """Load mode-transition contracts, keyed by the directed (from, to) pair."""
-    index: dict[tuple[str, str], ModelSOModeTransition] = {}
-    for path in sorted(directory.glob("*.yaml")):
-        spec = ModelSOModeTransition.model_validate(
-            yaml.safe_load(path.read_text(encoding="utf-8"))
-        )
-        index[(spec.from_mode, spec.to_mode)] = spec
-    return index
 
 
 class MatchContractCatalog:
@@ -132,20 +104,6 @@ class MatchContractCatalog:
             gizmo_id for gizmo_id, spec in gizmos.items() if spec.category is GizmoCategory.SAFETY
         )
 
-    @classmethod
-    def load(cls, contracts_data_dir: Path | None = None) -> MatchContractCatalog:
-        data_dir = (
-            contracts_data_dir if contracts_data_dir is not None else DEFAULT_CONTRACTS_DATA_DIR
-        )
-        return cls(
-            chassis=_load_specs(data_dir / "chassis", ModelSOChassisSpec),
-            boilers=_load_specs(data_dir / "boilers", ModelSOBoilerSpec),
-            sensors=_load_specs(data_dir / "sensors", ModelSOSensorSpec),
-            weapons=_load_specs(data_dir / "weapons", ModelSOWeaponSpec),
-            gizmos=_load_specs(data_dir / "gizmos", ModelSOGizmoSpec),
-            transitions=_load_transitions(data_dir / "modes" / "transitions"),
-        )
-
 
 class MatchStateFold:
     """Fold canonical events into ``ModelSOMatchState`` (live AND replay path).
@@ -166,20 +124,25 @@ class MatchStateFold:
     def __init__(
         self,
         match_id: str,
-        correlation_id: UUID | None = None,
+        correlation_id: UUID,
         *,
+        event_factory: EventFactory,
+        catalog: MatchContractCatalog,
         bus: EventBus | None = None,
-        catalog: MatchContractCatalog | None = None,
     ) -> None:
         self._match_id = match_id
-        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._bus = bus
-        self._catalog = catalog if catalog is not None else MatchContractCatalog.load()
-        self._lifecycle = ReducerMatchLifecycle(match_id, correlation_id, bus=bus)
+        self._catalog = catalog
+        self._lifecycle = ReducerMatchLifecycle(
+            match_id, correlation_id, event_factory=event_factory, bus=bus
+        )
         self._failure = ReducerFailureCascade(
             match_id,
             correlation_id,
             emit=self._emit,
+            event_factory=event_factory,
             safety_gizmo_ids=self._catalog.safety_gizmo_ids,
         )
         self._boilers: dict[str, ReducerBoiler] = {}
@@ -292,7 +255,11 @@ class MatchStateFold:
         composite = self.state
         self._boilers = {
             mech_id: ReducerBoiler(
-                mech_id, composite, emit=self._emit, correlation_id=self._correlation_id
+                mech_id,
+                composite,
+                emit=self._emit,
+                correlation_id=self._correlation_id,
+                event_factory=self._events,
             )
             for mech_id in self._mech_states
         }
@@ -422,7 +389,7 @@ class MatchStateFold:
         if len(survivors_before) > 1 and len(survivors_after) == 1:
             winner = next(iter(survivors_after))
             self._emit(
-                make_event(
+                self._events.make(
                     match_id=self._match_id,
                     correlation_id=self._correlation_id,
                     tick=event.tick,
@@ -528,6 +495,7 @@ class MatchStateFold:
             )
             self._emit(
                 build_mode_transition_completed_event(
+                    event_factory=self._events,
                     match_id=self._match_id,
                     correlation_id=self._correlation_id,
                     tick=event.tick,

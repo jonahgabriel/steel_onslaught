@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
-import ulid
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -141,9 +140,9 @@ def make_event(
     payload: dict[str, Any],
     correlation_id: UUID,
     causation_id: UUID | None = None,
-    event_id: str | None = None,
-    message_id: UUID | None = None,
-    emitted_at: datetime | None = None,
+    event_id: str,
+    message_id: UUID,
+    emitted_at: datetime,
 ) -> ModelSOEventEnvelope:
     """Build an event with a composed ONEX envelope (the canonical factory).
 
@@ -153,14 +152,12 @@ def make_event(
                         of one match). Generate once per match; reuse for all events.
         causation_id:   The message_id of the event that caused this one (None for
                         root events like MATCH_STARTED).
-        event_id:       ULID string (uniqueness). Generated if omitted.
-        message_id:     ONEX message UUID. Generated if omitted.
-        emitted_at:     tz-aware UTC datetime. Generated if omitted.
+        event_id:       Injected ULID string (uniqueness).
+        message_id:     Injected ONEX message UUID.
+        emitted_at:     Injected tz-aware UTC datetime.
     """
-    _now = emitted_at if emitted_at is not None else datetime.now(UTC)
-    _msg = message_id if message_id is not None else uuid4()
     return ModelSOEventEnvelope(
-        event_id=event_id if event_id is not None else ulid.new().str,
+        event_id=event_id,
         match_id=match_id,
         tick=tick,
         sequence_in_tick=sequence_in_tick,
@@ -172,8 +169,8 @@ def make_event(
             correlation_id=correlation_id,
             causation_id=causation_id,
             entity_id=match_id,
-            message_id=_msg,
-            emitted_at=_now,
+            message_id=message_id,
+            emitted_at=emitted_at,
         ),
     )
 
@@ -188,9 +185,9 @@ def caused_by(
     producer_node: str,
     subject: ModelSOEventSubject,
     payload: dict[str, Any],
-    event_id: str | None = None,
-    message_id: UUID | None = None,
-    emitted_at: datetime | None = None,
+    event_id: str,
+    message_id: UUID,
+    emitted_at: datetime,
 ) -> ModelSOEventEnvelope:
     """Build an event caused by *parent* — inherits correlation_id, links causation.
 

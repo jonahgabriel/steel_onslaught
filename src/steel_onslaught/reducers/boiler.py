@@ -25,15 +25,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    make_event,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 
 _PRODUCER_NODE = "node.reducer.boiler"
@@ -70,10 +70,12 @@ class ReducerBoiler:
         state: ModelSOMatchState,
         emit: EmitFn,
         *,
-        correlation_id: UUID | None = None,
+        correlation_id: UUID,
+        event_factory: EventFactory,
     ) -> None:
         self._mech_id = mech_id
-        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._emit = emit
         # Capture the initial redline flag from the current boiler state so we
         # can detect upward/downward threshold crossings correctly.
@@ -223,6 +225,7 @@ class ReducerBoiler:
         if new_pressure != old_boiler.pressure_current or new_heat != old_boiler.heat_current:
             self._emit(
                 _make_env(
+                    event_factory=self._events,
                     match_id=state.match_id,
                     correlation_id=self._correlation_id,
                     tick=triggering_event.tick,
@@ -242,6 +245,7 @@ class ReducerBoiler:
         if not was_redline and now_redline:
             self._emit(
                 _make_env(
+                    event_factory=self._events,
                     match_id=state.match_id,
                     correlation_id=self._correlation_id,
                     tick=triggering_event.tick,
@@ -256,6 +260,7 @@ class ReducerBoiler:
         elif was_redline and not now_redline:
             self._emit(
                 _make_env(
+                    event_factory=self._events,
                     match_id=state.match_id,
                     correlation_id=self._correlation_id,
                     tick=triggering_event.tick,
@@ -281,16 +286,17 @@ class ReducerBoiler:
 
 def _make_env(
     *,
+    event_factory: EventFactory,
     match_id: str,
-    correlation_id: UUID | None = None,
+    correlation_id: UUID,
     tick: int,
     event_type: SOEventType,
     subject: ModelSOEventSubject,
     payload: dict[str, Any],
 ) -> ModelSOEventEnvelope:
-    return make_event(
+    return event_factory.make(
         match_id=match_id,
-        correlation_id=correlation_id if correlation_id is not None else uuid4(),
+        correlation_id=correlation_id,
         tick=tick,
         sequence_in_tick=0,  # bus reassigns on publish
         event_type=event_type,

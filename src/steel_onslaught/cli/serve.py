@@ -42,7 +42,10 @@ from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 from steel_onslaught.bus.protocol import EventBus, HandlerToken
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.protocol import QueryableEventLedger
-from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
+from steel_onslaught.match.composition import (
+    build_runtime_dependencies,
+    load_application_overlay,
+)
 
 DEFAULT_WS_HOST = "127.0.0.1"
 DEFAULT_WS_PORT = 8765
@@ -285,8 +288,8 @@ async def _serve_replay(
 
 @click.command(name="serve")
 @click.option(
-    "--ledger",
-    "ledger_path",
+    "--overlay",
+    "overlay_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
 )
@@ -302,21 +305,16 @@ async def _serve_replay(
     help="Seconds to pause between tick boundaries during replay (0 = no pacing).",
 )
 def serve_command(
-    ledger_path: Path, match_id: str, host: str, port: int, tick_delay: float
+    overlay_path: Path, match_id: str, host: str, port: int, tick_delay: float
 ) -> None:
     """Stream a recorded match to WebSocket clients (frontend on :5173)."""
-    ledger = SQLiteLedger(
-        ModelSOSQLiteLedgerConfig(
-            path=ledger_path,
-            journal_mode="WAL",
-            check_same_thread=True,
-            transaction_mode="autocommit",
-            event_schema="canonical_event_v1",
-        )
-    )
-    events = list(ledger.read_all(match_id))
+    overlay = load_application_overlay(overlay_path)
+    dependencies = build_runtime_dependencies(overlay)
+    events = list(dependencies.ledger.read_all(match_id))
     if not events:
-        raise click.ClickException(f"no events found for match {match_id!r} in {ledger_path}")
+        raise click.ClickException(
+            f"no events found for match {match_id!r} in {overlay.event_ledger.path}"
+        )
     try:
         asyncio.run(_serve_replay(events, host=host, port=port, tick_delay=tick_delay))
     except KeyboardInterrupt:

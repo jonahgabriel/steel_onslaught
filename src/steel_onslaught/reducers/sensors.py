@@ -38,15 +38,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    make_event,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
@@ -101,10 +101,12 @@ class ReducerSensors:
         sensor_specs: dict[str, ModelSOSensorSpec],
         emit: Callable[[ModelSOEventEnvelope], None],
         *,
-        correlation_id: UUID | None = None,
+        correlation_id: UUID,
+        event_factory: EventFactory,
     ) -> None:
         self._match_id = match_id
-        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._state = state
         self._sensor_specs = sensor_specs
         self._emit = emit
@@ -203,7 +205,7 @@ class ReducerSensors:
                 payload["mode_estimate"] = target.current_mode
 
         self._emit(
-            make_event(
+            self._events.make(
                 match_id=self._match_id,
                 tick=tick,
                 sequence_in_tick=0,  # bus re-stamps if wired through InProcessEventBus

@@ -44,6 +44,23 @@ describe("types parity against Python-emitted fixtures", () => {
     expect(() => parseEnvelope(corrupted)).toThrow(/bogus_field/);
   });
 
+  it("rejects an unknown nested ONEX envelope field", () => {
+    const raw: unknown = JSON.parse(readFileSync(join(FIXTURES_DIR, "match_tick.json"), "utf-8"));
+    const record = raw as Record<string, unknown>;
+    const envelope = { ...(record["envelope"] as Record<string, unknown>), bogus: 1 };
+    expect(() => parseEnvelope({ ...record, envelope })).toThrow(/envelope\.envelope.*bogus/);
+  });
+
+  it("rejects an ONEX entity_id that differs from match_id", () => {
+    const raw: unknown = JSON.parse(readFileSync(join(FIXTURES_DIR, "match_tick.json"), "utf-8"));
+    const record = raw as Record<string, unknown>;
+    const envelope = {
+      ...(record["envelope"] as Record<string, unknown>),
+      entity_id: "match.other.0001",
+    };
+    expect(() => parseEnvelope({ ...record, envelope })).toThrow(/must equal match_id/);
+  });
+
   it("rejects an unknown payload field on a closed payload", () => {
     const raw: unknown = JSON.parse(
       readFileSync(join(FIXTURES_DIR, "boiler_updated.json"), "utf-8"),

@@ -19,32 +19,21 @@ Query helpers
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
+from steel_onslaught.events.factory import Clock
+from steel_onslaught.projections.leaderboard.protocol import ModelSOLeaderboardEntry
 
 
-class ModelSOLeaderboardEntry(BaseModel):
-    """One row of the leaderboard_entries table."""
-
+class ModelSOSQLiteLeaderboardConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    match_id: str
-    winner_player_id: str
-    winner_loadout_id: str
-    winner_score: int = Field(ge=0)
-    loser_player_id: str
-    loser_score: int = Field(ge=0)
-    duration_ticks: int = Field(gt=0)
-    scored_at: str
-    created_at: str
-    is_draw: bool
+    path: Path
+    journal_mode: Literal["WAL"]
+    check_same_thread: bool
 
 
 # ---------------------------------------------------------------------------
@@ -145,16 +134,21 @@ class LeaderboardHandler:
     filtering on ``SOEventType.MATCH_SCORED``.
     """
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
-        self._conn = sqlite3.connect(db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
+    def __init__(self, config: ModelSOSQLiteLeaderboardConfig, *, clock: Clock) -> None:
+        self._config = config
+        self._clock = clock
+        self._conn = sqlite3.connect(config.path, check_same_thread=config.check_same_thread)
+        row = self._conn.execute(f"PRAGMA journal_mode={config.journal_mode}").fetchone()
+        if row is None or str(row[0]).upper() != config.journal_mode:
+            raise RuntimeError(
+                f"SQLite refused required journal mode {config.journal_mode!r}: {row!r}"
+            )
         self._conn.executescript(_CREATE_SQL)
         self._conn.commit()
 
     @property
     def db_path(self) -> Path:
-        return self._db_path
+        return self._config.path
 
     def on_match_scored(self, payload: dict[str, Any]) -> None:
         """Process a MATCH_SCORED payload dict and upsert a leaderboard row.
@@ -172,7 +166,7 @@ class LeaderboardHandler:
         duration_ticks = int(str(payload["duration_ticks"]))
         scored_at = str(payload["scored_at"])
         is_draw = bool(payload.get("is_draw", False))
-        created_at = datetime.now(UTC).isoformat()
+        created_at = self._clock.now().isoformat()
 
         self._conn.execute(
             _UPSERT_SQL,
@@ -190,6 +184,10 @@ class LeaderboardHandler:
             ),
         )
         self._conn.commit()
+
+    def top_n(self, n: int) -> list[ModelSOLeaderboardEntry]:
+        cursor = self._conn.execute(_TOP_N_SQL, (n,))
+        return [_row_to_entry(row) for row in cursor]
 
 
 # ---------------------------------------------------------------------------

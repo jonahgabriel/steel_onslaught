@@ -46,13 +46,17 @@ function makeDecisionEnvelope(
     match_id: "match.test.001",
     tick,
     sequence_in_tick: 0,
-    correlation_id: null,
-    causation_id: null,
     producer_node: `node.pilot.${mechId}`,
     subject: { mech_id: mechId, player_id: playerId },
     event_type: "pilot_decision_made" as const,
     payload,
-    emitted_at: "2026-04-30T16:00:00Z",
+    envelope: {
+      message_id: "22222222-2222-2222-2222-222222222222",
+      correlation_id: "11111111-1111-1111-1111-111111111111",
+      causation_id: null,
+      emitted_at: "2026-04-30T16:00:00Z",
+      entity_id: "match.test.001",
+    },
   };
 }
 

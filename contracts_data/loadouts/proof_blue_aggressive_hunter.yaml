@@ -8,7 +8,7 @@ id: loadout.proof.blue_aggressive_hunter
 
 chassis_id: chassis.medium.hunter_mk1
 boiler_id: boiler.volatile.v1
-pilot_id: pilot.proof.aggressive_v1
+pilot_id: pilot.template.aggressive
 
 modules:
   weapons:

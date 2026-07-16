@@ -34,15 +34,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    make_event,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotDecision,
@@ -181,10 +181,12 @@ class ReducerPilotTick:
         emit: Callable[[ModelSOEventEnvelope], None],
         weapon_specs: dict[str, ModelSOWeaponSpec] | None = None,
         *,
-        correlation_id: UUID | None = None,
+        correlation_id: UUID,
+        event_factory: EventFactory,
     ) -> None:
         self._match_id = match_id
-        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._state = state
         self._pilots = pilots
         self._sensor_events = sensor_events
@@ -237,7 +239,7 @@ class ReducerPilotTick:
 
         # 1. Emit PILOT_DECISION_MADE first (invariant: before any intent).
         self._emit(
-            make_event(
+            self._events.make(
                 match_id=self._match_id,
                 correlation_id=self._correlation_id,
                 tick=state.tick,
@@ -254,7 +256,7 @@ class ReducerPilotTick:
         if intent is not None:
             intent_type, intent_payload = intent
             self._emit(
-                make_event(
+                self._events.make(
                     match_id=self._match_id,
                     correlation_id=self._correlation_id,
                     tick=state.tick,

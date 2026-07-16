@@ -20,45 +20,35 @@ driven over an ``EventBus``:
 All stochastic behaviour flows through ``MatchRng`` sub-seeds, so the full
 event stream is a pure function of ``(seed, loadouts, max_ticks, geometry)``.
 
-``run_match`` (Task 34) is the Proof-of-Life entrypoint: it wires the ledger,
-the scoring reducer (with the replay-validity hard gate), and the leaderboard
-handler around a ``MatchRunner`` and drives one duel to termination.
+``run_match`` is a thin compatibility facade over the typed composition root.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from uuid import uuid4
-
-import yaml  # type: ignore[import-untyped]
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
-from steel_onslaught.contracts.pilot import ModelSOPilotSpec
-from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    caused_by,
-    make_event,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.initiative import order_by_initiative
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
-    SOMatchEndReason,
     SOMatchStatus,
 )
-from steel_onslaught.pilots.aggressive import AggressivePilot
-from steel_onslaught.pilots.defensive import DefensivePilot
-from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
 from steel_onslaught.reducers.damage import (
     compute_armor_reduction,
@@ -78,6 +68,9 @@ from steel_onslaught.reducers.weapons import (
     roll_hit,
     validate_weapon_fire_intent,
 )
+
+if TYPE_CHECKING:
+    from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 
 _PRODUCER_NODE = "node.match.runner"
 
@@ -109,29 +102,16 @@ _INTENT_EVENT_TYPES = [
 ]
 
 
-def load_loadout(path: Path) -> ModelSOLoadout:
-    """Load and validate one loadout contract YAML."""
-    return ModelSOLoadout.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
-
-
-def _pilot_from_spec(spec: ModelSOPilotSpec) -> PilotProtocol:
-    """Construct the archetype implementation a resolved pilot spec drives."""
-    match spec.archetype:
-        case "aggressive":
-            return AggressivePilot(spec=spec)
-        case "defensive":
-            return DefensivePilot(spec=spec)
-        case "predictive":
-            return PredictivePilot(spec=spec)
-        case _:
-            # archetype is a Literal, so this is only reachable via a spec that
-            # bypassed validation — fail loudly rather than yielding a mech that
-            # silently never acts (ReducerPilotTick skips None pilot entries).
-            raise ValueError(f"unknown pilot archetype {spec.archetype!r} (spec id: {spec.id!r})")
-
-
 def _clamp(value: int, magnitude: int) -> int:
     return max(-magnitude, min(magnitude, value))
+
+
+@dataclass(frozen=True)
+class MatchIdentity:
+    """Public match/workflow identity shared by every composed participant."""
+
+    match_id: str
+    correlation_id: UUID
 
 
 class MatchRunner:
@@ -140,17 +120,15 @@ class MatchRunner:
     def __init__(
         self,
         *,
-        match_id: str,
+        identity: MatchIdentity,
         seed: int,
         loadout_a: ModelSOLoadout,
         loadout_b: ModelSOLoadout,
         bus: EventBus,
-        max_ticks: int = 200,
-        contracts_data_dir: Path | None = None,
-        catalog: MatchContractCatalog | None = None,
-        pilot_registry: PilotSpecRegistry | None = None,
-        loadout_dir_a: Path | None = None,
-        loadout_dir_b: Path | None = None,
+        event_factory: EventFactory,
+        catalog: MatchContractCatalog,
+        pilots: dict[str, PilotProtocol],
+        max_ticks: int,
         side_a: str = "a",
         side_b: str = "b",
         spawn_a: ModelSOPosition = _SPAWN_A,
@@ -159,10 +137,10 @@ class MatchRunner:
         facing_b: int = _FACING_B,
         arena_size: int = ARENA_SIZE_CELLS,
     ) -> None:
-        self._match_id = match_id
-        # ONEX workflow correlation id — generated once per match, shared across
-        # every event the runner emits (the causation-chain root identity).
-        self._correlation_id = uuid4()
+        self._identity = identity
+        self._match_id = identity.match_id
+        self._correlation_id = identity.correlation_id
+        self._events = event_factory
         self._seed = seed
         self._rng = MatchRng(match_seed=seed)
         self._loadout_a = loadout_a
@@ -176,23 +154,19 @@ class MatchRunner:
         self._facing_a = facing_a
         self._facing_b = facing_b
         self._arena_size = arena_size
-        self._catalog = (
-            catalog if catalog is not None else MatchContractCatalog.load(contracts_data_dir)
-        )
-        self._pilot_registry = (
-            pilot_registry
-            if pilot_registry is not None
-            else PilotSpecRegistry.load(
-                contracts_data_dir / "pilots" if contracts_data_dir is not None else None
-            )
-        )
-        self._loadout_dir_a = loadout_dir_a
-        self._loadout_dir_b = loadout_dir_b
+        self._catalog = catalog
+        self._pilots = dict(pilots)
 
         # Canonical state fold — the same fold the replay engine uses.
         # Subscribed at construction time so callers can order later
         # subscribers (scoring, leaderboard) AFTER the fold.
-        self.fold = MatchStateFold(match_id, self._correlation_id, bus=bus, catalog=self._catalog)
+        self.fold = MatchStateFold(
+            self._match_id,
+            self._correlation_id,
+            event_factory=event_factory,
+            bus=bus,
+            catalog=self._catalog,
+        )
         bus.subscribe(self.fold.handle)
 
         # Per-tick buffers + MATCH_ENDED bookkeeping.
@@ -206,6 +180,10 @@ class MatchRunner:
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
+
+    @property
+    def identity(self) -> MatchIdentity:
+        return self._identity
 
     def run(self) -> ModelSOMatchState:
         """Drive the match to termination; return the final match state."""
@@ -224,14 +202,10 @@ class MatchRunner:
             facing=self._facing_b,
         )
         mechs = (mech_a, mech_b)
-        pilots: dict[str, PilotProtocol] = {
-            mech_a.mech_id: _pilot_from_spec(
-                self._pilot_registry.resolve(self._loadout_a, base_dir=self._loadout_dir_a)
-            ),
-            mech_b.mech_id: _pilot_from_spec(
-                self._pilot_registry.resolve(self._loadout_b, base_dir=self._loadout_dir_b)
-            ),
-        }
+        required_pilot_ids = {mech_a.mech_id, mech_b.mech_id}
+        missing_pilots = required_pilot_ids - set(self._pilots)
+        if missing_pilots:
+            raise ValueError(f"missing injected pilots for seats: {sorted(missing_pilots)}")
 
         self._bus.publish(
             self._make_match_event(
@@ -261,16 +235,18 @@ class MatchRunner:
                 self._catalog.sensors,
                 emit=self._bus.publish,
                 correlation_id=self._correlation_id,
+                event_factory=self._events,
             ).apply(tick_event)
 
             ReducerPilotTick(
                 self._match_id,
                 self.fold.state,
-                pilots,
+                self._pilots,
                 sensor_events=list(self._sensor_buffer),
                 emit=self._bus.publish,
                 weapon_specs=self._catalog.weapons,
                 correlation_id=self._correlation_id,
+                event_factory=self._events,
             ).apply(tick_event)
 
             # Resolve intents in initiative order. Initiative is a real combat
@@ -554,6 +530,7 @@ class MatchRunner:
             return  # silent drop — PILOT_DECISION_MADE records the attempt
         self._bus.publish(
             build_mode_transition_started_event(
+                event_factory=self._events,
                 match_id=self._match_id,
                 correlation_id=self._correlation_id,
                 causation_id=intent.envelope.message_id,
@@ -623,7 +600,7 @@ class MatchRunner:
     def _make_match_event(
         self, event_type: SOEventType, *, tick: int, payload: dict[str, Any]
     ) -> ModelSOEventEnvelope:
-        return make_event(
+        return self._events.make(
             match_id=self._match_id,
             tick=tick,
             sequence_in_tick=0,  # bus re-stamps
@@ -654,7 +631,7 @@ class MatchRunner:
         trace WEAPON_FIRED back to the WEAPON_FIRE_INTENT that triggered it.
         """
         if caused_by_intent is not None:
-            return caused_by(  # the ONEX child-envelope factory
+            return self._events.caused_by(
                 caused_by_intent,
                 match_id=self._match_id,
                 tick=tick,
@@ -664,7 +641,7 @@ class MatchRunner:
                 subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
                 payload=payload,
             )
-        return make_event(
+        return self._events.make(
             match_id=self._match_id,
             tick=tick,
             sequence_in_tick=0,  # bus re-stamps
@@ -769,53 +746,19 @@ def _require_valid_budgets(loadout: ModelSOLoadout, catalog: MatchContractCatalo
 
 def run_match(
     *,
+    overlay: ModelSOApplicationOverlay,
     red_loadout: str | Path,
     blue_loadout: str | Path,
     seed: int,
     max_ticks: int,
-    ledger_path: Path,
-    leaderboard_path: Path,
-    contracts_data_dir: Path | None = None,
 ) -> ModelSOMatchState:
-    """Wire the full Task 1-33 stack and drive one red-vs-blue duel to its end.
+    """Compatibility facade delegating to the sole production composition root."""
+    from steel_onslaught.match.composition import run_composed_match
 
-    Delegates the composition to ``assemble_match_live()`` (the ONEX-style
-    wiring function) and drives the runner to termination. The subscriber
-    order (ledger → fold → scoring → leaderboard) is fixed there.
-
-    Hard gates (plan Task 29/34): a match whose ledger does not replay to the
-    live state must never be reported as healthy; a draw must not record a winner.
-    """
-    from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
-    from steel_onslaught.match.composition import assemble_match_live
-
-    catalog = MatchContractCatalog.load(contracts_data_dir)
-    pilot_registry = PilotSpecRegistry.load(
-        contracts_data_dir / "pilots" if contracts_data_dir is not None else None
-    )
-    red_path = Path(red_loadout)
-    blue_path = Path(blue_loadout)
-    red = load_loadout(red_path)
-    blue = load_loadout(blue_path)
-    _require_valid_budgets(red, catalog)
-    _require_valid_budgets(blue, catalog)
-
-    stack = assemble_match_live(
-        red=red,
-        blue=blue,
-        red_loadout_dir=red_path.parent,
-        blue_loadout_dir=blue_path.parent,
+    return run_composed_match(
+        overlay=overlay,
+        red_loadout_path=Path(red_loadout),
+        blue_loadout_path=Path(blue_loadout),
         seed=seed,
         max_ticks=max_ticks,
-        ledger_path=ledger_path,
-        leaderboard_path=leaderboard_path,
-        catalog=catalog,
-        pilot_registry=pilot_registry,
     )
-    final = stack.runner.run()
-
-    if final.status is not SOMatchStatus.ENDED:
-        raise RuntimeError(f"match {stack.match_id!r} did not terminate: {final.status.value}")
-    if final.end_reason is SOMatchEndReason.DRAW_MAX_TICKS and final.winner_id is not None:
-        raise RuntimeError("draw recorded a winner — lifecycle invariant violated")
-    return final

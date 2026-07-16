@@ -18,7 +18,7 @@ around via the bus or the ledger.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -27,8 +27,8 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    make_event,
 )
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
@@ -108,9 +108,15 @@ class ReducerMatchLifecycle:
     """Per-match lifecycle reducer. Construct one per ``match_id``."""
 
     def __init__(
-        self, match_id: str, correlation_id: UUID | None = None, bus: EventBus | None = None
+        self,
+        match_id: str,
+        correlation_id: UUID,
+        *,
+        event_factory: EventFactory,
+        bus: EventBus | None = None,
     ) -> None:
-        self._correlation_id = correlation_id if correlation_id is not None else uuid4()
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._bus = bus
         self._state = ModelSOMatchState(
             match_id=match_id,
@@ -276,7 +282,7 @@ class ReducerMatchLifecycle:
         if self._bus is None:
             return
         self._bus.publish(
-            make_event(
+            self._events.make(
                 match_id=self._state.match_id,
                 correlation_id=self._correlation_id,
                 tick=self._state.tick,  # bus re-stamps tick + sequence_in_tick

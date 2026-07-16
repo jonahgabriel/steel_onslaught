@@ -25,6 +25,7 @@ and ``gizmo.efficiency.efficient_regulator`` (see the loadout YAML comments).
 from __future__ import annotations
 
 import contextlib
+import json
 import socket
 import subprocess
 import sys
@@ -36,8 +37,8 @@ import pytest
 from click.testing import CliRunner
 
 from steel_onslaught.cli.main import main as cli_main
-from steel_onslaught.match.fold import MatchContractCatalog
-from steel_onslaught.match.runner import run_match
+from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from steel_onslaught.match.composition import assemble_match_live
 from steel_onslaught.match.state import SOMatchEndReason, SOMatchStatus
 from steel_onslaught.projections.leaderboard.handler import LeaderboardProjection
 from steel_onslaught.replay.engine import ReplayEngine
@@ -55,11 +56,45 @@ _WS_PORT = 8765
 _VITE_PORT = 5173
 
 
-def capture_cli_replay(ledger_path: Path, match_id: str) -> str:
+def _write_overlay(
+    tmp_path: Path, *, ledger_path: Path, leaderboard_path: Path
+) -> tuple[ModelSOApplicationOverlay, Path]:
+    overlay = ModelSOApplicationOverlay.model_validate(
+        {
+            "schema_version": "1",
+            "bus": {"kind": "in_process"},
+            "event_ledger": {
+                "kind": "sqlite",
+                "path": ledger_path,
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+            },
+            "leaderboard": {
+                "kind": "sqlite",
+                "path": leaderboard_path,
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+            },
+            "contracts": {
+                "catalog_dir": _REPO_ROOT / "contracts_data",
+                "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",
+            },
+            "clock": {"kind": "system_utc"},
+            "identity": {"kind": "system"},
+        }
+    )
+    overlay_path = tmp_path / "application.json"
+    overlay_path.write_text(json.dumps(overlay.model_dump(mode="json")), encoding="utf-8")
+    return overlay, overlay_path
+
+
+def capture_cli_replay(overlay_path: Path, match_id: str) -> str:
     """Run ``so replay`` against *ledger_path* and return its stdout."""
     result = CliRunner().invoke(
         cli_main,
-        ["replay", "--ledger", str(ledger_path), "--match", match_id, "--no-color"],
+        ["replay", "--overlay", str(overlay_path), "--match", match_id, "--no-color"],
     )
     assert result.exit_code == 0, f"so replay failed: {result.output}"
     return result.output
@@ -103,14 +138,17 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
     # 1) Run match live with the canonical decisive-victory seed.
     ledger_path = tmp_path / "match.sqlite"
     leaderboard_path = tmp_path / "leaderboard.sqlite"
-    live_state = run_match(
-        red_loadout=_LOADOUTS / "proof_red_predictive_ironclad.yaml",
-        blue_loadout=_LOADOUTS / "proof_blue_aggressive_hunter.yaml",
+    overlay, overlay_path = _write_overlay(
+        tmp_path, ledger_path=ledger_path, leaderboard_path=leaderboard_path
+    )
+    stack = assemble_match_live(
+        overlay=overlay,
+        red_loadout_path=_LOADOUTS / "proof_red_predictive_ironclad.yaml",
+        blue_loadout_path=_LOADOUTS / "proof_blue_aggressive_hunter.yaml",
         seed=DECISIVE_SEED,
         max_ticks=200,
-        ledger_path=ledger_path,
-        leaderboard_path=leaderboard_path,
     )
+    live_state = stack.runner.run()
     assert live_state.status is SOMatchStatus.ENDED
     assert live_state.tick <= 200
     assert live_state.end_reason is SOMatchEndReason.LAST_MECH_STANDING
@@ -120,7 +158,8 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
     replay = ReplayEngine(
         open_sqlite_ledger(ledger_path),
         match_id=live_state.match_id,
-        catalog=MatchContractCatalog.load(None),
+        catalog=stack.catalog,
+        event_factory=stack.event_factory,
     )
     reconstructed = replay.reconstruct_at_tick(live_state.tick)
     assert reconstructed == live_state, "replay must reproduce canonical state exactly"
@@ -135,8 +174,8 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
     assert top[0].is_draw is False
 
     # 4) CLI projection produces byte-identical output across runs.
-    cli_out_1 = capture_cli_replay(ledger_path, live_state.match_id)
-    cli_out_2 = capture_cli_replay(ledger_path, live_state.match_id)
+    cli_out_1 = capture_cli_replay(overlay_path, live_state.match_id)
+    cli_out_2 = capture_cli_replay(overlay_path, live_state.match_id)
     assert cli_out_1 == cli_out_2, "CLI replay must be byte-identical across runs"
     assert f"VICTORY: {live_state.winner_id}" in cli_out_1
 
@@ -148,8 +187,8 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
         "-c",
         "from steel_onslaught.cli import main; main()",
         "serve",
-        "--ledger",
-        str(ledger_path),
+        "--overlay",
+        str(overlay_path),
         "--match",
         live_state.match_id,
         "--port",
@@ -180,14 +219,17 @@ def test_proof_of_life_draw_max_ticks(tmp_path: Path) -> None:
     """Two defensive pilots that never engage → match terminates at max_ticks."""
     ledger_path = tmp_path / "draw.sqlite"
     leaderboard_path = tmp_path / "draw_leaderboard.sqlite"
-    live_state = run_match(
-        red_loadout=_LOADOUTS / "proof_red_defensive_passive.yaml",
-        blue_loadout=_LOADOUTS / "proof_blue_defensive_passive.yaml",
+    overlay, _ = _write_overlay(
+        tmp_path, ledger_path=ledger_path, leaderboard_path=leaderboard_path
+    )
+    stack = assemble_match_live(
+        overlay=overlay,
+        red_loadout_path=_LOADOUTS / "proof_red_defensive_passive.yaml",
+        blue_loadout_path=_LOADOUTS / "proof_blue_defensive_passive.yaml",
         seed=DRAW_SEED,
         max_ticks=50,  # short cap to keep the test fast
-        ledger_path=ledger_path,
-        leaderboard_path=leaderboard_path,
     )
+    live_state = stack.runner.run()
     assert live_state.status is SOMatchStatus.ENDED
     assert live_state.tick == 50  # match runs the full cap
     assert live_state.end_reason is SOMatchEndReason.DRAW_MAX_TICKS
@@ -202,6 +244,7 @@ def test_proof_of_life_draw_max_ticks(tmp_path: Path) -> None:
     replay = ReplayEngine(
         open_sqlite_ledger(ledger_path),
         match_id=live_state.match_id,
-        catalog=MatchContractCatalog.load(None),
+        catalog=stack.catalog,
+        event_factory=stack.event_factory,
     )
     assert replay.reconstruct_at_tick(live_state.tick) == live_state
