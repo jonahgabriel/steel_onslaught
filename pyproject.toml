@@ -2,17 +2,17 @@
 name = "steel_onslaught"
 version = "0.1.0"
 description = "Steampunk tactical mech battle — event-bus-native, replayable, contract-driven contest framework"
-requires-python = ">=3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "click>=8.1",
     "ulid-py>=1.1",
     "websockets>=12.0",  # used by Task 31's WebSocket bridge to the frontend
-    # OmniNode ONEX primitives — workspace siblings (local path sources; see
-    # [tool.uv.sources] below). Core provides the event/envelope/reducer/intent
-    # models + in-process bus; SPI provides the protocol contracts. Infra
-    # (Kafka/Postgres) is intentionally not pulled into this single-process engine.
+    # OmniNode ONEX primitives — resolved from published packages so fresh
+    # clones and hosted CI do not depend on a developer's workspace layout.
+    # Core provides the event/envelope/reducer/intent models; SPI provides the
+    # protocol contracts. Infra is intentionally excluded from this engine.
     "omnibase-core>=0.46.2",
     "omnibase-spi>=0.22.0",
 ]
@@ -47,20 +47,12 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "RUF"]
 
 [tool.mypy]
 strict = true
-python_version = "3.13"
+python_version = "3.12"
 files = ["src/", "tests/"]
-
-[tool.uv.sources]
-# Workspace sibling clones — resolve omnibase packages from the local checkout
-# rather than PyPI, matching how an internal OmniNode monorepo composes them.
-# The core override is global so transitive resolutions (e.g. spi's own core
-# dependency, which it pins to a git tag) also resolve to the local path.
-omnibase-core = { path = "/Users/jonah/Code/omni_home/omnibase_core" }
-omnibase-spi = { path = "/Users/jonah/Code/omni_home/omnibase_spi" }

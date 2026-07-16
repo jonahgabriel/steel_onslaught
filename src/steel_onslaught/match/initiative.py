@@ -21,8 +21,6 @@ its ordering to the intent-resolution loop.
 
 from __future__ import annotations
 
-import random
-
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import ModelSOMechRuntimeState
 
@@ -56,7 +54,10 @@ def initiative_score(mech: ModelSOMechRuntimeState) -> int:
 
     boiler = mech.boiler
     # Pressure responsiveness: ample reserves let the mech act crisply.
-    if boiler.pressure_maximum > 0 and boiler.pressure_current >= _PRESSURE_BONUS_THRESHOLD * boiler.pressure_maximum:
+    if (
+        boiler.pressure_maximum > 0
+        and boiler.pressure_current >= _PRESSURE_BONUS_THRESHOLD * boiler.pressure_maximum
+    ):
         score += _PRESSURE_BONUS
     # Heat strain: a redline-hot boiler fights sluggishly.
     if boiler.status_redline:
@@ -92,9 +93,7 @@ def order_by_initiative(
 
     # Decorate-sort-undecorate: pair each mech with (score, random tiebreak key)
     # so sort is deterministic and ties break by the seeded RNG.
-    decorated = [
-        (initiative_score(mech), tiebreak_rng.random(), mech) for mech in mechs
-    ]
+    decorated = [(initiative_score(mech), tiebreak_rng.random(), mech) for mech in mechs]
     # Sort by score descending; the random tiebreak key orders equal scores.
     decorated.sort(key=lambda triple: (-triple[0], triple[1]))
     return [mech for _, _, mech in decorated]

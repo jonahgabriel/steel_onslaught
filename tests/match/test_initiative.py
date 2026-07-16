@@ -164,8 +164,7 @@ def test_tiebreak_varies_across_ticks() -> None:
     a = _mech("mech.a.01", chassis_class="medium")
     b = _mech("mech.b.01", chassis_class="medium")
     orderings = {
-        tuple(m.mech_id for m in order_by_initiative([a, b], rng=rng, tick=t))
-        for t in range(1, 21)
+        tuple(m.mech_id for m in order_by_initiative([a, b], rng=rng, tick=t)) for t in range(1, 21)
     }
     # Across 20 ticks the tiebreak should produce both orderings at least once.
     assert len(orderings) == 2

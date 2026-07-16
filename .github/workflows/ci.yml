@@ -19,7 +19,7 @@ jobs:
         with:
           enable-cache: true
       - name: Set up Python
-        run: uv python install 3.13
+        run: uv python install 3.12
       - name: Install
         run: uv sync --extra dev
       # The proof-of-life e2e (tests/integration/test_proof_of_life.py) spawns
@@ -88,7 +88,7 @@ jobs:
         with:
           enable-cache: true
       - name: Set up Python
-        run: uv python install 3.13
+        run: uv python install 3.12
       - name: Install (core deps only)
         run: uv sync
       - name: Evidence schema gate
