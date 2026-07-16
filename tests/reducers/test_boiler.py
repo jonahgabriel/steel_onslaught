@@ -23,6 +23,7 @@ import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -141,7 +142,7 @@ def _make_mech(boiler: ModelSOBoilerState) -> ModelSOMechRuntimeState:
         hp_max=100,
         armor_value=10,
         armor_max=10,
-        current_mode="recon",
+        current_mode=ModeId.RECON,
         boiler=boiler,
     )
 

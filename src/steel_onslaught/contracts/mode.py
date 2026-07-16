@@ -12,7 +12,7 @@ Invariants enforced at validation time:
 
 from __future__ import annotations
 
-import re
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,7 +22,15 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # ---------------------------------------------------------------------------
 
 _RUPTURE_THRESHOLD = 100  # design §10.3 canonical rupture threshold for guard checks
-_MODE_ID_PATTERN = re.compile(r"^mode\.[a-z][a-z0-9_]*$")
+
+
+class ModeId(StrEnum):
+    """Closed canonical combat-mode identifier used across every boundary."""
+
+    RECON = "recon"
+    ASSAULT = "assault"
+    EVASION = "evasion"
+
 
 # ---------------------------------------------------------------------------
 # Sub-models
@@ -116,9 +124,15 @@ class ModelSOModeSpec(BaseModel):
     @field_validator("id")
     @classmethod
     def id_matches_pattern(cls, v: str) -> str:
-        if not _MODE_ID_PATTERN.match(v):
+        prefix, separator, raw_mode = v.partition(".")
+        try:
+            mode = ModeId(raw_mode)
+        except ValueError:
+            mode = None
+        if prefix != "mode" or separator != "." or mode is None:
             raise ValueError(
-                f"id={v!r} must match ^mode\\.[a-z][a-z0-9_]*$ (e.g. 'mode.recon', 'mode.assault')"
+                f"id={v!r} must identify one of the closed combat modes: "
+                f"{[f'mode.{item.value}' for item in ModeId]}"
             )
         return v
 
@@ -135,8 +149,8 @@ class ModelSOModeTransition(BaseModel):
 
     schema_version: Literal["0.1.0"] = "0.1.0"
     kind: Literal["steel_onslaught.mode_transition"]
-    from_mode: str = Field(description="Mode name (without 'mode.' prefix, e.g. 'recon')")
-    to_mode: str = Field(description="Mode name (without 'mode.' prefix, e.g. 'assault')")
+    from_mode: ModeId = Field(description="Closed source mode identifier")
+    to_mode: ModeId = Field(description="Closed destination mode identifier")
     costs: ModelSOModeTransitionCosts
     restrictions: ModelSOModeTransitionRestrictions
     vulnerability: ModelSOModeTransitionVulnerability
@@ -149,3 +163,42 @@ class ModelSOModeTransition(BaseModel):
                 "from_mode and to_mode must differ."
             )
         return self
+
+
+class ModelSOModeSwitchIntentPayload(BaseModel):
+    """Closed payload emitted by the canonical pilot-to-runner intent path."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    target_mode: ModeId
+
+
+class ModelSOLegacyModeSwitchIntentPayload(BaseModel):
+    """Closed payload consumed only by the legacy standalone mode reducer."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    from_mode: ModeId
+    to_mode: ModeId
+
+
+class ModelSOModeTransitionStartedPayload(BaseModel):
+    """Closed canonical MODE_TRANSITION_STARTED payload."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    from_mode: ModeId
+    to_mode: ModeId
+    costs: ModelSOModeTransitionCosts
+    sensor_dropout_ticks: int = Field(ge=0)
+    evasion_penalty: float = Field(ge=0.0)
+
+
+class ModelSOModeTransitionCompletedPayload(BaseModel):
+    """Closed canonical MODE_TRANSITION_COMPLETED payload."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    from_mode: ModeId
+    new_mode: ModeId
+    mode_lock_until: int = Field(ge=0)

@@ -49,7 +49,11 @@ from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.gizmo import GizmoCategory, ModelSOGizmoSpec
-from steel_onslaught.contracts.mode import ModelSOModeTransition
+from steel_onslaught.contracts.mode import (
+    ModeId,
+    ModelSOModeTransition,
+    ModelSOModeTransitionStartedPayload,
+)
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
@@ -98,6 +102,27 @@ class MissingMatchContractError(ValueError):
         )
 
 
+class MatchContractStateMismatchError(ValueError):
+    """MATCH_STARTED state disagrees with its injected contract projection."""
+
+    def __init__(
+        self,
+        field: str,
+        actual: object,
+        expected: object,
+        *,
+        owner_id: str,
+    ) -> None:
+        self.field = field
+        self.actual = actual
+        self.expected = expected
+        self.owner_id = owner_id
+        super().__init__(
+            "match_contract_state_mismatch: "
+            f"{owner_id!r}.{field} is {actual!r}; injected contract truth requires {expected!r}"
+        )
+
+
 class MatchContractCatalog:
     """Static contract indexes a match needs at runtime AND at replay time.
 
@@ -114,7 +139,7 @@ class MatchContractCatalog:
         sensors: dict[str, ModelSOSensorSpec],
         weapons: dict[str, ModelSOWeaponSpec],
         gizmos: dict[str, ModelSOGizmoSpec],
-        transitions: dict[tuple[str, str], ModelSOModeTransition],
+        transitions: dict[tuple[ModeId, ModeId], ModelSOModeTransition],
     ) -> None:
         self.chassis = chassis
         self.boilers = boilers
@@ -295,8 +320,8 @@ class MatchStateFold:
 
     def _require_transition(
         self,
-        from_mode: str,
-        to_mode: str,
+        from_mode: ModeId,
+        to_mode: ModeId,
         *,
         owner_id: str,
     ) -> ModelSOModeTransition:
@@ -312,12 +337,34 @@ class MatchStateFold:
     def _validate_match_started_contracts(self, payload: ModelSOMatchStartedPayload) -> None:
         """Validate every static mech reference before lifecycle state mutates."""
         for mech in payload.mechs:
-            self._require_contract(
+            chassis = self._require_contract(
                 self._catalog.chassis,
                 "chassis",
                 mech.chassis_id,
                 owner_id=mech.mech_id,
             )
+            expected_base_speed = chassis.constraints.base_speed
+            if mech.base_speed != expected_base_speed:
+                raise MatchContractStateMismatchError(
+                    "base_speed",
+                    mech.base_speed,
+                    expected_base_speed,
+                    owner_id=mech.mech_id,
+                )
+            expected_speed = mode_effective_speed(expected_base_speed, mech.current_mode)
+            if mech.speed != expected_speed:
+                raise MatchContractStateMismatchError(
+                    "speed",
+                    mech.speed,
+                    expected_speed,
+                    owner_id=mech.mech_id,
+                )
+            if mech.transition_to_mode is not None:
+                self._require_transition(
+                    mech.current_mode,
+                    mech.transition_to_mode,
+                    owner_id=mech.mech_id,
+                )
             for weapon_id in mech.weapon_cooldowns:
                 self._require_contract(
                     self._catalog.weapons,
@@ -402,23 +449,49 @@ class MatchStateFold:
     def _on_mode_transition_started(self, event: ModelSOEventEnvelope) -> None:
         mech_id = event.subject.mech_id
         working = self.state
+        payload = ModelSOModeTransitionStartedPayload.model_validate(event.payload)
+        mech = working.mech_states.get(mech_id)
+        if mech is None:
+            return
+        if payload.from_mode != mech.current_mode:
+            raise MatchContractStateMismatchError(
+                "current_mode",
+                mech.current_mode,
+                payload.from_mode,
+                owner_id=mech_id,
+            )
+        transition = self._require_transition(
+            payload.from_mode,
+            payload.to_mode,
+            owner_id=mech_id,
+        )
+        expected_payload = ModelSOModeTransitionStartedPayload(
+            from_mode=transition.from_mode,
+            to_mode=transition.to_mode,
+            costs=transition.costs,
+            sensor_dropout_ticks=transition.vulnerability.sensor_dropout_ticks,
+            evasion_penalty=transition.vulnerability.evasion_penalty_during_transition,
+        )
+        if payload != expected_payload:
+            raise MatchContractStateMismatchError(
+                "mode_transition",
+                payload.model_dump(mode="json"),
+                expected_payload.model_dump(mode="json"),
+                owner_id=mech_id,
+            )
         boiler = self._boilers.get(mech_id)
         if boiler is not None:
             working = boiler.apply(event, working)  # deduct costs (Task 22 fold)
-        mech = working.mech_states.get(mech_id)
-        if mech is not None:
-            costs = event.payload["costs"]
-            mech = mech.model_copy(
-                update={
-                    "transition_ticks_remaining": int(costs["transition_ticks"]),
-                    "transition_to_mode": str(event.payload["to_mode"]),
-                    "sensor_dropout_ticks_remaining": int(event.payload["sensor_dropout_ticks"]),
-                    "evasion": float(event.payload["evasion_penalty"]),
-                }
-            )
-            working = working.model_copy(
-                update={"mech_states": {**working.mech_states, mech_id: mech}}
-            )
+            mech = working.mech_states[mech_id]
+        mech = mech.model_copy(
+            update={
+                "transition_ticks_remaining": payload.costs.transition_ticks,
+                "transition_to_mode": payload.to_mode,
+                "sensor_dropout_ticks_remaining": payload.sensor_dropout_ticks,
+                "evasion": payload.evasion_penalty,
+            }
+        )
+        working = working.model_copy(update={"mech_states": {**working.mech_states, mech_id: mech}})
         self._mech_states = dict(working.mech_states)
 
     def _on_damage_applied(self, event: ModelSOEventEnvelope) -> None:
@@ -580,6 +653,12 @@ class MatchStateFold:
                 to_mode,
                 owner_id=mech_id,
             )
+            chassis = self._require_contract(
+                self._catalog.chassis,
+                "chassis",
+                mech.chassis_id,
+                owner_id=mech_id,
+            )
             lock_ticks = transition.restrictions.minimum_lock_ticks_after_switch
             lock_until = event.tick + lock_ticks
             new_states[mech_id] = mech.model_copy(
@@ -589,7 +668,7 @@ class MatchStateFold:
                     "transition_to_mode": None,
                     "mode_lock_until": lock_until,
                     "evasion": 0.0,  # transition vulnerability window closes
-                    "speed": mode_effective_speed(mech.base_speed, to_mode),
+                    "speed": mode_effective_speed(chassis.constraints.base_speed, to_mode),
                 }
             )
             self._emit(

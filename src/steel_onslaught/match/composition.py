@@ -20,7 +20,7 @@ from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
 from steel_onslaught.contracts.loadout import ModelSOLoadout
-from steel_onslaught.contracts.mode import ModelSOModeTransition
+from steel_onslaught.contracts.mode import ModeId, ModelSOModeTransition
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.contracts.pilot_registry import PilotResolutionError, PilotSpecRegistry
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
@@ -177,7 +177,7 @@ def _load_specs[ModelT: BaseModel](directory: Path, model: type[ModelT]) -> dict
 
 
 def load_match_contract_catalog(directory: Path) -> MatchContractCatalog:
-    transitions: dict[tuple[str, str], ModelSOModeTransition] = {}
+    transitions: dict[tuple[ModeId, ModeId], ModelSOModeTransition] = {}
     transitions_dir = directory / "modes" / "transitions"
     if not transitions_dir.is_dir():
         raise FileNotFoundError(f"required contract directory does not exist: {transitions_dir}")

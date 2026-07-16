@@ -32,6 +32,7 @@ from typing import Any
 from uuid import UUID, uuid5
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -119,7 +120,7 @@ def _mech_state(
         hp_max=100,
         armor_value=10,
         armor_max=10,
-        current_mode="recon",
+        current_mode=ModeId.RECON,
         weapon_cooldowns={"module.weapon.machine_gun": 0},
         boiler=boiler,
     )

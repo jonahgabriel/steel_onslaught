@@ -24,6 +24,7 @@ import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -148,7 +149,7 @@ def _mech(
         armor_max=5,
         alive=alive,
         pilot_alive=pilot_alive,
-        current_mode="recon",
+        current_mode=ModeId.RECON,
         mode_lock_until=mode_lock_until,
         boiler=_boiler(pressure=pressure, heat=heat, mech_id=mech_id),
         weapon_cooldowns=weapon_cooldowns or {},

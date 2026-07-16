@@ -22,6 +22,7 @@ from steel_onslaught.contracts.loadout import (
     ModelSOLoadoutBudgets,
     ModelSOLoadoutModules,
 )
+from steel_onslaught.contracts.mode import ModeId
 
 _DATA = Path(__file__).parent.parent.parent / "contracts_data"
 
@@ -79,7 +80,7 @@ def _module(
         pressure_draw=pressure_draw,
         heat_output=heat_output,
         signature_impact=signature_impact,
-        active_modes=active_modes,
+        active_modes=tuple(ModeId(mode) for mode in active_modes),
     )
 
 

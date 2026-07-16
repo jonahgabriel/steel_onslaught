@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.mode import ModeId
 
 # Steady-state pressure draw above this fraction of boiler capacity leaves no
 # headroom for weapons fire or mode switches and is rejected outright.
@@ -65,7 +66,7 @@ class ModelSOModuleBudget(BaseModel):
     signature_impact: float = Field(
         ge=0.0, description="Additive signature contribution while active."
     )
-    active_modes: tuple[str, ...] = Field(
+    active_modes: tuple[ModeId, ...] = Field(
         min_length=1,
         description="Mode names in which this module is active (e.g. 'assault', 'recon').",
     )

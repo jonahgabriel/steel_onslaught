@@ -23,6 +23,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -97,7 +98,7 @@ class ModelSOSensorReading(BaseModel):
     heat_estimate: float | None = Field(
         default=None, description="Present iff a thermal sensor resolved target heat"
     )
-    mode_estimate: str | None = Field(
+    mode_estimate: ModeId | None = Field(
         default=None, description="Present iff an acoustic sensor resolved target mode"
     )
 
@@ -127,7 +128,7 @@ class ModelSOPilotObservation(BaseModel):
     # Own state.
     boiler: ModelSOBoilerState
     weapons: list[ModelSOPilotWeaponView]
-    current_mode: str = Field(description="Mode name without prefix, e.g. 'recon'")
+    current_mode: ModeId = Field(description="Closed current combat mode")
     mode_lock_expired: bool
     position: ModelSOPosition
     hp_percent: float = Field(ge=0.0, le=100.0)

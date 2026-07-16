@@ -17,6 +17,7 @@ from typing import Literal
 import pytest
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.composition import load_loadout
@@ -202,7 +203,7 @@ def test_replay_rejects_missing_mode_transition_contract(tmp_path: Path) -> None
     live_state, ledger = _run_and_record(tmp_path)
     runtime = runtime_dependencies()
     transitions = dict(runtime.catalog.transitions)
-    transitions.pop(("recon", "assault"))
+    transitions.pop((ModeId.RECON, ModeId.ASSAULT))
     catalog = MatchContractCatalog(
         chassis=dict(runtime.catalog.chassis),
         boilers=dict(runtime.catalog.boilers),

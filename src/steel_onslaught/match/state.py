@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.pilots.schemas import ModelSOPosition
 
 # ---------------------------------------------------------------------------
@@ -101,14 +102,14 @@ class ModelSOMechRuntimeState(BaseModel):
     pilot_alive: bool = True
 
     # Mode + transition bookkeeping.
-    current_mode: str = Field(description="Mode name without prefix, e.g. 'recon'")
+    current_mode: ModeId = Field(description="Closed current combat mode")
     mode_lock_until: int = Field(
         default=0, ge=0, description="Tick at which the post-switch mode lock expires"
     )
     transition_ticks_remaining: int = Field(
         default=0, ge=0, description="Ticks left in an in-flight mode transition (0 = none)"
     )
-    transition_to_mode: str | None = Field(
+    transition_to_mode: ModeId | None = Field(
         default=None, description="Target mode of an in-flight transition (None = none)"
     )
     sensor_dropout_ticks_remaining: int = Field(

@@ -9,9 +9,13 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from steel_onslaught.contracts.mode import (
+    ModeId,
     ModelSOModeSpec,
+    ModelSOModeSwitchIntentPayload,
     ModelSOModeTransition,
+    ModelSOModeTransitionCompletedPayload,
     ModelSOModeTransitionCosts,
+    ModelSOModeTransitionStartedPayload,
 )
 
 CONTRACTS_DATA = Path(__file__).parent.parent.parent / "contracts_data" / "modes"
@@ -100,7 +104,7 @@ def test_all_nine_transitions_exist() -> None:
     The plan says "all 9 ordered pairs", but with 3 modes there are 3x2=6
     valid non-self-loop directed pairs.  We enforce all 6.
     """
-    modes = ["recon", "assault", "evasion"]
+    modes = list(ModeId)
     expected_pairs = {(f, t) for f in modes for t in modes if f != t}
     transitions = _load_all_transitions()
     found_pairs = {(t.from_mode, t.to_mode) for t in transitions}
@@ -169,6 +173,22 @@ def test_mode_spec_rejects_bad_id_format() -> None:
                 "active_systems": ["sensor"],
                 "passive_modifiers": {},
                 "default_priorities": ["observe"],
+            }
+        )
+
+
+@pytest.mark.unit
+def test_mode_spec_rejects_well_formed_but_unknown_mode_id() -> None:
+    with pytest.raises(ValidationError, match="closed combat modes"):
+        ModelSOModeSpec.model_validate(
+            {
+                "schema_version": "0.1.0",
+                "kind": "steel_onslaught.mode",
+                "id": "mode.siege",
+                "display_name": "Siege",
+                "active_systems": ["weapon"],
+                "passive_modifiers": {},
+                "default_priorities": ["fire"],
             }
         )
 
@@ -249,6 +269,68 @@ def test_transition_rejects_self_transition() -> None:
                     "evasion_penalty_during_transition": 0.0,
                     "sensor_dropout_ticks": 0,
                 },
+            }
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["from_mode", "to_mode"])
+def test_transition_rejects_unknown_mode_endpoint(field: str) -> None:
+    raw = {
+        "schema_version": "0.1.0",
+        "kind": "steel_onslaught.mode_transition",
+        "from_mode": "recon",
+        "to_mode": "assault",
+        "costs": {"pressure": 0, "heat": 0, "transition_ticks": 1},
+        "restrictions": {
+            "minimum_lock_ticks_after_switch": 0,
+            "cannot_switch_if_heat_above": None,
+            "cannot_switch_if_boiler_disabled": False,
+        },
+        "vulnerability": {
+            "evasion_penalty_during_transition": 0.0,
+            "sensor_dropout_ticks": 0,
+        },
+    }
+    raw[field] = "siege"
+
+    with pytest.raises(ValidationError):
+        ModelSOModeTransition.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_mode_switch_intent_payload_is_closed() -> None:
+    with pytest.raises(ValidationError):
+        ModelSOModeSwitchIntentPayload.model_validate({"target_mode": "siege"})
+    with pytest.raises(ValidationError):
+        ModelSOModeSwitchIntentPayload.model_validate(
+            {"target_mode": "assault", "fallback_mode": "recon"}
+        )
+
+
+@pytest.mark.unit
+def test_mode_transition_started_payload_is_closed() -> None:
+    valid = {
+        "from_mode": "recon",
+        "to_mode": "assault",
+        "costs": {"pressure": 1, "heat": 2, "transition_ticks": 3},
+        "sensor_dropout_ticks": 1,
+        "evasion_penalty": 0.2,
+    }
+    with pytest.raises(ValidationError):
+        ModelSOModeTransitionStartedPayload.model_validate({**valid, "to_mode": "siege"})
+    with pytest.raises(ValidationError):
+        ModelSOModeTransitionStartedPayload.model_validate({**valid, "legacy": True})
+
+
+@pytest.mark.unit
+def test_mode_transition_completed_payload_is_closed() -> None:
+    with pytest.raises(ValidationError):
+        ModelSOModeTransitionCompletedPayload.model_validate(
+            {
+                "from_mode": "recon",
+                "new_mode": "siege",
+                "mode_lock_until": 4,
             }
         )
 

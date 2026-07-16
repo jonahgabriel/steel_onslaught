@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.match.initiative import initiative_score, order_by_initiative
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import ModelSOMechRuntimeState
@@ -67,7 +68,7 @@ def _mech(
         hp_max=100,
         armor_value=10,
         armor_max=10,
-        current_mode="recon",
+        current_mode=ModeId.RECON,
         weapon_cooldowns={},
         boiler=_boiler(
             pressure=pressure,

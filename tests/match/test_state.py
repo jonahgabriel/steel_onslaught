@@ -164,6 +164,18 @@ def test_negative_weapon_cooldown_rejected() -> None:
 
 
 @pytest.mark.unit
+def test_unknown_current_mode_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _mech(current_mode="siege")
+
+
+@pytest.mark.unit
+def test_unknown_transition_target_mode_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _mech(transition_ticks_remaining=2, transition_to_mode="siege")
+
+
+@pytest.mark.unit
 def test_transition_ticks_without_target_mode_rejected() -> None:
     with pytest.raises(ValidationError):
         _mech(transition_ticks_remaining=2, transition_to_mode=None)

@@ -36,6 +36,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
+from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -143,7 +144,8 @@ def _intent_for(decision: ModelSOPilotDecision) -> tuple[SOEventType, dict[str, 
         case SOPilotAction.FIRE_WEAPON:
             return SOEventType.WEAPON_FIRE_INTENT, dict(decision.action_params)
         case SOPilotAction.SWITCH_MODE:
-            return SOEventType.MODE_SWITCH_INTENT, dict(decision.action_params)
+            payload = ModelSOModeSwitchIntentPayload.model_validate(decision.action_params)
+            return SOEventType.MODE_SWITCH_INTENT, payload.model_dump(mode="json")
         case SOPilotAction.VENT:
             return SOEventType.VENT_INTENT, dict(decision.action_params)
         case _:

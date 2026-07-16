@@ -28,11 +28,14 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -58,7 +61,7 @@ from steel_onslaught.reducers.mode import (
     build_mode_transition_started_event,
     validate_mode_switch,
 )
-from steel_onslaught.reducers.movement import chebyshev, effective_speed
+from steel_onslaught.reducers.movement import chebyshev, effective_speed, mode_effective_speed
 from steel_onslaught.reducers.pilot_tick import ReducerPilotTick
 from steel_onslaught.reducers.sensors import ReducerSensors
 from steel_onslaught.reducers.weapons import (
@@ -85,10 +88,10 @@ _FACING_B = 225
 
 # Combat stats: hull/armor come from the chassis contract (base_hp /
 # base_armor on ModelSOChassisConstraints), so chassis class drives durability.
-_INITIAL_MODE = "recon"
+_INITIAL_MODE = ModeId.RECON
 
 # All mode names a module may be active in (budget normalization).
-_ALL_MODES = ("recon", "assault", "evasion")
+_ALL_MODES = tuple(ModeId)
 
 _INTENT_EVENT_TYPES = [
     SOEventType.MOVE_INTENT,
@@ -516,7 +519,11 @@ class MatchRunner:
         state: ModelSOMatchState,
         mech: ModelSOMechRuntimeState,
     ) -> None:
-        to_mode = str(intent.payload.get("target_mode", ""))
+        try:
+            payload = ModelSOModeSwitchIntentPayload.model_validate(intent.payload)
+        except ValidationError:
+            return  # malformed/unknown mode intent is non-canonical and silently dropped
+        to_mode = payload.target_mode
         if mech.transition_ticks_remaining > 0:
             return  # already mid-transition
         transition = self._catalog.transitions.get((mech.current_mode, to_mode))
@@ -585,7 +592,7 @@ class MatchRunner:
             base_speed=chassis.constraints.base_speed,
             position=position,
             facing=facing,
-            speed=chassis.constraints.base_speed,
+            speed=mode_effective_speed(chassis.constraints.base_speed, _INITIAL_MODE),
             hp=chassis.constraints.base_hp,
             hp_max=chassis.constraints.base_hp,
             armor_value=chassis.constraints.base_armor,
@@ -686,7 +693,7 @@ def _module_budgets(
                 pressure_draw=0.0,
                 heat_output=float(weapon.heat_generated),
                 signature_impact=0.0,
-                active_modes=("assault",),
+                active_modes=(ModeId.ASSAULT,),
             )
         )
     for sensor_id in loadout.modules.sensors:

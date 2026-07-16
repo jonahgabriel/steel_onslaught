@@ -20,6 +20,7 @@ import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -172,7 +173,7 @@ def _mech(
         hp_max=100,
         armor_value=5,
         armor_max=5,
-        current_mode="recon",
+        current_mode=ModeId.RECON,
         sensor_ids=sensor_ids,
         jamming_intensity=jamming_intensity,
         sensor_dropout_ticks_remaining=sensor_dropout_ticks_remaining,

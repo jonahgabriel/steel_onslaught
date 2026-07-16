@@ -12,73 +12,106 @@ import pytest
 
 _SRC = Path(__file__).parents[1] / "src" / "steel_onslaught"
 _ROOT = _SRC / "match" / "composition.py"
-_FORBIDDEN_NAMES = {
-    "AggressivePilot",
-    "DefensivePilot",
-    "EventFactory",
-    "InProcessEventBus",
-    "LeaderboardHandler",
-    "MatchContractCatalog",
-    "ModelSOFilesystemLearningArtifactsConfig",
-    "ModelSOSQLiteLeaderboardConfig",
-    "ModelSOSQLiteLedgerConfig",
-    "PilotSpecRegistry",
-    "PredictivePilot",
-    "SQLiteLedger",
-    "SystemClock",
-    "SystemIdentityProvider",
-    "YamlFilesystemLearningArtifactStore",
-}
-_EFFECT_NAMES = {"datetime.now", "ulid.new", "uuid4"}
-_OWNED_CLASS_DEFINITIONS: dict[Path, frozenset[str]] = {
-    Path("bus/in_process.py"): frozenset({"InProcessEventBus"}),
-    Path("contracts/pilot_registry.py"): frozenset({"PilotSpecRegistry"}),
-    Path("events/factory.py"): frozenset({"EventFactory"}),
-    Path("learning/filesystem_artifacts.py"): frozenset(
-        {
-            "ModelSOFilesystemLearningArtifactsConfig",
-            "YamlFilesystemLearningArtifactStore",
-        }
+_FORBIDDEN_SYMBOLS = {
+    "datetime.datetime.now": "datetime.now",
+    "steel_onslaught.bus.in_process.InProcessEventBus": "InProcessEventBus",
+    "steel_onslaught.contracts.pilot_registry.PilotSpecRegistry": "PilotSpecRegistry",
+    "steel_onslaught.events.factory.EventFactory": "EventFactory",
+    "steel_onslaught.learning.filesystem_artifacts.ModelSOFilesystemLearningArtifactsConfig": (
+        "ModelSOFilesystemLearningArtifactsConfig"
     ),
-    Path("ledger/sqlite_ledger.py"): frozenset({"ModelSOSQLiteLedgerConfig", "SQLiteLedger"}),
-    Path("match/composition.py"): frozenset({"SystemClock", "SystemIdentityProvider"}),
-    Path("match/fold.py"): frozenset({"MatchContractCatalog"}),
-    Path("pilots/aggressive.py"): frozenset({"AggressivePilot"}),
-    Path("pilots/defensive.py"): frozenset({"DefensivePilot"}),
-    Path("pilots/predictive.py"): frozenset({"PredictivePilot"}),
-    Path("projections/leaderboard/handler.py"): frozenset(
-        {"LeaderboardHandler", "ModelSOSQLiteLeaderboardConfig"}
+    "steel_onslaught.learning.filesystem_artifacts.YamlFilesystemLearningArtifactStore": (
+        "YamlFilesystemLearningArtifactStore"
     ),
+    "steel_onslaught.ledger.sqlite_ledger.ModelSOSQLiteLedgerConfig": ("ModelSOSQLiteLedgerConfig"),
+    "steel_onslaught.ledger.sqlite_ledger.SQLiteLedger": "SQLiteLedger",
+    "steel_onslaught.match.composition.SystemClock": "SystemClock",
+    "steel_onslaught.match.composition.SystemIdentityProvider": "SystemIdentityProvider",
+    "steel_onslaught.match.fold.MatchContractCatalog": "MatchContractCatalog",
+    "steel_onslaught.pilots.aggressive.AggressivePilot": "AggressivePilot",
+    "steel_onslaught.pilots.defensive.DefensivePilot": "DefensivePilot",
+    "steel_onslaught.pilots.predictive.PredictivePilot": "PredictivePilot",
+    "steel_onslaught.projections.leaderboard.handler.LeaderboardHandler": ("LeaderboardHandler"),
+    "steel_onslaught.projections.leaderboard.handler.ModelSOSQLiteLeaderboardConfig": (
+        "ModelSOSQLiteLeaderboardConfig"
+    ),
+    "ulid.new": "ulid.new",
+    "uuid.uuid4": "uuid4",
 }
 
 # Exact direct-call budget. Constructor references, lambdas, wrappers, and
 # calls in any other function/file are forbidden even inside composition.py.
 _APPROVED_CALLS = Counter(
     {
-        ("SystemClock.now", "datetime.now"): 1,
+        ("SystemClock.now", "datetime.datetime.now"): 1,
         ("SystemIdentityProvider.new_match_id", "ulid.new"): 1,
-        ("SystemIdentityProvider.new_correlation_id", "uuid4"): 1,
+        ("SystemIdentityProvider.new_correlation_id", "uuid.uuid4"): 1,
         ("SystemIdentityProvider.new_event_id", "ulid.new"): 1,
-        ("SystemIdentityProvider.new_message_id", "uuid4"): 1,
-        ("load_match_contract_catalog", "MatchContractCatalog"): 1,
-        ("load_pilot_registry", "PilotSpecRegistry"): 1,
-        ("pilot_from_spec", "AggressivePilot"): 1,
-        ("pilot_from_spec", "DefensivePilot"): 1,
-        ("pilot_from_spec", "PredictivePilot"): 1,
-        ("build_runtime_dependencies", "SystemClock"): 1,
-        ("build_runtime_dependencies", "SystemIdentityProvider"): 1,
-        ("build_runtime_dependencies", "EventFactory"): 1,
-        ("build_runtime_dependencies", "InProcessEventBus"): 1,
-        ("build_runtime_dependencies", "ModelSOSQLiteLedgerConfig"): 1,
-        ("build_runtime_dependencies", "SQLiteLedger"): 1,
-        ("build_runtime_dependencies", "ModelSOSQLiteLeaderboardConfig"): 1,
-        ("build_runtime_dependencies", "LeaderboardHandler"): 1,
-        ("build_learning_dependencies", "SystemClock"): 1,
+        ("SystemIdentityProvider.new_message_id", "uuid.uuid4"): 1,
+        (
+            "load_match_contract_catalog",
+            "steel_onslaught.match.fold.MatchContractCatalog",
+        ): 1,
+        (
+            "load_pilot_registry",
+            "steel_onslaught.contracts.pilot_registry.PilotSpecRegistry",
+        ): 1,
+        (
+            "pilot_from_spec",
+            "steel_onslaught.pilots.aggressive.AggressivePilot",
+        ): 1,
+        (
+            "pilot_from_spec",
+            "steel_onslaught.pilots.defensive.DefensivePilot",
+        ): 1,
+        (
+            "pilot_from_spec",
+            "steel_onslaught.pilots.predictive.PredictivePilot",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.match.composition.SystemClock",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.match.composition.SystemIdentityProvider",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.events.factory.EventFactory",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.bus.in_process.InProcessEventBus",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.ledger.sqlite_ledger.ModelSOSQLiteLedgerConfig",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.ledger.sqlite_ledger.SQLiteLedger",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.projections.leaderboard.handler.ModelSOSQLiteLeaderboardConfig",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.projections.leaderboard.handler.LeaderboardHandler",
+        ): 1,
         (
             "build_learning_dependencies",
-            "ModelSOFilesystemLearningArtifactsConfig",
+            "steel_onslaught.match.composition.SystemClock",
         ): 1,
-        ("build_learning_dependencies", "YamlFilesystemLearningArtifactStore"): 1,
+        (
+            "build_learning_dependencies",
+            "steel_onslaught.learning.filesystem_artifacts.ModelSOFilesystemLearningArtifactsConfig",
+        ): 1,
+        (
+            "build_learning_dependencies",
+            "steel_onslaught.learning.filesystem_artifacts.YamlFilesystemLearningArtifactStore",
+        ): 1,
     }
 )
 
@@ -86,19 +119,24 @@ _APPROVED_CALLS = Counter(
 @dataclass(frozen=True)
 class _Usage:
     line: int
-    kind: str
+    symbol: str
     function: str
     direct_call: bool
     in_lambda: bool
 
+    @property
+    def kind(self) -> str:
+        return _FORBIDDEN_SYMBOLS[self.symbol]
 
-_UNRESOLVED = object()
+
+_Provenance = frozenset[str]
+_UNRESOLVED: _Provenance = frozenset()
 
 
 @dataclass
 class _Scope:
-    kind: Literal["module", "class", "function", "lambda"]
-    symbols: dict[str, str | object]
+    kind: Literal["module", "class", "function", "lambda", "comprehension"]
+    symbols: dict[str, _Provenance]
     local_names: frozenset[str] = frozenset()
     global_names: frozenset[str] = frozenset()
     nonlocal_names: frozenset[str] = frozenset()
@@ -260,12 +298,19 @@ def _lambda_scope(node: ast.Lambda) -> _Scope:
 
 
 class _ReferenceScanner(ast.NodeVisitor):
-    def __init__(self, *, owned_class_definitions: frozenset[str]) -> None:
-        self._scopes = [_Scope(kind="module", symbols={})]
-        self._owned_class_definitions = owned_class_definitions
+    def __init__(self, *, module_name: str, postponed_annotations: bool) -> None:
+        self._module_name = module_name
+        self._postponed_annotations = postponed_annotations
+        self._scopes = [
+            _Scope(
+                kind="module",
+                symbols={"getattr": frozenset({"builtins.getattr"})},
+            )
+        ]
         self.usages: list[_Usage] = []
         self._classes: list[str] = []
         self._functions: list[str] = []
+        self._deferred_class_bindings: list[tuple[_Scope, str, _Provenance]] = []
         self._lambda_depth = 0
 
     @property
@@ -277,126 +322,173 @@ class _ReferenceScanner(ast.NodeVisitor):
     def _scope(self) -> _Scope:
         return self._scopes[-1]
 
-    def _scope_value(self, scope: _Scope, name: str) -> str | None:
-        value = scope.symbols.get(name, _UNRESOLVED)
-        return value if isinstance(value, str) else None
-
-    def _resolve_nonlocal(self, name: str, start: int) -> str | None:
+    def _resolve_nonlocal(self, name: str, start: int) -> _Provenance:
         for scope in reversed(self._scopes[:start]):
             if scope.kind in {"function", "lambda"} and name in scope.local_names:
-                return self._scope_value(scope, name)
-        return None
+                return scope.symbols.get(name, _UNRESOLVED)
+        return _UNRESOLVED
 
-    def _resolve_name(self, name: str) -> str | None:
+    def _resolve_name(self, name: str) -> _Provenance:
         current_index = len(self._scopes) - 1
         current = self._scope
         if current.kind in {"function", "lambda"}:
             if name in current.global_names:
-                return self._scope_value(self._scopes[0], name) or name
+                return current.symbols.get(name, self._scopes[0].symbols.get(name, _UNRESOLVED))
             if name in current.nonlocal_names:
-                return self._resolve_nonlocal(name, current_index)
+                return current.symbols.get(name, self._resolve_nonlocal(name, current_index))
 
-        skip_class_scopes = current.kind in {"function", "lambda"}
+        function_like = {"function", "lambda", "comprehension"}
+        skip_class_scopes = current.kind in function_like
         for index in range(current_index, -1, -1):
             scope = self._scopes[index]
             if scope.kind == "class" and skip_class_scopes:
                 continue
-            if scope.kind in {"function", "lambda"} and name in scope.local_names:
-                return self._scope_value(scope, name)
+            if scope.kind in function_like and name in scope.local_names:
+                return scope.symbols.get(name, _UNRESOLVED)
             if name in scope.symbols:
-                return self._scope_value(scope, name)
-            if scope.kind in {"function", "lambda"}:
+                return scope.symbols[name]
+            if scope.kind in function_like:
                 skip_class_scopes = True
-        return name
+        return _UNRESOLVED
 
-    def _binding_scope(self, name: str) -> _Scope:
-        current = self._scope
-        if current.kind not in {"function", "lambda"}:
-            return current
-        if name in current.global_names:
-            return self._scopes[0]
-        if name in current.nonlocal_names:
-            for scope in reversed(self._scopes[:-1]):
-                if scope.kind in {"function", "lambda"} and name in scope.local_names:
-                    return scope
-        return current
+    def _bind(self, name: str, resolved: _Provenance) -> None:
+        # Global/nonlocal assignments get a function-analysis-local override.
+        # Visiting a function definition must never mutate enclosing scan state.
+        self._scope.symbols[name] = resolved
 
-    def _bind(self, name: str, resolved: str | None) -> None:
-        self._binding_scope(name).symbols[name] = resolved or _UNRESOLVED
-
-    def resolve(self, node: ast.expr) -> str | None:
+    def resolve(self, node: ast.expr) -> _Provenance:
         if isinstance(node, ast.Name):
             return self._resolve_name(node.id)
         if isinstance(node, ast.Attribute):
-            base = self.resolve(node.value)
-            return f"{base}.{node.attr}" if base is not None else None
+            return frozenset(f"{base}.{node.attr}" for base in self.resolve(node.value))
+        if isinstance(node, ast.IfExp):
+            return self.resolve(node.body) | self.resolve(node.orelse)
+        if isinstance(node, ast.BoolOp):
+            return frozenset().union(*(self.resolve(value) for value in node.values))
+        if isinstance(node, ast.NamedExpr):
+            return self.resolve(node.value)
         if (
             isinstance(node, ast.Call)
-            and self.resolve(node.func) in {"getattr", "builtins.getattr"}
+            and "builtins.getattr" in self.resolve(node.func)
             and len(node.args) >= 2
             and isinstance(node.args[1], ast.Constant)
             and isinstance(node.args[1].value, str)
         ):
-            base = self.resolve(node.args[0])
-            return f"{base}.{node.args[1].value}" if base is not None else None
-        return None
+            return frozenset(f"{base}.{node.args[1].value}" for base in self.resolve(node.args[0]))
+        return _UNRESOLVED
+
+    def _import_module(self, node: ast.ImportFrom) -> str:
+        if node.level == 0:
+            return node.module or ""
+        package = self._module_name.rpartition(".")[0]
+        pieces = package.split(".") if package else []
+        keep = max(0, len(pieces) - (node.level - 1))
+        prefix = ".".join(pieces[:keep])
+        return ".".join(part for part in (prefix, node.module or "") if part)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            self._bind(alias.asname or alias.name.split(".")[0], alias.name)
+            if alias.asname is not None:
+                self._bind(alias.asname, frozenset({alias.name}))
+            else:
+                root = alias.name.split(".", 1)[0]
+                self._bind(root, frozenset({root}))
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        module = node.module or ""
+        module = self._import_module(node)
         for alias in node.names:
-            self._bind(
-                alias.asname or alias.name,
-                f"{module}.{alias.name}".lstrip("."),
-            )
+            if alias.name == "*":
+                continue
+            symbol = ".".join(part for part in (module, alias.name) if part)
+            self._bind(alias.asname or alias.name, frozenset({symbol}))
 
-    def _record(self, node: ast.expr, resolved: str, *, direct_call: bool) -> None:
-        kind = _forbidden_kind(resolved)
-        if kind is not None:
+    def _record(self, node: ast.expr, resolved: _Provenance, *, direct_call: bool) -> bool:
+        forbidden = sorted(resolved & _FORBIDDEN_SYMBOLS.keys())
+        for symbol in forbidden:
             self.usages.append(
                 _Usage(
                     line=node.lineno,
-                    kind=kind,
+                    symbol=symbol,
                     function=self.function,
                     direct_call=direct_call,
                     in_lambda=self._lambda_depth > 0,
                 )
             )
+        return bool(forbidden)
+
+    def _visit_annotation(self, node: ast.expr | None) -> None:
+        if node is not None and not self._postponed_annotations:
+            self.visit(node)
+
+    def _visit_arguments(self, arguments: ast.arguments) -> None:
+        for argument in [
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ]:
+            self._visit_annotation(argument.annotation)
+        if arguments.vararg is not None:
+            self._visit_annotation(arguments.vararg.annotation)
+        if arguments.kwarg is not None:
+            self._visit_annotation(arguments.kwarg.annotation)
+        for default in [*arguments.defaults, *arguments.kw_defaults]:
+            if default is not None:
+                self.visit(default)
+
+    def _apply_deferred_class_bindings(
+        self,
+    ) -> list[tuple[_Scope, str, bool, _Provenance]]:
+        saved: list[tuple[_Scope, str, bool, _Provenance]] = []
+        for scope, name, resolved in self._deferred_class_bindings:
+            saved.append((scope, name, name in scope.symbols, scope.symbols.get(name, _UNRESOLVED)))
+            scope.symbols[name] = resolved
+        return saved
+
+    @staticmethod
+    def _restore_deferred_class_bindings(
+        saved: list[tuple[_Scope, str, bool, _Provenance]],
+    ) -> None:
+        for scope, name, existed, resolved in reversed(saved):
+            if existed:
+                scope.symbols[name] = resolved
+            else:
+                scope.symbols.pop(name, None)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        is_owned_definition = (
-            self._scope.kind == "module" and node.name in self._owned_class_definitions
-        )
         for decorator in node.decorator_list:
             self.visit(decorator)
         for base in node.bases:
             self.visit(base)
         for keyword in node.keywords:
             self.visit(keyword.value)
+        symbol = f"{self._module_name}.{node.name}"
+        owned = self._scope.kind == "module" and symbol in _FORBIDDEN_SYMBOLS
+        resolved = frozenset({symbol}) if owned else _UNRESOLVED
+        outer_scope = self._scope
         self._classes.append(node.name)
         self._scopes.append(_Scope(kind="class", symbols={}))
+        self._deferred_class_bindings.append((outer_scope, node.name, resolved))
         for statement in node.body:
             self.visit(statement)
+        self._deferred_class_bindings.pop()
         self._scopes.pop()
         self._classes.pop()
-        self._bind(node.name, node.name if is_owned_definition else None)
+        self._bind(node.name, resolved)
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         for decorator in node.decorator_list:
             self.visit(decorator)
-        for default in [*node.args.defaults, *node.args.kw_defaults]:
-            if default is not None:
-                self.visit(default)
+        self._visit_arguments(node.args)
+        self._visit_annotation(node.returns)
+        self._bind(node.name, _UNRESOLVED)
         self._functions.append(node.name)
+        saved = self._apply_deferred_class_bindings()
         self._scopes.append(_function_scope(node))
         for statement in node.body:
             self.visit(statement)
         self._scopes.pop()
+        self._restore_deferred_class_bindings(saved)
         self._functions.pop()
-        self._bind(node.name, None)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -405,85 +497,264 @@ class _ReferenceScanner(ast.NodeVisitor):
         self._visit_function(node)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        for default in [*node.args.defaults, *node.args.kw_defaults]:
-            if default is not None:
-                self.visit(default)
+        self._visit_arguments(node.args)
         self._lambda_depth += 1
+        saved = self._apply_deferred_class_bindings()
         self._scopes.append(_lambda_scope(node))
         self.visit(node.body)
         self._scopes.pop()
+        self._restore_deferred_class_bindings(saved)
         self._lambda_depth -= 1
+
+    def _bind_target(self, target: ast.expr, resolved: _Provenance) -> None:
+        if isinstance(target, ast.Name):
+            self._bind(target.id, resolved)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self._bind_target(element, _UNRESOLVED)
+        elif isinstance(target, ast.Starred):
+            self._bind_target(target.value, _UNRESOLVED)
+        else:
+            self.visit(target)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         resolved = self.resolve(node.value)
         self.visit(node.value)
         for target in node.targets:
-            if isinstance(target, ast.Name):
-                self._bind(target.id, resolved)
+            self._bind_target(target, resolved)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
             resolved = self.resolve(node.value)
             self.visit(node.value)
-            if isinstance(node.target, ast.Name):
-                self._bind(node.target.id, resolved)
-        elif isinstance(node.target, ast.Name):
-            self._bind(node.target.id, None)
+            self._bind_target(node.target, resolved)
+        elif not isinstance(node.target, ast.Name):
+            self.visit(node.target)
+        self._visit_annotation(node.annotation)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if isinstance(node.target, ast.Name):
+            self._record(node.target, self.resolve(node.target), direct_call=False)
+            self._bind(node.target.id, _UNRESOLVED)
+        else:
+            self.visit(node.target)
+        self.visit(node.value)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            self._bind_target(target, _UNRESOLVED)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        resolved = self.resolve(node.value)
+        self.visit(node.value)
+        if isinstance(node.target, ast.Name):
+            for scope in reversed(self._scopes):
+                if scope.kind != "comprehension":
+                    scope.symbols[node.target.id] = resolved
+                    break
 
     def visit_Name(self, node: ast.Name) -> None:
-        if not isinstance(node.ctx, ast.Load):
-            return
-        resolved = self.resolve(node)
-        if resolved is not None:
-            self._record(node, resolved, direct_call=False)
+        if isinstance(node.ctx, ast.Load):
+            self._record(node, self.resolve(node), direct_call=False)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        resolved = self.resolve(node)
-        if resolved is not None and _forbidden_kind(resolved) is not None:
-            self._record(node, resolved, direct_call=False)
-            return
-        self.generic_visit(node)
+        if not self._record(node, self.resolve(node), direct_call=False):
+            self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
         resolved_func = self.resolve(node.func)
-        if resolved_func is not None and _forbidden_kind(resolved_func) is not None:
-            self._record(node.func, resolved_func, direct_call=True)
-        else:
+        if not self._record(node.func, resolved_func, direct_call=True):
             resolved_value = self.resolve(node)
-            if resolved_value is not None and _forbidden_kind(resolved_value) is not None:
-                self._record(node, resolved_value, direct_call=False)
-            self.visit(node.func)
+            if not self._record(node, resolved_value, direct_call=False):
+                self.visit(node.func)
         for argument in node.args:
             self.visit(argument)
         for keyword in node.keywords:
             self.visit(keyword.value)
 
+    def _snapshot(self) -> dict[str, _Provenance]:
+        return dict(self._scope.symbols)
 
-def _forbidden_kind(resolved: str) -> str | None:
-    tail = resolved.rsplit(".", 1)[-1]
-    if tail in _FORBIDDEN_NAMES:
-        return tail
-    if resolved.endswith(".datetime.now") or resolved == "datetime.now":
-        return "datetime.now"
-    if resolved.endswith(".uuid4") or resolved == "uuid4":
-        return "uuid4"
-    if resolved.endswith(".ulid.new") or resolved == "ulid.new":
-        return "ulid.new"
-    return None
+    def _restore(self, symbols: dict[str, _Provenance]) -> None:
+        self._scope.symbols = dict(symbols)
+
+    @staticmethod
+    def _merge(*states: dict[str, _Provenance]) -> dict[str, _Provenance]:
+        names = set().union(*(state.keys() for state in states))
+        return {
+            name: frozenset().union(*(state.get(name, _UNRESOLVED) for state in states))
+            for name in names
+        }
+
+    def _visit_statements(self, statements: list[ast.stmt]) -> None:
+        for statement in statements:
+            self.visit(statement)
+
+    def _visit_statements_with_states(
+        self, statements: list[ast.stmt]
+    ) -> list[dict[str, _Provenance]]:
+        states = [self._snapshot()]
+        for statement in statements:
+            self.visit(statement)
+            states.append(self._snapshot())
+        return states
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        base = self._snapshot()
+        self._visit_statements(node.body)
+        body = self._snapshot()
+        self._restore(base)
+        self._visit_statements(node.orelse)
+        orelse = self._snapshot()
+        self._restore(self._merge(body, orelse))
+
+    def _visit_try(self, node: ast.Try | ast.TryStar) -> None:
+        base = self._snapshot()
+        try_states = self._visit_statements_with_states(node.body)
+        body = self._snapshot()
+        self._visit_statements(node.orelse)
+        paths = [self._snapshot()]
+        for handler in node.handlers:
+            self._restore(self._merge(base, body, *try_states))
+            if handler.type is not None:
+                self.visit(handler.type)
+            if handler.name is not None:
+                self._bind(handler.name, _UNRESOLVED)
+            self._visit_statements(handler.body)
+            paths.append(self._snapshot())
+        self._restore(self._merge(*paths))
+        self._visit_statements(node.finalbody)
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self._visit_try(node)
+
+    def visit_TryStar(self, node: ast.TryStar) -> None:
+        self._visit_try(node)
+
+    def _bind_pattern(self, pattern: ast.pattern) -> None:
+        for item in ast.walk(pattern):
+            if isinstance(item, (ast.MatchAs, ast.MatchStar)) and item.name is not None:
+                self._bind(item.name, _UNRESOLVED)
+            elif isinstance(item, ast.MatchMapping) and item.rest is not None:
+                self._bind(item.rest, _UNRESOLVED)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.visit(node.subject)
+        base = self._snapshot()
+        paths = [base]
+        for case in node.cases:
+            self._restore(base)
+            self.visit(case.pattern)
+            self._bind_pattern(case.pattern)
+            if case.guard is not None:
+                self.visit(case.guard)
+            self._visit_statements(case.body)
+            paths.append(self._snapshot())
+        self._restore(self._merge(*paths))
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        base = self._snapshot()
+        self._bind_target(node.target, _UNRESOLVED)
+        body_states = self._visit_statements_with_states(node.body)
+        body = self._snapshot()
+        body_may = self._merge(base, body, *body_states)
+        self._restore(body_may)
+        self._visit_statements(node.orelse)
+        self._restore(self._merge(body_may, self._snapshot()))
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.visit_For(node)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.visit(node.test)
+        base = self._snapshot()
+        body_states = self._visit_statements_with_states(node.body)
+        body = self._snapshot()
+        body_may = self._merge(base, body, *body_states)
+        self._restore(body_may)
+        self._visit_statements(node.orelse)
+        self._restore(self._merge(body_may, self._snapshot()))
+
+    def _visit_comprehension(
+        self,
+        generators: list[ast.comprehension],
+        values: list[ast.expr],
+        *,
+        deferred_body: bool = False,
+    ) -> None:
+        first, *remaining = generators
+        self.visit(first.iter)
+        saved = self._apply_deferred_class_bindings() if deferred_body else []
+        local_names = frozenset(
+            item.id
+            for generator in generators
+            for item in ast.walk(generator.target)
+            if isinstance(item, ast.Name)
+        )
+        self._scopes.append(
+            _Scope(
+                kind="comprehension",
+                symbols={name: _UNRESOLVED for name in local_names},
+                local_names=local_names,
+            )
+        )
+        self._bind_target(first.target, _UNRESOLVED)
+        for condition in first.ifs:
+            self.visit(condition)
+        for generator in remaining:
+            self.visit(generator.iter)
+            self._bind_target(generator.target, _UNRESOLVED)
+            for condition in generator.ifs:
+                self.visit(condition)
+        for value in values:
+            self.visit(value)
+        self._scopes.pop()
+        self._restore_deferred_class_bindings(saved)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, [node.elt])
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, [node.elt], deferred_body=True)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, [node.key, node.value])
 
 
 def _usages(
     source: str,
     *,
-    owned_class_definitions: frozenset[str] = frozenset(),
+    module_name: str = "fixture",
 ) -> list[_Usage]:
-    scanner = _ReferenceScanner(owned_class_definitions=owned_class_definitions)
-    scanner.visit(ast.parse(source))
+    tree = ast.parse(source)
+    postponed_annotations = any(
+        isinstance(statement, ast.ImportFrom)
+        and statement.module == "__future__"
+        and any(alias.name == "annotations" for alias in statement.names)
+        for statement in tree.body
+    )
+    scanner = _ReferenceScanner(
+        module_name=module_name,
+        postponed_annotations=postponed_annotations,
+    )
+    scanner.visit(tree)
     return scanner.usages
 
 
 def _violations(source: str) -> list[str]:
     return [f"{usage.line}:{usage.kind}" for usage in _usages(source)]
+
+
+def _module_name(path: Path) -> str:
+    parts = list(path.with_suffix("").parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(["steel_onslaught", *parts])
 
 
 def _budget_mismatch(
@@ -503,9 +774,9 @@ def test_effectful_construction_is_confined_to_exact_root_calls() -> None:
         relative_path = path.relative_to(_SRC)
         for usage in _usages(
             path.read_text(encoding="utf-8"),
-            owned_class_definitions=_OWNED_CLASS_DEFINITIONS.get(relative_path, frozenset()),
+            module_name=_module_name(relative_path),
         ):
-            key = (usage.function, usage.kind)
+            key = (usage.function, usage.symbol)
             if (
                 path == _ROOT
                 and usage.direct_call
@@ -564,6 +835,170 @@ def test_guard_detects_alias_getattr_and_higher_order_evasions(source: str) -> N
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "import steel_onslaught.ledger.sqlite_ledger\n"
+            "steel_onslaught.ledger.sqlite_ledger.SQLiteLedger(cfg)\n"
+        ),
+        ("from steel_onslaught.ledger import sqlite_ledger\nsqlite_ledger.SQLiteLedger(cfg)\n"),
+    ],
+)
+def test_guard_preserves_full_canonical_import_provenance(source: str) -> None:
+    assert _violations(source) == ["2:SQLiteLedger"]
+
+
+@pytest.mark.unit
+def test_guard_resolves_relative_import_provenance() -> None:
+    source = "from .ledger.sqlite_ledger import SQLiteLedger as factory\nfactory(cfg)\n"
+
+    usages = _usages(source, module_name="steel_onslaught.fixture")
+    assert [f"{usage.line}:{usage.kind}" for usage in usages] == ["2:SQLiteLedger"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from counterfeit import SQLiteLedger\nSQLiteLedger(cfg)\n",
+        "import counterfeit.sqlite_ledger as ledger\nledger.SQLiteLedger(cfg)\n",
+        "import counterfeit.sqlite_ledger as ledger\ngetattr(ledger, 'SQLiteLedger')(cfg)\n",
+        "from counterfeit import uuid4\nuuid4()\n",
+        "from counterfeit import datetime\ndatetime.now()\n",
+        "import counterfeit.ulid as identity\nidentity.new()\n",
+    ],
+)
+def test_wrong_module_homonyms_are_neither_forbidden_nor_approved(source: str) -> None:
+    assert _violations(source) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source, expected_line",
+    [
+        (
+            "if enabled:\n"
+            "    from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+            "else:\n"
+            "    factory = harmless\n"
+            "factory(cfg)\n",
+            5,
+        ),
+        (
+            "try:\n"
+            "    from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+            "except Exception:\n"
+            "    factory = harmless\n"
+            "factory(cfg)\n",
+            5,
+        ),
+        (
+            "factory = harmless\n"
+            "try:\n"
+            "    from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+            "    risky()\n"
+            "    factory = harmless\n"
+            "except Exception:\n"
+            "    pass\n"
+            "factory(cfg)\n",
+            8,
+        ),
+        (
+            "match value:\n"
+            "    case 1:\n"
+            "        from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+            "    case _:\n"
+            "        factory = harmless\n"
+            "factory(cfg)\n",
+            6,
+        ),
+        (
+            "factory = harmless\n"
+            "for item in items:\n"
+            "    from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+            "factory(cfg)\n",
+            4,
+        ),
+        (
+            "factory = harmless\n"
+            "while enabled:\n"
+            "    from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+            "factory(cfg)\n",
+            4,
+        ),
+        (
+            "factory = harmless\n"
+            "for item in items:\n"
+            "    from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+            "    if stop:\n"
+            "        break\n"
+            "    factory = harmless\n"
+            "factory(cfg)\n",
+            7,
+        ),
+    ],
+)
+def test_module_control_flow_joins_may_provenance(source: str, expected_line: int) -> None:
+    assert _violations(source) == [f"{expected_line}:SQLiteLedger"]
+
+
+@pytest.mark.unit
+def test_unconditional_module_rebinding_clears_branch_may_provenance() -> None:
+    source = (
+        "if enabled:\n"
+        "    from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+        "factory = harmless\n"
+        "factory(cfg)\n"
+    )
+
+    assert _violations(source) == []
+
+
+@pytest.mark.unit
+def test_comprehension_scope_shadows_iteration_parameters() -> None:
+    source = (
+        "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+        "instances = [SQLiteLedger() for SQLiteLedger in factories]\n"
+    )
+
+    assert _violations(source) == []
+
+
+@pytest.mark.unit
+def test_comprehension_closure_preserves_canonical_provenance() -> None:
+    source = (
+        "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+        "instances = [SQLiteLedger(config) for config in configs]\n"
+    )
+
+    assert _violations(source) == ["2:SQLiteLedger"]
+
+
+@pytest.mark.unit
+def test_evaluated_annotations_are_scanned_in_the_enclosing_scope() -> None:
+    source = (
+        "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+        "def invoke(SQLiteLedger: SQLiteLedger()):\n"
+        "    return SQLiteLedger(cfg)\n"
+    )
+
+    assert _violations(source) == ["2:SQLiteLedger"]
+
+
+@pytest.mark.unit
+def test_postponed_annotations_are_not_runtime_constructor_references() -> None:
+    source = (
+        "from __future__ import annotations\n"
+        "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+        "def invoke(SQLiteLedger: SQLiteLedger()):\n"
+        "    return SQLiteLedger(cfg)\n"
+    )
+
+    assert _violations(source) == []
+
+
+@pytest.mark.unit
 def test_function_local_shadow_does_not_mutate_module_resolution() -> None:
     source = (
         "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
@@ -575,6 +1010,21 @@ def test_function_local_shadow_does_not_mutate_module_resolution() -> None:
     )
 
     assert _violations(source) == ["6:SQLiteLedger"]
+
+
+@pytest.mark.unit
+def test_function_global_override_does_not_mutate_module_scan_state() -> None:
+    source = (
+        "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+        "def harmless_earlier_function():\n"
+        "    global SQLiteLedger\n"
+        "    SQLiteLedger = harmless\n"
+        "    return SQLiteLedger(cfg)\n"
+        "def forbidden_later_function():\n"
+        "    return SQLiteLedger(cfg)\n"
+    )
+
+    assert _violations(source) == ["7:SQLiteLedger"]
 
 
 @pytest.mark.unit
@@ -642,6 +1092,80 @@ def test_guard_honors_harmless_class_definition_shadows(source: str) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "source, expected_line",
+    [
+        (
+            "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+            "class SQLiteLedger:\n"
+            "    instance = SQLiteLedger(cfg)\n",
+            3,
+        ),
+        (
+            "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+            "class SQLiteLedger:\n"
+            "    def build(factory=SQLiteLedger(cfg)):\n"
+            "        return factory\n",
+            3,
+        ),
+        (
+            "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+            "class SQLiteLedger:\n"
+            "    stream = (item for item in SQLiteLedger(cfg))\n",
+            3,
+        ),
+    ],
+)
+def test_class_body_evaluation_sees_the_preexisting_outer_binding(
+    source: str, expected_line: int
+) -> None:
+    assert _violations(source) == [f"{expected_line}:SQLiteLedger"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+            "class SQLiteLedger:\n"
+            "    def build():\n"
+            "        return SQLiteLedger(cfg)\n"
+        ),
+        (
+            "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+            "class SQLiteLedger:\n"
+            "    build = lambda: SQLiteLedger(cfg)\n"
+        ),
+        (
+            "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
+            "class SQLiteLedger:\n"
+            "    stream = (SQLiteLedger(cfg) for cfg in configs)\n"
+        ),
+    ],
+)
+def test_class_method_and_lambda_closures_see_the_final_class_binding(
+    source: str,
+) -> None:
+    assert _violations(source) == []
+
+
+@pytest.mark.unit
+def test_owned_class_method_closure_retains_canonical_identity() -> None:
+    source = (
+        "class SystemClock:\n    @classmethod\n    def build(cls):\n        return SystemClock()\n"
+    )
+
+    assert [
+        usage.symbol
+        for usage in _usages(
+            source,
+            module_name="steel_onslaught.match.composition",
+        )
+    ] == ["steel_onslaught.match.composition.SystemClock"]
+
+
+@pytest.mark.unit
 def test_owned_forbidden_class_definition_retains_constructor_identity() -> None:
     source = (
         "class SystemClock:\n"
@@ -652,11 +1176,11 @@ def test_owned_forbidden_class_definition_retains_constructor_identity() -> None
 
     assert _usages(
         source,
-        owned_class_definitions=frozenset({"SystemClock"}),
+        module_name="steel_onslaught.match.composition",
     ) == [
         _Usage(
             line=4,
-            kind="SystemClock",
+            symbol="steel_onslaught.match.composition.SystemClock",
             function="build_runtime_dependencies",
             direct_call=True,
             in_lambda=False,
@@ -683,6 +1207,15 @@ def test_owned_forbidden_class_definition_retains_constructor_identity() -> None
             "    return SQLiteLedger(cfg)\n",
             4,
         ),
+        (
+            "def outer():\n"
+            "    from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger as factory\n"
+            "    def inner():\n"
+            "        nonlocal factory\n"
+            "        return factory(cfg)\n"
+            "    return inner\n",
+            5,
+        ),
     ],
 )
 def test_guard_resolves_nested_closure_and_global_names(source: str, expected_line: int) -> None:
@@ -697,15 +1230,43 @@ def test_approved_root_call_budget_rejects_an_extra_call() -> None:
         "    SystemClock()\n"
         "    SystemClock()\n"
     )
-    key = ("build_runtime_dependencies", "SystemClock")
+    key = (
+        "build_runtime_dependencies",
+        "steel_onslaught.match.composition.SystemClock",
+    )
     observed = Counter(
-        (usage.function, usage.kind)
+        (usage.function, usage.symbol)
         for usage in _usages(source)
         if usage.direct_call and not usage.in_lambda
     )
 
     assert observed == Counter({key: 2})
     assert _budget_mismatch(observed, Counter({key: 1})) is not None
+
+
+@pytest.mark.unit
+def test_wrong_module_homonym_cannot_satisfy_an_approved_budget() -> None:
+    source = (
+        "from counterfeit import SystemClock\n"
+        "def build_runtime_dependencies():\n"
+        "    return SystemClock()\n"
+    )
+    expected = Counter(
+        {
+            (
+                "build_runtime_dependencies",
+                "steel_onslaught.match.composition.SystemClock",
+            ): 1
+        }
+    )
+    observed = Counter(
+        (usage.function, usage.symbol)
+        for usage in _usages(source)
+        if usage.direct_call and not usage.in_lambda
+    )
+
+    assert observed == Counter()
+    assert _budget_mismatch(observed, expected) is not None
 
 
 @pytest.mark.unit

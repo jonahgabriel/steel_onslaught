@@ -6,7 +6,7 @@ Invariants checked:
 - MOVEMENT_RESOLVED with 5 cells (Chebyshev), base_speed 2, 2 ticks
   raises ReducerError("speed_exceeded").
 - Movement consumes pressure (1 per cell of Chebyshev distance per move).
-- Evasion mode adds +1 to effective speed; siege mode subtracts -1.
+- Evasion mode adds +1; recon and assault preserve chassis base speed.
 - Moving with pressure below the move cost raises ReducerError("insufficient_pressure").
 - The reducer ignores events for a different match_id (raises match_id_mismatch).
 """
@@ -20,6 +20,7 @@ import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -32,7 +33,7 @@ from steel_onslaught.match.state import (
 )
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.errors import ReducerError
-from steel_onslaught.reducers.movement import ReducerMovement
+from steel_onslaught.reducers.movement import ReducerMovement, mode_effective_speed
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,7 +73,7 @@ def _mech(
     position: ModelSOPosition | None = None,
     base_speed: int = 2,
     pressure: int = 60,
-    current_mode: str = "recon",
+    current_mode: ModeId = ModeId.RECON,
 ) -> ModelSOMechRuntimeState:
     pos = position or ModelSOPosition(x=0, y=0)
     return ModelSOMechRuntimeState(
@@ -256,7 +257,7 @@ def test_movement_insufficient_pressure_raises() -> None:
 @pytest.mark.unit
 def test_evasion_mode_adds_one_to_effective_speed() -> None:
     """In evasion mode, effective speed is base_speed + 1."""
-    mech = _mech(base_speed=2, current_mode="evasion", pressure=60)
+    mech = _mech(base_speed=2, current_mode=ModeId.EVASION, pressure=60)
     match_state = _match_state(mech)
     reducer = ReducerMovement(MATCH_ID, match_state)
     # evasion gives effective_speed = 3; 1 tick * 3 = 3 cells max
@@ -278,7 +279,7 @@ def test_evasion_mode_adds_one_to_effective_speed() -> None:
 @pytest.mark.unit
 def test_evasion_mode_3_cells_1_tick_at_base_2_would_fail_without_mode() -> None:
     """At base_speed 2 without evasion, 3 cells in 1 tick raises speed_exceeded."""
-    mech = _mech(base_speed=2, current_mode="recon", pressure=60)
+    mech = _mech(base_speed=2, current_mode=ModeId.RECON, pressure=60)
     match_state = _match_state(mech)
     reducer = ReducerMovement(MATCH_ID, match_state)
     event = _envelope(
@@ -295,32 +296,16 @@ def test_evasion_mode_3_cells_1_tick_at_base_2_would_fail_without_mode() -> None
 
 
 @pytest.mark.unit
-def test_siege_mode_subtracts_one_from_effective_speed() -> None:
-    """In siege mode, effective speed is max(1, base_speed - 1)."""
-    mech = _mech(base_speed=2, current_mode="recon", pressure=60)
-    # The siege mode reduces speed to base_speed - 1 = 1.
-    # Try to move 2 cells in 1 tick: with siege speed=1, this should fail.
-    mech_siege = mech.model_copy(update={"current_mode": "siege"})
-    state = ModelSOMatchState(
-        match_id=MATCH_ID,
-        tick=1,
-        status=SOMatchStatus.RUNNING,
-        seed=42,
-        max_ticks=200,
-        mech_states={mech_siege.mech_id: mech_siege},
-    )
-    reducer = ReducerMovement(MATCH_ID, state)
-    event = _envelope(
-        SOEventType.MOVEMENT_RESOLVED,
-        {
-            "from": {"x": 0, "y": 0},
-            "to": {"x": 2, "y": 0},
-            "ticks_consumed": 1,
-            "pressure_consumed": 2,
-        },
-    )
-    with pytest.raises(ReducerError, match="speed_exceeded"):
-        reducer.apply(event)
+@pytest.mark.parametrize(
+    ("mode", "expected_speed"),
+    [
+        (ModeId.RECON, 2),
+        (ModeId.ASSAULT, 2),
+        (ModeId.EVASION, 3),
+    ],
+)
+def test_mode_effective_speed_mapping_is_exhaustive(mode: ModeId, expected_speed: int) -> None:
+    assert mode_effective_speed(2, mode) == expected_speed
 
 
 @pytest.mark.unit

@@ -12,6 +12,7 @@ from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -114,7 +115,7 @@ def _mech(mech_id: str, player_id: str, *, alive: bool = True) -> ModelSOMechRun
         armor_value=10,
         armor_max=10,
         alive=alive,
-        current_mode="recon",
+        current_mode=ModeId.RECON,
         weapon_cooldowns={"weapon.machine_gun": 0},
         boiler=_boiler(mech_id),
     )

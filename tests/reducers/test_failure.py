@@ -31,6 +31,7 @@ import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -177,7 +178,7 @@ def _make_mech(
         armor_max=10,
         alive=alive,
         pilot_alive=pilot_alive,
-        current_mode="recon",
+        current_mode=ModeId.RECON,
         boiler=_make_boiler(mech_id, heat_current=heat_current),
         redline_consecutive_ticks=redline_consecutive_ticks,
         overloaded=overloaded,

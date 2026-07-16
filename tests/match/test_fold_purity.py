@@ -22,11 +22,19 @@ from uuid import UUID, uuid4
 
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
+from pydantic import ValidationError
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
-from steel_onslaught.match.fold import MatchStateFold
+from steel_onslaught.match.fold import (
+    MatchContractCatalog,
+    MatchContractStateMismatchError,
+    MatchStateFold,
+    MissingMatchContractError,
+)
+from steel_onslaught.match.state import SOMatchStatus
 from tests.runtime import runtime_dependencies
 
 _MATCH_ID = "match.test.fold-purity"
@@ -35,14 +43,18 @@ _SOURCE = Path(MatchStateFold.__module__.replace(".", "/") + ".py")
 _SOURCE_PATH = Path(inspect.getsourcefile(MatchStateFold))  # type: ignore[arg-type]
 
 
-def _fold(bus: InProcessEventBus | None = None) -> MatchStateFold:
+def _fold(
+    bus: InProcessEventBus | None = None,
+    *,
+    catalog: MatchContractCatalog | None = None,
+) -> MatchStateFold:
     runtime = runtime_dependencies()
     return MatchStateFold(
         _MATCH_ID,
         UUID("11111111-1111-1111-1111-111111111111"),
         bus=bus,
         event_factory=runtime.event_factory,
-        catalog=runtime.catalog,
+        catalog=catalog or runtime.catalog,
     )
 
 
@@ -111,6 +123,31 @@ def _match_started_env() -> ModelSOEventEnvelope:
     )
 
 
+def _match_started_with_mech_updates(**updates: object) -> ModelSOEventEnvelope:
+    event = _match_started_env()
+    payload = dict(event.payload)
+    raw_mechs = payload["mechs"]
+    assert isinstance(raw_mechs, list)
+    mechs = [dict(mech) for mech in raw_mechs]
+    mechs[0].update(updates)
+    payload["mechs"] = mechs
+    return event.model_copy(update={"payload": payload})
+
+
+def _tick_env(tick: int) -> ModelSOEventEnvelope:
+    return ModelSOEventEnvelope(
+        event_id=f"01JPUREPUREPUREPUREPUREP{tick:02d}",
+        match_id=_MATCH_ID,
+        tick=tick,
+        sequence_in_tick=0,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="*", player_id="*"),
+        event_type=SOEventType.MATCH_TICK,
+        payload={},
+        envelope=ModelEnvelope(correlation_id=uuid4(), entity_id=_MATCH_ID),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Structural: delta exists and returns the intents list (the ONEX shape)
 # ---------------------------------------------------------------------------
@@ -152,6 +189,94 @@ def test_fold_fails_closed_on_unknown_weapon_contract() -> None:
 
     with pytest.raises(UnknownWeaponError, match=r"weapon\.unknown"):
         fold.apply(event)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"current_mode": "siege"},
+        {"transition_ticks_remaining": 1, "transition_to_mode": "siege"},
+    ],
+    ids=["current-mode", "transition-target"],
+)
+def test_match_started_rejects_unknown_mode_before_lifecycle_mutation(
+    updates: dict[str, object],
+) -> None:
+    fold = _fold()
+
+    with pytest.raises(ValidationError):
+        fold.apply(_match_started_with_mech_updates(**updates))
+
+    assert fold.state.status is SOMatchStatus.PENDING
+    assert fold.state.mech_states == {}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "forged"),
+    [("base_speed", 99), ("speed", 99)],
+)
+def test_match_started_rejects_forged_chassis_speed_before_lifecycle_mutation(
+    field: str,
+    forged: int,
+) -> None:
+    fold = _fold()
+
+    with pytest.raises(MatchContractStateMismatchError) as error:
+        fold.apply(_match_started_with_mech_updates(**{field: forged}))
+
+    assert error.value.field == field
+    assert error.value.owner_id == "mech.a.01"
+    assert fold.state.status is SOMatchStatus.PENDING
+    assert fold.state.mech_states == {}
+
+
+@pytest.mark.unit
+def test_match_started_requires_exact_in_flight_transition_before_lifecycle_mutation() -> None:
+    runtime = runtime_dependencies()
+    transitions = dict(runtime.catalog.transitions)
+    transitions.pop((ModeId.RECON, ModeId.ASSAULT))
+    catalog = MatchContractCatalog(
+        chassis=dict(runtime.catalog.chassis),
+        boilers=dict(runtime.catalog.boilers),
+        sensors=dict(runtime.catalog.sensors),
+        weapons=dict(runtime.catalog.weapons),
+        gizmos=dict(runtime.catalog.gizmos),
+        transitions=transitions,
+    )
+    fold = _fold(catalog=catalog)
+    event = _match_started_with_mech_updates(
+        transition_ticks_remaining=1,
+        transition_to_mode="assault",
+    )
+
+    with pytest.raises(MissingMatchContractError) as error:
+        fold.apply(event)
+
+    assert error.value.contract_kind == "transition"
+    assert error.value.contract_id == "recon->assault"
+    assert error.value.owner_id == "mech.a.01"
+    assert fold.state.status is SOMatchStatus.PENDING
+    assert fold.state.mech_states == {}
+
+
+@pytest.mark.unit
+def test_mode_completion_derives_destination_speed_from_injected_chassis() -> None:
+    fold = _fold()
+    fold.apply(
+        _match_started_with_mech_updates(
+            transition_ticks_remaining=1,
+            transition_to_mode="evasion",
+        )
+    )
+
+    fold.apply(_tick_env(1))
+
+    mech = fold.state.mech_states["mech.a.01"]
+    assert mech.current_mode == "evasion"
+    assert mech.base_speed == 4
+    assert mech.speed == 5
 
 
 @pytest.mark.unit

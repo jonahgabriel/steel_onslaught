@@ -10,8 +10,7 @@ Movement model
 Distance metric: Chebyshev — ``max(|dx|, |dy|)``.
 Speed limit: ``effective_speed = base_speed + mode_speed_modifier``.
   - evasion mode: +1
-  - siege mode: -1 (floored at 1)
-  - all others: 0
+  - recon and assault modes: 0
 Max cells per move: ``effective_speed * ticks_consumed``.
 Pressure cost: 1 per cell of Chebyshev distance (exactly equal to the distance).
 
@@ -30,6 +29,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
@@ -39,16 +39,19 @@ from steel_onslaught.reducers.errors import ReducerError
 # Mode speed modifiers
 # ---------------------------------------------------------------------------
 
-_MODE_SPEED_DELTA: dict[str, int] = {
-    "evasion": 1,
-    "siege": -1,
+_MODE_SPEED_DELTA: dict[ModeId, int] = {
+    ModeId.RECON: 0,
+    ModeId.ASSAULT: 0,
+    ModeId.EVASION: 1,
 }
+if set(_MODE_SPEED_DELTA) != set(ModeId):  # pragma: no cover - import-time invariant
+    raise RuntimeError("movement speed mapping must cover every ModeId exactly once")
 _MIN_EFFECTIVE_SPEED = 1
 
 
-def mode_effective_speed(base_speed: int, mode: str) -> int:
+def mode_effective_speed(base_speed: int, mode: ModeId) -> int:
     """Effective speed for *base_speed* in *mode* (floored at 1)."""
-    return max(_MIN_EFFECTIVE_SPEED, base_speed + _MODE_SPEED_DELTA.get(mode, 0))
+    return max(_MIN_EFFECTIVE_SPEED, base_speed + _MODE_SPEED_DELTA[mode])
 
 
 def effective_speed(mech: ModelSOMechRuntimeState) -> int:

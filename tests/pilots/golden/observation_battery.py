@@ -19,6 +19,7 @@ from itertools import product
 from typing import NamedTuple
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
@@ -209,7 +210,7 @@ def observation_battery() -> list[ModelSOPilotObservation]:
                     match_elapsed_ticks=1,
                     boiler=_make_boiler(spec, heat, pressure),
                     weapons=_make_weapons(weapon_rows),
-                    current_mode=mode,
+                    current_mode=ModeId(mode),
                     mode_lock_expired=mode_lock_expired,
                     position=ModelSOPosition(x=0, y=0),
                     hp_percent=hp_percent,
