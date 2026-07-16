@@ -41,6 +41,10 @@ from steel_onslaught.match.duel import (
     ModelSOEvaluationStorageKey,
     run_duel,
 )
+from steel_onslaught.match.evaluation_storage import (
+    EvaluationStorageAllocator,
+    SQLiteEvaluationStorageAllocator,
+)
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import (
     ARENA_SIZE_CELLS,
@@ -279,7 +283,28 @@ def build_learning_dependencies(overlay: ModelSOApplicationOverlay) -> LearningD
 
 def build_duel_executor(overlay: ModelSOApplicationOverlay) -> DuelExecutor:
     """Bind the learning/balance duel capability at the sole adapter root."""
-    storage_namespaces: dict[str, Path] = {}
+    return build_duel_executor_with_dependencies(
+        overlay,
+        evaluation_storage=build_evaluation_storage_allocator(overlay),
+    )
+
+
+def build_evaluation_storage_allocator(
+    overlay: ModelSOApplicationOverlay,
+) -> EvaluationStorageAllocator:
+    """Bind the operator-selected evaluation evidence adapter exactly once."""
+    binding = overlay.evaluation_storage
+    if binding.kind == "sqlite":
+        return SQLiteEvaluationStorageAllocator(binding)
+    raise ValueError(f"unsupported evaluation storage adapter kind: {binding.kind!r}")
+
+
+def build_duel_executor_with_dependencies(
+    overlay: ModelSOApplicationOverlay,
+    *,
+    evaluation_storage: EvaluationStorageAllocator,
+) -> DuelExecutor:
+    """Assemble the duel capability over an injected evidence allocator."""
 
     def execute(
         *,
@@ -294,38 +319,23 @@ def build_duel_executor(overlay: ModelSOApplicationOverlay) -> DuelExecutor:
         side_a: str,
         side_b: str,
     ) -> DuelResult:
-        storage_root = storage_namespaces.get(storage.namespace)
-        if storage_root is None:
-            base = overlay.evaluation_storage.root / storage.namespace
-            storage_root = base
-            suffix = 1
-            while (storage_root / f"{storage.duel}.sqlite3").exists():
-                suffix += 1
-                storage_root = base.with_name(f"{base.name}_{suffix:04d}")
-            storage_namespaces[storage.namespace] = storage_root
-        storage_root.mkdir(parents=True, exist_ok=True)
-        ledger_path = storage_root / f"{storage.duel}.sqlite3"
-        if ledger_path.exists():
-            raise FileExistsError(
-                f"evaluation storage already exists: {storage.namespace}/{storage.duel}"
-            )
-        evaluation = overlay.evaluation_storage
+        claim = evaluation_storage.claim(storage)
         ledger_binding = overlay.event_ledger.model_copy(
             update={
-                "path": ledger_path,
-                "journal_mode": evaluation.journal_mode,
-                "check_same_thread": evaluation.check_same_thread,
-                "transaction_mode": evaluation.transaction_mode,
-                "event_schema": evaluation.event_schema,
+                "path": claim.path,
+                "journal_mode": claim.journal_mode,
+                "check_same_thread": claim.check_same_thread,
+                "transaction_mode": claim.transaction_mode,
+                "event_schema": claim.event_schema,
             }
         )
         leaderboard_binding = overlay.leaderboard.model_copy(
             update={
-                "path": ledger_path,
-                "journal_mode": evaluation.journal_mode,
-                "check_same_thread": evaluation.check_same_thread,
-                "transaction_mode": evaluation.transaction_mode,
-                "storage_schema": evaluation.leaderboard_schema,
+                "path": claim.path,
+                "journal_mode": claim.journal_mode,
+                "check_same_thread": claim.check_same_thread,
+                "transaction_mode": claim.transaction_mode,
+                "storage_schema": claim.leaderboard_schema,
             }
         )
         duel_overlay = overlay.model_copy(
@@ -505,6 +515,8 @@ __all__ = [
     "assemble_match_live",
     "assemble_match_with_dependencies",
     "build_duel_executor",
+    "build_duel_executor_with_dependencies",
+    "build_evaluation_storage_allocator",
     "build_learning_dependencies",
     "build_runtime_dependencies",
     "load_application_overlay",

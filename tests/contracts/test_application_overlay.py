@@ -1,12 +1,18 @@
 """Closed-schema tests for the sole Slice-1 application overlay."""
 
 from pathlib import Path
+from shutil import copytree
 
 import pytest
 import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
-from steel_onslaught.match.composition import load_application_overlay
+from steel_onslaught.match.composition import (
+    load_application_overlay,
+    load_match_contract_catalog,
+)
+
+_CONTRACTS_DATA = Path(__file__).parent.parent.parent / "contracts_data"
 
 
 def _overlay_data(tmp_path: Path) -> dict[str, object]:
@@ -71,6 +77,30 @@ def test_overlay_rejects_unknown_nested_policy(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="implicit_fallback"):
         ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_overlay_selected_catalog_rejects_unknown_nested_boiler_compatibility(
+    tmp_path: Path,
+) -> None:
+    catalog_dir = tmp_path / "catalog"
+    copytree(_CONTRACTS_DATA, catalog_dir)
+    boiler_path = catalog_dir / "boilers" / "compact_v1.yaml"
+    boiler = yaml.safe_load(boiler_path.read_text(encoding="utf-8"))
+    assert isinstance(boiler, dict)
+    compatibility = boiler["compatibility"]
+    assert isinstance(compatibility, dict)
+    compatibility["implicit_compatibility_fallback"] = True
+    boiler_path.write_text(yaml.safe_dump(boiler), encoding="utf-8")
+
+    raw_overlay = _overlay_data(tmp_path)
+    overlay_path = tmp_path / "application.yaml"
+    serialized = ModelSOApplicationOverlay.model_validate(raw_overlay).model_dump(mode="json")
+    overlay_path.write_text(yaml.safe_dump(serialized), encoding="utf-8")
+    overlay = load_application_overlay(overlay_path)
+
+    with pytest.raises(ValueError, match="implicit_compatibility_fallback"):
+        load_match_contract_catalog(overlay.contracts.catalog_dir)
 
 
 @pytest.mark.unit

@@ -28,6 +28,9 @@ _FORBIDDEN_SYMBOLS = {
     "steel_onslaught.match.composition.SystemClock": "SystemClock",
     "steel_onslaught.match.composition.SystemIdentityProvider": "SystemIdentityProvider",
     "steel_onslaught.match.fold.MatchContractCatalog": "MatchContractCatalog",
+    "steel_onslaught.match.evaluation_storage.SQLiteEvaluationStorageAllocator": (
+        "SQLiteEvaluationStorageAllocator"
+    ),
     "steel_onslaught.pilots.aggressive.AggressivePilot": "AggressivePilot",
     "steel_onslaught.pilots.defensive.DefensivePilot": "DefensivePilot",
     "steel_onslaught.pilots.predictive.PredictivePilot": "PredictivePilot",
@@ -111,6 +114,10 @@ _APPROVED_CALLS = Counter(
         (
             "build_learning_dependencies",
             "steel_onslaught.learning.filesystem_artifacts.YamlFilesystemLearningArtifactStore",
+        ): 1,
+        (
+            "build_evaluation_storage_allocator",
+            "steel_onslaught.match.evaluation_storage.SQLiteEvaluationStorageAllocator",
         ): 1,
     }
 )
@@ -798,6 +805,11 @@ def test_effectful_construction_is_confined_to_exact_root_calls() -> None:
     "source",
     [
         "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\nSQLiteLedger(cfg)",
+        (
+            "from steel_onslaught.match.evaluation_storage import "
+            "SQLiteEvaluationStorageAllocator\n"
+            "SQLiteEvaluationStorageAllocator(binding)"
+        ),
         ("import steel_onslaught.ledger.sqlite_ledger as ledger\nledger.SQLiteLedger(cfg)"),
         (
             "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
@@ -1281,3 +1293,73 @@ def test_cli_requires_explicit_overlay_and_has_no_package_path_defaults() -> Non
             if isinstance(node, ast.Attribute) and node.attr in {"parent", "parents"}:
                 violations.append(f"{filename}:{node.lineno}: package path traversal")
     assert violations == []
+
+
+@pytest.mark.unit
+def test_duel_executor_routes_both_stores_through_injected_atomic_claim() -> None:
+    source = _ROOT.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    factory = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "build_duel_executor_with_dependencies"
+    )
+    execute = next(
+        node
+        for node in factory.body
+        if isinstance(node, ast.FunctionDef) and node.name == "execute"
+    )
+
+    claim_assignments = [
+        node
+        for node in execute.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "claim" for target in node.targets)
+    ]
+    assert len(claim_assignments) == 1
+    assert ast.unparse(claim_assignments[0].value) == "evaluation_storage.claim(storage)"
+
+    binding_updates: dict[str, ast.Dict] = {}
+    for node in execute.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name) or target.id not in {
+            "ledger_binding",
+            "leaderboard_binding",
+        }:
+            continue
+        assert isinstance(node.value, ast.Call)
+        update = next(keyword.value for keyword in node.value.keywords if keyword.arg == "update")
+        assert isinstance(update, ast.Dict)
+        binding_updates[target.id] = update
+
+    assert set(binding_updates) == {"ledger_binding", "leaderboard_binding"}
+    for update in binding_updates.values():
+        path_values = [
+            value
+            for key, value in zip(update.keys, update.values, strict=True)
+            if isinstance(key, ast.Constant) and key.value == "path"
+        ]
+        assert len(path_values) == 1
+        assert ast.unparse(path_values[0]) == "claim.path"
+
+    forbidden_inner_calls = {
+        node.func.attr
+        for node in ast.walk(execute)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"exists", "mkdir", "open"}
+    }
+    assert forbidden_inner_calls == set()
+    assert (
+        sum(
+            1
+            for node in ast.walk(execute)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "build_runtime_dependencies"
+        )
+        == 1
+    )

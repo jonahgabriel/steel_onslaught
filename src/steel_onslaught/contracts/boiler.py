@@ -12,9 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ModelSOBoilerCompatibility(BaseModel):
-    """Chassis classes compatible with this boiler."""
+    """Closed chassis-class compatibility block loaded by the catalog parser."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     compatible_chassis_classes: tuple[str, ...] = Field(min_length=1)
 

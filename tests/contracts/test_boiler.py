@@ -144,6 +144,32 @@ def test_zero_mass_rejected() -> None:
         _minimal_spec(mass=0)
 
 
+@pytest.mark.unit
+def test_boiler_compatibility_rejects_unknown_fields_directly() -> None:
+    compatibility = _compat("heavy")
+    with pytest.raises(ValueError, match="frozen"):
+        compatibility.compatible_chassis_classes = ("light",)
+
+    with pytest.raises(ValueError, match="implicit_compatibility_fallback"):
+        ModelSOBoilerCompatibility.model_validate(
+            {
+                "compatible_chassis_classes": ["heavy"],
+                "implicit_compatibility_fallback": True,
+            }
+        )
+
+
+@pytest.mark.unit
+def test_boiler_spec_rejects_unknown_nested_compatibility_fields() -> None:
+    raw = _minimal_spec().model_dump(mode="json")
+    compatibility = raw["compatibility"]
+    assert isinstance(compatibility, dict)
+    compatibility["implicit_compatibility_fallback"] = True
+
+    with pytest.raises(ValueError, match="implicit_compatibility_fallback"):
+        ModelSOBoilerSpec.model_validate(raw)
+
+
 # ---------------------------------------------------------------------------
 # Validation invariants — ModelSOBoilerState
 # ---------------------------------------------------------------------------
