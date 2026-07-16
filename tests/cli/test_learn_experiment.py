@@ -14,6 +14,7 @@ evaluator (no real duels). Invariants under test (plan §4.5-4.6):
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -24,9 +25,12 @@ from click.testing import CliRunner
 from steel_onslaught.cli import learn as learn_module
 from steel_onslaught.cli.main import main
 from steel_onslaught.contracts.lineage import ParamDict
+from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.llm.context_arms import ContextArm
 from steel_onslaught.llm.experiment import ModelSOTunerUsage
+from tests.overlay import complete_test_overlay
 
 _PARENT_SPEC = Path("contracts_data/pilots/template_aggressive.yaml")
 _BASE_LOADOUT = Path("contracts_data/loadouts/example_aggressive_light.yaml")
@@ -67,10 +71,10 @@ class _ForcedCandidateEvaluator:
         self,
         *,
         archetype: str,
-        base_loadout: Path,
-        workdir: Path,
+        base_loadout: ModelSOLoadout,
         max_ticks: int,
-        contracts_data_dir: Path | None = None,
+        duel_executor: object,
+        artifacts: LearningArtifactStore,
     ) -> None:
         pass
 
@@ -91,8 +95,64 @@ class _ForcedCandidateEvaluator:
         ]
 
 
+def _write_overlay(tmp_path: Path) -> Path:
+    overlay_path = tmp_path / "application.json"
+    overlay_path.parent.mkdir(parents=True, exist_ok=True)
+    overlay_path.write_text(
+        json.dumps(
+            complete_test_overlay(
+                {
+                    "schema_version": "1",
+                    "bus": {"kind": "in_process"},
+                    "event_ledger": {
+                        "kind": "sqlite",
+                        "path": tmp_path / "events.sqlite",
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "event_schema": "canonical_event_v1",
+                    },
+                    "leaderboard": {
+                        "kind": "sqlite",
+                        "path": tmp_path / "leaderboard.sqlite",
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "storage_schema": "leaderboard_v1",
+                    },
+                    "learning_artifacts": {
+                        "kind": "filesystem_yaml",
+                        "evaluation_root": tmp_path / "work",
+                        "lineage_root": tmp_path / "lineage",
+                    },
+                    "evaluation_storage": {
+                        "kind": "sqlite",
+                        "root": tmp_path / "work",
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "event_schema": "canonical_event_v1",
+                        "leaderboard_schema": "leaderboard_v1",
+                    },
+                    "contracts": {
+                        "catalog_dir": Path("contracts_data").resolve(),
+                        "pilot_registry_dir": Path("contracts_data/pilots").resolve(),
+                    },
+                    "clock": {"kind": "system_utc"},
+                    "identity": {"kind": "system"},
+                },
+                tmp_path,
+            ),
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    return overlay_path
+
+
 def _experiment_args(tmp_path: Path, **overrides: str) -> list[str]:
     options = {
+        "--overlay": str(_write_overlay(tmp_path)),
         "--archetype": "aggressive",
         "--parent": str(_PARENT_SPEC),
         "--base-loadout": str(_BASE_LOADOUT),
@@ -103,9 +163,6 @@ def _experiment_args(tmp_path: Path, **overrides: str) -> list[str]:
         "--k": "2",
         "--max-ticks": "40",
         "--llm-provider": "stub",
-        "--lineage-root": str(tmp_path / "lineage"),
-        "--workdir": str(tmp_path / "work"),
-        "--output-dir": str(tmp_path / "out"),
     }
     options.update(overrides)
     args = ["learn-experiment"]
@@ -134,7 +191,7 @@ class TestNegativeControlRefusal:
         assert exit_code != 0
         assert "negative-control arm" in output
         # Refused before writing any artifacts.
-        assert not (tmp_path / "out" / "summary.yaml").exists()
+        assert not list((tmp_path / "experiments").glob("summaries/*.yaml"))
 
     def test_runs_when_negative_control_explicitly_included(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -162,7 +219,7 @@ class TestFullMatrixRun:
         assert exit_code == 0, output
 
         # --- summary.yaml: 5 LLM arms + baseline, K=2 ---
-        summary_path = tmp_path / "out" / "summary.yaml"
+        summary_path = next((tmp_path / "experiments").glob("summaries/*.yaml"))
         assert summary_path.exists()
         summary = yaml.safe_load(summary_path.read_text())
         assert summary["k_trials"] == 2
@@ -174,7 +231,8 @@ class TestFullMatrixRun:
         assert summary["negative_control_arm"] == ContextArm.LLM_FULL_DESIGN_DOC.value
 
         # --- rows.yaml: one row per run, every required field present ---
-        rows = yaml.safe_load((tmp_path / "out" / "rows.yaml").read_text())
+        rows_path = next((tmp_path / "experiments").glob("rows/*.yaml"))
+        rows = yaml.safe_load(rows_path.read_text())
         assert len(rows) == 12  # 6 arms x 2 trials
         for row in rows:
             assert _ROW_FIELDS.issubset(row.keys()), (
@@ -207,6 +265,8 @@ class TestFullMatrixRun:
         code_a, _ = _invoke(_experiment_args(run_a, **{"--experiment-seed": "999"}))
         code_b, _ = _invoke(_experiment_args(run_b, **{"--experiment-seed": "999"}))
         assert code_a == 0 and code_b == 0
-        seeds_a = yaml.safe_load((run_a / "out" / "summary.yaml").read_text())["master_seeds"]
-        seeds_b = yaml.safe_load((run_b / "out" / "summary.yaml").read_text())["master_seeds"]
+        summary_a = next((run_a / "experiments").glob("summaries/*.yaml"))
+        summary_b = next((run_b / "experiments").glob("summaries/*.yaml"))
+        seeds_a = yaml.safe_load(summary_a.read_text())["master_seeds"]
+        seeds_b = yaml.safe_load(summary_b.read_text())["master_seeds"]
         assert seeds_a == seeds_b

@@ -16,12 +16,25 @@ decision was produced.
 
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
 
-from steel_onslaught.llm.personas import Persona, get_persona
-from steel_onslaught.llm.schemas import LlmResponse, ProtocolLlmClient
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictStr, ValidationError
+
+from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOMoveIntentPayload,
+    ModelSOWeaponFireIntentPayload,
+)
+from steel_onslaught.immutable import FrozenJSONMapping, thaw_json_mapping
+from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
+from steel_onslaught.llm.personas import Persona
+from steel_onslaught.llm.schemas import (
+    LlmResponse,
+    ModelSOLlmCompletionRequest,
+    ModelSOLlmEvidenceContext,
+    ProtocolLlmClient,
+)
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPilotDecision,
@@ -42,6 +55,17 @@ _LLM_ACTION_VOCAB: dict[str, SOPilotAction] = {
     "switch_mode": SOPilotAction.SWITCH_MODE,
     "vent": SOPilotAction.VENT,
 }
+
+
+class _ModelSOLlmPilotResponse(BaseModel):
+    """Closed semantic boundary for nondeterministic provider output."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    action: StrictStr = Field(min_length=1)
+    action_params: FrozenJSONMapping
+    confidence: StrictFloat = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    rationale: StrictStr = Field(min_length=1)
 
 
 def _serialize_observation(obs: ModelSOPilotObservation) -> str:
@@ -109,80 +133,69 @@ class LLMPilot:
         self._client = client
         self._persona = persona
 
-    @classmethod
-    def from_persona_id(cls, *, client: ProtocolLlmClient, persona_id: str) -> LLMPilot:
-        """Construct from a persona id (fail-fast on unknown persona)."""
-        return cls(client=client, persona=get_persona(persona_id))
-
     def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
         """Consult the LLM and return a validated decision, or REMAIN on failure."""
         user_prompt = _serialize_observation(observation)
         try:
-            response = self._client.complete(
-                system_prompt=self._persona.system_prompt,
-                user_prompt=user_prompt,
-                persona=self._persona.persona_id,
-                temperature=self._persona.temperature,
-                json_mode=True,
+            return consume_llm_completion(
+                client=self._client,
+                request=ModelSOLlmCompletionRequest(
+                    system_prompt=self._persona.system_prompt,
+                    user_prompt=user_prompt,
+                    persona=self._persona.persona_id,
+                    temperature=self._persona.temperature,
+                    json_mode=True,
+                    evidence_context=ModelSOLlmEvidenceContext(
+                        match_id=observation.match_id,
+                        mech_id=observation.mech_id,
+                        player_id=observation.player_id,
+                        tick=observation.tick,
+                        correlation_id=None,
+                    ),
+                ),
+                consumer=lambda response: self._parse_response(response, observation),
             )
         except Exception as exc:
-            _LOG.warning("LLM call failed: %s", exc)
-            return _fallback_decision(f"{type(exc).__name__}: {exc}")
-
-        return self._parse_response(response, observation)
+            _LOG.warning("LLM call failed (%s)", type(exc).__name__)
+            return _fallback_decision(type(exc).__name__)
 
     def _parse_response(
         self, response: LlmResponse, observation: ModelSOPilotObservation
     ) -> ModelSOPilotDecision:
         """Parse the LLM's JSON text → validated decision, or REMAIN fallback."""
         try:
-            parsed: dict[str, Any] = json.loads(response.text)
-        except (json.JSONDecodeError, TypeError) as exc:
-            return _fallback_decision(f"malformed JSON: {exc}")
+            parsed = _ModelSOLlmPilotResponse.model_validate_json(response.text)
+        except (ValidationError, ValueError, TypeError):
+            raise LlmSemanticError("malformed semantic JSON") from None
 
-        action_str = str(parsed.get("action", "")).strip().lower()
+        action_str = parsed.action.strip().lower()
         action = _LLM_ACTION_VOCAB.get(action_str)
         if action is None:
-            return _fallback_decision(f"unknown action {action_str!r}")
+            raise LlmSemanticError("unknown action")
 
         # Validate against availability (e.g. can't fire a weapon on cooldown).
         allowed = available_actions(observation)
         if action not in allowed:
-            return _fallback_decision(f"action {action_str!r} not available this tick")
+            raise LlmSemanticError("action unavailable")
 
-        action_params = parsed.get("action_params", {})
-        if not isinstance(action_params, dict):
-            action_params = {}
+        action_params = thaw_json_mapping(parsed.action_params)
+        try:
+            match action:
+                case SOPilotAction.MOVE:
+                    ModelSOMoveIntentPayload.model_validate(action_params)
+                case SOPilotAction.FIRE_WEAPON:
+                    fire = ModelSOWeaponFireIntentPayload.model_validate(action_params)
+                    if fire.weapon_id not in {weapon.weapon_id for weapon in observation.weapons}:
+                        raise ValueError("unknown weapon")
+                case SOPilotAction.SWITCH_MODE:
+                    ModelSOModeSwitchIntentPayload.model_validate(action_params)
+                case SOPilotAction.VENT | SOPilotAction.REMAIN:
+                    ModelSOEmptyPayload.model_validate(action_params)
+        except (ValidationError, ValueError, TypeError):
+            raise LlmSemanticError("invalid action parameters") from None
 
-        # If firing, ensure weapon_id is set — the LLM may omit it (intent: "fire
-        # any ready weapon"). Pick a ready, affordable, in-range weapon. Without
-        # this, the resolver gets weapon_id="" and drops the shot.
-        if action is SOPilotAction.FIRE_WEAPON and "weapon_id" not in action_params:
-            # Estimate enemy distance from the latest sensor reading.
-            enemy_dist = (
-                observation.enemy_observations[-1].distance_estimate
-                if observation.enemy_observations
-                else float("inf")
-            )
-            ready = [
-                w
-                for w in observation.weapons
-                if w.cooldown_remaining_ticks == 0
-                and observation.boiler.pressure_current >= w.pressure_cost
-                and w.range >= enemy_dist
-            ]
-            if not ready:
-                return _fallback_decision("no ready weapon in range")
-            # Highest-damage ready weapon that can reach.
-            chosen = max(ready, key=lambda w: w.damage)
-            action_params["weapon_id"] = chosen.weapon_id
-
-        # If moving, ensure direction is set (the resolver requires it).
-        if action is SOPilotAction.MOVE and "direction" not in action_params:
-            action_params["direction"] = "toward_enemy"
-
-        confidence = float(parsed.get("confidence", 0.5))
-        rationale = str(parsed.get("rationale", "")) or None
+        confidence = parsed.confidence
+        rationale = parsed.rationale
 
         return ModelSOPilotDecision(
             action=action,

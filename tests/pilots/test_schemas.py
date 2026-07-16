@@ -81,6 +81,7 @@ def _observation(
     return ModelSOPilotObservation(
         match_id="match-001",
         mech_id="mech-red",
+        player_id="player-red",
         tick=5,
         match_elapsed_ticks=5,
         boiler=boiler if boiler is not None else _boiler_state(),

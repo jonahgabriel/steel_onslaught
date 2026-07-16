@@ -116,6 +116,7 @@ def _build_observation(
     return ModelSOPilotObservation(
         match_id=state.match_id,
         mech_id=mech.mech_id,
+        player_id=mech.player_id,
         tick=state.tick,
         match_elapsed_ticks=state.tick,
         boiler=mech.boiler,

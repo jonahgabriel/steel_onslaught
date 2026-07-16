@@ -89,6 +89,7 @@ from steel_onslaught.match.composition import (
 )
 from steel_onslaught.match.duel import ModelSOEvaluationStorageKey
 from steel_onslaught.replay.engine import ReplayEngine
+from tests.overlay import complete_test_overlay
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -126,6 +127,9 @@ _PINNED_EVENT_TYPES = frozenset(
         "mech_spawned",
         "sensor_observation",
         "pilot_decision_made",
+        "llm_completion_requested",
+        "llm_completion_resolved",
+        "llm_completion_failed",
         "move_intent",
         "weapon_fire_intent",
         "mode_switch_intent",
@@ -209,46 +213,49 @@ def _snapshot_contracts_data() -> dict[str, str]:
 
 def _overlay(root: Path, *, ledger_path: Path | None = None) -> ModelSOApplicationOverlay:
     return ModelSOApplicationOverlay.model_validate(
-        {
-            "schema_version": "1",
-            "bus": {"kind": "in_process"},
-            "event_ledger": {
-                "kind": "sqlite",
-                "path": ledger_path or root / "events.sqlite3",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
+        complete_test_overlay(
+            {
+                "schema_version": "1",
+                "bus": {"kind": "in_process"},
+                "event_ledger": {
+                    "kind": "sqlite",
+                    "path": ledger_path or root / "events.sqlite3",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                },
+                "leaderboard": {
+                    "kind": "sqlite",
+                    "path": root / "leaderboard.sqlite3",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "storage_schema": "leaderboard_v1",
+                },
+                "learning_artifacts": {
+                    "kind": "filesystem_yaml",
+                    "evaluation_root": root / "work",
+                    "lineage_root": root / "lineage",
+                },
+                "evaluation_storage": {
+                    "kind": "sqlite",
+                    "root": root / "work",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                    "leaderboard_schema": "leaderboard_v1",
+                },
+                "contracts": {
+                    "catalog_dir": _CONTRACTS_DATA,
+                    "pilot_registry_dir": _CONTRACTS_DATA / "pilots",
+                },
+                "clock": {"kind": "system_utc"},
+                "identity": {"kind": "system"},
             },
-            "leaderboard": {
-                "kind": "sqlite",
-                "path": root / "leaderboard.sqlite3",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "storage_schema": "leaderboard_v1",
-            },
-            "learning_artifacts": {
-                "kind": "filesystem_yaml",
-                "evaluation_root": root / "work",
-                "lineage_root": root / "lineage",
-            },
-            "evaluation_storage": {
-                "kind": "sqlite",
-                "root": root / "work",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
-                "leaderboard_schema": "leaderboard_v1",
-            },
-            "contracts": {
-                "catalog_dir": _CONTRACTS_DATA,
-                "pilot_registry_dir": _CONTRACTS_DATA / "pilots",
-            },
-            "clock": {"kind": "system_utc"},
-            "identity": {"kind": "system"},
-        }
+            root,
+        )
     )
 
 
@@ -274,6 +281,7 @@ def _run_chain(tmp: Path, parent_params: ParamDict, bounds: BoundsDict) -> _Chai
         ModelSOFilesystemLearningArtifactsConfig(
             evaluation_root=workdir,
             lineage_root=lineage_root,
+            experiment_root=tmp / "experiments",
         )
     )
     recorder = _RecordingEvaluator(
@@ -347,6 +355,7 @@ def artifacts(tmp_path_factory: pytest.TempPathFactory) -> _E2EArtifacts:
             ModelSOFilesystemLearningArtifactsConfig(
                 evaluation_root=self_workdir,
                 lineage_root=self_workdir / "lineage",
+                experiment_root=self_workdir / "experiments",
             )
         ),
     )

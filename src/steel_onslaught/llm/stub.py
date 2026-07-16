@@ -17,13 +17,28 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
 
-from steel_onslaught.llm.schemas import LlmResponse, LlmUsage
+from steel_onslaught.llm.schemas import (
+    LlmResponse,
+    LlmUsage,
+    ModelSOLlmCompletionRequest,
+)
 
 # A stub decision function: given the user-prompt text (the serialized
 # observation), return the JSON string the pilot will parse.
 _StubDecisionFn = Callable[[str], str]
+
+
+def _first_ready_weapon_id(user_prompt: str) -> str | None:
+    lines = user_prompt.splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("  - "):
+            continue
+        if index + 1 < len(lines) and "cooldown_remaining_ticks: 0" in lines[index + 1]:
+            return line.removeprefix("  - ").split(":", 1)[0]
+        if "cooldown_remaining_ticks: 0" in line:
+            return line.removeprefix("  - ").split(":", 1)[0]
+    return None
 
 
 def _berserker_decision(user_prompt: str) -> str:
@@ -37,10 +52,13 @@ def _berserker_decision(user_prompt: str) -> str:
         if "distance_estimate=" in line
     )
     if has_ready_weapon and enemy_close:
+        weapon_id = _first_ready_weapon_id(user_prompt)
+        if weapon_id is None:
+            raise ValueError("stub prompt omitted a ready weapon id")
         return json.dumps(
             {
                 "action": "fire_weapon",
-                "action_params": {},
+                "action_params": {"weapon_id": weapon_id},
                 "confidence": 0.8,
                 "rationale": "CLOSE AND BURN — fire the first ready weapon.",
             }
@@ -72,10 +90,13 @@ def _sniper_decision(user_prompt: str) -> str:
         or "confidence=0.9" in user_prompt
         or "confidence=1.0" in user_prompt
     ):
+        weapon_id = _first_ready_weapon_id(user_prompt)
+        if weapon_id is None:
+            raise ValueError("stub prompt omitted a ready weapon id")
         return json.dumps(
             {
                 "action": "fire_weapon",
-                "action_params": {},
+                "action_params": {"weapon_id": weapon_id},
                 "confidence": 0.85,
                 "rationale": "High-confidence lock — take the shot.",
             }
@@ -159,19 +180,23 @@ class StubLlmClient:
     REMAIN fallback masquerading as a real decision.
     """
 
+    def __init__(self, *, model: str) -> None:
+        self._model = model
+
     def complete(
         self,
-        system_prompt: str,
-        user_prompt: str,
-        **opts: Any,
+        request: ModelSOLlmCompletionRequest,
     ) -> LlmResponse:
-        persona = opts.get("persona", "berserker")
-        decision_fn = _PERSONA_STUBS[persona]  # KeyError on unscripted persona
-        text = decision_fn(user_prompt)
+        decision_fn = _PERSONA_STUBS[request.persona]  # KeyError on unscripted persona
+        text = decision_fn(request.user_prompt)
         return LlmResponse(
             text=text,
-            usage=LlmUsage(prompt_tokens=len(user_prompt) // 4, completion_tokens=20),
-            model="stub",
+            usage=LlmUsage(
+                prompt_tokens=len(request.user_prompt) // 4,
+                completion_tokens=20,
+                cost_usd=0.0,
+            ),
+            model=self._model,
             finish_reason="stop",
         )
 

@@ -21,6 +21,10 @@ class SOEventType(StrEnum):
     SENSOR_OBSERVATION = "sensor_observation"
     # Pilot decision (informational, emitted before intents)
     PILOT_DECISION_MADE = "pilot_decision_made"
+    # LLM effect evidence (informational; fold ignores all three)
+    LLM_COMPLETION_REQUESTED = "llm_completion_requested"
+    LLM_COMPLETION_RESOLVED = "llm_completion_resolved"
+    LLM_COMPLETION_FAILED = "llm_completion_failed"
     # Intents — produced by the pilot tick reducer; consumed by downstream
     #           reducers which validate and either accept or reject.
     MOVE_INTENT = "move_intent"

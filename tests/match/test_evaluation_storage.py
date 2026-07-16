@@ -20,11 +20,13 @@ from steel_onslaught.match import composition
 from steel_onslaught.match.composition import (
     build_duel_executor,
     build_duel_executor_with_dependencies,
+    build_llm_dependencies,
     load_loadout,
 )
 from steel_onslaught.match.duel import DuelResult, ModelSOEvaluationStorageKey
 from steel_onslaught.match.evaluation_storage import SQLiteEvaluationStorageAllocator
 from steel_onslaught.replay.engine import ReplayEngine
+from tests.overlay import complete_test_overlay
 from tests.runtime import runtime_dependencies
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -47,38 +49,41 @@ def _binding(root: Path) -> ModelSOSQLiteEvaluationStorageBinding:
 
 def _overlay(root: Path) -> ModelSOApplicationOverlay:
     return ModelSOApplicationOverlay.model_validate(
-        {
-            "schema_version": "1",
-            "bus": {"kind": "in_process"},
-            "event_ledger": {
-                "kind": "sqlite",
-                "path": root / "global-events.sqlite3",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
+        complete_test_overlay(
+            {
+                "schema_version": "1",
+                "bus": {"kind": "in_process"},
+                "event_ledger": {
+                    "kind": "sqlite",
+                    "path": root / "global-events.sqlite3",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                },
+                "leaderboard": {
+                    "kind": "sqlite",
+                    "path": root / "global-leaderboard.sqlite3",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "storage_schema": "leaderboard_v1",
+                },
+                "learning_artifacts": {
+                    "kind": "filesystem_yaml",
+                    "evaluation_root": root / "learning",
+                    "lineage_root": root / "lineage",
+                },
+                "evaluation_storage": _binding(root / "evaluation").model_dump(),
+                "contracts": {
+                    "catalog_dir": _CONTRACTS,
+                    "pilot_registry_dir": _CONTRACTS / "pilots",
+                },
+                "clock": {"kind": "system_utc"},
+                "identity": {"kind": "system"},
             },
-            "leaderboard": {
-                "kind": "sqlite",
-                "path": root / "global-leaderboard.sqlite3",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "storage_schema": "leaderboard_v1",
-            },
-            "learning_artifacts": {
-                "kind": "filesystem_yaml",
-                "evaluation_root": root / "learning",
-                "lineage_root": root / "lineage",
-            },
-            "evaluation_storage": _binding(root / "evaluation").model_dump(),
-            "contracts": {
-                "catalog_dir": _CONTRACTS,
-                "pilot_registry_dir": _CONTRACTS / "pilots",
-            },
-            "clock": {"kind": "system_utc"},
-            "identity": {"kind": "system"},
-        }
+            root,
+        )
     )
 
 
@@ -154,10 +159,12 @@ def test_failed_post_claim_runtime_construction_retains_claim(
     executor = build_duel_executor_with_dependencies(
         overlay,
         evaluation_storage=allocator,
+        llm_dependencies=build_llm_dependencies(overlay),
     )
     attempted_overlays: list[ModelSOApplicationOverlay] = []
 
-    def fail_after_claim(attempted: ModelSOApplicationOverlay) -> None:
+    def fail_after_claim(attempted: ModelSOApplicationOverlay, *, llm_dependencies: object) -> None:
+        del llm_dependencies
         attempted_overlays.append(attempted)
         raise RuntimeError("injected construction failure")
 

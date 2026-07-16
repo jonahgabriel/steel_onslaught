@@ -26,9 +26,9 @@ from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
-from steel_onslaught.match.composition import load_loadout, pilot_from_spec
+from steel_onslaught.match.composition import load_loadout
 from steel_onslaught.pilots.schemas import ModelSOPosition
-from tests.runtime import match_runner
+from tests.runtime import match_runner, pilot_from_spec
 
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 

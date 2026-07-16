@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01MCMPETNFAED0000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "llm_completion_failed",
+  "payload": {
+    "provider_id": "primary",
+    "reason_code": "invalid_response",
+    "model": "served-model",
+    "prompt_tokens": 64,
+    "completion_tokens": 24,
+    "cost_usd": null
+  },
+  "envelope": {
+    "message_id": "8915d356-a52c-50a9-a203-87ab2bb58e39",
+    "correlation_id": "216a8b7b-6339-56ff-86ef-1af3393f4562",
+    "causation_id": null,
+    "emitted_at": "2026-04-30T00:00:00Z",
+    "entity_id": "match.fixture.0001"
+  }
+}

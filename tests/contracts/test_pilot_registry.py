@@ -19,7 +19,11 @@ _LOADOUTS_DIR = _REPO_ROOT / "contracts_data" / "loadouts"
 
 _PINNED_LOADOUT_PILOT_IDS: dict[str, str] = {
     "example_aggressive_light.yaml": "pilot.template.aggressive",
+    "example_llm_berserker_light.yaml": "pilot.llm.berserker",
+    "example_llm_sniper_light.yaml": "pilot.llm.sniper",
     "example_predictive_heavy.yaml": "pilot.template.predictive",
+    "llm_qwen27_sniper.yaml": "pilot.llm.qwen27",
+    "llm_qwen35_berserker.yaml": "pilot.llm.qwen35",
     "proof_blue_aggressive_hunter.yaml": "pilot.template.aggressive",
     "proof_blue_defensive_passive.yaml": "pilot.template.defensive",
     "proof_red_defensive_passive.yaml": "pilot.template.defensive",

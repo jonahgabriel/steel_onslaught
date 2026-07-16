@@ -18,20 +18,19 @@ negative-control arm is not a valid effectiveness experiment (addendum).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
+from uuid import UUID
 
 import click
-import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from steel_onslaught.cli.learn import (
-    DEFAULT_LINEAGE_ROOT,
-    _make_llm_client,
-    _run_learn,
-)
+from steel_onslaught.cli.application import CliApplicationFactory
+from steel_onslaught.cli.learn import _run_learn
 from steel_onslaught.contracts.lineage import ParamDict
-from steel_onslaught.contracts.pilot_registry import load_pilot_spec
+from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.pilot import ModelSOPilotSpec
+from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.loop import ModelSOLearnResult, SOSearchStrategy
 from steel_onslaught.learning.spec_adapter import PilotSpecView
 from steel_onslaught.llm.context_arms import ContextArm
@@ -52,11 +51,17 @@ from steel_onslaught.llm.experiment import (
     routing_overlay_hash,
     run_id_for,
 )
-from steel_onslaught.llm.schemas import LlmUsage
-from steel_onslaught.llm.tuner import tune_with_usage
+from steel_onslaught.llm.schemas import LlmUsage, ModelSOLlmEvidenceContext
+from steel_onslaught.llm.tuner import ProtocolTunerGenerator
+from steel_onslaught.match.composition import (
+    LearningDependencies,
+    load_application_overlay,
+    load_loadout,
+    load_pilot_spec,
+)
+from steel_onslaught.match.duel import DuelExecutor
 
 _EXISTING_FILE = click.Path(exists=True, dir_okay=False, path_type=Path)
-_DIR_PATH = click.Path(file_okay=False, path_type=Path)
 
 # Baseline arm uses a deterministic non-LLM generator; the search seed batteries
 # still vary per trial (derived from the varying master seed), so the arm has
@@ -65,15 +70,6 @@ _BASELINE_STRATEGY = SOSearchStrategy.GRID
 _BASELINE_PROVIDER = "compute"
 _BASELINE_MODEL_ID = "baseline"
 _TEMPERATURE = 0.0
-
-
-def _dump_yaml(model: BaseModel, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = model.model_dump(mode="json")
-    path.write_text(
-        yaml.dump(data, default_flow_style=False, sort_keys=True, allow_unicode=True),
-        encoding="utf-8",
-    )
 
 
 def _promoted(result: ModelSOLearnResult) -> bool:
@@ -143,18 +139,18 @@ def _run_trial(
     experiment_seed: int,
     trial: int,
     archetype: str,
-    parent_path: Path,
-    base_loadout: Path,
+    parent_spec: ModelSOPilotSpec,
+    base_loadout: ModelSOLoadout,
     n_search_seeds: int,
     n_holdout_seeds: int,
     max_evaluations: int,
     max_ticks: int,
     provider: str,
     design_doc_path: Path | None,
-    lineage_root: Path,
-    workdir: Path,
-    output_dir: Path,
     recorded_at: datetime,
+    duel_executor: DuelExecutor,
+    artifacts: LearningArtifactStore,
+    tuner_generator: ProtocolTunerGenerator,
 ) -> ModelSOExperimentRow:
     """Materialize candidates (LLM I/O), run the pure loop, persist artifacts.
 
@@ -163,37 +159,44 @@ def _run_trial(
     """
     run_id = run_id_for(experiment_seed, arm_value, trial)
     correlation_id = correlation_id_for(run_id)
-    trial_workdir = workdir / arm_value / f"trial{trial}"
-    trial_workdir.mkdir(parents=True, exist_ok=True)
-
-    candidates: list[tuple[ParamDict, str]] | None
+    candidates: tuple[tuple[ParamDict, str], ...] | None
     if is_baseline:
         strategy = _BASELINE_STRATEGY
         candidates = None
         generator_id: str | None = None
-        usage = LlmUsage()
+        usage = LlmUsage(prompt_tokens=0, completion_tokens=0, cost_usd=0.0)
         provider_name = _BASELINE_PROVIDER
         endpoint_ref = _BASELINE_PROVIDER
         model_id = _BASELINE_MODEL_ID
     else:
         strategy = SOSearchStrategy.EXTERNAL
-        view = PilotSpecView(load_pilot_spec(parent_path))
-        candidates, generator_id, usage = tune_with_usage(
-            client=_make_llm_client(provider),
+        view = PilotSpecView(parent_spec)
+        generation = tuner_generator.generate(
+            provider_id=provider,
             arm=ContextArm(arm_value),
             archetype=archetype,
             parent_params=view.parameters,
             bounds=view.bounds,
             n_proposals=max_evaluations - 1,
+            evidence_context=ModelSOLlmEvidenceContext(
+                match_id=run_id,
+                mech_id=f"tuner.{archetype}",
+                player_id="experiment.operator",
+                tick=0,
+                correlation_id=UUID(correlation_id),
+            ),
             design_doc_path=design_doc_path,
         )
+        candidates = generation.candidates
+        generator_id = generation.generator_id
+        usage = generation.usage
         provider_name = provider
         endpoint_ref = provider
         model_id = _model_id_from_generator(generator_id)
 
     result, record_path = _run_learn(
         archetype=archetype,
-        parent_path=parent_path,
+        parent_spec=parent_spec,
         strategy=strategy,
         n_search_seeds=n_search_seeds,
         n_holdout_seeds=n_holdout_seeds,
@@ -201,9 +204,9 @@ def _run_trial(
         master_seed=master_seed,
         base_loadout=base_loadout,
         max_ticks=max_ticks,
-        lineage_root=lineage_root,
-        workdir=trial_workdir,
         recorded_at=recorded_at,
+        duel_executor=duel_executor,
+        artifacts=artifacts,
         candidates=candidates,
         generator_id=generator_id,
     )
@@ -232,10 +235,7 @@ def _run_trial(
         cost_usd=usage.cost_usd,
         recorded_at=recorded_at,
     )
-    if record_path is not None:
-        _dump_yaml(sidecar, record_path.with_suffix(".usage.yaml"))
-    else:
-        _dump_yaml(sidecar, output_dir / "usage" / f"{run_id}.usage.yaml")
+    artifacts.write_tuner_usage(sidecar, lineage_record=record_path)
 
     return row
 
@@ -260,7 +260,94 @@ def _format_table(summary: ModelSOExperimentSummary) -> str:
     return "\n".join(lines)
 
 
+def _execute_experiment(
+    *,
+    dependencies: LearningDependencies,
+    archetype: str,
+    parent_path: Path,
+    base_loadout: Path,
+    experiment_seed: int,
+    n_search_seeds: int,
+    n_holdout_seeds: int,
+    max_evaluations: int,
+    k_trials: int,
+    max_ticks: int,
+    llm_provider: str,
+    arm_names: tuple[str, ...],
+    design_doc_path: Path | None,
+) -> None:
+    recorded_at = dependencies.clock.now()
+    parent_spec = load_pilot_spec(parent_path)
+    loaded_base_loadout = load_loadout(base_loadout)
+    selected_arms: tuple[ContextArm, ...] = (
+        ALL_LLM_ARMS if not arm_names else tuple(ContextArm(name) for name in arm_names)
+    )
+    try:
+        enforce_negative_control(selected_arms)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    arm_matrix: list[tuple[str, bool]] = [(arm.value, False) for arm in selected_arms]
+    arm_matrix.append((BASELINE_ARM, True))
+    master_seeds = derive_experiment_seeds(experiment_seed, k_trials)
+    arm_metrics_list: list[ModelSOArmMetrics] = []
+    all_rows: list[ModelSOExperimentRow] = []
+    run_order = 0
+    try:
+        for arm_value, is_baseline in arm_matrix:
+            arm_rows: list[ModelSOExperimentRow] = []
+            for trial, master_seed in enumerate(master_seeds):
+                row = _run_trial(
+                    arm_value=arm_value,
+                    is_baseline=is_baseline,
+                    master_seed=master_seed,
+                    run_order=run_order,
+                    experiment_seed=experiment_seed,
+                    trial=trial,
+                    archetype=archetype,
+                    parent_spec=parent_spec,
+                    base_loadout=loaded_base_loadout,
+                    n_search_seeds=n_search_seeds,
+                    n_holdout_seeds=n_holdout_seeds,
+                    max_evaluations=max_evaluations,
+                    max_ticks=max_ticks,
+                    provider=llm_provider,
+                    design_doc_path=design_doc_path,
+                    recorded_at=recorded_at,
+                    duel_executor=dependencies.duel_executor,
+                    artifacts=dependencies.artifacts,
+                    tuner_generator=dependencies.tuner_generator,
+                )
+                arm_rows.append(row)
+                all_rows.append(row)
+                run_order += 1
+            arm_metrics_list.append(compute_arm_metrics(arm_value, arm_rows))
+    except (ValueError, ValidationError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    summary = ModelSOExperimentSummary(
+        experiment_seed=experiment_seed,
+        archetype=archetype,
+        provider=llm_provider,
+        k_trials=k_trials,
+        master_seeds=master_seeds,
+        arms=tuple(arm_value for arm_value, _ in arm_matrix),
+        arm_metrics=tuple(arm_metrics_list),
+    )
+    summary_path = dependencies.artifacts.write_experiment_summary(summary)
+    rows_path = dependencies.artifacts.write_experiment_rows(tuple(all_rows))
+    click.echo(_format_table(summary))
+    click.echo(f"summary: {summary_path}")
+    click.echo(f"rows: {rows_path}")
+
+
 @click.command(name="learn-experiment")
+@click.option(
+    "--overlay",
+    "overlay_path",
+    type=_EXISTING_FILE,
+    required=True,
+)
 @click.option(
     "--archetype",
     type=click.Choice(["aggressive", "defensive", "predictive"]),
@@ -317,10 +404,8 @@ def _format_table(summary: ModelSOExperimentSummary) -> str:
 @click.option("--max-ticks", type=click.IntRange(min=1), default=200, show_default=True)
 @click.option(
     "--llm-provider",
-    type=click.Choice(["stub", "openai-compat"]),
-    default="stub",
-    show_default=True,
-    help="LLM provider for the tuner arms.",
+    required=True,
+    help="Provider id declared by the application overlay.",
 )
 @click.option(
     "--arm",
@@ -337,25 +422,8 @@ def _format_table(summary: ModelSOExperimentSummary) -> str:
     default=None,
     help="Design doc for the llm_full_design_doc (negative-control) arm context.",
 )
-@click.option(
-    "--lineage-root",
-    type=_DIR_PATH,
-    default=DEFAULT_LINEAGE_ROOT,
-    help="Lineage record store (default: shipped contracts_data/lineage).",
-)
-@click.option(
-    "--workdir",
-    type=_DIR_PATH,
-    required=True,
-    help="Evaluation scratch; one subdir per arm/trial.",
-)
-@click.option(
-    "--output-dir",
-    type=_DIR_PATH,
-    required=True,
-    help="Experiment artifacts: summary.yaml, rows.yaml, usage sidecars.",
-)
 def learn_experiment_command(
+    overlay_path: Path,
     archetype: str,
     parent_path: Path,
     base_loadout: Path,
@@ -368,83 +436,25 @@ def learn_experiment_command(
     llm_provider: str,
     arm_names: tuple[str, ...],
     design_doc_path: Path | None,
-    lineage_root: Path,
-    workdir: Path,
-    output_dir: Path,
 ) -> None:
     """Run the LLM-tuner arm matrix + deterministic baseline, K trials per arm."""
-    recorded_at = datetime.now(UTC)  # the single wall-clock read (mirror cli/learn.py)
-
-    selected_arms: tuple[ContextArm, ...] = (
-        ALL_LLM_ARMS if not arm_names else tuple(ContextArm(name) for name in arm_names)
-    )
-    try:
-        enforce_negative_control(selected_arms)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    # The arm matrix: every LLM arm, then the deterministic baseline arm.
-    arm_matrix: list[tuple[str, bool]] = [(arm.value, False) for arm in selected_arms]
-    arm_matrix.append((BASELINE_ARM, True))
-
-    master_seeds = derive_experiment_seeds(experiment_seed, k_trials)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    arm_metrics_list: list[ModelSOArmMetrics] = []
-    all_rows: list[ModelSOExperimentRow] = []
-    run_order = 0
-    try:
-        for arm_value, is_baseline in arm_matrix:
-            arm_rows: list[ModelSOExperimentRow] = []
-            for trial, master_seed in enumerate(master_seeds):
-                row = _run_trial(
-                    arm_value=arm_value,
-                    is_baseline=is_baseline,
-                    master_seed=master_seed,
-                    run_order=run_order,
-                    experiment_seed=experiment_seed,
-                    trial=trial,
-                    archetype=archetype,
-                    parent_path=parent_path,
-                    base_loadout=base_loadout,
-                    n_search_seeds=n_search_seeds,
-                    n_holdout_seeds=n_holdout_seeds,
-                    max_evaluations=max_evaluations,
-                    max_ticks=max_ticks,
-                    provider=llm_provider,
-                    design_doc_path=design_doc_path,
-                    lineage_root=lineage_root,
-                    workdir=workdir,
-                    output_dir=output_dir,
-                    recorded_at=recorded_at,
-                )
-                arm_rows.append(row)
-                all_rows.append(row)
-                run_order += 1
-            arm_metrics_list.append(compute_arm_metrics(arm_value, arm_rows))
-    except (ValueError, ValidationError) as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    summary = ModelSOExperimentSummary(
-        experiment_seed=experiment_seed,
-        archetype=archetype,
-        provider=llm_provider,
-        k_trials=k_trials,
-        master_seeds=master_seeds,
-        arms=tuple(arm_value for arm_value, _ in arm_matrix),
-        arm_metrics=tuple(arm_metrics_list),
-    )
-
-    _dump_yaml(summary, output_dir / "summary.yaml")
-    rows_data = [row.model_dump(mode="json") for row in all_rows]
-    (output_dir / "rows.yaml").write_text(
-        yaml.dump(rows_data, default_flow_style=False, sort_keys=True, allow_unicode=True),
-        encoding="utf-8",
-    )
-
-    click.echo(_format_table(summary))
-    click.echo(f"summary: {output_dir / 'summary.yaml'}")
-    click.echo(f"rows: {output_dir / 'rows.yaml'}")
+    overlay = load_application_overlay(overlay_path)
+    with CliApplicationFactory.packaged().learning(overlay) as dependencies:
+        _execute_experiment(
+            dependencies=dependencies,
+            archetype=archetype,
+            parent_path=parent_path,
+            base_loadout=base_loadout,
+            experiment_seed=experiment_seed,
+            n_search_seeds=n_search_seeds,
+            n_holdout_seeds=n_holdout_seeds,
+            max_evaluations=max_evaluations,
+            k_trials=k_trials,
+            max_ticks=max_ticks,
+            llm_provider=llm_provider,
+            arm_names=arm_names,
+            design_doc_path=design_doc_path,
+        )
 
 
 __all__ = ["learn_experiment_command"]

@@ -11,8 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.events.envelope import ModelSOEventEnvelope
+from steel_onslaught.llm.schemas import ModelSOLlmPilotSelection
 from steel_onslaught.match.runner import MatchIdentity
 from steel_onslaught.match.state import ModelSOMatchState
+from steel_onslaught.pilots.schemas import PilotProtocol
 
 if TYPE_CHECKING:
     from steel_onslaught.match.composition import RuntimeDependencies
@@ -54,6 +56,25 @@ class DuelExecutor(Protocol):
     ) -> DuelResult: ...
 
 
+class PilotDuelExecutor(Protocol):
+    """Evidence-backed duel capability for workflows supplying built pilots."""
+
+    def __call__(
+        self,
+        *,
+        loadout_a: ModelSOLoadout,
+        loadout_b: ModelSOLoadout,
+        pilot_a: ModelSOLlmPilotSelection,
+        pilot_b: ModelSOLlmPilotSelection,
+        seed: int,
+        max_ticks: int,
+        storage: ModelSOEvaluationStorageKey,
+        match_id: str,
+        side_a: str,
+        side_b: str,
+    ) -> DuelResult: ...
+
+
 def run_duel(
     *,
     dependencies: RuntimeDependencies,
@@ -87,4 +108,46 @@ def run_duel(
     return DuelResult(final_state=final, events=tuple(events))
 
 
-__all__ = ["DuelExecutor", "DuelResult", "ModelSOEvaluationStorageKey", "run_duel"]
+def run_pilot_duel(
+    *,
+    dependencies: RuntimeDependencies,
+    identity: MatchIdentity,
+    loadout_a: ModelSOLoadout,
+    loadout_b: ModelSOLoadout,
+    pilot_a: PilotProtocol,
+    pilot_b: PilotProtocol,
+    seed: int,
+    max_ticks: int,
+    side_a: str,
+    side_b: str,
+) -> DuelResult:
+    """Run a duel with factory-built pilots over canonical runtime evidence."""
+    from steel_onslaught.match.composition import assemble_match_with_dependencies
+
+    stack = assemble_match_with_dependencies(
+        dependencies=dependencies,
+        red=loadout_a,
+        blue=loadout_b,
+        seed=seed,
+        max_ticks=max_ticks,
+        identity=identity,
+        side_a=side_a,
+        side_b=side_b,
+        pilots_override={
+            f"mech.{side_a}.01": pilot_a,
+            f"mech.{side_b}.01": pilot_b,
+        },
+    )
+    final = stack.runner.run()
+    events: Sequence[ModelSOEventEnvelope] = tuple(dependencies.ledger.read_all(identity.match_id))
+    return DuelResult(final_state=final, events=tuple(events))
+
+
+__all__ = [
+    "DuelExecutor",
+    "DuelResult",
+    "ModelSOEvaluationStorageKey",
+    "PilotDuelExecutor",
+    "run_duel",
+    "run_pilot_duel",
+]

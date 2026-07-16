@@ -36,21 +36,21 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
 
-from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.learning.stats import paired_comparison, wilson_interval
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.llm.context_arms import ContextArm, assemble_arm_context
-from steel_onslaught.llm.pilot import LLMPilot
-from steel_onslaught.llm.schemas import LlmResponse, ProtocolLlmClient
-from steel_onslaught.match.runner import MatchRunner
-from steel_onslaught.match.state import ModelSOMatchState
-from steel_onslaught.pilots.schemas import PilotProtocol
+from steel_onslaught.llm.schemas import (
+    LlmResponse,
+    ModelSOLlmCompletionRequest,
+    ModelSOLlmPilotSelection,
+    ProtocolLlmAttempt,
+    ProtocolLlmAttemptClient,
+    ProtocolLlmClient,
+)
+from steel_onslaught.match.duel import ModelSOEvaluationStorageKey, PilotDuelExecutor
 
 # Deterministic identities the runner assigns (match/runner.py::_build_mech):
 # side "a"/"b" → mech.{side}.01 and player.{side}.
@@ -87,17 +87,27 @@ class OpponentAwareClient:
 
     def complete(
         self,
-        system_prompt: str,
-        user_prompt: str,
-        **opts: Any,
+        request: ModelSOLlmCompletionRequest,
     ) -> LlmResponse:
+        return self._base.complete(self._augmented(request))
+
+    @property
+    def observes_attempts(self) -> bool:
+        return isinstance(self._base, ProtocolLlmAttemptClient) and self._base.observes_attempts
+
+    def begin_attempt(self, request: ModelSOLlmCompletionRequest) -> ProtocolLlmAttempt:
+        if not isinstance(self._base, ProtocolLlmAttemptClient):
+            raise RuntimeError("base client does not expose observed attempts")
+        return self._base.begin_attempt(self._augmented(request))
+
+    def _augmented(self, request: ModelSOLlmCompletionRequest) -> ModelSOLlmCompletionRequest:
         augmented = (
-            f"{user_prompt}\n\n"
+            f"{request.user_prompt}\n\n"
             "--- OPPONENT ADAPTATION CONTEXT ---\n"
             "Your opponent's recent decision history (adapt to exploit it):\n"
             f"{self._trace_block}"
         )
-        return self._base.complete(system_prompt=system_prompt, user_prompt=augmented, **opts)
+        return request.model_copy(update={"user_prompt": augmented})
 
 
 # ---------------------------------------------------------------------------
@@ -230,37 +240,6 @@ class AdaptationResult:
     pairs: tuple[PairOutcome, ...] = field(default_factory=tuple)
 
 
-# ---------------------------------------------------------------------------
-# Match execution + decision extraction.
-# ---------------------------------------------------------------------------
-
-
-def _run_one_match(
-    *,
-    match_id: str,
-    seed: int,
-    loadout_a: ModelSOLoadout,
-    loadout_b: ModelSOLoadout,
-    pilot_a: PilotProtocol,
-    pilot_b: PilotProtocol,
-    max_ticks: int,
-    ledger: SQLiteLedger,
-) -> ModelSOMatchState:
-    """Drive one match with injected pilots, appending every event to ``ledger``."""
-    bus = InProcessEventBus()
-    bus.subscribe(ledger.append)
-    runner = MatchRunner(
-        match_id=match_id,
-        seed=seed,
-        loadout_a=loadout_a,
-        loadout_b=loadout_b,
-        bus=bus,
-        max_ticks=max_ticks,
-        pilots_override={_MECH_A: pilot_a, _MECH_B: pilot_b},
-    )
-    return runner.run()
-
-
 def _a_decisions(
     events: Iterable[ModelSOEventEnvelope],
 ) -> list[tuple[int, str, str | None]]:
@@ -326,13 +305,12 @@ def run_adaptation_experiment(
     seed: int,
     loadout_a: ModelSOLoadout,
     loadout_b: ModelSOLoadout,
-    base_client: ProtocolLlmClient,
-    ledger_dir: Path,
-    max_ticks: int = 60,
-    most_recent_n: int = _DEFAULT_MOST_RECENT_N,
-    max_trace_chars: int = _DEFAULT_MAX_TRACE_CHARS,
-    max_sample_diffs: int = _DEFAULT_SAMPLE_DIFFS,
-    match_id_prefix: str = "adapt",
+    duel_executor: PilotDuelExecutor,
+    max_ticks: int,
+    most_recent_n: int,
+    max_trace_chars: int,
+    max_sample_diffs: int,
+    match_id_prefix: str,
 ) -> AdaptationResult:
     """Run N seeded control/adapted match pairs and summarise the win-rate shift.
 
@@ -350,30 +328,37 @@ def run_adaptation_experiment(
     if n_matches < 1:
         raise ValueError(f"n_matches must be >= 1; got {n_matches}")
 
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-
     pairs: list[PairOutcome] = []
     seed_outcomes: list[ModelSOSeedOutcome] = []
 
     for i in range(n_matches):
         pair_seed = seed + i
-        ledger_path = ledger_dir / f"{match_id_prefix}.seed{pair_seed}.sqlite"
-        ledger = SQLiteLedger(ledger_path)
         control_id = f"{match_id_prefix}.{pair_seed}.control"
         adapted_id = f"{match_id_prefix}.{pair_seed}.adapted"
+        namespace = f"{match_id_prefix}.seed{pair_seed}"
 
         # 1. Control run (trace-OFF).
-        control_final = _run_one_match(
+        control_result = duel_executor(
             match_id=control_id,
             seed=pair_seed,
             loadout_a=loadout_a,
             loadout_b=loadout_b,
-            pilot_a=LLMPilot.from_persona_id(client=base_client, persona_id=persona_a),
-            pilot_b=LLMPilot.from_persona_id(client=base_client, persona_id=persona_b),
+            pilot_a=ModelSOLlmPilotSelection(
+                provider_id=provider,
+                persona_id=persona_a,
+                opponent_trace=None,
+            ),
+            pilot_b=ModelSOLlmPilotSelection(
+                provider_id=provider,
+                persona_id=persona_b,
+                opponent_trace=None,
+            ),
             max_ticks=max_ticks,
-            ledger=ledger,
+            storage=ModelSOEvaluationStorageKey(namespace=namespace, duel="control"),
+            side_a="a",
+            side_b="b",
         )
-        control_events = list(ledger.read_all(control_id))
+        control_events = list(control_result.events)
 
         # 2. Assemble the opponent (B) trace from the control ledger.
         trace_block = build_opponent_trace_block(
@@ -382,25 +367,31 @@ def run_adaptation_experiment(
             most_recent_n=most_recent_n,
             max_chars=max_trace_chars,
         )
-        adapted_client: ProtocolLlmClient = OpponentAwareClient(
-            base=base_client, trace_block=trace_block
-        )
-
         # 3. Adapted run (trace-ON) — same seed, A wrapped.
-        adapted_final = _run_one_match(
+        adapted_result = duel_executor(
             match_id=adapted_id,
             seed=pair_seed,
             loadout_a=loadout_a,
             loadout_b=loadout_b,
-            pilot_a=LLMPilot.from_persona_id(client=adapted_client, persona_id=persona_a),
-            pilot_b=LLMPilot.from_persona_id(client=base_client, persona_id=persona_b),
+            pilot_a=ModelSOLlmPilotSelection(
+                provider_id=provider,
+                persona_id=persona_a,
+                opponent_trace=trace_block,
+            ),
+            pilot_b=ModelSOLlmPilotSelection(
+                provider_id=provider,
+                persona_id=persona_b,
+                opponent_trace=None,
+            ),
             max_ticks=max_ticks,
-            ledger=ledger,
+            storage=ModelSOEvaluationStorageKey(namespace=namespace, duel="adapted"),
+            side_a="a",
+            side_b="b",
         )
-        adapted_events = list(ledger.read_all(adapted_id))
+        adapted_events = list(adapted_result.events)
 
-        control_a_won = control_final.winner_id == _PLAYER_A
-        adapted_a_won = adapted_final.winner_id == _PLAYER_A
+        control_a_won = control_result.final_state.winner_id == _PLAYER_A
+        adapted_a_won = adapted_result.final_state.winner_id == _PLAYER_A
 
         actions_changed, samples = _diff_decisions(
             _a_decisions(control_events),
@@ -411,8 +402,8 @@ def run_adaptation_experiment(
         pairs.append(
             PairOutcome(
                 seed=pair_seed,
-                control_winner=control_final.winner_id,
-                adapted_winner=adapted_final.winner_id,
+                control_winner=control_result.final_state.winner_id,
+                adapted_winner=adapted_result.final_state.winner_id,
                 control_a_won=control_a_won,
                 adapted_a_won=adapted_a_won,
                 actions_changed=actions_changed,

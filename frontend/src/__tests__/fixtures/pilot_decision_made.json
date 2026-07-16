@@ -26,7 +26,8 @@
         "action": "move",
         "score": 0.4
       }
-    ]
+    ],
+    "rationale": null
   },
   "envelope": {
     "message_id": "450f3dca-e044-5e92-8378-b43836db45e5",

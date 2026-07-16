@@ -138,6 +138,7 @@ class ModelSOPilotObservation(BaseModel):
 
     match_id: str
     mech_id: str
+    player_id: str
     tick: int = Field(ge=0)
     match_elapsed_ticks: int = Field(ge=0)
 

@@ -29,6 +29,7 @@ import hashlib
 import random
 from collections.abc import Sequence
 from datetime import datetime
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -129,7 +130,7 @@ class ModelSOTunerUsage(BaseModel):
     model_id: str = Field(min_length=1)
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cost_usd: float = Field(ge=0.0)
+    cost_usd: float | None = Field(ge=0.0)
     recorded_at: datetime  # timezone-aware required; injected by the CLI clock
 
     @field_validator("recorded_at")
@@ -160,7 +161,7 @@ class ModelSOExperimentRow(BaseModel):
     final_success: bool  # run ultimately promoted
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
-    cost_usd: float = Field(ge=0.0)
+    cost_usd: float | None = Field(ge=0.0)
     model_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     context_factor_subset: str = Field(min_length=1)  # the arm
@@ -186,7 +187,7 @@ class ModelSOArmMetrics(BaseModel):
     # Per-trial attempts_to_promotion: evaluations_consumed when promoted, else None.
     attempts_to_promotion: tuple[int | None, ...]
     mean_attempts_to_promotion: float | None  # over promoted trials; None if none
-    total_cost_usd: float = Field(ge=0.0)
+    total_cost_usd: float | None = Field(ge=0.0)
     cost_per_promotion: float | None  # total_cost / n_promoted; None if none promoted
     first_batch_promotion_rate: float = Field(ge=0.0, le=1.0)
 
@@ -226,8 +227,9 @@ def compute_arm_metrics(arm: str, rows: Sequence[ModelSOExperimentRow]) -> Model
     promoted_attempts = [row.attempt_count for row in rows if row.final_success]
     n_promoted = len(promoted_attempts)
     mean_attempts = sum(promoted_attempts) / n_promoted if n_promoted else None
-    total_cost = sum(row.cost_usd for row in rows)
-    cost_per_promotion = total_cost / n_promoted if n_promoted else None
+    costs = tuple(row.cost_usd for row in rows)
+    total_cost = sum(cost for cost in costs if cost is not None) if None not in costs else None
+    cost_per_promotion = total_cost / n_promoted if total_cost is not None and n_promoted else None
     first_batch_promotion_rate = sum(1 for row in rows if row.first_pass_success) / k
     return ModelSOArmMetrics(
         arm=arm,
@@ -247,8 +249,8 @@ def run_id_for(experiment_seed: int, arm: str, trial: int) -> str:
 
 
 def correlation_id_for(run_id: str) -> str:
-    """Deterministic 16-hex correlation id derived from the run id."""
-    return _sha256_hex(run_id)[:16]
+    """Deterministic canonical correlation UUID derived from the run id."""
+    return str(uuid5(NAMESPACE_URL, f"steel-onslaught:{run_id}"))
 
 
 __all__ = [

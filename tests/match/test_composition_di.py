@@ -11,9 +11,11 @@ import pytest
 
 from steel_onslaught.bus.protocol import EventHandler
 from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
+from steel_onslaught.llm.schemas import ModelSOLlmPilotSelection, ProtocolLlmCompletionObserver
 from steel_onslaught.match import composition
 from steel_onslaught.match.composition import RuntimeDependencies
 from steel_onslaught.match.fold import MatchContractCatalog
@@ -118,6 +120,25 @@ class _Catalog:
     safety_gizmo_ids: frozenset[str] = frozenset()
 
 
+class _Closer:
+    def close(self) -> None:
+        return
+
+
+class _PilotFactory:
+    def with_observer(self, observer: ProtocolLlmCompletionObserver) -> _PilotFactory:
+        del observer
+        return self
+
+    def from_spec(self, spec: ModelSOPilotSpec) -> PilotProtocol:
+        del spec
+        return cast(PilotProtocol, object())
+
+    def llm_pilot(self, selection: ModelSOLlmPilotSelection) -> PilotProtocol:
+        del selection
+        return cast(PilotProtocol, object())
+
+
 def _loadout(name: str) -> ModelSOLoadout:
     return ModelSOLoadout.model_validate(
         {
@@ -151,9 +172,6 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
     identities = _Identities()
     event_factory = EventFactory(clock=clock, identities=identities)
 
-    def pilot_factory(_: object) -> PilotProtocol:
-        return cast(PilotProtocol, object())
-
     dependencies = RuntimeDependencies(
         bus=bus,
         ledger=ledger,
@@ -163,7 +181,8 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
         event_factory=event_factory,
         catalog=cast(MatchContractCatalog, _Catalog()),
         pilot_registry=cast(Any, _Registry()),
-        pilot_factory=cast(Any, pilot_factory),
+        pilot_factory=_PilotFactory(),
+        closer=_Closer(),
     )
     identity = MatchIdentity(
         match_id=identities.new_match_id(),

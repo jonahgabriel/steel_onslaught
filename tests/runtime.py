@@ -9,19 +9,34 @@ from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.composition import (
     load_match_contract_catalog,
     load_pilot_registry,
-    pilot_from_spec,
 )
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import MatchIdentity, MatchRunner
-from steel_onslaught.pilots.schemas import ModelSOPosition
+from steel_onslaught.pilots.aggressive import AggressivePilot
+from steel_onslaught.pilots.defensive import DefensivePilot
+from steel_onslaught.pilots.predictive import PredictivePilot
+from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CONTRACTS = _REPO_ROOT / "contracts_data"
 _NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+
+
+def pilot_from_spec(spec: ModelSOPilotSpec) -> PilotProtocol:
+    """Test-only deterministic pilot fixture; production construction stays at the root."""
+    match spec.archetype:
+        case "aggressive":
+            return AggressivePilot(spec=spec)
+        case "defensive":
+            return DefensivePilot(spec=spec)
+        case "predictive":
+            return PredictivePilot(spec=spec)
+    raise ValueError(f"unknown pilot archetype {spec.archetype!r} (spec id: {spec.id!r})")
 
 
 class FixedClock:
@@ -111,5 +126,6 @@ __all__ = [
     "SequentialIdentities",
     "TestRuntime",
     "match_runner",
+    "pilot_from_spec",
     "runtime_dependencies",
 ]

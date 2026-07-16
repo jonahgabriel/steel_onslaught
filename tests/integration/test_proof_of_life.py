@@ -41,6 +41,7 @@ from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.match.composition import assemble_match_live
 from steel_onslaught.match.state import SOMatchEndReason, SOMatchStatus
 from steel_onslaught.replay.engine import ReplayEngine
+from tests.overlay import complete_test_overlay
 from tests.sqlite_ledger import open_sqlite_ledger
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,46 +60,49 @@ def _write_overlay(
     tmp_path: Path, *, ledger_path: Path, leaderboard_path: Path
 ) -> tuple[ModelSOApplicationOverlay, Path]:
     overlay = ModelSOApplicationOverlay.model_validate(
-        {
-            "schema_version": "1",
-            "bus": {"kind": "in_process"},
-            "event_ledger": {
-                "kind": "sqlite",
-                "path": ledger_path,
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
+        complete_test_overlay(
+            {
+                "schema_version": "1",
+                "bus": {"kind": "in_process"},
+                "event_ledger": {
+                    "kind": "sqlite",
+                    "path": ledger_path,
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                },
+                "leaderboard": {
+                    "kind": "sqlite",
+                    "path": leaderboard_path,
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "storage_schema": "leaderboard_v1",
+                },
+                "learning_artifacts": {
+                    "kind": "filesystem_yaml",
+                    "evaluation_root": tmp_path / "evaluations",
+                    "lineage_root": tmp_path / "lineage",
+                },
+                "evaluation_storage": {
+                    "kind": "sqlite",
+                    "root": tmp_path / "evaluations",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                    "leaderboard_schema": "leaderboard_v1",
+                },
+                "contracts": {
+                    "catalog_dir": _REPO_ROOT / "contracts_data",
+                    "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",
+                },
+                "clock": {"kind": "system_utc"},
+                "identity": {"kind": "system"},
             },
-            "leaderboard": {
-                "kind": "sqlite",
-                "path": leaderboard_path,
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "storage_schema": "leaderboard_v1",
-            },
-            "learning_artifacts": {
-                "kind": "filesystem_yaml",
-                "evaluation_root": tmp_path / "evaluations",
-                "lineage_root": tmp_path / "lineage",
-            },
-            "evaluation_storage": {
-                "kind": "sqlite",
-                "root": tmp_path / "evaluations",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
-                "leaderboard_schema": "leaderboard_v1",
-            },
-            "contracts": {
-                "catalog_dir": _REPO_ROOT / "contracts_data",
-                "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",
-            },
-            "clock": {"kind": "system_utc"},
-            "identity": {"kind": "system"},
-        }
+            tmp_path,
+        )
     )
     overlay_path = tmp_path / "application.json"
     overlay_path.write_text(json.dumps(overlay.model_dump(mode="json")), encoding="utf-8")

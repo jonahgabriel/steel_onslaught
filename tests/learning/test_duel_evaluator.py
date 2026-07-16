@@ -49,6 +49,7 @@ from steel_onslaught.match.composition import (
     load_loadout,
     load_pilot_spec,
 )
+from tests.overlay import complete_test_overlay
 
 _BASE_LOADOUT = Path("contracts_data/loadouts/example_aggressive_light.yaml").resolve()
 _TEMPLATE_PILOT = Path("contracts_data/pilots/template_aggressive.yaml").resolve()
@@ -80,46 +81,49 @@ def _snapshot(root: Path) -> dict[str, str]:
 
 def _make_evaluator(workdir: Path, *, base_loadout: Path = _BASE_LOADOUT) -> DuelEvaluator:
     overlay = ModelSOApplicationOverlay.model_validate(
-        {
-            "schema_version": "1",
-            "bus": {"kind": "in_process"},
-            "event_ledger": {
-                "kind": "sqlite",
-                "path": workdir / "unused.sqlite3",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
+        complete_test_overlay(
+            {
+                "schema_version": "1",
+                "bus": {"kind": "in_process"},
+                "event_ledger": {
+                    "kind": "sqlite",
+                    "path": workdir / "unused.sqlite3",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                },
+                "leaderboard": {
+                    "kind": "sqlite",
+                    "path": workdir / "leaderboard.sqlite3",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "storage_schema": "leaderboard_v1",
+                },
+                "learning_artifacts": {
+                    "kind": "filesystem_yaml",
+                    "evaluation_root": workdir,
+                    "lineage_root": workdir / "lineage",
+                },
+                "evaluation_storage": {
+                    "kind": "sqlite",
+                    "root": workdir,
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                    "leaderboard_schema": "leaderboard_v1",
+                },
+                "contracts": {
+                    "catalog_dir": _CONTRACTS_DATA,
+                    "pilot_registry_dir": _CONTRACTS_DATA / "pilots",
+                },
+                "clock": {"kind": "system_utc"},
+                "identity": {"kind": "system"},
             },
-            "leaderboard": {
-                "kind": "sqlite",
-                "path": workdir / "leaderboard.sqlite3",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "storage_schema": "leaderboard_v1",
-            },
-            "learning_artifacts": {
-                "kind": "filesystem_yaml",
-                "evaluation_root": workdir,
-                "lineage_root": workdir / "lineage",
-            },
-            "evaluation_storage": {
-                "kind": "sqlite",
-                "root": workdir,
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
-                "leaderboard_schema": "leaderboard_v1",
-            },
-            "contracts": {
-                "catalog_dir": _CONTRACTS_DATA,
-                "pilot_registry_dir": _CONTRACTS_DATA / "pilots",
-            },
-            "clock": {"kind": "system_utc"},
-            "identity": {"kind": "system"},
-        }
+            workdir,
+        )
     )
     return DuelEvaluator(
         archetype="aggressive",
@@ -130,6 +134,7 @@ def _make_evaluator(workdir: Path, *, base_loadout: Path = _BASE_LOADOUT) -> Due
             ModelSOFilesystemLearningArtifactsConfig(
                 evaluation_root=workdir,
                 lineage_root=workdir / "lineage",
+                experiment_root=workdir / "experiments",
             )
         ),
     )

@@ -18,15 +18,12 @@ from pathlib import Path
 import click
 
 from steel_onslaught.cli.adaptation import adaptation_command
+from steel_onslaught.cli.application import CliApplicationFactory
 from steel_onslaught.cli.balance import balance_command
 from steel_onslaught.cli.experiment import learn_experiment_command
 from steel_onslaught.cli.learn import learn_command
 from steel_onslaught.cli.serve import serve_command
-from steel_onslaught.match.composition import (
-    assemble_match_live,
-    build_runtime_dependencies,
-    load_application_overlay,
-)
+from steel_onslaught.match.composition import load_application_overlay
 from steel_onslaught.projections.cli.renderer import CliTextRenderer
 
 _LOADOUT_PATH = click.Path(exists=True, dir_okay=False, path_type=Path)
@@ -62,7 +59,7 @@ def run_command(
 ) -> None:
     """Run a live match between two loadouts."""
     overlay = load_application_overlay(overlay_path)
-    stack = assemble_match_live(
+    stack = CliApplicationFactory.packaged().match(
         overlay=overlay,
         red_loadout_path=loadout_a_path,
         blue_loadout_path=loadout_b_path,
@@ -70,13 +67,16 @@ def run_command(
         max_ticks=max_ticks,
     )
     renderer = CliTextRenderer(out=click.get_text_stream("stdout"), color=not no_color)
-    stack.runner.run()
-    # Render the durable canonical order. Re-entrant in-process dispatch can
-    # deliver derived events to a live observer before the outer event whose
-    # lower sequence number is already in the ledger.
-    for event in stack.ledger.read_all(stack.match_id):
-        renderer.handle(event)
-    click.echo(f"match_id: {stack.match_id}", err=True)
+    try:
+        stack.runner.run()
+        # Render the durable canonical order. Re-entrant in-process dispatch can
+        # deliver derived events to a live observer before the outer event whose
+        # lower sequence number is already in the ledger.
+        for event in stack.ledger.read_all(stack.match_id):
+            renderer.handle(event)
+        click.echo(f"match_id: {stack.match_id}", err=True)
+    finally:
+        stack.close()
 
 
 @main.command(name="replay")
@@ -94,28 +94,31 @@ def replay_command(
 ) -> None:
     """Re-emit a recorded match's events through a fresh bus + renderer."""
     overlay = load_application_overlay(overlay_path)
-    dependencies = build_runtime_dependencies(overlay)
-    renderer = CliTextRenderer(out=click.get_text_stream("stdout"), color=not no_color)
-    renderer.attach(dependencies.bus)
+    dependencies = CliApplicationFactory.packaged().runtime(overlay)
+    try:
+        renderer = CliTextRenderer(out=click.get_text_stream("stdout"), color=not no_color)
+        renderer.attach(dependencies.bus)
 
-    published = 0
-    for event in dependencies.ledger.read_all(match_id):
-        if from_tick is not None and event.tick < from_tick:
-            continue
-        if to_tick is not None and event.tick > to_tick:
-            continue
-        dependencies.bus.publish(event)
-        published += 1
+        published = 0
+        for event in dependencies.ledger.read_all(match_id):
+            if from_tick is not None and event.tick < from_tick:
+                continue
+            if to_tick is not None and event.tick > to_tick:
+                continue
+            dependencies.bus.publish(event)
+            published += 1
 
-    if published == 0:
-        raise click.ClickException(
-            f"no events found for match {match_id!r} in {overlay.event_ledger.path}"
-            + (
-                f" within tick window [{from_tick}, {to_tick}]"
-                if from_tick is not None or to_tick is not None
-                else ""
+        if published == 0:
+            raise click.ClickException(
+                f"no events found for match {match_id!r} in {overlay.event_ledger.path}"
+                + (
+                    f" within tick window [{from_tick}, {to_tick}]"
+                    if from_tick is not None or to_tick is not None
+                    else ""
+                )
             )
-        )
+    finally:
+        dependencies.close()
 
 
 @main.command(name="leaderboard")
@@ -124,7 +127,11 @@ def replay_command(
 def leaderboard_command(overlay_path: Path, top_n: int) -> None:
     """Show the top-N leaderboard entries (draws excluded)."""
     overlay = load_application_overlay(overlay_path)
-    rows = build_runtime_dependencies(overlay).leaderboard.top_n(top_n)
+    dependencies = CliApplicationFactory.packaged().runtime(overlay)
+    try:
+        rows = dependencies.leaderboard.top_n(top_n)
+    finally:
+        dependencies.close()
 
     if not rows:
         click.echo("leaderboard is empty")

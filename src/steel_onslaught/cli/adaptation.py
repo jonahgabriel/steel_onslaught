@@ -15,27 +15,18 @@ smoke run.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import click
 
+from steel_onslaught.cli.application import CliApplicationFactory
 from steel_onslaught.llm.adaptation import AdaptationResult, run_adaptation_experiment
-from steel_onslaught.llm.schemas import ProtocolLlmClient
-from steel_onslaught.match.runner import load_loadout
+from steel_onslaught.match.composition import (
+    load_application_overlay,
+    load_loadout,
+)
 
 _LOADOUT_PATH = click.Path(exists=True, dir_okay=False, path_type=Path)
-
-
-def _build_client(provider: str) -> ProtocolLlmClient:
-    """Resolve the base LLM client for a provider id (fail-fast on unknown)."""
-    if provider == "stub":
-        from steel_onslaught.llm.stub import StubLlmClient
-
-        return StubLlmClient()
-    from steel_onslaught.llm.client_http import client_for_provider
-
-    return client_for_provider(provider)
 
 
 def _render(result: AdaptationResult) -> str:
@@ -91,10 +82,15 @@ def _render(result: AdaptationResult) -> str:
 
 @click.command(name="run-adaptation")
 @click.option(
+    "--overlay",
+    "overlay_path",
+    type=_LOADOUT_PATH,
+    required=True,
+)
+@click.option(
     "--provider",
-    default="stub",
-    show_default=True,
-    help="LLM provider id: 'stub' (offline, deterministic) or a providers.yaml id.",
+    required=True,
+    help="Provider id declared by the application overlay.",
 )
 @click.option("--persona-a", required=True, help="Side-A persona id (the adapting pilot).")
 @click.option("--persona-b", required=True, help="Side-B persona id (the observed opponent).")
@@ -115,26 +111,19 @@ def _render(result: AdaptationResult) -> str:
     "--loadout-a",
     "loadout_a_path",
     type=_LOADOUT_PATH,
-    default=Path("contracts_data/loadouts/example_aggressive_light.yaml"),
-    show_default=True,
+    required=True,
     help="Side-A loadout contract (the persona overrides the pilot).",
 )
 @click.option(
     "--loadout-b",
     "loadout_b_path",
     type=_LOADOUT_PATH,
-    default=Path("contracts_data/loadouts/example_predictive_heavy.yaml"),
-    show_default=True,
+    required=True,
     help="Side-B loadout contract (the persona overrides the pilot).",
 )
-@click.option("--max-ticks", type=click.IntRange(min=1), default=60, show_default=True)
-@click.option(
-    "--ledger-dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    default=None,
-    help="Directory for per-pair match ledgers (default: a fresh temp dir).",
-)
+@click.option("--max-ticks", type=click.IntRange(min=1), required=True)
 def adaptation_command(
+    overlay_path: Path,
     provider: str,
     persona_a: str,
     persona_b: str,
@@ -143,27 +132,27 @@ def adaptation_command(
     loadout_a_path: Path,
     loadout_b_path: Path,
     max_ticks: int,
-    ledger_dir: Path | None,
 ) -> None:
     """Measure whether showing pilot A its opponent's decision history changes A's play."""
-    base_client = _build_client(provider)
-    resolved_ledger_dir = (
-        ledger_dir if ledger_dir is not None else Path(tempfile.mkdtemp(prefix="so-adaptation-"))
-    )
-    result = run_adaptation_experiment(
-        provider=provider,
-        persona_a=persona_a,
-        persona_b=persona_b,
-        n_matches=n_matches,
-        seed=seed,
-        loadout_a=load_loadout(loadout_a_path),
-        loadout_b=load_loadout(loadout_b_path),
-        base_client=base_client,
-        ledger_dir=resolved_ledger_dir,
-        max_ticks=max_ticks,
-    )
+    overlay = load_application_overlay(overlay_path)
+    with CliApplicationFactory.packaged().adaptation(overlay) as dependencies:
+        result = run_adaptation_experiment(
+            provider=provider,
+            persona_a=persona_a,
+            persona_b=persona_b,
+            n_matches=n_matches,
+            seed=seed,
+            loadout_a=load_loadout(loadout_a_path),
+            loadout_b=load_loadout(loadout_b_path),
+            duel_executor=dependencies.duel_executor,
+            max_ticks=max_ticks,
+            most_recent_n=12,
+            max_trace_chars=1200,
+            max_sample_diffs=3,
+            match_id_prefix="adapt",
+        )
     click.echo(_render(result))
-    click.echo(f"ledgers: {resolved_ledger_dir}", err=True)
+    click.echo(f"evidence: {overlay.evaluation_storage.root}", err=True)
 
 
 __all__ = ["adaptation_command"]

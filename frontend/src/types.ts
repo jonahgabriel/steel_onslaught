@@ -30,6 +30,9 @@ export const SO_EVENT_TYPES = [
   "mech_spawned",
   "sensor_observation",
   "pilot_decision_made",
+  "llm_completion_requested",
+  "llm_completion_resolved",
+  "llm_completion_failed",
   "move_intent",
   "weapon_fire_intent",
   "mode_switch_intent",
@@ -91,7 +94,9 @@ export type SOPilotReasonCode =
   | "pressure_recovery"
   | "predicted_intercept"
   | "evade_sensor_lock"
-  | "no_viable_action";
+  | "no_viable_action"
+  | "llm_decision"
+  | "llm_fallback";
 export type SOMatchEndReason = "last_mech_standing" | "pilot_killed" | "draw_max_ticks" | "aborted";
 
 /** Mirror of steel_onslaught.contracts.boiler.ModelSOBoilerState. */
@@ -193,6 +198,31 @@ export interface PilotDecisionMadePayload {
   confidence: number;
   considered_actions: ConsideredAction[];
   rationale: string | null;
+}
+
+export interface LlmCompletionRequestedPayload {
+  provider_id: string;
+  persona_id: string;
+  system_prompt_length: number;
+  user_prompt_length: number;
+}
+
+export interface LlmCompletionResolvedPayload {
+  provider_id: string;
+  model: string;
+  finish_reason: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  response_length: number;
+}
+
+export interface LlmCompletionFailedPayload {
+  provider_id: string;
+  reason_code: "provider_error" | "invalid_response" | "consumer_error" | "abandoned";
+  model: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  cost_usd: number | null;
 }
 
 export interface MoveIntentPayload {
@@ -362,6 +392,9 @@ export interface PayloadMap {
   mech_spawned: MechSpawnedPayload;
   sensor_observation: SensorObservationPayload;
   pilot_decision_made: PilotDecisionMadePayload;
+  llm_completion_requested: LlmCompletionRequestedPayload;
+  llm_completion_resolved: LlmCompletionResolvedPayload;
+  llm_completion_failed: LlmCompletionFailedPayload;
   move_intent: MoveIntentPayload;
   weapon_fire_intent: WeaponFireIntentPayload;
   mode_switch_intent: ModeSwitchIntentPayload;
@@ -638,7 +671,9 @@ function parsePilotReason(value: unknown, context: string): SOPilotReasonCode {
     value === "pressure_recovery" ||
     value === "predicted_intercept" ||
     value === "evade_sensor_lock" ||
-    value === "no_viable_action"
+    value === "no_viable_action" ||
+    value === "llm_decision" ||
+    value === "llm_fallback"
   ) {
     return value;
   }
@@ -1029,6 +1064,76 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       confidence: Math.min(1, Math.max(0, confidence)),
       considered_actions,
       rationale: nullableStr(record, "rationale", context),
+    };
+  },
+  llm_completion_requested: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      ["provider_id", "persona_id", "system_prompt_length", "user_prompt_length"],
+      context,
+    );
+    return {
+      provider_id: str(record, "provider_id", context),
+      persona_id: str(record, "persona_id", context),
+      system_prompt_length: nonNegativeInt(record, "system_prompt_length", context),
+      user_prompt_length: nonNegativeInt(record, "user_prompt_length", context),
+    };
+  },
+  llm_completion_resolved: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      [
+        "provider_id",
+        "model",
+        "finish_reason",
+        "prompt_tokens",
+        "completion_tokens",
+        "response_length",
+      ],
+      context,
+    );
+    return {
+      provider_id: str(record, "provider_id", context),
+      model: str(record, "model", context),
+      finish_reason: str(record, "finish_reason", context),
+      prompt_tokens: nonNegativeInt(record, "prompt_tokens", context),
+      completion_tokens: nonNegativeInt(record, "completion_tokens", context),
+      response_length: nonNegativeInt(record, "response_length", context),
+    };
+  },
+  llm_completion_failed: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      ["provider_id", "reason_code", "model", "prompt_tokens", "completion_tokens", "cost_usd"],
+      context,
+    );
+    const reason_code = str(record, "reason_code", context);
+    if (
+      reason_code !== "provider_error" &&
+      reason_code !== "invalid_response" &&
+      reason_code !== "consumer_error" &&
+      reason_code !== "abandoned"
+    ) {
+      fail(context, 'field "reason_code" is not a recognized LLM failure reason');
+    }
+    if (
+      !("prompt_tokens" in record) ||
+      !("completion_tokens" in record) ||
+      !("cost_usd" in record)
+    ) {
+      fail(context, "nullable LLM failure usage fields are required");
+    }
+    return {
+      provider_id: str(record, "provider_id", context),
+      reason_code,
+      model: nullableStr(record, "model", context),
+      prompt_tokens: optionalNullableNonNegativeInt(record, "prompt_tokens", context) ?? null,
+      completion_tokens:
+        optionalNullableNonNegativeInt(record, "completion_tokens", context) ?? null,
+      cost_usd: optionalNullableNonNegativeNum(record, "cost_usd", context) ?? null,
     };
   },
   move_intent: (value, context) => {

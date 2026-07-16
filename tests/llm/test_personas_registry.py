@@ -1,9 +1,4 @@
-"""Tests for the persona contract registry (D6 — personas as YAML contracts).
-
-The shipped personas now live in ``contracts_data/pilots/personas/*.yaml`` and
-``llm/personas.py`` is a thin loader. These tests cover the contract load, the
-preserved public API, and the byte-exact system-prompt assembly.
-"""
+"""Tests for explicit immutable persona contract registries."""
 
 from __future__ import annotations
 
@@ -14,67 +9,28 @@ from pydantic import ValidationError
 
 from steel_onslaught.llm.personas import _JSON_INSTRUCTION as JSON_INSTRUCTION
 from steel_onslaught.llm.personas import (
-    BERSERKER,
-    OPPORTUNIST,
-    PERSONAS,
-    SNIPER,
     Persona,
     PersonaRegistry,
     PersonaResolutionError,
-    get_persona,
     load_persona,
 )
 
-# ---------------------------------------------------------------------------
-# Public API preserved (llm/pilot.py + main.py depend on this shape)
-# ---------------------------------------------------------------------------
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SHIPPED_PERSONAS = _REPO_ROOT / "contracts_data/pilots/personas"
 
 
-@pytest.mark.unit
-def test_shipped_personas_present() -> None:
-    assert set(PERSONAS) == {"berserker", "sniper", "opportunist"}
-    for persona in (BERSERKER, SNIPER, OPPORTUNIST):
-        assert isinstance(persona, Persona)
-
-
-@pytest.mark.unit
-def test_persona_singletons_have_expected_fields() -> None:
-    assert BERSERKER.persona_id == "berserker"
-    assert BERSERKER.display_name == "Berserker"
-    assert SNIPER.display_name == "Sniper"
-    assert OPPORTUNIST.display_name == "Opportunist"
-    for persona in (BERSERKER, SNIPER, OPPORTUNIST):
-        assert persona.temperature == 0.7
-        assert persona.system_prompt.endswith(JSON_INSTRUCTION)
-
-
-@pytest.mark.unit
-def test_get_persona_roundtrip_and_unknown() -> None:
-    assert get_persona("berserker") is BERSERKER
-    with pytest.raises(KeyError):
-        get_persona("nonexistent")
-
-
-@pytest.mark.unit
-def test_doctrine_keywords_survive_yaml_fold() -> None:
-    assert "RECKLESS BERSERKER" in BERSERKER.system_prompt
-    assert "overheat and risk rupture" in BERSERKER.system_prompt  # fold joins lines w/ spaces
-    assert "MAINTAIN MAXIMUM STANDOFF RANGE" in SNIPER.system_prompt
-    assert "confidence is high (>= 0.7)" in SNIPER.system_prompt
-    assert "read the situation and exploit the largest opening" in OPPORTUNIST.system_prompt
-
-
-# ---------------------------------------------------------------------------
-# Registry.load conventions (mirrors PilotSpecRegistry.load)
-# ---------------------------------------------------------------------------
-
-
-def _write_persona(dir_path: Path, name: str, persona_id: str) -> Path:
-    path = dir_path / f"{name}.yaml"
+def _write_persona(
+    directory: Path,
+    filename: str,
+    persona_id: str,
+    *,
+    temperature: str = "0.3",
+) -> Path:
+    path = directory / f"{filename}.yaml"
     path.write_text(
         f"persona_id: {persona_id}\n"
         f"display_name: Test {persona_id}\n"
-        "temperature: 0.3\n"
+        f"temperature: {temperature}\n"
         "doctrine: >-\n"
         "  First line of doctrine.\n"
         "  Second line.\n",
@@ -84,17 +40,49 @@ def _write_persona(dir_path: Path, name: str, persona_id: str) -> Path:
 
 
 @pytest.mark.unit
-def test_registry_load_from_custom_dir(tmp_path: Path) -> None:
+def test_shipped_registry_is_loaded_only_from_explicit_path() -> None:
+    registry = PersonaRegistry.load(_SHIPPED_PERSONAS)
+    assert set(registry.as_mapping()) == {"berserker", "sniper", "opportunist"}
+    berserker = registry.require("berserker")
+    assert isinstance(berserker, Persona)
+    assert berserker.display_name == "Berserker"
+    assert berserker.temperature == 0.7
+    assert "RECKLESS BERSERKER" in berserker.system_prompt
+    assert berserker.system_prompt.endswith(JSON_INSTRUCTION)
+
+
+@pytest.mark.unit
+def test_registry_load_from_custom_dir_preserves_contract_values(tmp_path: Path) -> None:
     _write_persona(tmp_path, "alpha", "alpha")
     _write_persona(tmp_path, "beta", "beta")
     registry = PersonaRegistry.load(tmp_path)
-    assert registry.get("alpha") is not None
-    assert set(registry.as_dict()) == {"alpha", "beta"}
-    alpha = registry.get("alpha")
-    assert alpha is not None
+    assert set(registry.as_mapping()) == {"alpha", "beta"}
+    alpha = registry.require("alpha")
     assert alpha.temperature == 0.3
-    # Folded doctrine (lines joined by spaces) + shared JSON instruction.
     assert alpha.system_prompt == "First line of doctrine. Second line." + JSON_INSTRUCTION
+
+
+@pytest.mark.unit
+def test_registry_mapping_is_immutable(tmp_path: Path) -> None:
+    _write_persona(tmp_path, "alpha", "alpha")
+    mapping = PersonaRegistry.load(tmp_path).as_mapping()
+    with pytest.raises(TypeError):
+        mapping["replacement"] = mapping["alpha"]  # type: ignore[index]
+
+
+@pytest.mark.unit
+def test_registry_rejects_unknown_persona(tmp_path: Path) -> None:
+    _write_persona(tmp_path, "alpha", "alpha")
+    with pytest.raises(PersonaResolutionError, match="unknown_persona"):
+        PersonaRegistry.load(tmp_path).require("missing")
+
+
+@pytest.mark.unit
+def test_registry_rejects_missing_directory_and_empty_directory(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        PersonaRegistry.load(tmp_path / "absent")
+    with pytest.raises(PersonaResolutionError, match="must not be empty"):
+        PersonaRegistry.load(tmp_path)
 
 
 @pytest.mark.unit
@@ -106,11 +94,16 @@ def test_registry_load_rejects_duplicate_id(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_load_persona_rejects_unknown_field(tmp_path: Path) -> None:
-    path = tmp_path / "bad.yaml"
-    path.write_text(
+@pytest.mark.parametrize(
+    "body",
+    [
         "persona_id: x\ndisplay_name: X\ndoctrine: hi\nbogus_field: 1\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValidationError):  # extra=forbid
+        "persona_id: x\ndisplay_name: X\ndoctrine: hi\n",
+        'persona_id: x\ndisplay_name: X\ndoctrine: hi\ntemperature: "0.3"\n',
+    ],
+)
+def test_load_persona_rejects_unknown_missing_and_coerced_fields(tmp_path: Path, body: str) -> None:
+    path = tmp_path / "bad.yaml"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(ValidationError):
         load_persona(path)

@@ -206,6 +206,7 @@ def observation_battery() -> list[ModelSOPilotObservation]:
                 ModelSOPilotObservation(
                     match_id="battery",
                     mech_id="mech-x",
+                    player_id="player-x",
                     tick=1,
                     match_elapsed_ticks=1,
                     boiler=_make_boiler(spec, heat, pressure),

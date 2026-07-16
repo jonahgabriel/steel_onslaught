@@ -145,6 +145,39 @@ describe("types parity against Python-emitted fixtures", () => {
     });
   }
 
+  for (const eventType of [
+    "llm_completion_requested",
+    "llm_completion_resolved",
+    "llm_completion_failed",
+  ] as const) {
+    it(`rejects an unknown ${eventType} field`, () => {
+      expect(() =>
+        parseEnvelope(
+          corruptPayload(eventType, (payload) => {
+            payload["unexpected"] = true;
+          }),
+        ),
+      ).toThrow(/unexpected/);
+    });
+  }
+
+  it("rejects missing and coerced LLM completion evidence fields", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_requested", (payload) => {
+          delete payload["provider_id"];
+        }),
+      ),
+    ).toThrow(/provider_id/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_resolved", (payload) => {
+          payload["prompt_tokens"] = "64";
+        }),
+      ),
+    ).toThrow(/prompt_tokens/);
+  });
+
   for (const [eventType, requiredField] of [
     ["move_intent", "direction"],
     ["weapon_fire_intent", "weapon_id"],

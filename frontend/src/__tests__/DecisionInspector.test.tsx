@@ -39,6 +39,7 @@ function makeDecisionEnvelope(
       { action, score: 0.85 },
       { action: "remain", score: 0.2 },
     ],
+    rationale: null,
   };
   return {
     schema_version: "0.1.0",

@@ -40,10 +40,10 @@ import click
 from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 
 from steel_onslaught.bus.protocol import EventBus, HandlerToken
+from steel_onslaught.cli.application import CliApplicationFactory
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.match.composition import (
-    build_runtime_dependencies,
     load_application_overlay,
 )
 
@@ -309,13 +309,13 @@ def serve_command(
 ) -> None:
     """Stream a recorded match to WebSocket clients (frontend on :5173)."""
     overlay = load_application_overlay(overlay_path)
-    dependencies = build_runtime_dependencies(overlay)
-    events = list(dependencies.ledger.read_all(match_id))
-    if not events:
-        raise click.ClickException(
-            f"no events found for match {match_id!r} in {overlay.event_ledger.path}"
-        )
-    try:
-        asyncio.run(_serve_replay(events, host=host, port=port, tick_delay=tick_delay))
-    except KeyboardInterrupt:
-        click.echo("serve interrupted", err=True)
+    with CliApplicationFactory.packaged().runtime(overlay) as dependencies:
+        events = list(dependencies.ledger.read_all(match_id))
+        if not events:
+            raise click.ClickException(
+                f"no events found for match {match_id!r} in {overlay.event_ledger.path}"
+            )
+        try:
+            asyncio.run(_serve_replay(events, host=host, port=port, tick_delay=tick_delay))
+        except KeyboardInterrupt:
+            click.echo("serve interrupted", err=True)
