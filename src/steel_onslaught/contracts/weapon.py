@@ -54,6 +54,25 @@ class ModelSOWeaponCompatibility(BaseModel):
     compatible_chassis_classes: list[str] = Field(min_length=1)
 
 
+class ModelSOTargetClassEffectiveness(BaseModel):
+    """Closed, positive damage multipliers for every supported chassis class."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    light: float = Field(gt=0.0)
+    medium: float = Field(gt=0.0)
+    heavy: float = Field(gt=0.0)
+
+    def __getitem__(self, chassis_class: Literal["light", "medium", "heavy"]) -> float:
+        """Resolve a required multiplier without a permissive runtime fallback."""
+        try:
+            return float(getattr(self, chassis_class))
+        except AttributeError as exc:
+            # Validated instances always contain all three fields.  A KeyError
+            # keeps corrupted/unvalidated runtime objects fail-closed too.
+            raise KeyError(chassis_class) from exc
+
+
 class ModelSOWeaponSpec(BaseModel):
     """Weapon specification — design §13.2."""
 
@@ -79,7 +98,7 @@ class ModelSOWeaponSpec(BaseModel):
     accuracy_curve: list[ModelSOAccuracyPoint] = Field(min_length=1)
 
     # Multiplier applied to base damage against each chassis class.
-    target_class_effectiveness: dict[str, float]
+    target_class_effectiveness: ModelSOTargetClassEffectiveness
 
     # Damage type used to resolve armor effectiveness on a hit (Task 25).
     damage_type: WeaponDamageType

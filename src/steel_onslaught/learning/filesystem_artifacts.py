@@ -30,9 +30,30 @@ class YamlFilesystemLearningArtifactStore:
         return self._config.evaluation_root / workspace.key
 
     def prepare_evaluation(self, index: int) -> EvaluationWorkspace:
-        workspace = EvaluationWorkspace(key=f"eval_{index:04d}")
-        self._workspace_path(workspace).mkdir(parents=True, exist_ok=True)
-        return workspace
+        self._config.evaluation_root.mkdir(parents=True, exist_ok=True)
+        base_key = f"eval_{index:04d}"
+        suffix = 1
+        while True:
+            key = base_key if suffix == 1 else f"{base_key}_{suffix:04d}"
+            workspace = EvaluationWorkspace(key=key)
+            try:
+                self._workspace_path(workspace).mkdir(exist_ok=False)
+            except FileExistsError:
+                suffix += 1
+                continue
+            return workspace
+
+    @staticmethod
+    def _write_exclusive_or_verify(path: Path, content: bytes) -> None:
+        """Create one artifact without replacing any prior evidence."""
+        try:
+            with path.open("xb") as stream:
+                stream.write(content)
+        except FileExistsError:
+            if path.read_bytes() != content:
+                raise FileExistsError(
+                    f"refusing to replace non-identical learning artifact: {path}"
+                ) from None
 
     def materialize_loadout(
         self,
@@ -44,9 +65,9 @@ class YamlFilesystemLearningArtifactStore:
     ) -> MaterializedLoadout:
         workspace_path = self._workspace_path(workspace)
         spec_path = workspace_path / f"{spec.id}.yaml"
-        spec_path.write_text(
-            yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False),
-            encoding="utf-8",
+        self._write_exclusive_or_verify(
+            spec_path,
+            yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False).encode("utf-8"),
         )
         hash_fragment = spec.id.rsplit("_", 1)[-1]
         loadout = ModelSOLoadout.model_validate(
@@ -58,9 +79,9 @@ class YamlFilesystemLearningArtifactStore:
             }
         )
         loadout_path = workspace_path / f"{loadout.id}.yaml"
-        loadout_path.write_text(
-            yaml.safe_dump(loadout.model_dump(mode="json"), sort_keys=False),
-            encoding="utf-8",
+        self._write_exclusive_or_verify(
+            loadout_path,
+            yaml.safe_dump(loadout.model_dump(mode="json"), sort_keys=False).encode("utf-8"),
         )
         return MaterializedLoadout(loadout=loadout, path=loadout_path)
 

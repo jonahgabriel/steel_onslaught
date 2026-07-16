@@ -442,7 +442,7 @@ class MatchRunner:
 
         # --- Damage chain (Task 25) ---------------------------------------
         damage_type = spec.damage_type
-        effectiveness = spec.target_class_effectiveness.get(target.chassis_class, 1.0)
+        effectiveness = spec.target_class_effectiveness[target.chassis_class]
         damage_raw = int(spec.damage * effectiveness)
         armor_reduction = compute_armor_reduction(
             damage_raw=damage_raw,

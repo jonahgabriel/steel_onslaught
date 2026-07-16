@@ -42,7 +42,7 @@ while the match is still RUNNING):
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, TypeVar
 from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
@@ -66,7 +66,7 @@ from steel_onslaught.match.state import (
 )
 from steel_onslaught.reducers.boiler import ReducerBoiler
 from steel_onslaught.reducers.failure import ReducerFailureCascade
-from steel_onslaught.reducers.lifecycle import ReducerMatchLifecycle
+from steel_onslaught.reducers.lifecycle import ModelSOMatchStartedPayload, ReducerMatchLifecycle
 from steel_onslaught.reducers.mode import build_mode_transition_completed_event
 from steel_onslaught.reducers.movement import ReducerMovement, mode_effective_speed
 
@@ -74,6 +74,28 @@ _PRODUCER_NODE = "node.match.fold"
 
 # Match-scoped events carry the wildcard subject (lifecycle convention).
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
+
+_ContractT = TypeVar("_ContractT")
+_ContractKind = Literal["chassis", "weapon", "sensor", "gizmo", "transition"]
+
+
+class MissingMatchContractError(ValueError):
+    """A canonical match event references absent injected contract truth."""
+
+    def __init__(
+        self,
+        contract_kind: _ContractKind,
+        contract_id: str,
+        *,
+        owner_id: str,
+    ) -> None:
+        self.contract_kind = contract_kind
+        self.contract_id = contract_id
+        self.owner_id = owner_id
+        super().__init__(
+            f"missing_match_contract: {contract_kind} {contract_id!r} referenced by "
+            f"{owner_id!r} is absent from the injected match catalog"
+        )
 
 
 class MatchContractCatalog:
@@ -208,6 +230,10 @@ class MatchStateFold:
         outer_sink = self._sink
         self._sink = produced
         try:
+            if event.event_type is SOEventType.MATCH_STARTED:
+                payload = ModelSOMatchStartedPayload.model_validate(event.payload)
+                self._validate_match_started_contracts(payload)
+
             # Lifecycle authority first: status / tick / winner / end_reason.
             # (It commits its state BEFORE any of its own terminal emissions.)
             self._lifecycle.apply(event)
@@ -249,6 +275,70 @@ class MatchStateFold:
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
+
+    def _require_contract(
+        self,
+        contracts: dict[str, _ContractT],
+        contract_kind: Literal["chassis", "weapon", "sensor", "gizmo"],
+        contract_id: str,
+        *,
+        owner_id: str,
+    ) -> _ContractT:
+        try:
+            return contracts[contract_id]
+        except KeyError as exc:
+            raise MissingMatchContractError(
+                contract_kind,
+                contract_id,
+                owner_id=owner_id,
+            ) from exc
+
+    def _require_transition(
+        self,
+        from_mode: str,
+        to_mode: str,
+        *,
+        owner_id: str,
+    ) -> ModelSOModeTransition:
+        try:
+            return self._catalog.transitions[(from_mode, to_mode)]
+        except KeyError as exc:
+            raise MissingMatchContractError(
+                "transition",
+                f"{from_mode}->{to_mode}",
+                owner_id=owner_id,
+            ) from exc
+
+    def _validate_match_started_contracts(self, payload: ModelSOMatchStartedPayload) -> None:
+        """Validate every static mech reference before lifecycle state mutates."""
+        for mech in payload.mechs:
+            self._require_contract(
+                self._catalog.chassis,
+                "chassis",
+                mech.chassis_id,
+                owner_id=mech.mech_id,
+            )
+            for weapon_id in mech.weapon_cooldowns:
+                self._require_contract(
+                    self._catalog.weapons,
+                    "weapon",
+                    weapon_id,
+                    owner_id=mech.mech_id,
+                )
+            for sensor_id in mech.sensor_ids:
+                self._require_contract(
+                    self._catalog.sensors,
+                    "sensor",
+                    sensor_id,
+                    owner_id=mech.mech_id,
+                )
+            for gizmo_id in mech.gizmo_ids:
+                self._require_contract(
+                    self._catalog.gizmos,
+                    "gizmo",
+                    gizmo_id,
+                    owner_id=mech.mech_id,
+                )
 
     def _on_match_started(self) -> None:
         self._mech_states = dict(self._lifecycle.state.mech_states)
@@ -445,8 +535,13 @@ class MatchStateFold:
             if not mech.alive or mech.armor_value >= mech.armor_max:
                 new_states[mech_id] = mech
                 continue
-            chassis = self._catalog.chassis.get(mech.chassis_id)
-            regen = chassis.constraints.base_armor_regen if chassis is not None else 0
+            chassis = self._require_contract(
+                self._catalog.chassis,
+                "chassis",
+                mech.chassis_id,
+                owner_id=mech_id,
+            )
+            regen = chassis.constraints.base_armor_regen
             new_armor = min(mech.armor_max, mech.armor_value + regen)
             if new_armor == mech.armor_value:
                 new_states[mech_id] = mech
@@ -480,12 +575,12 @@ class MatchStateFold:
                 new_states[mech_id] = mech.model_copy(update={"transition_ticks_remaining": 0})
                 continue
 
-            transition = self._catalog.transitions.get((mech.current_mode, to_mode))
-            lock_ticks = (
-                transition.restrictions.minimum_lock_ticks_after_switch
-                if transition is not None
-                else 0
+            transition = self._require_transition(
+                mech.current_mode,
+                to_mode,
+                owner_id=mech_id,
             )
+            lock_ticks = transition.restrictions.minimum_lock_ticks_after_switch
             lock_until = event.tick + lock_ticks
             new_states[mech_id] = mech.model_copy(
                 update={

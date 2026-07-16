@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -19,6 +20,7 @@ from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.composition import load_loadout
+from steel_onslaught.match.fold import MatchContractCatalog, MissingMatchContractError
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchStatus
 from steel_onslaught.replay.engine import ReplayEngine
 from tests.fixtures.event_samples import build_sample_envelopes
@@ -116,6 +118,36 @@ def _replay(ledger: SQLiteLedger, match_id: str = MATCH_ID) -> ReplayEngine:
     )
 
 
+def _catalog_without(
+    catalog: MatchContractCatalog,
+    contract_kind: Literal["chassis", "sensor", "weapon", "gizmo"],
+    contract_id: str,
+) -> MatchContractCatalog:
+    chassis = dict(catalog.chassis)
+    boilers = dict(catalog.boilers)
+    sensors = dict(catalog.sensors)
+    weapons = dict(catalog.weapons)
+    gizmos = dict(catalog.gizmos)
+    transitions = dict(catalog.transitions)
+    match contract_kind:
+        case "chassis":
+            chassis.pop(contract_id)
+        case "sensor":
+            sensors.pop(contract_id)
+        case "weapon":
+            weapons.pop(contract_id)
+        case "gizmo":
+            gizmos.pop(contract_id)
+    return MatchContractCatalog(
+        chassis=chassis,
+        boilers=boilers,
+        sensors=sensors,
+        weapons=weapons,
+        gizmos=gizmos,
+        transitions=transitions,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Round-trip determinism (the critical invariant from the plan)
 # ---------------------------------------------------------------------------
@@ -128,6 +160,70 @@ def test_replay_reproduces_live_state(tmp_path: Path) -> None:
     replay = _replay(ledger)
     reconstructed = replay.reconstruct_at_tick(live_state.tick)
     assert reconstructed == live_state
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("contract_kind", "contract_id"),
+    [
+        ("chassis", "chassis.light.scout_mk1"),
+        ("weapon", "weapon.light.machine_gun"),
+        ("sensor", "sensor.short_range_scanner"),
+        ("gizmo", "gizmo.control.targeting_assist"),
+        ("gizmo", "gizmo.cooling.emergency_condenser"),
+    ],
+    ids=["chassis", "weapon", "sensor", "non-safety-gizmo", "safety-gizmo"],
+)
+def test_replay_rejects_missing_match_started_contract_reference(
+    tmp_path: Path,
+    contract_kind: Literal["chassis", "sensor", "weapon", "gizmo"],
+    contract_id: str,
+) -> None:
+    _live_state, ledger = _run_and_record(tmp_path)
+    runtime = runtime_dependencies()
+    catalog = _catalog_without(runtime.catalog, contract_kind, contract_id)
+    replay = ReplayEngine(
+        ledger,
+        match_id=MATCH_ID,
+        catalog=catalog,
+        event_factory=runtime.event_factory,
+    )
+
+    with pytest.raises(MissingMatchContractError) as error:
+        replay.reconstruct_at_tick(0)
+
+    assert error.value.contract_kind == contract_kind
+    assert error.value.contract_id == contract_id
+    assert error.value.owner_id.startswith("mech.")
+
+
+@pytest.mark.integration
+def test_replay_rejects_missing_mode_transition_contract(tmp_path: Path) -> None:
+    live_state, ledger = _run_and_record(tmp_path)
+    runtime = runtime_dependencies()
+    transitions = dict(runtime.catalog.transitions)
+    transitions.pop(("recon", "assault"))
+    catalog = MatchContractCatalog(
+        chassis=dict(runtime.catalog.chassis),
+        boilers=dict(runtime.catalog.boilers),
+        sensors=dict(runtime.catalog.sensors),
+        weapons=dict(runtime.catalog.weapons),
+        gizmos=dict(runtime.catalog.gizmos),
+        transitions=transitions,
+    )
+    replay = ReplayEngine(
+        ledger,
+        match_id=MATCH_ID,
+        catalog=catalog,
+        event_factory=runtime.event_factory,
+    )
+
+    with pytest.raises(MissingMatchContractError) as error:
+        replay.reconstruct_at_tick(live_state.tick)
+
+    assert error.value.contract_kind == "transition"
+    assert error.value.contract_id == "recon->assault"
+    assert error.value.owner_id.startswith("mech.")
 
 
 # ---------------------------------------------------------------------------
