@@ -13,6 +13,7 @@ import pytest
 from pydantic import ValidationError
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPilotDecision,
@@ -84,7 +85,7 @@ def _observation(
         match_elapsed_ticks=5,
         boiler=boiler if boiler is not None else _boiler_state(),
         weapons=weapons if weapons is not None else [_weapon()],
-        current_mode="recon",
+        current_mode=ModeId.RECON,
         mode_lock_expired=mode_lock_expired,
         position=ModelSOPosition(x=3, y=7),
         hp_percent=100.0,
@@ -108,6 +109,19 @@ def _decision(
         confidence=confidence,
         considered_actions=considered,
     )
+
+
+@pytest.mark.unit
+def test_default_action_params_are_deeply_immutable() -> None:
+    decision = ModelSOPilotDecision(
+        action=SOPilotAction.REMAIN,
+        reason_code=SOPilotReasonCode.NO_VIABLE_ACTION,
+        confidence=0.5,
+        considered_actions=[ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=1.0)],
+    )
+
+    with pytest.raises(TypeError):
+        decision.action_params["forged"] = True  # type: ignore[index]
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +162,7 @@ def test_observation_constructs_with_sensor_readings() -> None:
         distance_estimate=4.2,
         confidence=0.8,
         heat_estimate=35.0,
-        mode_estimate="assault",
+        mode_estimate=ModeId.ASSAULT,
     )
     obs = _observation(enemy_observations=[reading])
     assert obs.enemy_observations[0].enemy_mech_id == "mech-blue"
@@ -169,6 +183,27 @@ def test_observation_is_frozen() -> None:
 def test_observation_rejects_unknown_fields() -> None:
     with pytest.raises(ValidationError):
         ModelSOPilotObservation.model_validate({**_observation().model_dump(), "surprise": True})
+
+
+@pytest.mark.unit
+def test_observation_rejects_unknown_current_mode() -> None:
+    data = _observation().model_dump(mode="json")
+    data["current_mode"] = "siege"
+
+    with pytest.raises(ValidationError):
+        ModelSOPilotObservation.model_validate(data)
+
+
+@pytest.mark.unit
+def test_sensor_reading_rejects_unknown_mode_estimate() -> None:
+    with pytest.raises(ValidationError):
+        ModelSOSensorReading(
+            enemy_mech_id="mech-blue",
+            tick=5,
+            distance_estimate=4.2,
+            confidence=0.8,
+            mode_estimate="siege",  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.unit

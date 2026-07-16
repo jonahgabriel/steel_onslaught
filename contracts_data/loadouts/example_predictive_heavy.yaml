@@ -5,7 +5,7 @@ id: loadout.example.predictive_heavy
 
 chassis_id: chassis.heavy.ironclad_mk1
 boiler_id: boiler.industrial.bessemer_90
-pilot_id: pilot.example.predictive_v1
+pilot_id: pilot.template.predictive
 
 modules:
   weapons:

@@ -32,17 +32,23 @@ Design notes
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import Callable, Mapping
 from typing import Any
+from uuid import UUID
 
-import ulid
-
-from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
+from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
+from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+)
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOMoveIntentPayload,
+    ModelSOSensorObservationPayload,
+    ModelSOWeaponFireIntentPayload,
 )
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import (
@@ -57,33 +63,31 @@ from steel_onslaught.pilots.schemas import (
 _PRODUCER_NODE = "node.reducer.pilot_tick"
 
 
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 def _build_observation(
     mech: ModelSOMechRuntimeState,
     state: ModelSOMatchState,
     sensor_events: list[ModelSOEventEnvelope],
-    weapon_specs: dict[str, ModelSOWeaponSpec],
+    weapon_specs: Mapping[str, ModelSOWeaponSpec],
 ) -> ModelSOPilotObservation:
     """Build the observation passed to a pilot for one tick."""
     # Weapon views — empty if no weapon_cooldowns recorded on the mech.
     # The cooldowns dict maps weapon_id -> remaining ticks.
     # We expose the weapons the mech *has cooldown entries for*; the pilot
     # only needs to know about weapons the match runner has registered.
-    # Stats come from the weapon contract index (Task 34); a weapon with no
-    # spec entry falls back to zeros (the Task 21 scope behavior).
+    # Stats come from the injected weapon contract index (Task 34). Missing
+    # entries are contract/provenance violations and fail closed.
     weapon_views: list[ModelSOPilotWeaponView] = []
     for weapon_id, cooldown in mech.weapon_cooldowns.items():
         spec = weapon_specs.get(weapon_id)
+        if spec is None:
+            raise UnknownWeaponError(weapon_id, owner_id=mech.mech_id)
         weapon_views.append(
             ModelSOPilotWeaponView(
                 weapon_id=weapon_id,
-                damage=spec.damage if spec is not None else 0,
-                range=spec.range if spec is not None else 0,
-                pressure_cost=spec.pressure_cost if spec is not None else 0,
-                heat_generated=spec.heat_generated if spec is not None else 0,
+                damage=spec.damage,
+                range=spec.range,
+                pressure_cost=spec.pressure_cost,
+                heat_generated=spec.heat_generated,
                 cooldown_remaining_ticks=cooldown,
             )
         )
@@ -95,15 +99,15 @@ def _build_observation(
             continue
         if evt.subject.mech_id != mech.mech_id:
             continue
-        payload = evt.payload
+        payload = ModelSOSensorObservationPayload.model_validate(evt.payload)
         enemy_readings.append(
             ModelSOSensorReading(
-                enemy_mech_id=payload["enemy_mech_id"],
+                enemy_mech_id=payload.enemy_mech_id,
                 tick=evt.tick,
-                distance_estimate=float(payload["distance_estimate"]),
-                confidence=float(payload["confidence"]),
-                heat_estimate=payload.get("heat_estimate"),
-                mode_estimate=payload.get("mode_estimate"),
+                distance_estimate=payload.distance_estimate,
+                confidence=payload.confidence,
+                heat_estimate=payload.heat_estimate,
+                mode_estimate=payload.mode_estimate,
             )
         )
     # Newest last (events are already in ledger order; sensor_events passed in
@@ -142,13 +146,17 @@ def _intent_for(decision: ModelSOPilotDecision) -> tuple[SOEventType, dict[str, 
     match decision.action:
         case SOPilotAction.MOVE | SOPilotAction.DISENGAGE:
             # DISENGAGE is a directional move (away); treated as a MOVE_INTENT.
-            return SOEventType.MOVE_INTENT, dict(decision.action_params)
+            move_payload = ModelSOMoveIntentPayload.model_validate(decision.action_params)
+            return SOEventType.MOVE_INTENT, move_payload.model_dump(mode="json", exclude_none=True)
         case SOPilotAction.FIRE_WEAPON:
-            return SOEventType.WEAPON_FIRE_INTENT, dict(decision.action_params)
+            fire_payload = ModelSOWeaponFireIntentPayload.model_validate(decision.action_params)
+            return SOEventType.WEAPON_FIRE_INTENT, fire_payload.model_dump(mode="json")
         case SOPilotAction.SWITCH_MODE:
-            return SOEventType.MODE_SWITCH_INTENT, dict(decision.action_params)
+            mode_payload = ModelSOModeSwitchIntentPayload.model_validate(decision.action_params)
+            return SOEventType.MODE_SWITCH_INTENT, mode_payload.model_dump(mode="json")
         case SOPilotAction.VENT:
-            return SOEventType.VENT_INTENT, dict(decision.action_params)
+            vent_payload = ModelSOEmptyPayload.model_validate(decision.action_params)
+            return SOEventType.VENT_INTENT, vent_payload.model_dump(mode="json")
         case _:
             # REMAIN, ACTIVATE_MODULE, EMERGENCY_SHUTDOWN: no intent event.
             return None
@@ -161,6 +169,8 @@ class ReducerPilotTick:
     ----------
     match_id:
         Identifier of the match this reducer belongs to.
+    correlation_id:
+        ONEX workflow correlation id shared across all events of this match.
     state:
         Current (immutable) match state.  The pilot tick reducer does NOT
         mutate match state; it only emits events.
@@ -182,14 +192,19 @@ class ReducerPilotTick:
         pilots: dict[str, PilotProtocol],
         sensor_events: list[ModelSOEventEnvelope],
         emit: Callable[[ModelSOEventEnvelope], None],
-        weapon_specs: dict[str, ModelSOWeaponSpec] | None = None,
+        weapon_specs: Mapping[str, ModelSOWeaponSpec],
+        *,
+        correlation_id: UUID,
+        event_factory: EventFactory,
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._state = state
         self._pilots = pilots
         self._sensor_events = sensor_events
         self._emit = emit
-        self._weapon_specs = weapon_specs if weapon_specs is not None else {}
+        self._weapon_specs = weapon_specs
 
     @property
     def state(self) -> ModelSOMatchState:
@@ -209,6 +224,7 @@ class ReducerPilotTick:
         if event.event_type != SOEventType.MATCH_TICK:
             return self._state
 
+        ModelSOEmptyPayload.model_validate(event.payload)
         self._process_tick()
         return self._state
 
@@ -237,16 +253,15 @@ class ReducerPilotTick:
 
         # 1. Emit PILOT_DECISION_MADE first (invariant: before any intent).
         self._emit(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            self._events.make(
                 match_id=self._match_id,
+                correlation_id=self._correlation_id,
                 tick=state.tick,
                 sequence_in_tick=0,
                 event_type=SOEventType.PILOT_DECISION_MADE,
                 producer_node=_PRODUCER_NODE,
                 subject=subject,
                 payload=_decision_payload(decision),
-                emitted_at=_now_iso(),
             )
         )
 
@@ -255,15 +270,14 @@ class ReducerPilotTick:
         if intent is not None:
             intent_type, intent_payload = intent
             self._emit(
-                ModelSOEventEnvelope(
-                    event_id=ulid.new().str,
+                self._events.make(
                     match_id=self._match_id,
+                    correlation_id=self._correlation_id,
                     tick=state.tick,
                     sequence_in_tick=0,
                     event_type=intent_type,
                     producer_node=_PRODUCER_NODE,
                     subject=subject,
                     payload=intent_payload,
-                    emitted_at=_now_iso(),
                 )
             )

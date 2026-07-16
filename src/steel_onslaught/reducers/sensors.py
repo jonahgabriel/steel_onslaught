@@ -36,11 +36,9 @@ Design notes
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import Callable, Mapping
 from typing import Any
-
-import ulid
+from uuid import UUID
 
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.events.envelope import (
@@ -48,6 +46,8 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import ModelSOEmptyPayload
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
@@ -83,6 +83,8 @@ class ReducerSensors:
     ----------
     match_id:
         Identifier of the match this reducer belongs to.
+    correlation_id:
+        ONEX workflow correlation id shared across all events of this match.
     state:
         Current (immutable) match state.  Updated by ``apply`` on MATCH_TICK.
     sensor_specs:
@@ -97,10 +99,15 @@ class ReducerSensors:
         self,
         match_id: str,
         state: ModelSOMatchState,
-        sensor_specs: dict[str, ModelSOSensorSpec],
+        sensor_specs: Mapping[str, ModelSOSensorSpec],
         emit: Callable[[ModelSOEventEnvelope], None],
+        *,
+        correlation_id: UUID,
+        event_factory: EventFactory,
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._state = state
         self._sensor_specs = sensor_specs
         self._emit = emit
@@ -123,6 +130,7 @@ class ReducerSensors:
             return self._state
 
         if event.event_type == SOEventType.MATCH_TICK:
+            ModelSOEmptyPayload.model_validate(event.payload)
             self._process_tick(event.tick)
 
         return self._state
@@ -199,8 +207,7 @@ class ReducerSensors:
                 payload["mode_estimate"] = target.current_mode
 
         self._emit(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            self._events.make(
                 match_id=self._match_id,
                 tick=tick,
                 sequence_in_tick=0,  # bus re-stamps if wired through InProcessEventBus
@@ -211,6 +218,6 @@ class ReducerSensors:
                     player_id=observer.player_id,
                 ),
                 payload=payload,
-                emitted_at=datetime.now(UTC).isoformat(),
+                correlation_id=self._correlation_id,
             )
         )

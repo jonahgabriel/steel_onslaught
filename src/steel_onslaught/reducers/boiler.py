@@ -24,16 +24,20 @@ reducer therefore floors pressure at 0 rather than raising.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Any
-
-import ulid
+from uuid import UUID
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+)
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOModeTransitionStartedPayload,
+    ModelSOWeaponFiredPayload,
 )
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 
@@ -56,6 +60,9 @@ class ReducerBoiler:
 
     Args:
         mech_id:  The mech whose boiler this reducer manages.
+        correlation_id:
+                  ONEX workflow correlation id shared across all events of
+                  this match.
         state:    Current match state (used to initialise internal bookkeeping).
         emit:     Callable that receives produced events (e.g. bus.publish).
                   Pass a no-op lambda for replay scenarios where re-emission
@@ -67,8 +74,13 @@ class ReducerBoiler:
         mech_id: str,
         state: ModelSOMatchState,
         emit: EmitFn,
+        *,
+        correlation_id: UUID,
+        event_factory: EventFactory,
     ) -> None:
         self._mech_id = mech_id
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._emit = emit
         # Capture the initial redline flag from the current boiler state so we
         # can detect upward/downward threshold crossings correctly.
@@ -117,6 +129,7 @@ class ReducerBoiler:
         mech: ModelSOMechRuntimeState,
     ) -> ModelSOMatchState:
         """MATCH_TICK: regen pressure, vent heat."""
+        ModelSOEmptyPayload.model_validate(event.payload)
         boiler = mech.boiler
 
         new_pressure = min(
@@ -135,14 +148,13 @@ class ReducerBoiler:
     ) -> ModelSOMatchState:
         """WEAPON_FIRED: deduct pressure cost, add heat."""
         boiler = mech.boiler
-        pressure_cost: int = int(event.payload.get("pressure_cost", 0))
-        heat_generated: int = int(event.payload.get("heat_generated", 0))
+        payload = ModelSOWeaponFiredPayload.model_validate(event.payload)
 
-        new_pressure = max(boiler.pressure_current - pressure_cost, 0)
+        new_pressure = max(boiler.pressure_current - payload.pressure_cost, 0)
         # heat is capped at rupture_threshold by the boiler state validator;
         # we floor here; the validator prevents us from exceeding rupture.
         new_heat = min(
-            boiler.heat_current + heat_generated,
+            boiler.heat_current + payload.heat_generated,
             boiler.heat_rupture_threshold,
         )
 
@@ -156,13 +168,11 @@ class ReducerBoiler:
     ) -> ModelSOMatchState:
         """MODE_TRANSITION_STARTED: deduct pressure and add heat from costs."""
         boiler = mech.boiler
-        costs: dict[str, Any] = event.payload.get("costs", {})
-        pressure_cost: int = int(costs.get("pressure", 0))
-        heat_cost: int = int(costs.get("heat", 0))
+        payload = ModelSOModeTransitionStartedPayload.model_validate(event.payload)
 
-        new_pressure = max(boiler.pressure_current - pressure_cost, 0)
+        new_pressure = max(boiler.pressure_current - payload.costs.pressure, 0)
         new_heat = min(
-            boiler.heat_current + heat_cost,
+            boiler.heat_current + payload.costs.heat,
             boiler.heat_rupture_threshold,
         )
 
@@ -218,7 +228,9 @@ class ReducerBoiler:
         if new_pressure != old_boiler.pressure_current or new_heat != old_boiler.heat_current:
             self._emit(
                 _make_env(
+                    event_factory=self._events,
                     match_id=state.match_id,
+                    correlation_id=self._correlation_id,
                     tick=triggering_event.tick,
                     event_type=SOEventType.BOILER_UPDATED,
                     subject=subject,
@@ -236,7 +248,9 @@ class ReducerBoiler:
         if not was_redline and now_redline:
             self._emit(
                 _make_env(
+                    event_factory=self._events,
                     match_id=state.match_id,
+                    correlation_id=self._correlation_id,
                     tick=triggering_event.tick,
                     event_type=SOEventType.HEAT_REDLINE_ENTERED,
                     subject=subject,
@@ -249,7 +263,9 @@ class ReducerBoiler:
         elif was_redline and not now_redline:
             self._emit(
                 _make_env(
+                    event_factory=self._events,
                     match_id=state.match_id,
+                    correlation_id=self._correlation_id,
                     tick=triggering_event.tick,
                     event_type=SOEventType.HEAT_REDLINE_EXITED,
                     subject=subject,
@@ -273,20 +289,21 @@ class ReducerBoiler:
 
 def _make_env(
     *,
+    event_factory: EventFactory,
     match_id: str,
+    correlation_id: UUID,
     tick: int,
     event_type: SOEventType,
     subject: ModelSOEventSubject,
     payload: dict[str, Any],
 ) -> ModelSOEventEnvelope:
-    return ModelSOEventEnvelope(
-        event_id=ulid.new().str,
+    return event_factory.make(
         match_id=match_id,
+        correlation_id=correlation_id,
         tick=tick,
         sequence_in_tick=0,  # bus reassigns on publish
         event_type=event_type,
         producer_node=_PRODUCER_NODE,
         subject=subject,
         payload=payload,
-        emitted_at=datetime.now(UTC).isoformat(),
     )

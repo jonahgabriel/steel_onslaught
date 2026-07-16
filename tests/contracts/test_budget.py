@@ -22,6 +22,7 @@ from steel_onslaught.contracts.loadout import (
     ModelSOLoadoutBudgets,
     ModelSOLoadoutModules,
 )
+from steel_onslaught.contracts.mode import ModeId
 
 _DATA = Path(__file__).parent.parent.parent / "contracts_data"
 
@@ -48,7 +49,7 @@ def _make_loadout(module_ids: list[str], chassis_id: str, boiler_id: str) -> Mod
         chassis_id=chassis_id,
         boiler_id=boiler_id,
         pilot_id="pilot.test.synthetic_v1",
-        modules=ModelSOLoadoutModules(weapons=module_ids),
+        modules=ModelSOLoadoutModules(weapons=tuple(module_ids)),
         budgets=ModelSOLoadoutBudgets(
             points_used=0,
             points_max=100,
@@ -79,7 +80,7 @@ def _module(
         pressure_draw=pressure_draw,
         heat_output=heat_output,
         signature_impact=signature_impact,
-        active_modes=active_modes,
+        active_modes=tuple(ModeId(mode) for mode in active_modes),
     )
 
 

@@ -46,16 +46,20 @@ same event sequence.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-
-import ulid
+from uuid import UUID
 
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
+)
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOMechDestroyedPayload,
+    ModelSOPilotKilledPayload,
 )
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
@@ -147,8 +151,10 @@ class ReducerFailureCascade:
     Args:
         match_id:         Owning match identifier; events for other matches
                           are silently ignored.
+        correlation_id:   ONEX workflow correlation id shared across all events
+                          of this match.
         emit:             Callable receiving produced events (e.g.
-                          ``bus.publish``).  Pass a no-op for replay.
+                          bus.publish).  Pass a no-op for replay.
         safety_gizmo_ids: Gizmo ids that count as *emergency safety* gizmos
                           for the rupture-survival roll (resolved by the match
                           runner from gizmo specs with ``category=safety``).
@@ -157,12 +163,16 @@ class ReducerFailureCascade:
     def __init__(
         self,
         match_id: str,
+        correlation_id: UUID,
         *,
         emit: EmitFn,
-        safety_gizmo_ids: frozenset[str] = frozenset(),
+        event_factory: EventFactory,
+        safety_gizmo_ids: frozenset[str],
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id
         self._emit = emit
+        self._events = event_factory
         self._safety_gizmo_ids = safety_gizmo_ids
 
     # ------------------------------------------------------------------
@@ -185,10 +195,13 @@ class ReducerFailureCascade:
 
         match event.event_type:
             case SOEventType.MATCH_TICK:
+                ModelSOEmptyPayload.model_validate(event.payload)
                 return self._apply_tick(event, state)
             case SOEventType.MECH_DESTROYED:
+                ModelSOMechDestroyedPayload.model_validate(event.payload)
                 return self._fold_flag(event, state, field="alive")
             case SOEventType.PILOT_KILLED:
+                ModelSOPilotKilledPayload.model_validate(event.payload)
                 return self._fold_flag(event, state, field="pilot_alive")
             case _:
                 return state
@@ -459,6 +472,14 @@ class ReducerFailureCascade:
         Emitting only on the >1 -> ==1 transition keeps re-folds and
         already-decided states from duplicating the declaration.  Zero
         survivors emits nothing (lifecycle max_ticks draw is the backstop).
+
+        Defense-in-depth: ``MatchStateFold._on_flag_drop`` (in ``match/fold.py``)
+        declares victory on the same transition.  This cascade-level declaration
+        fires when the kill arrives via the rupture chain; the fold-level one is
+        the backstop for kills arriving as direct MECH_DESTROYED events.  Both
+        are guarded to the >1 -> ==1 transition so they don't duplicate.  The
+        paired redundancy is intentional — see
+        ``tests/match/test_fold_victory_backstop.py``.
         """
         survivors_after = new_state.surviving_player_ids()
         if len(survivors_before) > 1 and len(survivors_after) == 1:
@@ -486,15 +507,14 @@ class ReducerFailureCascade:
         payload: dict[str, Any],
     ) -> None:
         self._emit(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            self._events.make(
                 match_id=self._match_id,
+                correlation_id=self._correlation_id,
                 tick=tick,
                 sequence_in_tick=0,  # bus reassigns on publish
                 event_type=event_type,
                 producer_node=_PRODUCER_NODE,
                 subject=subject,
                 payload=payload,
-                emitted_at=datetime.now(UTC).isoformat(),
             )
         )

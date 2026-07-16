@@ -10,9 +10,10 @@ Design reference: §14 and §14.3 of docs/plans/2026-04-30-steel-onslaught-desig
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from steel_onslaught.immutable import FrozenJSONMapping
 
 
 class GizmoCategory(StrEnum):
@@ -32,7 +33,7 @@ class ModelSOGizmoConstraints(BaseModel):
 
     mass: int = Field(gt=0, description="Mass units consumed in the loadout budget.")
     slots: int = Field(gt=0, description="Module slot count consumed.")
-    compatible_chassis: list[str] = Field(
+    compatible_chassis: tuple[str, ...] = Field(
         min_length=1,
         description="List of chassis class strings this gizmo may be installed on.",
     )
@@ -56,19 +57,21 @@ class ModelSOGizmoSpec(BaseModel):
     )
     display_name: str = Field(min_length=1)
     category: GizmoCategory
-    constraints: dict[str, Any] = Field(
+    constraints: FrozenJSONMapping = Field(
         description="Mass, slots, compatible_chassis — parsed from the constraints block."
     )
-    effects: dict[str, Any] = Field(
+    effects: FrozenJSONMapping = Field(
         default_factory=dict,
+        validate_default=True,
         description="Free-form effects keyed by trigger (e.g. on_redline).",
     )
-    tradeoffs: dict[str, Any] = Field(
+    tradeoffs: FrozenJSONMapping = Field(
         default_factory=dict,
+        validate_default=True,
         description="Free-form tradeoff penalties applied passively.",
     )
-    forbidden_stacking: list[str] = Field(
-        default_factory=list,
+    forbidden_stacking: tuple[str, ...] = Field(
+        default=(),
         description="Gizmo ids that cannot be installed alongside this gizmo.",
     )
 

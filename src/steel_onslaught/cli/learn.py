@@ -21,16 +21,17 @@ Phase 2 meta is the parent pairing; pool-wide metas arrive with populations
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 import click
 from pydantic import ValidationError
 
 from steel_onslaught.contracts.lineage import spec_hash
-from steel_onslaught.contracts.pilot_registry import load_pilot_spec
+from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.pilot import ModelSOPilotSpec
+from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.duel_evaluator import DuelEvaluator
-from steel_onslaught.learning.lineage_store import write_lineage_record
 from steel_onslaught.learning.loop import (
     ModelSOLearnConfig,
     ModelSOLearnResult,
@@ -40,46 +41,51 @@ from steel_onslaught.learning.loop import (
 from steel_onslaught.learning.protocols import ModelSOPairedComparison
 from steel_onslaught.learning.spec_adapter import PilotSpecView
 from steel_onslaught.learning.stats import wilson_interval
-
-DEFAULT_LINEAGE_ROOT = Path(__file__).parent.parent.parent.parent / "contracts_data" / "lineage"
+from steel_onslaught.match.composition import (
+    build_duel_executor,
+    build_learning_dependencies,
+    load_application_overlay,
+    load_loadout,
+    load_pilot_spec,
+)
+from steel_onslaught.match.duel import DuelExecutor
 
 _EXISTING_FILE = click.Path(exists=True, dir_okay=False, path_type=Path)
-_DIR_PATH = click.Path(file_okay=False, path_type=Path)
 
 
 def _run_learn(
     *,
     archetype: str,
-    parent_path: Path,
+    parent_spec: ModelSOPilotSpec,
     strategy: SOSearchStrategy,
     n_search_seeds: int,
     n_holdout_seeds: int,
     max_evaluations: int,
     master_seed: int,
-    base_loadout: Path,
+    base_loadout: ModelSOLoadout,
     max_ticks: int,
-    lineage_root: Path,
-    workdir: Path,
     recorded_at: datetime,
+    duel_executor: DuelExecutor,
+    artifacts: LearningArtifactStore,
 ) -> tuple[ModelSOLearnResult, Path | None]:
     """The testable composition; the caller injects the clock.
 
     Raises ValueError on harness errors (archetype mismatch, gate input
     bugs); pydantic ValidationError on malformed specs/loadouts.
     """
-    parent_spec = load_pilot_spec(parent_path)
     if parent_spec.archetype != archetype:
         raise ValueError(
             f"parent spec archetype {parent_spec.archetype!r} does not match "
-            f"--archetype {archetype!r} ({parent_path})"
+            f"--archetype {archetype!r} ({parent_spec.id})"
         )
     view = PilotSpecView(parent_spec)
     parent_params = view.parameters
     evaluator = DuelEvaluator(
         archetype=archetype,
         base_loadout=base_loadout,
-        workdir=workdir,
         max_ticks=max_ticks,
+        duel_executor=duel_executor,
+        artifacts=artifacts,
     )
     config = ModelSOLearnConfig(
         strategy=strategy,
@@ -98,8 +104,9 @@ def _run_learn(
     )
     record_path: Path | None = None
     if result.record is not None:
-        record_path = write_lineage_record(
-            result.record, root=lineage_root, recorded_at=recorded_at
+        record_path = artifacts.write_lineage(
+            result.record,
+            recorded_at=recorded_at,
         )
     return result, record_path
 
@@ -163,6 +170,12 @@ def _print_summary(result: ModelSOLearnResult, record_path: Path | None) -> None
 
 @click.command(name="learn")
 @click.option(
+    "--overlay",
+    "overlay_path",
+    type=_EXISTING_FILE,
+    required=True,
+)
+@click.option(
     "--archetype",
     type=click.Choice(["aggressive", "defensive", "predictive"]),
     required=True,
@@ -209,19 +222,8 @@ def _print_summary(result: ModelSOLearnResult, record_path: Path | None) -> None
     help="Loadout both sides field; only the pilot parameters differ.",
 )
 @click.option("--max-ticks", type=click.IntRange(min=1), default=200, show_default=True)
-@click.option(
-    "--lineage-root",
-    type=_DIR_PATH,
-    default=DEFAULT_LINEAGE_ROOT,
-    help="Lineage record store (default: shipped contracts_data/lineage).",
-)
-@click.option(
-    "--workdir",
-    type=_DIR_PATH,
-    required=True,
-    help="Evaluation scratch; retains gate ledgers as replay evidence.",
-)
 def learn_command(
+    overlay_path: Path,
     archetype: str,
     parent_path: Path,
     strategy_name: str,
@@ -231,25 +233,24 @@ def learn_command(
     master_seed: int,
     base_loadout: Path,
     max_ticks: int,
-    lineage_root: Path,
-    workdir: Path,
 ) -> None:
     """Bounded pilot-spec search with promotion gate and hidden-seed holdout."""
-    recorded_at = datetime.now(UTC)  # the single wall-clock read (Decision #4)
     try:
+        overlay = load_application_overlay(overlay_path)
+        dependencies = build_learning_dependencies(overlay)
         result, record_path = _run_learn(
             archetype=archetype,
-            parent_path=parent_path,
+            parent_spec=load_pilot_spec(parent_path),
             strategy=SOSearchStrategy(strategy_name),
             n_search_seeds=n_search_seeds,
             n_holdout_seeds=n_holdout_seeds,
             max_evaluations=max_evaluations,
             master_seed=master_seed,
-            base_loadout=base_loadout,
+            base_loadout=load_loadout(base_loadout),
             max_ticks=max_ticks,
-            lineage_root=lineage_root,
-            workdir=workdir,
-            recorded_at=recorded_at,
+            recorded_at=dependencies.clock.now(),
+            duel_executor=build_duel_executor(overlay),
+            artifacts=dependencies.artifacts,
         )
     except (ValueError, ValidationError) as exc:
         raise click.ClickException(str(exc)) from exc

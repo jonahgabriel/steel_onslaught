@@ -61,6 +61,7 @@ def _mech_kwargs(mech_id: str = "mech.red.01", player_id: str = "player.red") ->
         "hp": 100,
         "hp_max": 100,
         "armor_value": 10,
+        "armor_max": 10,
         "current_mode": "recon",
         "weapon_cooldowns": {"weapon.machine_gun": 0},
         "boiler": _boiler(mech_id),
@@ -139,6 +140,16 @@ def test_mech_runtime_state_is_frozen() -> None:
 
 
 @pytest.mark.unit
+def test_default_weapon_cooldowns_are_immutable() -> None:
+    kwargs = _mech_kwargs()
+    del kwargs["weapon_cooldowns"]
+    mech = ModelSOMechRuntimeState(**kwargs)
+
+    with pytest.raises(TypeError):
+        mech.weapon_cooldowns["weapon.forged"] = 1  # type: ignore[index]
+
+
+@pytest.mark.unit
 def test_facing_must_be_below_360() -> None:
     with pytest.raises(ValidationError):
         _mech(facing=360)
@@ -160,6 +171,18 @@ def test_hp_cannot_exceed_hp_max() -> None:
 def test_negative_weapon_cooldown_rejected() -> None:
     with pytest.raises(ValidationError):
         _mech(weapon_cooldowns={"weapon.machine_gun": -1})
+
+
+@pytest.mark.unit
+def test_unknown_current_mode_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _mech(current_mode="siege")
+
+
+@pytest.mark.unit
+def test_unknown_transition_target_mode_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _mech(transition_ticks_remaining=2, transition_to_mode="siege")
 
 
 @pytest.mark.unit

@@ -73,14 +73,14 @@ def test_mypy_ini_has_strict() -> None:
 
 @pytest.mark.unit
 def test_mypy_ini_python_version() -> None:
-    """mypy.ini must target Python 3.13."""
+    """mypy.ini must target Python 3.12."""
     import configparser
 
     ini = REPO_ROOT / "mypy.ini"
     cp = configparser.ConfigParser()
     cp.read(ini)
     py_version = cp["mypy"].get("python_version", "").strip()
-    assert py_version == "3.13", f"mypy.ini [mypy] python_version must be 3.13, got {py_version!r}"
+    assert py_version == "3.12", f"mypy.ini [mypy] python_version must be 3.12, got {py_version!r}"
 
 
 @pytest.mark.unit

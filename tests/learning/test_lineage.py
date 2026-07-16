@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 from pydantic import ValidationError
 
@@ -213,3 +215,20 @@ class TestModelSOLineageRecord:
         dumped = rec.model_dump()
         restored = ModelSOLineageRecord.model_validate(dumped)
         assert restored == rec
+
+    def test_parameters_are_typed_immutable_and_json_stable(self) -> None:
+        rec = _make_valid_record()
+        assert isinstance(rec.parameters, Mapping)
+        assert not isinstance(rec.parameters, dict)
+        assert spec_hash(rec.archetype, rec.parameters) == rec.spec_hash
+        assert rec.model_dump(mode="json")["parameters"] == {"attack": 5, "defense": 3}
+        with pytest.raises(TypeError):
+            rec.parameters["attack"] = 99  # type: ignore[index]
+
+    @pytest.mark.parametrize("invalid", [[1, 2], {"nested": 1}])
+    def test_parameters_reject_nested_or_list_values(self, invalid: object) -> None:
+        rec = _make_valid_record()
+        raw = rec.model_dump(mode="json")
+        raw["parameters"] = {"attack": invalid}
+        with pytest.raises(ValidationError):
+            ModelSOLineageRecord.model_validate(raw)

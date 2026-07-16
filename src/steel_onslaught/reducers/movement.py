@@ -10,8 +10,7 @@ Movement model
 Distance metric: Chebyshev — ``max(|dx|, |dy|)``.
 Speed limit: ``effective_speed = base_speed + mode_speed_modifier``.
   - evasion mode: +1
-  - siege mode: -1 (floored at 1)
-  - all others: 0
+  - recon and assault modes: 0
 Max cells per move: ``effective_speed * ticks_consumed``.
 Pressure cost: 1 per cell of Chebyshev distance (exactly equal to the distance).
 
@@ -28,9 +27,12 @@ Invariant enforcement (raises ReducerError)
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.events.payloads import (
+    ModelSOMechSpawnedPayload,
+    ModelSOMovementResolvedPayload,
+)
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.errors import ReducerError
@@ -39,16 +41,19 @@ from steel_onslaught.reducers.errors import ReducerError
 # Mode speed modifiers
 # ---------------------------------------------------------------------------
 
-_MODE_SPEED_DELTA: dict[str, int] = {
-    "evasion": 1,
-    "siege": -1,
+_MODE_SPEED_DELTA: dict[ModeId, int] = {
+    ModeId.RECON: 0,
+    ModeId.ASSAULT: 0,
+    ModeId.EVASION: 1,
 }
+if set(_MODE_SPEED_DELTA) != set(ModeId):  # pragma: no cover - import-time invariant
+    raise RuntimeError("movement speed mapping must cover every ModeId exactly once")
 _MIN_EFFECTIVE_SPEED = 1
 
 
-def mode_effective_speed(base_speed: int, mode: str) -> int:
+def mode_effective_speed(base_speed: int, mode: ModeId) -> int:
     """Effective speed for *base_speed* in *mode* (floored at 1)."""
-    return max(_MIN_EFFECTIVE_SPEED, base_speed + _MODE_SPEED_DELTA.get(mode, 0))
+    return max(_MIN_EFFECTIVE_SPEED, base_speed + _MODE_SPEED_DELTA[mode])
 
 
 def effective_speed(mech: ModelSOMechRuntimeState) -> int:
@@ -59,33 +64,6 @@ def effective_speed(mech: ModelSOMechRuntimeState) -> int:
 def chebyshev(a: ModelSOPosition, b: ModelSOPosition) -> int:
     """Chebyshev (king-move) distance between two grid positions."""
     return max(abs(b.x - a.x), abs(b.y - a.y))
-
-
-# ---------------------------------------------------------------------------
-# Typed payload models (internal — not exported as public API)
-# ---------------------------------------------------------------------------
-
-
-class _SpawnPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    position: ModelSOPosition
-    facing: int = Field(ge=0)
-
-
-class _MovementPayload(BaseModel):
-    from_pos: ModelSOPosition = Field(alias="from")
-    to_pos: ModelSOPosition = Field(alias="to")
-    ticks_consumed: int = Field(gt=0)
-    pressure_consumed: int = Field(ge=0)
-
-    model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
-
-    @model_validator(mode="after")
-    def _ticks_positive(self) -> _MovementPayload:
-        if self.ticks_consumed < 1:
-            raise ValueError("ticks_consumed must be >= 1")
-        return self
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +117,7 @@ class ReducerMovement:
         mech_id = event.subject.mech_id
         mech = self._require_mech(mech_id)
 
-        payload = _SpawnPayload.model_validate(event.payload)
+        payload = ModelSOMechSpawnedPayload.model_validate(event.payload)
         facing = payload.facing
         if facing < 0 or facing >= 360:
             raise ReducerError(f"invalid_facing: facing must be in [0, 360), got {facing}")
@@ -156,7 +134,7 @@ class ReducerMovement:
         mech_id = event.subject.mech_id
         mech = self._require_mech(mech_id)
 
-        payload = _MovementPayload.model_validate(event.payload)
+        payload = ModelSOMovementResolvedPayload.model_validate(event.payload)
         from_pos = payload.from_pos
         to_pos = payload.to_pos
         ticks_consumed = payload.ticks_consumed

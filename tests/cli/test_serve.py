@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import click
 import pytest
 import websockets
 from click.testing import CliRunner
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.cli.serve import (
@@ -52,7 +54,13 @@ def _env(
             "heat_before": 10,
             "heat_after": 12,
         },
-        emitted_at=datetime(2026, 4, 30, tzinfo=UTC).isoformat(),
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id="match.test.serve",
+            emitted_at=datetime(2026, 4, 30, tzinfo=UTC),
+        ),
     )
 
 
@@ -184,11 +192,11 @@ def test_tick_delay_option_defaults_to_zero() -> None:
 
 @pytest.mark.unit
 def test_negative_tick_delay_rejected_by_click(tmp_path: Path) -> None:
-    ledger = tmp_path / "match.sqlite"
-    ledger.touch()
+    overlay = tmp_path / "application.json"
+    overlay.touch()
     result = CliRunner().invoke(
         serve_command,
-        ["--ledger", str(ledger), "--match", "m", "--tick-delay", "-0.5"],
+        ["--overlay", str(overlay), "--match", "m", "--tick-delay", "-0.5"],
     )
     assert result.exit_code == 2
     assert "--tick-delay" in result.output

@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
-from steel_onslaught.match.runner import MatchRunner, load_loadout
+from steel_onslaught.match.composition import load_loadout
 from steel_onslaught.match.state import SOMatchEndReason, SOMatchStatus
+from tests.runtime import match_runner
+from tests.sqlite_ledger import open_sqlite_ledger
 
 LOADOUT_A = Path("contracts_data/loadouts/example_aggressive_light.yaml")
 LOADOUT_B = Path("contracts_data/loadouts/example_predictive_heavy.yaml")
@@ -30,12 +34,12 @@ def _run_match(
     bus.subscribe(collected.append)
     if ledger is not None:
         bus.subscribe(ledger.append)
-    runner = MatchRunner(
+    runner, _runtime = match_runner(
+        bus=bus,
         match_id=MATCH_ID,
         seed=seed,
         loadout_a=load_loadout(LOADOUT_A),
         loadout_b=load_loadout(LOADOUT_B),
-        bus=bus,
         max_ticks=max_ticks,
     )
     final = runner.run()
@@ -77,7 +81,7 @@ def test_same_seed_produces_identical_event_stream() -> None:
 
     def fingerprint(
         events: list[ModelSOEventEnvelope],
-    ) -> list[tuple[int, int, SOEventType, dict[str, Any]]]:
+    ) -> list[tuple[int, int, SOEventType, Mapping[str, Any]]]:
         return [(e.tick, e.sequence_in_tick, e.event_type, e.payload) for e in events]
 
     assert fingerprint(events_one) == fingerprint(events_two)
@@ -95,7 +99,7 @@ def test_pilot_decisions_emitted_per_living_mech_per_tick() -> None:
 
 @pytest.mark.integration
 def test_run_with_ledger_persists_all_events_in_canonical_order(tmp_path: Path) -> None:
-    ledger = SQLiteLedger(tmp_path / "ledger.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "ledger.sqlite")
     _, collected = _run_match(max_ticks=5, ledger=ledger)
 
     persisted = list(ledger.read_all(MATCH_ID))
@@ -110,12 +114,42 @@ def test_unknown_pilot_archetype_fails_fast() -> None:
     loadout = load_loadout(LOADOUT_A)
     bad = loadout.model_copy(update={"pilot_id": "pilot.example.unknown_v1"})
     bus = InProcessEventBus()
-    with pytest.raises(ValueError, match="unknown pilot archetype"):
-        MatchRunner(
+    with pytest.raises(ValueError, match="unknown exact pilot_id"):
+        match_runner(
+            bus=bus,
             match_id=MATCH_ID,
             seed=1,
             loadout_a=bad,
             loadout_b=load_loadout(LOADOUT_B),
-            bus=bus,
             max_ticks=3,
-        ).run()
+        )[0].run()
+
+
+@pytest.mark.unit
+def test_unknown_loadout_weapon_fails_with_typed_deterministic_error() -> None:
+    loadout = load_loadout(LOADOUT_A)
+    unknown_id = "weapon.light.absent"
+    bad = loadout.model_copy(
+        update={
+            "modules": loadout.modules.model_copy(update={"weapons": [unknown_id]}),
+        }
+    )
+    bus = InProcessEventBus()
+    runner, _runtime = match_runner(
+        bus=bus,
+        match_id=MATCH_ID,
+        seed=1,
+        loadout_a=bad,
+        loadout_b=load_loadout(LOADOUT_B),
+        max_ticks=3,
+    )
+
+    with pytest.raises(UnknownWeaponError) as raised:
+        runner.run()
+
+    assert raised.value.weapon_id == unknown_id
+    assert raised.value.owner_id == loadout.id
+    assert str(raised.value) == (
+        f"unknown_weapon_id: weapon {unknown_id!r} referenced by {loadout.id!r} "
+        "is absent from the injected weapon catalog"
+    )

@@ -34,12 +34,21 @@ from pathlib import Path
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.lineage import ParamDict, spec_hash
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
-from steel_onslaught.contracts.pilot_registry import load_pilot_spec
 from steel_onslaught.learning.duel_evaluator import DuelEvaluator, aggregate_pair
+from steel_onslaught.learning.filesystem_artifacts import (
+    ModelSOFilesystemLearningArtifactsConfig,
+    YamlFilesystemLearningArtifactStore,
+)
 from steel_onslaught.learning.protocols import EvaluatorProtocol, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import params_from_spec
+from steel_onslaught.match.composition import (
+    build_duel_executor,
+    load_loadout,
+    load_pilot_spec,
+)
 
 _BASE_LOADOUT = Path("contracts_data/loadouts/example_aggressive_light.yaml").resolve()
 _TEMPLATE_PILOT = Path("contracts_data/pilots/template_aggressive.yaml").resolve()
@@ -70,11 +79,59 @@ def _snapshot(root: Path) -> dict[str, str]:
 
 
 def _make_evaluator(workdir: Path, *, base_loadout: Path = _BASE_LOADOUT) -> DuelEvaluator:
+    overlay = ModelSOApplicationOverlay.model_validate(
+        {
+            "schema_version": "1",
+            "bus": {"kind": "in_process"},
+            "event_ledger": {
+                "kind": "sqlite",
+                "path": workdir / "unused.sqlite3",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+            },
+            "leaderboard": {
+                "kind": "sqlite",
+                "path": workdir / "leaderboard.sqlite3",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "storage_schema": "leaderboard_v1",
+            },
+            "learning_artifacts": {
+                "kind": "filesystem_yaml",
+                "evaluation_root": workdir,
+                "lineage_root": workdir / "lineage",
+            },
+            "evaluation_storage": {
+                "kind": "sqlite",
+                "root": workdir,
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+                "leaderboard_schema": "leaderboard_v1",
+            },
+            "contracts": {
+                "catalog_dir": _CONTRACTS_DATA,
+                "pilot_registry_dir": _CONTRACTS_DATA / "pilots",
+            },
+            "clock": {"kind": "system_utc"},
+            "identity": {"kind": "system"},
+        }
+    )
     return DuelEvaluator(
         archetype="aggressive",
-        base_loadout=base_loadout,
-        workdir=workdir,
+        base_loadout=load_loadout(base_loadout),
         max_ticks=_MAX_TICKS,
+        duel_executor=build_duel_executor(overlay),
+        artifacts=YamlFilesystemLearningArtifactStore(
+            ModelSOFilesystemLearningArtifactsConfig(
+                evaluation_root=workdir,
+                lineage_root=workdir / "lineage",
+            )
+        ),
     )
 
 

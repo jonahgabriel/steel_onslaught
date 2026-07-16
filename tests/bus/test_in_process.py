@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from uuid import uuid4
+
 import pytest
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.events.envelope import (
@@ -21,6 +25,20 @@ _E6 = "01JABCDE0123456789ABCDEF06"
 _DEFAULT = "01JABCDE0123456789ABCDEFG0"
 
 
+def _envelope(
+    match_id: str = "m",
+    emitted_at: datetime = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC),
+) -> ModelEnvelope:
+    """Composed ONEX ModelEnvelope (message_id/correlation_id/causation_id/entity_id/emitted_at)."""
+    return ModelEnvelope(
+        message_id=uuid4(),
+        correlation_id=uuid4(),
+        causation_id=uuid4(),
+        entity_id=match_id,
+        emitted_at=emitted_at,
+    )
+
+
 def _env(t: SOEventType, eid: str = _DEFAULT) -> ModelSOEventEnvelope:
     # sequence_in_tick=0 here is a placeholder; the bus reassigns it on publish.
     return ModelSOEventEnvelope(
@@ -32,7 +50,7 @@ def _env(t: SOEventType, eid: str = _DEFAULT) -> ModelSOEventEnvelope:
         producer_node="p",
         subject=ModelSOEventSubject(mech_id="m", player_id="p"),
         payload={},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_envelope(),
     )
 
 
@@ -169,7 +187,7 @@ def test_sequence_in_tick_resets_per_tick() -> None:
         producer_node="p",
         subject=ModelSOEventSubject(mech_id="m", player_id="p"),
         payload={},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_envelope(),
     )
     bus.publish(tick1)
     bus.publish(_env(SOEventType.PILOT_DECISION_MADE, _E2))
@@ -185,7 +203,7 @@ def test_sequence_in_tick_resets_per_tick() -> None:
         producer_node="p",
         subject=ModelSOEventSubject(mech_id="m", player_id="p"),
         payload={},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_envelope(),
     )
     bus.publish(tick2)
     bus.publish(_env(SOEventType.BOILER_UPDATED, _E5))
@@ -216,7 +234,7 @@ def test_bus_overwrites_sequence_in_tick() -> None:
         producer_node="p",
         subject=ModelSOEventSubject(mech_id="m", player_id="p"),
         payload={},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_envelope(),
     )
     bus.publish(env_with_fake_seq)
     assert seen_seq == [0], "bus must assign sequence=0 for the first event, not 99"
@@ -276,7 +294,7 @@ def test_current_tick_advances_on_match_tick() -> None:
         producer_node="p",
         subject=ModelSOEventSubject(mech_id="m", player_id="p"),
         payload={},
-        emitted_at="2026-04-30T16:00:00Z",
+        envelope=_envelope(),
     )
     bus.publish(tick3)
     bus.publish(_env(SOEventType.BOILER_UPDATED, _E3))

@@ -1,0 +1,171 @@
+"""Closed-schema tests for the sole Slice-1 application overlay."""
+
+from pathlib import Path
+from shutil import copytree
+
+import pytest
+import yaml  # type: ignore[import-untyped]
+
+from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from steel_onslaught.match.composition import (
+    load_application_overlay,
+    load_match_contract_catalog,
+)
+
+_CONTRACTS_DATA = Path(__file__).parent.parent.parent / "contracts_data"
+
+
+def _overlay_data(tmp_path: Path) -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "bus": {"kind": "in_process"},
+        "event_ledger": {
+            "kind": "sqlite",
+            "path": tmp_path / "events.sqlite3",
+            "journal_mode": "WAL",
+            "check_same_thread": True,
+            "transaction_mode": "autocommit",
+            "event_schema": "canonical_event_v1",
+        },
+        "leaderboard": {
+            "kind": "sqlite",
+            "path": tmp_path / "leaderboard.sqlite3",
+            "journal_mode": "WAL",
+            "check_same_thread": True,
+            "transaction_mode": "autocommit",
+            "storage_schema": "leaderboard_v1",
+        },
+        "learning_artifacts": {
+            "kind": "filesystem_yaml",
+            "evaluation_root": tmp_path / "evaluations",
+            "lineage_root": tmp_path / "lineage",
+        },
+        "evaluation_storage": {
+            "kind": "sqlite",
+            "root": tmp_path / "evaluation_storage",
+            "journal_mode": "WAL",
+            "check_same_thread": True,
+            "transaction_mode": "autocommit",
+            "event_schema": "canonical_event_v1",
+            "leaderboard_schema": "leaderboard_v1",
+        },
+        "contracts": {
+            "catalog_dir": tmp_path / "catalog",
+            "pilot_registry_dir": tmp_path / "pilots",
+        },
+        "clock": {"kind": "system_utc"},
+        "identity": {"kind": "system"},
+    }
+
+
+@pytest.mark.unit
+def test_overlay_is_complete_and_frozen(tmp_path: Path) -> None:
+    overlay = ModelSOApplicationOverlay.model_validate(_overlay_data(tmp_path))
+
+    assert overlay.event_ledger.path == tmp_path / "events.sqlite3"
+    with pytest.raises(ValueError, match="frozen"):
+        overlay.event_ledger.path = tmp_path / "other.sqlite3"
+
+
+@pytest.mark.unit
+def test_overlay_rejects_unknown_nested_policy(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    assert isinstance(raw["event_ledger"], dict)
+    ledger = dict(raw["event_ledger"])
+    ledger["implicit_fallback"] = True
+    raw["event_ledger"] = ledger
+
+    with pytest.raises(ValueError, match="implicit_fallback"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_overlay_selected_catalog_rejects_unknown_nested_boiler_compatibility(
+    tmp_path: Path,
+) -> None:
+    catalog_dir = tmp_path / "catalog"
+    copytree(_CONTRACTS_DATA, catalog_dir)
+    boiler_path = catalog_dir / "boilers" / "compact_v1.yaml"
+    boiler = yaml.safe_load(boiler_path.read_text(encoding="utf-8"))
+    assert isinstance(boiler, dict)
+    compatibility = boiler["compatibility"]
+    assert isinstance(compatibility, dict)
+    compatibility["implicit_compatibility_fallback"] = True
+    boiler_path.write_text(yaml.safe_dump(boiler), encoding="utf-8")
+
+    raw_overlay = _overlay_data(tmp_path)
+    overlay_path = tmp_path / "application.yaml"
+    serialized = ModelSOApplicationOverlay.model_validate(raw_overlay).model_dump(mode="json")
+    overlay_path.write_text(yaml.safe_dump(serialized), encoding="utf-8")
+    overlay = load_application_overlay(overlay_path)
+
+    with pytest.raises(ValueError, match="implicit_compatibility_fallback"):
+        load_match_contract_catalog(overlay.contracts.catalog_dir)
+
+
+@pytest.mark.unit
+def test_overlay_rejects_unsupported_adapter_kind(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    raw["bus"] = {"kind": "redis"}
+
+    with pytest.raises(ValueError, match="in_process"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "bus",
+        "event_ledger",
+        "leaderboard",
+        "learning_artifacts",
+        "evaluation_storage",
+        "contracts",
+        "clock",
+        "identity",
+    ],
+)
+def test_overlay_requires_every_binding(tmp_path: Path, binding: str) -> None:
+    raw = _overlay_data(tmp_path)
+    del raw[binding]
+    with pytest.raises(ValueError, match=binding):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("binding", "unsupported"),
+    [
+        ("bus", {"kind": "redis"}),
+        ("event_ledger", {"kind": "postgres"}),
+        ("leaderboard", {"kind": "memory"}),
+        ("learning_artifacts", {"kind": "s3"}),
+        ("evaluation_storage", {"kind": "postgres"}),
+        ("clock", {"kind": "local_time"}),
+        ("identity", {"kind": "random_int"}),
+    ],
+)
+def test_overlay_rejects_every_unsupported_binding_kind(
+    tmp_path: Path,
+    binding: str,
+    unsupported: dict[str, str],
+) -> None:
+    raw = _overlay_data(tmp_path)
+    raw[binding] = unsupported
+    with pytest.raises(ValueError, match="kind"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_overlay_relative_paths_resolve_from_overlay_directory(tmp_path: Path) -> None:
+    raw = _overlay_data(Path("."))
+    overlay_path = tmp_path / "application.yaml"
+    serialized = ModelSOApplicationOverlay.model_validate(raw).model_dump(mode="json")
+    overlay_path.write_text(yaml.safe_dump(serialized), encoding="utf-8")
+
+    overlay = load_application_overlay(overlay_path)
+
+    assert overlay.event_ledger.path == tmp_path / "events.sqlite3"
+    assert overlay.contracts.catalog_dir == tmp_path / "catalog"
+    assert overlay.evaluation_storage.root == tmp_path / "evaluation_storage"

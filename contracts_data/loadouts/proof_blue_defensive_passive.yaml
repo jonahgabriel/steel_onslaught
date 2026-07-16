@@ -7,7 +7,7 @@ id: loadout.proof.blue_defensive_passive
 
 chassis_id: chassis.light.scout_mk1
 boiler_id: boiler.compact.v1
-pilot_id: pilot.proof.defensive_v1
+pilot_id: pilot.template.defensive
 
 modules:
   weapons: []

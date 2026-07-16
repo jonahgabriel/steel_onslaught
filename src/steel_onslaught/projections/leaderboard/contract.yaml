@@ -1,0 +1,54 @@
+---
+# ONEX Node Contract — Leaderboard projection.
+#
+# Declares LeaderboardHandler as an ONEX projection node: consumes MATCH_SCORED
+# events and materializes them into the leaderboard_entries SQLite table. This
+# is the read-model-builder pattern (ProtocolEventProjector equivalent) — a
+# reducer whose side-effect is an idempotent UPSERT keyed on match_id.
+name: leaderboard_projection
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: reducer  # projection is a reducer variant whose output is a DB upsert
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  Materializes MATCH_SCORED events into the leaderboard_entries table.
+  Replay-safe via idempotency key on match_id (re-applying the same scored
+  event produces the same row). The canonical event stream (tick,
+  sequence_in_tick) is the ordering authority; draws are excluded.
+
+handler:
+  module: steel_onslaught.projections.leaderboard.handler
+  class: LeaderboardHandler
+
+handler_routing:
+  default_handler: steel_onslaught.projections.leaderboard.handler:LeaderboardHandler
+
+descriptor:
+  node_archetype: projection
+  purity: impure
+  idempotent: true
+  timeout_ms: 1000
+
+event_bus:
+  subscribe_topics:
+    - onex.evt.steel-onslaught.match-scored.v1
+  publish_topics: []
+
+db_io:
+  db_tables:
+    - name: leaderboard_entries
+      migration: "0002_leaderboard.sql"
+      access: write
+      database: leaderboard
+      role: projection
+
+reducer_contract:
+  state_update: "on_match_scored(event) -> upserted_leaderboard_row"
+  owns_state: true
+  idempotent: true
+  ordering_authority: event_tick_sequence
+  duplicate_key_fields:
+    - match_id
+
+metadata:
+  transport_type: in_process

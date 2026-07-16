@@ -1,10 +1,21 @@
-"""Canonical match-state fold — Task 34.
+"""Canonical match-state fold — ONEX pure reducer (Task 34 / ONEX restructure).
 
 ``MatchStateFold`` is the SINGLE deterministic function from the canonical
 event stream to ``ModelSOMatchState``.  The live match runner (Task 28/34)
 and the replay engine (Task 27) both fold events through this class, which is
 what makes ``replay.reconstruct_at_tick(final) == live_state`` hold by
 construction (R9 / Architectural Decision #6).
+
+ONEX reducer shape
+------------------
+This follows the OmniNode ``delta(state, event) -> (new_state, intents[])``
+pure-reducer pattern. ``delta(event)`` is the pure state derivation — it
+collects produced events (boiler updates, mode completions, victory
+declarations) into an intents list and RETURNS them, never publishing.
+``handle(event)`` is the effect-boundary adapter that publishes those intents
+post-commit on the live bus (the only site of bus I/O). On the replay path
+(``bus=None``) the intents are discarded (the same events arrive from the
+ledger as idempotent re-statements).
 
 Design rules
 ------------
@@ -14,11 +25,10 @@ Design rules
    ``MECH_DESTROYED``, ``PILOT_KILLED``, terminal events).  Intent events are
    telemetry: the live resolver in ``match/runner.py`` validates them and
    publishes the resolved events; the fold never re-validates intents.
-2. Commit-then-emit: every event the fold itself produces (boiler updates,
-   mode-transition completions, the failure cascade, victory declarations) is
-   buffered, the state delta is committed first, and the buffer is published
-   afterwards (live path only; on replay ``bus=None`` suppresses emission and
-   the same events arrive from the ledger as idempotent re-statements).
+2. Commit-then-return: every event the fold itself produces is buffered, the
+   state delta commits first, and the buffer is RETURNED from ``delta`` (live
+   path only; on replay ``bus=None`` suppresses emission and the same events
+   arrive from the ledger as idempotent re-statements).
 3. All stochastic inputs (rupture survival rolls) flow through ``MatchRng``
    sub-seeds, so the fold is a pure function of ``(seed, event stream)``.
 
@@ -32,26 +42,38 @@ while the match is still RUNNING):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from pathlib import Path
-from typing import Literal
-
-import ulid
-import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Literal, TypeVar
+from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.gizmo import GizmoCategory, ModelSOGizmoSpec
-from steel_onslaught.contracts.mode import ModelSOModeTransition
+from steel_onslaught.contracts.mode import (
+    ModeId,
+    ModelSOModeTransition,
+    ModelSOModeTransitionStartedPayload,
+)
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
-from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
+from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOArmorAbsorbedPayload,
+    ModelSODamageAppliedPayload,
+    ModelSOMatchStartedPayload,
+    ModelSOMechDestroyedPayload,
+    ModelSOPilotKilledPayload,
+    ModelSOWeaponFiredPayload,
+)
+from steel_onslaught.immutable import freeze_mapping
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
@@ -69,72 +91,89 @@ _PRODUCER_NODE = "node.match.fold"
 # Match-scoped events carry the wildcard subject (lifecycle convention).
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 
-# Resolve contracts_data/ relative to this file's package tree:
-# src/steel_onslaught/match/fold.py -> project root is 4 levels up.
-DEFAULT_CONTRACTS_DATA_DIR = Path(__file__).parent.parent.parent.parent / "contracts_data"
+_ContractT = TypeVar("_ContractT")
+_ContractKind = Literal["chassis", "weapon", "sensor", "gizmo", "transition"]
 
 
-def _load_specs[ModelT: BaseModel](directory: Path, model: type[ModelT]) -> dict[str, ModelT]:
-    """Load every ``*.yaml`` contract under *directory*, keyed by its ``id``."""
-    index: dict[str, ModelT] = {}
-    for path in sorted(directory.glob("*.yaml")):
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        index[str(raw["id"])] = model.model_validate(raw)
-    return index
+class MissingMatchContractError(ValueError):
+    """A canonical match event references absent injected contract truth."""
 
-
-def _load_transitions(directory: Path) -> dict[tuple[str, str], ModelSOModeTransition]:
-    """Load mode-transition contracts, keyed by the directed (from, to) pair."""
-    index: dict[tuple[str, str], ModelSOModeTransition] = {}
-    for path in sorted(directory.glob("*.yaml")):
-        spec = ModelSOModeTransition.model_validate(
-            yaml.safe_load(path.read_text(encoding="utf-8"))
+    def __init__(
+        self,
+        contract_kind: _ContractKind,
+        contract_id: str,
+        *,
+        owner_id: str,
+    ) -> None:
+        self.contract_kind = contract_kind
+        self.contract_id = contract_id
+        self.owner_id = owner_id
+        super().__init__(
+            f"missing_match_contract: {contract_kind} {contract_id!r} referenced by "
+            f"{owner_id!r} is absent from the injected match catalog"
         )
-        index[(spec.from_mode, spec.to_mode)] = spec
-    return index
 
 
+class MatchContractStateMismatchError(ValueError):
+    """MATCH_STARTED state disagrees with its injected contract projection."""
+
+    def __init__(
+        self,
+        field: str,
+        actual: object,
+        expected: object,
+        *,
+        owner_id: str,
+    ) -> None:
+        self.field = field
+        self.actual = actual
+        self.expected = expected
+        self.owner_id = owner_id
+        super().__init__(
+            "match_contract_state_mismatch: "
+            f"{owner_id!r}.{field} is {actual!r}; injected contract truth requires {expected!r}"
+        )
+
+
+@dataclass(frozen=True, init=False)
 class MatchContractCatalog:
     """Static contract indexes a match needs at runtime AND at replay time.
 
-    The catalog is loaded from ``contracts_data/`` once per match (or per
-    replay) — contracts are content-addressed static files, so live fold and
-    replay fold see identical data.
+    The catalog is constructed by the application composition root and
+    injected explicitly. Live execution and replay must receive the same
+    validated contract snapshot.
     """
+
+    chassis: Mapping[str, ModelSOChassisSpec]
+    boilers: Mapping[str, ModelSOBoilerSpec]
+    sensors: Mapping[str, ModelSOSensorSpec]
+    weapons: Mapping[str, ModelSOWeaponSpec]
+    gizmos: Mapping[str, ModelSOGizmoSpec]
+    transitions: Mapping[tuple[ModeId, ModeId], ModelSOModeTransition]
+    safety_gizmo_ids: frozenset[str]
 
     def __init__(
         self,
         *,
-        chassis: dict[str, ModelSOChassisSpec],
-        boilers: dict[str, ModelSOBoilerSpec],
-        sensors: dict[str, ModelSOSensorSpec],
-        weapons: dict[str, ModelSOWeaponSpec],
-        gizmos: dict[str, ModelSOGizmoSpec],
-        transitions: dict[tuple[str, str], ModelSOModeTransition],
+        chassis: Mapping[str, ModelSOChassisSpec],
+        boilers: Mapping[str, ModelSOBoilerSpec],
+        sensors: Mapping[str, ModelSOSensorSpec],
+        weapons: Mapping[str, ModelSOWeaponSpec],
+        gizmos: Mapping[str, ModelSOGizmoSpec],
+        transitions: Mapping[tuple[ModeId, ModeId], ModelSOModeTransition],
     ) -> None:
-        self.chassis = chassis
-        self.boilers = boilers
-        self.sensors = sensors
-        self.weapons = weapons
-        self.gizmos = gizmos
-        self.transitions = transitions
-        self.safety_gizmo_ids: frozenset[str] = frozenset(
-            gizmo_id for gizmo_id, spec in gizmos.items() if spec.category is GizmoCategory.SAFETY
+        object.__setattr__(self, "chassis", MappingProxyType(dict(chassis)))
+        object.__setattr__(self, "boilers", MappingProxyType(dict(boilers)))
+        object.__setattr__(self, "sensors", MappingProxyType(dict(sensors)))
+        object.__setattr__(self, "weapons", MappingProxyType(dict(weapons)))
+        object.__setattr__(self, "gizmos", MappingProxyType(dict(gizmos)))
+        object.__setattr__(self, "transitions", MappingProxyType(dict(transitions)))
+        safety_gizmo_ids = frozenset(
+            gizmo_id
+            for gizmo_id, spec in self.gizmos.items()
+            if spec.category is GizmoCategory.SAFETY
         )
-
-    @classmethod
-    def load(cls, contracts_data_dir: Path | None = None) -> MatchContractCatalog:
-        data_dir = (
-            contracts_data_dir if contracts_data_dir is not None else DEFAULT_CONTRACTS_DATA_DIR
-        )
-        return cls(
-            chassis=_load_specs(data_dir / "chassis", ModelSOChassisSpec),
-            boilers=_load_specs(data_dir / "boilers", ModelSOBoilerSpec),
-            sensors=_load_specs(data_dir / "sensors", ModelSOSensorSpec),
-            weapons=_load_specs(data_dir / "weapons", ModelSOWeaponSpec),
-            gizmos=_load_specs(data_dir / "gizmos", ModelSOGizmoSpec),
-            transitions=_load_transitions(data_dir / "modes" / "transitions"),
-        )
+        object.__setattr__(self, "safety_gizmo_ids", safety_gizmo_ids)
 
 
 class MatchStateFold:
@@ -142,27 +181,39 @@ class MatchStateFold:
 
     Args:
         match_id: Owning match; events for other matches are ignored.
+        correlation_id:
+                  ONEX workflow correlation id shared across all events of
+                  this match; threaded into every event the fold + its
+                  sub-reducers produce.
         bus:      Live path: fold-produced events are published here after the
                   state delta commits.  Replay path: ``None`` (no emission —
                   the same events arrive from the ledger and fold as no-ops).
-        catalog:  Static contract indexes; defaults to ``contracts_data/``
-                  relative to the package tree.
+        catalog:  Required injected static contract indexes. The fold does
+                  not discover or load contracts from the filesystem.
     """
 
     def __init__(
         self,
         match_id: str,
+        correlation_id: UUID,
         *,
+        event_factory: EventFactory,
+        catalog: MatchContractCatalog,
         bus: EventBus | None = None,
-        catalog: MatchContractCatalog | None = None,
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._bus = bus
-        self._catalog = catalog if catalog is not None else MatchContractCatalog.load()
-        self._lifecycle = ReducerMatchLifecycle(match_id, bus=bus)
+        self._catalog = catalog
+        self._lifecycle = ReducerMatchLifecycle(
+            match_id, correlation_id, event_factory=event_factory, bus=bus
+        )
         self._failure = ReducerFailureCascade(
             match_id,
+            correlation_id,
             emit=self._emit,
+            event_factory=event_factory,
             safety_gizmo_ids=self._catalog.safety_gizmo_ids,
         )
         self._boilers: dict[str, ReducerBoiler] = {}
@@ -180,18 +231,58 @@ class MatchStateFold:
         return self._lifecycle.state.model_copy(update={"mech_states": dict(self._mech_states)})
 
     def handle(self, event: ModelSOEventEnvelope) -> None:
-        """``EventHandler``-shaped adapter for ``EventBus.subscribe``."""
+        """``EventHandler``-shaped adapter for ``EventBus.subscribe``.
+
+        Drives ``delta`` (pure) and publishes the returned intents on the live
+        bus post-commit — the single effect-boundary site for bus I/O. On the
+        replay path (``bus=None``) the intents are discarded (the same events
+        arrive from the ledger and re-fold as no-ops).
+        """
         self.apply(event)
 
     def apply(self, event: ModelSOEventEnvelope) -> ModelSOMatchState:
-        """Fold one canonical event; return the updated composite state."""
+        """Fold one canonical event; return the updated composite state.
+
+        Delegates to ``delta`` (the pure state derivation) and, on the live
+        path, publishes the intents ``delta`` returned. This is the ONEX
+        pure-reducer-as-effect pattern: state derivation is pure and returns
+        intents; the effect boundary (this method, live-only) executes them.
+        """
         if event.match_id != self._match_id:
             return self.state
+        produced = self.delta(event)
+        # Commit happened inside delta; emissions go out only afterwards (live).
+        if self._bus is not None:
+            for intent in produced:
+                self._bus.publish(intent)
+        return self.state
 
-        buffer: list[ModelSOEventEnvelope] = []
+    def delta(self, event: ModelSOEventEnvelope) -> list[ModelSOEventEnvelope]:
+        """Pure fold: derive the state delta from one event, return produced intents.
+
+        This is the ONEX ``delta(state, event) -> (new_state, intents[])`` shape.
+        It is the SINGLE deterministic function from the canonical event stream
+        to ``ModelSOMatchState`` — used identically by the live runner and the
+        replay engine, which is what guarantees ``replay == live`` (R9).
+
+        Side-effect-free: produced events (boiler updates, victory declarations,
+        mode completions) are collected and RETURNED, never published here.
+        The live ``apply`` publishes them post-commit; replay (``bus=None``)
+        discards them (they arrive from the ledger as idempotent re-statements).
+
+        Non-deterministic inputs (clock/UUID for the produced events) flow
+        through the ``make_event`` factories' injected ``emitted_at``/ids, which
+        are excluded from state-level replay validity (see
+        docs/plans/2026-07-02-determinism-boundaries.md).
+        """
+        produced: list[ModelSOEventEnvelope] = []
         outer_sink = self._sink
-        self._sink = buffer
+        self._sink = produced
         try:
+            if event.event_type is SOEventType.MATCH_STARTED:
+                payload = ModelSOMatchStartedPayload.model_validate(event.payload)
+                self._validate_match_started_contracts(payload)
+
             # Lifecycle authority first: status / tick / winner / end_reason.
             # (It commits its state BEFORE any of its own terminal emissions.)
             self._lifecycle.apply(event)
@@ -209,20 +300,19 @@ class MatchStateFold:
                     self._on_mode_transition_started(event)
                 case SOEventType.DAMAGE_APPLIED:
                     self._on_damage_applied(event)
+                case SOEventType.ARMOR_ABSORBED:
+                    self._on_armor_absorbed(event)
                 case SOEventType.MECH_DESTROYED:
+                    ModelSOMechDestroyedPayload.model_validate(event.payload)
                     self._on_flag_drop(event, field="alive")
                 case SOEventType.PILOT_KILLED:
+                    ModelSOPilotKilledPayload.model_validate(event.payload)
                     self._on_flag_drop(event, field="pilot_alive")
                 case _:
                     pass  # intents, observations, telemetry: no state delta
         finally:
             self._sink = outer_sink
-
-        # Commit happened above; emissions go out only afterwards (live path).
-        if self._bus is not None:
-            for produced in buffer:
-                self._bus.publish(produced)
-        return self.state
+        return produced
 
     # ------------------------------------------------------------------
     # Emission sink (buffered; drained post-commit by `apply`)
@@ -237,11 +327,103 @@ class MatchStateFold:
     # Event handlers
     # ------------------------------------------------------------------
 
+    def _require_contract(
+        self,
+        contracts: Mapping[str, _ContractT],
+        contract_kind: Literal["chassis", "weapon", "sensor", "gizmo"],
+        contract_id: str,
+        *,
+        owner_id: str,
+    ) -> _ContractT:
+        try:
+            return contracts[contract_id]
+        except KeyError as exc:
+            raise MissingMatchContractError(
+                contract_kind,
+                contract_id,
+                owner_id=owner_id,
+            ) from exc
+
+    def _require_transition(
+        self,
+        from_mode: ModeId,
+        to_mode: ModeId,
+        *,
+        owner_id: str,
+    ) -> ModelSOModeTransition:
+        try:
+            return self._catalog.transitions[(from_mode, to_mode)]
+        except KeyError as exc:
+            raise MissingMatchContractError(
+                "transition",
+                f"{from_mode}->{to_mode}",
+                owner_id=owner_id,
+            ) from exc
+
+    def _validate_match_started_contracts(self, payload: ModelSOMatchStartedPayload) -> None:
+        """Validate every static mech reference before lifecycle state mutates."""
+        for mech in payload.mechs:
+            chassis = self._require_contract(
+                self._catalog.chassis,
+                "chassis",
+                mech.chassis_id,
+                owner_id=mech.mech_id,
+            )
+            expected_base_speed = chassis.constraints.base_speed
+            if mech.base_speed != expected_base_speed:
+                raise MatchContractStateMismatchError(
+                    "base_speed",
+                    mech.base_speed,
+                    expected_base_speed,
+                    owner_id=mech.mech_id,
+                )
+            expected_speed = mode_effective_speed(expected_base_speed, mech.current_mode)
+            if mech.speed != expected_speed:
+                raise MatchContractStateMismatchError(
+                    "speed",
+                    mech.speed,
+                    expected_speed,
+                    owner_id=mech.mech_id,
+                )
+            if mech.transition_to_mode is not None:
+                self._require_transition(
+                    mech.current_mode,
+                    mech.transition_to_mode,
+                    owner_id=mech.mech_id,
+                )
+            for weapon_id in mech.weapon_cooldowns:
+                self._require_contract(
+                    self._catalog.weapons,
+                    "weapon",
+                    weapon_id,
+                    owner_id=mech.mech_id,
+                )
+            for sensor_id in mech.sensor_ids:
+                self._require_contract(
+                    self._catalog.sensors,
+                    "sensor",
+                    sensor_id,
+                    owner_id=mech.mech_id,
+                )
+            for gizmo_id in mech.gizmo_ids:
+                self._require_contract(
+                    self._catalog.gizmos,
+                    "gizmo",
+                    gizmo_id,
+                    owner_id=mech.mech_id,
+                )
+
     def _on_match_started(self) -> None:
         self._mech_states = dict(self._lifecycle.state.mech_states)
         composite = self.state
         self._boilers = {
-            mech_id: ReducerBoiler(mech_id, composite, emit=self._emit)
+            mech_id: ReducerBoiler(
+                mech_id,
+                composite,
+                emit=self._emit,
+                correlation_id=self._correlation_id,
+                event_factory=self._events,
+            )
             for mech_id in self._mech_states
         }
 
@@ -253,6 +435,7 @@ class MatchStateFold:
         for mech_id in list(working.mech_states):
             working = self._boilers[mech_id].apply(event, working)
         working = self._decrement_counters(working)
+        working = self._regenerate_armor(working)
         working = self._advance_mode_transitions(event, working)
         working = self._failure.apply(event, working)
         self._mech_states = dict(working.mech_states)
@@ -263,6 +446,7 @@ class MatchStateFold:
         self._mech_states = dict(new_state.mech_states)
 
     def _on_weapon_fired(self, event: ModelSOEventEnvelope) -> None:
+        payload = ModelSOWeaponFiredPayload.model_validate(event.payload)
         mech_id = event.subject.mech_id
         working = self.state
         boiler = self._boilers.get(mech_id)
@@ -270,12 +454,18 @@ class MatchStateFold:
             working = boiler.apply(event, working)
         mech = working.mech_states.get(mech_id)
         if mech is not None:
-            weapon_id = str(event.payload["weapon_id"])
+            weapon_id = payload.weapon_id
             spec = self._catalog.weapons.get(weapon_id)
-            cooldown = spec.cooldown_ticks if spec is not None else 0
+            if spec is None:
+                raise UnknownWeaponError(weapon_id, owner_id=mech_id)
             mech = mech.model_copy(
                 update={
-                    "weapon_cooldowns": {**mech.weapon_cooldowns, weapon_id: cooldown},
+                    "weapon_cooldowns": freeze_mapping(
+                        {
+                            **mech.weapon_cooldowns,
+                            weapon_id: spec.cooldown_ticks,
+                        }
+                    ),
                     # The overload penalty applies to the next firing only.
                     "accuracy_penalty_next_fire": 0.0,
                 }
@@ -288,35 +478,81 @@ class MatchStateFold:
     def _on_mode_transition_started(self, event: ModelSOEventEnvelope) -> None:
         mech_id = event.subject.mech_id
         working = self.state
+        payload = ModelSOModeTransitionStartedPayload.model_validate(event.payload)
+        mech = working.mech_states.get(mech_id)
+        if mech is None:
+            return
+        if payload.from_mode != mech.current_mode:
+            raise MatchContractStateMismatchError(
+                "current_mode",
+                mech.current_mode,
+                payload.from_mode,
+                owner_id=mech_id,
+            )
+        transition = self._require_transition(
+            payload.from_mode,
+            payload.to_mode,
+            owner_id=mech_id,
+        )
+        expected_payload = ModelSOModeTransitionStartedPayload(
+            from_mode=transition.from_mode,
+            to_mode=transition.to_mode,
+            costs=transition.costs,
+            sensor_dropout_ticks=transition.vulnerability.sensor_dropout_ticks,
+            evasion_penalty=transition.vulnerability.evasion_penalty_during_transition,
+        )
+        if payload != expected_payload:
+            raise MatchContractStateMismatchError(
+                "mode_transition",
+                payload.model_dump(mode="json"),
+                expected_payload.model_dump(mode="json"),
+                owner_id=mech_id,
+            )
         boiler = self._boilers.get(mech_id)
         if boiler is not None:
             working = boiler.apply(event, working)  # deduct costs (Task 22 fold)
-        mech = working.mech_states.get(mech_id)
-        if mech is not None:
-            costs = event.payload["costs"]
-            mech = mech.model_copy(
-                update={
-                    "transition_ticks_remaining": int(costs["transition_ticks"]),
-                    "transition_to_mode": str(event.payload["to_mode"]),
-                    "sensor_dropout_ticks_remaining": int(event.payload["sensor_dropout_ticks"]),
-                    "evasion": float(event.payload["evasion_penalty"]),
-                }
-            )
-            working = working.model_copy(
-                update={"mech_states": {**working.mech_states, mech_id: mech}}
-            )
+            mech = working.mech_states[mech_id]
+        mech = mech.model_copy(
+            update={
+                "transition_ticks_remaining": payload.costs.transition_ticks,
+                "transition_to_mode": payload.to_mode,
+                "sensor_dropout_ticks_remaining": payload.sensor_dropout_ticks,
+                "evasion": payload.evasion_penalty,
+            }
+        )
+        working = working.model_copy(update={"mech_states": {**working.mech_states, mech_id: mech}})
         self._mech_states = dict(working.mech_states)
 
     def _on_damage_applied(self, event: ModelSOEventEnvelope) -> None:
+        payload = ModelSODamageAppliedPayload.model_validate(event.payload)
         mech = self._mech_states.get(event.subject.mech_id)
         if mech is None:
             return
-        hp_after = int(event.payload["hp_after"])
+        hp_after = payload.hp_after
         if mech.hp == hp_after:
             return  # idempotent re-statement (e.g. rupture loop-back)
         self._mech_states = {
             **self._mech_states,
             mech.mech_id: mech.model_copy(update={"hp": hp_after}),
+        }
+
+    def _on_armor_absorbed(self, event: ModelSOEventEnvelope) -> None:
+        """Degrade armor_value to the post-hit value the runner computed.
+
+        The runner computes the capped absorption and emits ``armor_after``;
+        the fold applies it so canonical state tracks the degrading pool.
+        Idempotent if the value is already current.
+        """
+        payload = ModelSOArmorAbsorbedPayload.model_validate(event.payload)
+        mech = self._mech_states.get(event.subject.mech_id)
+        if mech is None:
+            return
+        armor_after = payload.armor_after
+        if mech.armor_value == armor_after:
+            return  # idempotent re-statement
+        self._mech_states = {
+            **self._mech_states,
+            mech.mech_id: mech.model_copy(update={"armor_value": armor_after}),
         }
 
     def _on_flag_drop(
@@ -325,7 +561,15 @@ class MatchStateFold:
         *,
         field: Literal["alive", "pilot_alive"],
     ) -> None:
-        """Fold MECH_DESTROYED / PILOT_KILLED; declare victory on the 2->1 transition."""
+        """Fold MECH_DESTROYED / PILOT_KILLED; declare victory on the 2->1 transition.
+
+        Defense-in-depth: the failure cascade (``ReducerFailureCascade._maybe_declare_victory``
+        in ``reducers/failure.py``) declares victory on the same transition.  This
+        fold-level declaration is the backstop that fires even on a MECH_DESTROYED
+        emitted outside the cascade (e.g. a direct weapon kill).  Both are guarded
+        to the >1 -> ==1 transition so they don't duplicate.  The paired
+        redundancy is intentional — see ``tests/match/test_fold_victory_backstop.py``.
+        """
         mech = self._mech_states.get(event.subject.mech_id)
         if mech is None:
             return
@@ -343,9 +587,9 @@ class MatchStateFold:
         if len(survivors_before) > 1 and len(survivors_after) == 1:
             winner = next(iter(survivors_after))
             self._emit(
-                ModelSOEventEnvelope(
-                    event_id=ulid.new().str,
+                self._events.make(
                     match_id=self._match_id,
+                    correlation_id=self._correlation_id,
                     tick=event.tick,
                     sequence_in_tick=0,  # bus re-stamps
                     event_type=SOEventType.VICTORY_DECLARED,
@@ -355,7 +599,6 @@ class MatchStateFold:
                         "winner_player_id": winner,
                         "reason": SOMatchEndReason.LAST_MECH_STANDING.value,
                     },
-                    emitted_at=datetime.now(UTC).isoformat(),
                 )
             )
 
@@ -377,12 +620,39 @@ class MatchStateFold:
             ):
                 mech = mech.model_copy(
                     update={
-                        "weapon_cooldowns": new_cooldowns,
+                        "weapon_cooldowns": freeze_mapping(new_cooldowns),
                         "sensor_dropout_ticks_remaining": new_dropout,
                     }
                 )
             new_states[mech_id] = mech
         return working.model_copy(update={"mech_states": new_states})
+
+    def _regenerate_armor(self, working: ModelSOMatchState) -> ModelSOMatchState:
+        """Regenerate each mech's armor_value toward armor_max (degrading-armor model).
+
+        The regen rate is chassis-driven (``base_armor_regen``). Armor that is
+        already at max is untouched. A dead mech does not regenerate.
+        """
+        new_states: dict[str, ModelSOMechRuntimeState] = {}
+        changed = False
+        for mech_id, mech in working.mech_states.items():
+            if not mech.alive or mech.armor_value >= mech.armor_max:
+                new_states[mech_id] = mech
+                continue
+            chassis = self._require_contract(
+                self._catalog.chassis,
+                "chassis",
+                mech.chassis_id,
+                owner_id=mech_id,
+            )
+            regen = chassis.constraints.base_armor_regen
+            new_armor = min(mech.armor_max, mech.armor_value + regen)
+            if new_armor == mech.armor_value:
+                new_states[mech_id] = mech
+                continue
+            changed = True
+            new_states[mech_id] = mech.model_copy(update={"armor_value": new_armor})
+        return working.model_copy(update={"mech_states": new_states}) if changed else working
 
     def _advance_mode_transitions(
         self, event: ModelSOEventEnvelope, working: ModelSOMatchState
@@ -409,12 +679,18 @@ class MatchStateFold:
                 new_states[mech_id] = mech.model_copy(update={"transition_ticks_remaining": 0})
                 continue
 
-            transition = self._catalog.transitions.get((mech.current_mode, to_mode))
-            lock_ticks = (
-                transition.restrictions.minimum_lock_ticks_after_switch
-                if transition is not None
-                else 0
+            transition = self._require_transition(
+                mech.current_mode,
+                to_mode,
+                owner_id=mech_id,
             )
+            chassis = self._require_contract(
+                self._catalog.chassis,
+                "chassis",
+                mech.chassis_id,
+                owner_id=mech_id,
+            )
+            lock_ticks = transition.restrictions.minimum_lock_ticks_after_switch
             lock_until = event.tick + lock_ticks
             new_states[mech_id] = mech.model_copy(
                 update={
@@ -423,12 +699,14 @@ class MatchStateFold:
                     "transition_to_mode": None,
                     "mode_lock_until": lock_until,
                     "evasion": 0.0,  # transition vulnerability window closes
-                    "speed": mode_effective_speed(mech.base_speed, to_mode),
+                    "speed": mode_effective_speed(chassis.constraints.base_speed, to_mode),
                 }
             )
             self._emit(
                 build_mode_transition_completed_event(
+                    event_factory=self._events,
                     match_id=self._match_id,
+                    correlation_id=self._correlation_id,
                     tick=event.tick,
                     mech_id=mech_id,
                     player_id=mech.player_id,

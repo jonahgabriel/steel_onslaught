@@ -8,8 +8,8 @@
  *
  * Parsers consume `unknown` and construct fresh, fully typed objects field by
  * field — no `any`, no unchecked casts.  Closed payloads reject unknown
- * fields; intent payloads (`*_intent`, `pilot_injured`) mirror Python's open
- * `dict[str, Any]` as `Record<string, JsonValue>`.
+ * fields. Current intent payloads are closed just like their Python models;
+ * only legacy `pilot_injured` remains an open JSON record.
  */
 
 export type JsonValue =
@@ -70,10 +70,34 @@ export interface SOPosition {
   y: number;
 }
 
+export type SOModeId = "recon" | "assault" | "evasion";
+export type SOPilotAction =
+  | "remain"
+  | "move"
+  | "fire_weapon"
+  | "activate_module"
+  | "vent"
+  | "switch_mode"
+  | "emergency_shutdown"
+  | "disengage";
+export type SOPilotReasonCode =
+  | "target_in_range"
+  | "mode_advantage"
+  | "heat_critical"
+  | "closing_distance"
+  | "maintain_range"
+  | "low_hp_retreat"
+  | "low_confidence_hold"
+  | "pressure_recovery"
+  | "predicted_intercept"
+  | "evade_sensor_lock"
+  | "no_viable_action";
+export type SOMatchEndReason = "last_mech_standing" | "pilot_killed" | "draw_max_ticks" | "aborted";
+
 /** Mirror of steel_onslaught.contracts.boiler.ModelSOBoilerState. */
 export interface SOBoilerState {
-  schema_version: string;
-  kind: string;
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.boiler_state";
   match_id: string;
   mech_id: string;
   tick: number;
@@ -95,8 +119,8 @@ export interface SOBoilerState {
 
 /** Mirror of steel_onslaught.match.state.ModelSOMechRuntimeState. */
 export interface SOMechRuntimeState {
-  schema_version: string;
-  kind: string;
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.mech_runtime_state";
   mech_id: string;
   player_id: string;
   loadout_id: string;
@@ -112,12 +136,13 @@ export interface SOMechRuntimeState {
   hp: number;
   hp_max: number;
   armor_value: number;
+  armor_max: number;
   alive: boolean;
   pilot_alive: boolean;
-  current_mode: string;
+  current_mode: SOModeId;
   mode_lock_until: number;
   transition_ticks_remaining: number;
-  transition_to_mode: string | null;
+  transition_to_mode: SOModeId | null;
   sensor_dropout_ticks_remaining: number;
   mode_switch_disabled_until: number;
   weapon_cooldowns: Record<string, number>;
@@ -152,25 +177,38 @@ export interface SensorObservationPayload {
   enemy_mech_id: string;
   distance_estimate: number;
   confidence: number;
-  heat_estimate?: number;
-  mode_estimate?: string;
+  heat_estimate: number | null;
+  mode_estimate: SOModeId | null;
 }
 
 export interface ConsideredAction {
-  action: string;
+  action: SOPilotAction;
   score: number;
 }
 
 export interface PilotDecisionMadePayload {
-  action: string;
+  action: SOPilotAction;
   action_params: Record<string, JsonValue>;
-  reason_code: string;
+  reason_code: SOPilotReasonCode;
   confidence: number;
   considered_actions: ConsideredAction[];
 }
 
-/** Intent payloads mirror Python's open `dict[str, Any]` action params. */
-export type IntentPayload = Record<string, JsonValue>;
+export interface MoveIntentPayload {
+  direction: "toward_enemy" | "defensive";
+  speed: "full" | null;
+}
+
+export interface WeaponFireIntentPayload {
+  weapon_id: string;
+  target_mech_id: string | null;
+}
+
+export interface ModeSwitchIntentPayload {
+  target_mode: SOModeId;
+}
+
+export type VentIntentPayload = Record<string, never>;
 
 export interface MovementResolvedPayload {
   from: SOPosition;
@@ -215,16 +253,16 @@ export interface ModeTransitionCosts {
 }
 
 export interface ModeTransitionStartedPayload {
-  from_mode: string;
-  to_mode: string;
+  from_mode: SOModeId;
+  to_mode: SOModeId;
   costs: ModeTransitionCosts;
   sensor_dropout_ticks: number;
   evasion_penalty: number;
 }
 
 export interface ModeTransitionCompletedPayload {
-  from_mode: string;
-  new_mode: string;
+  from_mode: SOModeId;
+  new_mode: SOModeId;
   mode_lock_until: number;
 }
 
@@ -250,6 +288,7 @@ export interface HitResolvedPayload {
 export interface ArmorAbsorbedPayload {
   target_id: string;
   absorbed_amount: number;
+  armor_after: number;
 }
 
 export interface DamageAppliedPayload {
@@ -257,8 +296,8 @@ export interface DamageAppliedPayload {
   damage: number;
   cause: string;
   hp_after: number;
-  source_mech_id?: string;
-  radius_cells?: number;
+  source_mech_id: string | null;
+  radius_cells: number | null;
 }
 
 /** No Python emitter yet (design-declared); open record until one lands. */
@@ -273,16 +312,16 @@ export interface PilotKilledPayload {
 
 export interface MechDestroyedPayload {
   cause: string;
-  source_mech_id?: string;
+  source_mech_id: string | null;
 }
 
 export interface VictoryDeclaredPayload {
   winner_player_id: string;
-  reason: string;
+  reason: SOMatchEndReason;
 }
 
 export interface MatchEndedPayload {
-  reason: string;
+  reason: SOMatchEndReason;
   winner_id: string | null;
 }
 
@@ -302,7 +341,7 @@ export interface SOScoredWinner {
 }
 
 export interface MatchScoredPayload {
-  kind: string;
+  kind: "steel_onslaught.match_scored";
   match_id: string;
   winner: SOScoredWinner | null;
   scores: Record<string, SOPlayerScore>;
@@ -322,10 +361,10 @@ export interface PayloadMap {
   mech_spawned: MechSpawnedPayload;
   sensor_observation: SensorObservationPayload;
   pilot_decision_made: PilotDecisionMadePayload;
-  move_intent: IntentPayload;
-  weapon_fire_intent: IntentPayload;
-  mode_switch_intent: IntentPayload;
-  vent_intent: IntentPayload;
+  move_intent: MoveIntentPayload;
+  weapon_fire_intent: WeaponFireIntentPayload;
+  mode_switch_intent: ModeSwitchIntentPayload;
+  vent_intent: VentIntentPayload;
   movement_resolved: MovementResolvedPayload;
   boiler_updated: BoilerUpdatedPayload;
   heat_redline_entered: HeatRedlinePayload;
@@ -350,17 +389,25 @@ export interface PayloadMap {
 // Envelope (mirror of ModelSOEventEnvelope) — discriminated on event_type
 // ---------------------------------------------------------------------------
 
+/** The composed ONEX ModelEnvelope — tracing identity + causation chain. */
+interface OnexEnvelope {
+  message_id: string;
+  correlation_id: string;
+  causation_id: string | null;
+  emitted_at: string;
+  entity_id: string;
+}
+
 interface EnvelopeBase {
   schema_version: string;
   event_id: string;
   match_id: string;
   tick: number;
   sequence_in_tick: number;
-  correlation_id: string | null;
-  causation_id: string | null;
   producer_node: string;
   subject: SOEventSubject;
-  emitted_at: string;
+  /** The ONEX canonical envelope (correlation/causation/identity). */
+  envelope: OnexEnvelope;
 }
 
 export type SOEventEnvelope = {
@@ -408,8 +455,64 @@ function str(record: Record<string, unknown>, key: string, context: string): str
 
 function num(record: Record<string, unknown>, key: string, context: string): number {
   const value = record[key];
-  if (typeof value !== "number" || Number.isNaN(value)) {
-    fail(context, `field ${JSON.stringify(key)} must be a number, got ${typeof value}`);
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    fail(context, `field ${JSON.stringify(key)} must be a finite number, got ${typeof value}`);
+  }
+  return value;
+}
+
+function integer(record: Record<string, unknown>, key: string, context: string): number {
+  const value = num(record, key, context);
+  if (!Number.isInteger(value)) {
+    fail(context, `field ${JSON.stringify(key)} must be an integer`);
+  }
+  return value;
+}
+
+function nonNegativeInt(record: Record<string, unknown>, key: string, context: string): number {
+  const value = integer(record, key, context);
+  if (value < 0) {
+    fail(context, `field ${JSON.stringify(key)} must be >= 0`);
+  }
+  return value;
+}
+
+function positiveInt(record: Record<string, unknown>, key: string, context: string): number {
+  const value = integer(record, key, context);
+  if (value <= 0) {
+    fail(context, `field ${JSON.stringify(key)} must be > 0`);
+  }
+  return value;
+}
+
+function boundedNum(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+  minimum: number,
+  maximum: number,
+  maximumExclusive = false,
+): number {
+  const value = num(record, key, context);
+  if (value < minimum || (maximumExclusive ? value >= maximum : value > maximum)) {
+    const upper = maximumExclusive ? `< ${maximum}` : `<= ${maximum}`;
+    fail(context, `field ${JSON.stringify(key)} must be >= ${minimum} and ${upper}`);
+  }
+  return value;
+}
+
+function boundedInt(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+  minimum: number,
+  maximum: number,
+  maximumExclusive = false,
+): number {
+  const value = integer(record, key, context);
+  if (value < minimum || (maximumExclusive ? value >= maximum : value > maximum)) {
+    const upper = maximumExclusive ? `< ${maximum}` : `<= ${maximum}`;
+    fail(context, `field ${JSON.stringify(key)} must be >= ${minimum} and ${upper}`);
   }
   return value;
 }
@@ -433,26 +536,124 @@ function nullableStr(record: Record<string, unknown>, key: string, context: stri
   return value;
 }
 
-function optionalNum(
+function optionalNullableNum(
   record: Record<string, unknown>,
   key: string,
   context: string,
-): number | undefined {
+): number | null | undefined {
   if (!(key in record)) {
     return undefined;
+  }
+  if (record[key] === null) {
+    return null;
   }
   return num(record, key, context);
 }
 
-function optionalStr(
+function optionalNullableNonNegativeNum(
   record: Record<string, unknown>,
   key: string,
   context: string,
-): string | undefined {
+): number | null | undefined {
+  const value = optionalNullableNum(record, key, context);
+  if (typeof value === "number" && value < 0) {
+    fail(context, `field ${JSON.stringify(key)} must be >= 0 or null`);
+  }
+  return value;
+}
+
+function optionalNullableNonNegativeInt(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): number | null | undefined {
+  const value = optionalNullableNum(record, key, context);
+  if (typeof value === "number" && (!Number.isInteger(value) || value < 0)) {
+    fail(context, `field ${JSON.stringify(key)} must be a non-negative integer or null`);
+  }
+  return value;
+}
+
+function optionalNullableStr(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): string | null | undefined {
   if (!(key in record)) {
     return undefined;
   }
+  if (record[key] === null) {
+    return null;
+  }
   return str(record, key, context);
+}
+
+function parseModeId(value: unknown, context: string): SOModeId {
+  if (value === "recon" || value === "assault" || value === "evasion") {
+    return value;
+  }
+  fail(context, `mode must be recon|assault|evasion, got ${JSON.stringify(value)}`);
+}
+
+function optionalNullableMode(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): SOModeId | null | undefined {
+  if (!(key in record)) {
+    return undefined;
+  }
+  if (record[key] === null) {
+    return null;
+  }
+  return parseModeId(record[key], `${context}.${key}`);
+}
+
+function parsePilotAction(value: unknown, context: string): SOPilotAction {
+  if (
+    value === "remain" ||
+    value === "move" ||
+    value === "fire_weapon" ||
+    value === "activate_module" ||
+    value === "vent" ||
+    value === "switch_mode" ||
+    value === "emergency_shutdown" ||
+    value === "disengage"
+  ) {
+    return value;
+  }
+  fail(context, `unknown pilot action ${JSON.stringify(value)}`);
+}
+
+function parsePilotReason(value: unknown, context: string): SOPilotReasonCode {
+  if (
+    value === "target_in_range" ||
+    value === "mode_advantage" ||
+    value === "heat_critical" ||
+    value === "closing_distance" ||
+    value === "maintain_range" ||
+    value === "low_hp_retreat" ||
+    value === "low_confidence_hold" ||
+    value === "pressure_recovery" ||
+    value === "predicted_intercept" ||
+    value === "evade_sensor_lock" ||
+    value === "no_viable_action"
+  ) {
+    return value;
+  }
+  fail(context, `unknown pilot reason ${JSON.stringify(value)}`);
+}
+
+function parseEndReason(value: unknown, context: string): SOMatchEndReason {
+  if (
+    value === "last_mech_standing" ||
+    value === "pilot_killed" ||
+    value === "draw_max_ticks" ||
+    value === "aborted"
+  ) {
+    return value;
+  }
+  fail(context, `unknown match end reason ${JSON.stringify(value)}`);
 }
 
 function strArray(record: Record<string, unknown>, key: string, context: string): string[] {
@@ -473,7 +674,7 @@ function asJsonValue(value: unknown, context: string): JsonValue {
     value === null ||
     typeof value === "string" ||
     typeof value === "boolean" ||
-    (typeof value === "number" && !Number.isNaN(value))
+    (typeof value === "number" && Number.isFinite(value))
   ) {
     return value;
   }
@@ -507,8 +708,11 @@ function numRecord(
   const inner = asRecord(record[key], `${context}.${key}`);
   const result: Record<string, number> = {};
   for (const [innerKey, value] of Object.entries(inner)) {
-    if (typeof value !== "number" || Number.isNaN(value)) {
-      fail(context, `field ${JSON.stringify(key)}.${innerKey} must be a number`);
+    if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+      fail(context, `field ${JSON.stringify(key)}.${innerKey} must be a finite integer`);
+    }
+    if (value < 0) {
+      fail(context, `field ${JSON.stringify(key)}.${innerKey} must be >= 0`);
     }
     result[innerKey] = value;
   }
@@ -522,7 +726,7 @@ function numRecord(
 function parsePosition(value: unknown, context: string): SOPosition {
   const record = asRecord(value, context);
   rejectUnknown(record, ["x", "y"], context);
-  return { x: num(record, "x", context), y: num(record, "y", context) };
+  return { x: integer(record, "x", context), y: integer(record, "y", context) };
 }
 
 function parseSubject(value: unknown, context: string): SOEventSubject {
@@ -559,27 +763,49 @@ const BOILER_FIELDS = [
 function parseBoilerState(value: unknown, context: string): SOBoilerState {
   const record = asRecord(value, context);
   rejectUnknown(record, BOILER_FIELDS, context);
-  return {
-    schema_version: str(record, "schema_version", context),
-    kind: str(record, "kind", context),
+  if (record["schema_version"] !== undefined && record["schema_version"] !== "0.1.0") {
+    fail(context, 'field "schema_version" must be "0.1.0"');
+  }
+  if (record["kind"] !== undefined && record["kind"] !== "steel_onslaught.boiler_state") {
+    fail(context, 'field "kind" must be "steel_onslaught.boiler_state"');
+  }
+  const parsed: SOBoilerState = {
+    schema_version: "0.1.0",
+    kind: "steel_onslaught.boiler_state",
     match_id: str(record, "match_id", context),
     mech_id: str(record, "mech_id", context),
-    tick: num(record, "tick", context),
-    pressure_current: num(record, "pressure_current", context),
-    pressure_maximum: num(record, "pressure_maximum", context),
-    regeneration_per_tick: num(record, "regeneration_per_tick", context),
-    heat_current: num(record, "heat_current", context),
-    heat_redline_threshold: num(record, "heat_redline_threshold", context),
-    heat_rupture_threshold: num(record, "heat_rupture_threshold", context),
-    heat_vent_rate: num(record, "heat_vent_rate", context),
+    tick: nonNegativeInt(record, "tick", context),
+    pressure_current: nonNegativeInt(record, "pressure_current", context),
+    pressure_maximum: positiveInt(record, "pressure_maximum", context),
+    regeneration_per_tick: nonNegativeInt(record, "regeneration_per_tick", context),
+    heat_current: nonNegativeInt(record, "heat_current", context),
+    heat_redline_threshold: positiveInt(record, "heat_redline_threshold", context),
+    heat_rupture_threshold: positiveInt(record, "heat_rupture_threshold", context),
+    heat_vent_rate: nonNegativeInt(record, "heat_vent_rate", context),
     status_redline: bool(record, "status_redline", context),
     status_rupture_warning: bool(record, "status_rupture_warning", context),
     status_disabled: bool(record, "status_disabled", context),
     status_ruptured: bool(record, "status_ruptured", context),
-    modifier_heat_weapon_pressure: num(record, "modifier_heat_weapon_pressure", context),
-    modifier_venting_penalty: num(record, "modifier_venting_penalty", context),
-    modifier_mode_switch_heat_delta: num(record, "modifier_mode_switch_heat_delta", context),
+    modifier_heat_weapon_pressure: boundedNum(
+      record,
+      "modifier_heat_weapon_pressure",
+      context,
+      0,
+      Number.MAX_VALUE,
+    ),
+    modifier_venting_penalty: boundedNum(
+      record,
+      "modifier_venting_penalty",
+      context,
+      0,
+      Number.MAX_VALUE,
+    ),
+    modifier_mode_switch_heat_delta: integer(record, "modifier_mode_switch_heat_delta", context),
   };
+  if (parsed.heat_current > parsed.heat_rupture_threshold) {
+    fail(context, "heat_current must not exceed heat_rupture_threshold");
+  }
+  return parsed;
 }
 
 const MECH_FIELDS = [
@@ -600,6 +826,7 @@ const MECH_FIELDS = [
   "hp",
   "hp_max",
   "armor_value",
+  "armor_max",
   "alive",
   "pilot_alive",
   "current_mode",
@@ -629,42 +856,87 @@ function parseChassisClass(value: unknown, context: string): "light" | "medium" 
 function parseMechState(value: unknown, context: string): SOMechRuntimeState {
   const record = asRecord(value, context);
   rejectUnknown(record, MECH_FIELDS, context);
-  return {
-    schema_version: str(record, "schema_version", context),
-    kind: str(record, "kind", context),
+  if (record["schema_version"] !== undefined && record["schema_version"] !== "0.1.0") {
+    fail(context, 'field "schema_version" must be "0.1.0"');
+  }
+  if (record["kind"] !== undefined && record["kind"] !== "steel_onslaught.mech_runtime_state") {
+    fail(context, 'field "kind" must be "steel_onslaught.mech_runtime_state"');
+  }
+  const parsed: SOMechRuntimeState = {
+    schema_version: "0.1.0",
+    kind: "steel_onslaught.mech_runtime_state",
     mech_id: str(record, "mech_id", context),
     player_id: str(record, "player_id", context),
     loadout_id: str(record, "loadout_id", context),
     pilot_id: str(record, "pilot_id", context),
     chassis_id: str(record, "chassis_id", context),
     chassis_class: parseChassisClass(record["chassis_class"], context),
-    sensor_ids: strArray(record, "sensor_ids", context),
-    gizmo_ids: strArray(record, "gizmo_ids", context),
-    base_speed: num(record, "base_speed", context),
+    sensor_ids: record["sensor_ids"] === undefined ? [] : strArray(record, "sensor_ids", context),
+    gizmo_ids: record["gizmo_ids"] === undefined ? [] : strArray(record, "gizmo_ids", context),
+    base_speed: positiveInt(record, "base_speed", context),
     position: parsePosition(record["position"], `${context}.position`),
-    facing: num(record, "facing", context),
-    speed: num(record, "speed", context),
-    hp: num(record, "hp", context),
-    hp_max: num(record, "hp_max", context),
-    armor_value: num(record, "armor_value", context),
-    alive: bool(record, "alive", context),
-    pilot_alive: bool(record, "pilot_alive", context),
-    current_mode: str(record, "current_mode", context),
-    mode_lock_until: num(record, "mode_lock_until", context),
-    transition_ticks_remaining: num(record, "transition_ticks_remaining", context),
-    transition_to_mode: nullableStr(record, "transition_to_mode", context),
-    sensor_dropout_ticks_remaining: num(record, "sensor_dropout_ticks_remaining", context),
-    mode_switch_disabled_until: num(record, "mode_switch_disabled_until", context),
-    weapon_cooldowns: numRecord(record, "weapon_cooldowns", context),
-    evasion: num(record, "evasion", context),
-    accuracy_penalty_next_fire: num(record, "accuracy_penalty_next_fire", context),
-    jamming_intensity: num(record, "jamming_intensity", context),
-    under_sensor_lock: bool(record, "under_sensor_lock", context),
+    facing: boundedInt(record, "facing", context, 0, 360, true),
+    speed: nonNegativeInt(record, "speed", context),
+    hp: nonNegativeInt(record, "hp", context),
+    hp_max: positiveInt(record, "hp_max", context),
+    armor_value: nonNegativeInt(record, "armor_value", context),
+    armor_max: nonNegativeInt(record, "armor_max", context),
+    alive: record["alive"] === undefined ? true : bool(record, "alive", context),
+    pilot_alive: record["pilot_alive"] === undefined ? true : bool(record, "pilot_alive", context),
+    current_mode: parseModeId(record["current_mode"], `${context}.current_mode`),
+    mode_lock_until:
+      record["mode_lock_until"] === undefined
+        ? 0
+        : nonNegativeInt(record, "mode_lock_until", context),
+    transition_ticks_remaining:
+      record["transition_ticks_remaining"] === undefined
+        ? 0
+        : nonNegativeInt(record, "transition_ticks_remaining", context),
+    transition_to_mode: optionalNullableMode(record, "transition_to_mode", context) ?? null,
+    sensor_dropout_ticks_remaining:
+      record["sensor_dropout_ticks_remaining"] === undefined
+        ? 0
+        : nonNegativeInt(record, "sensor_dropout_ticks_remaining", context),
+    mode_switch_disabled_until:
+      record["mode_switch_disabled_until"] === undefined
+        ? 0
+        : nonNegativeInt(record, "mode_switch_disabled_until", context),
+    weapon_cooldowns:
+      record["weapon_cooldowns"] === undefined
+        ? {}
+        : numRecord(record, "weapon_cooldowns", context),
+    evasion: record["evasion"] === undefined ? 0 : boundedNum(record, "evasion", context, 0, 1),
+    accuracy_penalty_next_fire:
+      record["accuracy_penalty_next_fire"] === undefined
+        ? 0
+        : boundedNum(record, "accuracy_penalty_next_fire", context, 0, 1),
+    jamming_intensity:
+      record["jamming_intensity"] === undefined
+        ? 0
+        : boundedNum(record, "jamming_intensity", context, 0, 1),
+    under_sensor_lock:
+      record["under_sensor_lock"] === undefined
+        ? false
+        : bool(record, "under_sensor_lock", context),
     boiler: parseBoilerState(record["boiler"], `${context}.boiler`),
-    redline_consecutive_ticks: num(record, "redline_consecutive_ticks", context),
-    overloaded: bool(record, "overloaded", context),
-    overloaded_consecutive_ticks: num(record, "overloaded_consecutive_ticks", context),
+    redline_consecutive_ticks:
+      record["redline_consecutive_ticks"] === undefined
+        ? 0
+        : nonNegativeInt(record, "redline_consecutive_ticks", context),
+    overloaded: record["overloaded"] === undefined ? false : bool(record, "overloaded", context),
+    overloaded_consecutive_ticks:
+      record["overloaded_consecutive_ticks"] === undefined
+        ? 0
+        : nonNegativeInt(record, "overloaded_consecutive_ticks", context),
   };
+  if (parsed.hp > parsed.hp_max) {
+    fail(context, "hp must not exceed hp_max");
+  }
+  const inFlight = parsed.transition_ticks_remaining > 0;
+  if (inFlight !== (parsed.transition_to_mode !== null)) {
+    fail(context, "transition_ticks_remaining and transition_to_mode must be paired");
+  }
+  return parsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -681,10 +953,19 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     if (!Array.isArray(mechs)) {
       fail(context, 'field "mechs" must be an array');
     }
+    if (mechs.length === 0) {
+      fail(context, 'field "mechs" must contain at least one mech');
+    }
+    const parsedMechs = mechs.map((mech, index) =>
+      parseMechState(mech, `${context}.mechs[${index}]`),
+    );
+    if (new Set(parsedMechs.map((mech) => mech.mech_id)).size !== parsedMechs.length) {
+      fail(context, 'field "mechs" contains duplicate mech_id values');
+    }
     return {
-      seed: num(record, "seed", context),
-      max_ticks: num(record, "max_ticks", context),
-      mechs: mechs.map((mech, index) => parseMechState(mech, `${context}.mechs[${index}]`)),
+      seed: nonNegativeInt(record, "seed", context),
+      max_ticks: positiveInt(record, "max_ticks", context),
+      mechs: parsedMechs,
     };
   },
   match_tick: (value, context) => {
@@ -697,7 +978,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     rejectUnknown(record, ["position", "facing"], context);
     return {
       position: parsePosition(record["position"], `${context}.position`),
-      facing: num(record, "facing", context),
+      facing: nonNegativeInt(record, "facing", context),
     };
   },
   sensor_observation: (value, context) => {
@@ -709,10 +990,10 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     );
     return {
       enemy_mech_id: str(record, "enemy_mech_id", context),
-      distance_estimate: num(record, "distance_estimate", context),
-      confidence: num(record, "confidence", context),
-      heat_estimate: optionalNum(record, "heat_estimate", context),
-      mode_estimate: optionalStr(record, "mode_estimate", context),
+      distance_estimate: boundedNum(record, "distance_estimate", context, 0, Number.MAX_VALUE),
+      confidence: boundedNum(record, "confidence", context, 0, 1),
+      heat_estimate: optionalNullableNonNegativeNum(record, "heat_estimate", context) ?? null,
+      mode_estimate: optionalNullableMode(record, "mode_estimate", context) ?? null,
     };
   },
   pilot_decision_made: (value, context) => {
@@ -726,33 +1007,68 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     if (!Array.isArray(considered)) {
       fail(context, 'field "considered_actions" must be an array');
     }
+    const action = parsePilotAction(record["action"], `${context}.action`);
+    const considered_actions = considered.map((item, index) => {
+      const innerContext = `${context}.considered_actions[${index}]`;
+      const inner = asRecord(item, innerContext);
+      rejectUnknown(inner, ["action", "score"], innerContext);
+      return {
+        action: parsePilotAction(inner["action"], `${innerContext}.action`),
+        score: num(inner, "score", innerContext),
+      };
+    });
+    if (!considered_actions.some((candidate) => candidate.action === action)) {
+      fail(context, "considered_actions must include the chosen action");
+    }
+    const confidence = num(record, "confidence", context);
     return {
-      action: str(record, "action", context),
+      action,
       action_params: openRecord(record["action_params"], `${context}.action_params`),
-      reason_code: str(record, "reason_code", context),
-      confidence: num(record, "confidence", context),
-      considered_actions: considered.map((item, index) => {
-        const inner = asRecord(item, `${context}.considered_actions[${index}]`);
-        rejectUnknown(inner, ["action", "score"], `${context}.considered_actions[${index}]`);
-        return {
-          action: str(inner, "action", context),
-          score: num(inner, "score", context),
-        };
-      }),
+      reason_code: parsePilotReason(record["reason_code"], `${context}.reason_code`),
+      confidence: Math.min(1, Math.max(0, confidence)),
+      considered_actions,
     };
   },
-  move_intent: (value, context) => openRecord(value, context),
-  weapon_fire_intent: (value, context) => openRecord(value, context),
-  mode_switch_intent: (value, context) => openRecord(value, context),
-  vent_intent: (value, context) => openRecord(value, context),
+  move_intent: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, ["direction", "speed"], context);
+    const direction = str(record, "direction", context);
+    if (direction !== "toward_enemy" && direction !== "defensive") {
+      fail(context, 'field "direction" must be "toward_enemy" or "defensive"');
+    }
+    const rawSpeed = record["speed"];
+    if (rawSpeed !== undefined && rawSpeed !== null && rawSpeed !== "full") {
+      fail(context, 'field "speed" must be "full" or null');
+    }
+    return { direction, speed: rawSpeed ?? null };
+  },
+  weapon_fire_intent: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, ["weapon_id", "target_mech_id"], context);
+    return {
+      weapon_id: str(record, "weapon_id", context),
+      target_mech_id: optionalNullableStr(record, "target_mech_id", context) ?? null,
+    };
+  },
+  mode_switch_intent: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, ["target_mode"], context);
+    const target_mode = parseModeId(record["target_mode"], `${context}.target_mode`);
+    return { target_mode };
+  },
+  vent_intent: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, [], context);
+    return {};
+  },
   movement_resolved: (value, context) => {
     const record = asRecord(value, context);
     rejectUnknown(record, ["from", "to", "ticks_consumed", "pressure_consumed"], context);
     return {
       from: parsePosition(record["from"], `${context}.from`),
       to: parsePosition(record["to"], `${context}.to`),
-      ticks_consumed: num(record, "ticks_consumed", context),
-      pressure_consumed: num(record, "pressure_consumed", context),
+      ticks_consumed: positiveInt(record, "ticks_consumed", context),
+      pressure_consumed: nonNegativeInt(record, "pressure_consumed", context),
     };
   },
   boiler_updated: (value, context) => {
@@ -763,10 +1079,10 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       context,
     );
     return {
-      pressure_before: num(record, "pressure_before", context),
-      pressure_after: num(record, "pressure_after", context),
-      heat_before: num(record, "heat_before", context),
-      heat_after: num(record, "heat_after", context),
+      pressure_before: nonNegativeInt(record, "pressure_before", context),
+      pressure_after: nonNegativeInt(record, "pressure_after", context),
+      heat_before: nonNegativeInt(record, "heat_before", context),
+      heat_after: nonNegativeInt(record, "heat_after", context),
     };
   },
   heat_redline_entered: (value, context) => parseHeatRedline(value, context),
@@ -785,11 +1101,11 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       context,
     );
     return {
-      heat: num(record, "heat", context),
-      redline_threshold: num(record, "redline_threshold", context),
-      redline_consecutive_ticks: num(record, "redline_consecutive_ticks", context),
-      accuracy_penalty_next_fire: num(record, "accuracy_penalty_next_fire", context),
-      mode_switch_disabled_until: num(record, "mode_switch_disabled_until", context),
+      heat: nonNegativeInt(record, "heat", context),
+      redline_threshold: positiveInt(record, "redline_threshold", context),
+      redline_consecutive_ticks: positiveInt(record, "redline_consecutive_ticks", context),
+      accuracy_penalty_next_fire: boundedNum(record, "accuracy_penalty_next_fire", context, 0, 1),
+      mode_switch_disabled_until: nonNegativeInt(record, "mode_switch_disabled_until", context),
     };
   },
   boiler_ruptured: (value, context) => {
@@ -801,11 +1117,11 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     );
     return {
       cause: str(record, "cause", context),
-      heat: num(record, "heat", context),
-      rupture_threshold: num(record, "rupture_threshold", context),
-      direct_damage: num(record, "direct_damage", context),
-      area_damage: num(record, "area_damage", context),
-      area_radius_cells: num(record, "area_radius_cells", context),
+      heat: nonNegativeInt(record, "heat", context),
+      rupture_threshold: positiveInt(record, "rupture_threshold", context),
+      direct_damage: nonNegativeInt(record, "direct_damage", context),
+      area_damage: nonNegativeInt(record, "area_damage", context),
+      area_radius_cells: nonNegativeInt(record, "area_radius_cells", context),
     };
   },
   mode_transition_started: (value, context) => {
@@ -818,24 +1134,24 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const costs = asRecord(record["costs"], `${context}.costs`);
     rejectUnknown(costs, ["pressure", "heat", "transition_ticks"], `${context}.costs`);
     return {
-      from_mode: str(record, "from_mode", context),
-      to_mode: str(record, "to_mode", context),
+      from_mode: parseModeId(record["from_mode"], `${context}.from_mode`),
+      to_mode: parseModeId(record["to_mode"], `${context}.to_mode`),
       costs: {
-        pressure: num(costs, "pressure", context),
-        heat: num(costs, "heat", context),
-        transition_ticks: num(costs, "transition_ticks", context),
+        pressure: nonNegativeInt(costs, "pressure", `${context}.costs`),
+        heat: nonNegativeInt(costs, "heat", `${context}.costs`),
+        transition_ticks: positiveInt(costs, "transition_ticks", `${context}.costs`),
       },
-      sensor_dropout_ticks: num(record, "sensor_dropout_ticks", context),
-      evasion_penalty: num(record, "evasion_penalty", context),
+      sensor_dropout_ticks: nonNegativeInt(record, "sensor_dropout_ticks", context),
+      evasion_penalty: boundedNum(record, "evasion_penalty", context, 0, Number.MAX_VALUE),
     };
   },
   mode_transition_completed: (value, context) => {
     const record = asRecord(value, context);
     rejectUnknown(record, ["from_mode", "new_mode", "mode_lock_until"], context);
     return {
-      from_mode: str(record, "from_mode", context),
-      new_mode: str(record, "new_mode", context),
-      mode_lock_until: num(record, "mode_lock_until", context),
+      from_mode: parseModeId(record["from_mode"], `${context}.from_mode`),
+      new_mode: parseModeId(record["new_mode"], `${context}.new_mode`),
+      mode_lock_until: nonNegativeInt(record, "mode_lock_until", context),
     };
   },
   weapon_fired: (value, context) => {
@@ -848,9 +1164,9 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     return {
       weapon_id: str(record, "weapon_id", context),
       target_id: str(record, "target_id", context),
-      hit_probability: num(record, "hit_probability", context),
-      pressure_cost: num(record, "pressure_cost", context),
-      heat_generated: num(record, "heat_generated", context),
+      hit_probability: boundedNum(record, "hit_probability", context, 0, 1),
+      pressure_cost: nonNegativeInt(record, "pressure_cost", context),
+      heat_generated: nonNegativeInt(record, "heat_generated", context),
     };
   },
   hit_resolved: (value, context) => {
@@ -863,16 +1179,17 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       defender_id: str(record, "defender_id", context),
       result: {
         hit: bool(result, "hit", context),
-        damage_after_armor: num(result, "damage_after_armor", context),
+        damage_after_armor: nonNegativeInt(result, "damage_after_armor", `${context}.result`),
       },
     };
   },
   armor_absorbed: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["target_id", "absorbed_amount"], context);
+    rejectUnknown(record, ["target_id", "absorbed_amount", "armor_after"], context);
     return {
       target_id: str(record, "target_id", context),
-      absorbed_amount: num(record, "absorbed_amount", context),
+      absorbed_amount: nonNegativeInt(record, "absorbed_amount", context),
+      armor_after: nonNegativeInt(record, "armor_after", context),
     };
   },
   damage_applied: (value, context) => {
@@ -884,11 +1201,11 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     );
     return {
       target_id: str(record, "target_id", context),
-      damage: num(record, "damage", context),
+      damage: nonNegativeInt(record, "damage", context),
       cause: str(record, "cause", context),
-      hp_after: num(record, "hp_after", context),
-      source_mech_id: optionalStr(record, "source_mech_id", context),
-      radius_cells: optionalNum(record, "radius_cells", context),
+      hp_after: nonNegativeInt(record, "hp_after", context),
+      source_mech_id: optionalNullableStr(record, "source_mech_id", context) ?? null,
+      radius_cells: optionalNullableNonNegativeInt(record, "radius_cells", context) ?? null,
     };
   },
   pilot_injured: (value, context) => openRecord(value, context),
@@ -901,9 +1218,9 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     );
     return {
       mech_id: str(record, "mech_id", context),
-      survival_probability: num(record, "survival_probability", context),
-      roll: num(record, "roll", context),
-      safety_gizmos_equipped: num(record, "safety_gizmos_equipped", context),
+      survival_probability: boundedNum(record, "survival_probability", context, 0, 1),
+      roll: boundedNum(record, "roll", context, 0, 1, true),
+      safety_gizmos_equipped: nonNegativeInt(record, "safety_gizmos_equipped", context),
     };
   },
   mech_destroyed: (value, context) => {
@@ -911,7 +1228,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     rejectUnknown(record, ["cause", "source_mech_id"], context);
     return {
       cause: str(record, "cause", context),
-      source_mech_id: optionalStr(record, "source_mech_id", context),
+      source_mech_id: optionalNullableStr(record, "source_mech_id", context) ?? null,
     };
   },
   victory_declared: (value, context) => {
@@ -919,14 +1236,14 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     rejectUnknown(record, ["winner_player_id", "reason"], context);
     return {
       winner_player_id: str(record, "winner_player_id", context),
-      reason: str(record, "reason", context),
+      reason: parseEndReason(record["reason"], `${context}.reason`),
     };
   },
   match_ended: (value, context) => {
     const record = asRecord(value, context);
     rejectUnknown(record, ["reason", "winner_id"], context);
     return {
-      reason: str(record, "reason", context),
+      reason: parseEndReason(record["reason"], `${context}.reason`),
       winner_id: nullableStr(record, "winner_id", context),
     };
   },
@@ -950,9 +1267,15 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       ],
       context,
     );
+    if (record["kind"] !== "steel_onslaught.match_scored") {
+      fail(context, 'field "kind" must be "steel_onslaught.match_scored"');
+    }
+    if (!("winner" in record)) {
+      fail(context, 'field "winner" is required');
+    }
     const winnerValue = record["winner"];
     let winner: SOScoredWinner | null = null;
-    if (winnerValue !== null && winnerValue !== undefined) {
+    if (winnerValue !== null) {
       const winnerRecord = asRecord(winnerValue, `${context}.winner`);
       rejectUnknown(winnerRecord, ["player_id", "mech_id"], `${context}.winner`);
       winner = {
@@ -978,29 +1301,66 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         `${context}.scores.${playerId}`,
       );
       scores[playerId] = {
-        victory: num(score, "victory", context),
-        damage_dealt: num(score, "damage_dealt", context),
-        damage_efficiency: num(score, "damage_efficiency", context),
-        pressure_efficiency: num(score, "pressure_efficiency", context),
-        overload_penalty: num(score, "overload_penalty", context),
-        replay_validity: num(score, "replay_validity", context),
-        final_score: num(score, "final_score", context),
+        victory: boundedInt(score, "victory", context, 0, 1),
+        damage_dealt: nonNegativeInt(score, "damage_dealt", context),
+        damage_efficiency: boundedNum(score, "damage_efficiency", context, 0, Number.MAX_VALUE),
+        pressure_efficiency: boundedNum(score, "pressure_efficiency", context, 0, 1),
+        overload_penalty: nonNegativeInt(score, "overload_penalty", context),
+        replay_validity: boundedInt(score, "replay_validity", context, 0, 1),
+        final_score: nonNegativeInt(score, "final_score", context),
       };
     }
-    return {
-      kind: str(record, "kind", context),
+    const parsed: MatchScoredPayload = {
+      kind: "steel_onslaught.match_scored",
       match_id: str(record, "match_id", context),
       winner,
       scores,
       winner_player_id: str(record, "winner_player_id", context),
       winner_loadout_id: str(record, "winner_loadout_id", context),
-      winner_score: num(record, "winner_score", context),
+      winner_score: nonNegativeInt(record, "winner_score", context),
       loser_player_id: str(record, "loser_player_id", context),
-      loser_score: num(record, "loser_score", context),
-      duration_ticks: num(record, "duration_ticks", context),
+      loser_score: nonNegativeInt(record, "loser_score", context),
+      duration_ticks: positiveInt(record, "duration_ticks", context),
       scored_at: str(record, "scored_at", context),
       is_draw: bool(record, "is_draw", context),
     };
+    if (parsed.winner_player_id === parsed.loser_player_id) {
+      fail(context, "winner_player_id and loser_player_id must be distinct");
+    }
+    const expectedPlayers = new Set([parsed.winner_player_id, parsed.loser_player_id]);
+    if (
+      Object.keys(parsed.scores).length !== 2 ||
+      !Object.keys(parsed.scores).every((playerId) => expectedPlayers.has(playerId))
+    ) {
+      fail(context, "scores must contain exactly the winner and loser player IDs");
+    }
+    const winnerScore = parsed.scores[parsed.winner_player_id];
+    const loserScore = parsed.scores[parsed.loser_player_id];
+    if (winnerScore === undefined || loserScore === undefined) {
+      fail(context, "scores are missing the winner or loser player ID");
+    }
+    if (
+      parsed.winner_score !== winnerScore.final_score ||
+      parsed.loser_score !== loserScore.final_score
+    ) {
+      fail(context, "flattened scores must equal nested final_score values");
+    }
+    if (parsed.is_draw) {
+      if (
+        parsed.winner !== null ||
+        Object.values(parsed.scores).some((score) => score.victory !== 0)
+      ) {
+        fail(context, "draw scores require winner=null and zero victory points");
+      }
+    } else if (
+      parsed.winner === null ||
+      parsed.winner.player_id !== parsed.winner_player_id ||
+      winnerScore.victory !== 1 ||
+      loserScore.victory !== 0
+    ) {
+      fail(context, "decisive score winner truth is inconsistent");
+    }
+    return parsed;
   },
 };
 
@@ -1008,8 +1368,8 @@ function parseHeatRedline(value: unknown, context: string): HeatRedlinePayload {
   const record = asRecord(value, context);
   rejectUnknown(record, ["heat", "redline_threshold"], context);
   return {
-    heat: num(record, "heat", context),
-    redline_threshold: num(record, "redline_threshold", context),
+    heat: nonNegativeInt(record, "heat", context),
+    redline_threshold: positiveInt(record, "redline_threshold", context),
   };
 }
 
@@ -1023,13 +1383,19 @@ const ENVELOPE_FIELDS = [
   "match_id",
   "tick",
   "sequence_in_tick",
-  "correlation_id",
-  "causation_id",
   "producer_node",
   "subject",
   "event_type",
   "payload",
+  "envelope",
+] as const;
+
+const ONEX_ENVELOPE_FIELDS = [
+  "message_id",
+  "correlation_id",
+  "causation_id",
   "emitted_at",
+  "entity_id",
 ] as const;
 
 function isEventType(value: string): value is SOEventType {
@@ -1065,17 +1431,33 @@ export function parseEnvelope(raw: unknown): SOEventEnvelope {
     fail(context, `event_id must be a 26-char ULID, got length ${eventId.length}`);
   }
 
+  const onexRecord = asRecord(record["envelope"], `${context}.envelope`);
+  rejectUnknown(onexRecord, ONEX_ENVELOPE_FIELDS, `${context}.envelope`);
+  const matchId = str(record, "match_id", context);
+  const entityId = str(onexRecord, "entity_id", `${context}.envelope.entity_id`);
+  if (entityId !== matchId) {
+    fail(
+      `${context}.envelope.entity_id`,
+      `must equal match_id ${JSON.stringify(matchId)}, got ${JSON.stringify(entityId)}`,
+    );
+  }
+  const onexEnvelope: OnexEnvelope = {
+    message_id: str(onexRecord, "message_id", `${context}.envelope.message_id`),
+    correlation_id: str(onexRecord, "correlation_id", `${context}.envelope.correlation_id`),
+    causation_id: nullableStr(onexRecord, "causation_id", `${context}.envelope.causation_id`),
+    emitted_at: str(onexRecord, "emitted_at", `${context}.envelope.emitted_at`),
+    entity_id: entityId,
+  };
+
   const base: EnvelopeBase = {
     schema_version: str(record, "schema_version", context),
     event_id: eventId,
-    match_id: str(record, "match_id", context),
+    match_id: matchId,
     tick: num(record, "tick", context),
     sequence_in_tick: num(record, "sequence_in_tick", context),
-    correlation_id: nullableStr(record, "correlation_id", context),
-    causation_id: nullableStr(record, "causation_id", context),
     producer_node: str(record, "producer_node", context),
     subject: parseSubject(record["subject"], `${context}.subject`),
-    emitted_at: str(record, "emitted_at", context),
+    envelope: onexEnvelope,
   };
 
   return buildEnvelope(base, eventTypeRaw, record["payload"]);

@@ -1,0 +1,98 @@
+---
+# ONEX Node Contract — Steel Onslaught canonical match-state fold.
+#
+# Declares MatchStateFold as an ONEX pure reducer:
+#   delta(event) -> (state_committed, intents[])
+# The fold is the SINGLE deterministic function from the canonical event
+# stream to ModelSOMatchState — used identically by the live runner and the
+# replay engine, which is what makes `replay == live` hold (R9).
+#
+# The handler module path is the current location (match/fold.py); a later
+# phase may relocate it into a node_*/ package without changing this
+# contract's identity.
+name: match_state_reducer
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: reducer
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  Steel Onslaught canonical match-state fold — ONEX pure reducer.
+  delta(event) commits the state delta and returns produced events as intents
+  (boiler updates, mode-transition completions, victory declarations); the
+  handle/apply effect boundary publishes them post-commit on the live bus.
+  Subscribes to every canonical event type (lifecycle, tick, resolved state
+  changes, terminal). Intent events (move/fire/mode/vent) are telemetry here —
+  the live resolver validates them and emits the resolved events the fold
+  consumes; the fold never re-validates intents.
+
+handler:
+  module: steel_onslaught.match.fold
+  class: MatchStateFold
+
+handler_routing:
+  default_handler: steel_onslaught.match.fold:MatchStateFold
+
+descriptor:
+  node_archetype: reducer
+  purity: pure
+  idempotent: true
+  timeout_ms: 5000
+
+event_bus:
+  # The fold subscribes to all canonical resolved event types (it dispatches
+  # internally on event_type; intent/observation events are no-ops).
+  subscribe_topics:
+    - onex.evt.steel-onslaught.match-started.v1
+    - onex.evt.steel-onslaught.match-tick.v1
+    - onex.evt.steel-onslaught.movement-resolved.v1
+    - onex.evt.steel-onslaught.weapon-fired.v1
+    - onex.evt.steel-onslaught.mode-transition-started.v1
+    - onex.evt.steel-onslaught.damage-applied.v1
+    - onex.evt.steel-onslaught.armor-absorbed.v1
+    - onex.evt.steel-onslaught.mech-destroyed.v1
+    - onex.evt.steel-onslaught.pilot-killed.v1
+  publish_topics:
+    - onex.evt.steel-onslaught.boiler-updated.v1
+    - onex.evt.steel-onslaught.mode-transition-completed.v1
+    - onex.evt.steel-onslaught.victory-declared.v1
+
+metadata:
+  transport_type: in_process
+
+# The match lifecycle FSM (mirrors SOMatchStatus / SOMatchEndReason).
+state_machine:
+  state_machine_name: match_lifecycle_fsm
+  initial_state: pending
+  states:
+    - state_name: pending
+      description: "Pre-start; MATCH_STARTED not yet folded."
+      required_data: []
+    - state_name: running
+      description: "Match in progress; per-tick deltas apply."
+      required_data: [tick, max_ticks]
+    - state_name: ended
+      description: "Terminal; winner/end_reason recorded (or draw at max_ticks)."
+      required_data: [end_reason]
+  transitions:
+    - from_state: pending
+      to_state: running
+      trigger: match_started
+      description: "MATCH_STARTED folds mechs + seed + max_ticks."
+    - from_state: running
+      to_state: running
+      trigger: match_tick
+      description: "Per-tick: boiler regen, countdowns, armor regen, mode, failure cascade."
+    - from_state: running
+      to_state: running
+      trigger: resolved_state_change
+      description: "MOVEMENT_RESOLVED / WEAPON_FIRED / DAMAGE_APPLIED / etc. (no lifecycle transition)."
+    - from_state: running
+      to_state: ended
+      trigger: victory_declared
+      description: "Last-mech-standing or pilot-killed transition ends the match."
+    - from_state: running
+      to_state: ended
+      trigger: match_ended
+      description: "Draw at max_ticks bound (lifecycle backstop)."
+  terminal_states: [ended]
+  persistence_enabled: false

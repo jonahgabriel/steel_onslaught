@@ -20,49 +20,45 @@ driven over an ``EventBus``:
 All stochastic behaviour flows through ``MatchRng`` sub-seeds, so the full
 event stream is a pure function of ``(seed, loadouts, max_ticks, geometry)``.
 
-``run_match`` (Task 34) is the Proof-of-Life entrypoint: it wires the ledger,
-the scoring reducer (with the replay-validity hard gate), and the leaderboard
-handler around a ``MatchRunner`` and drives one duel to termination.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
-import ulid
-import yaml  # type: ignore[import-untyped]
+from pydantic import ValidationError
 
-from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
-from steel_onslaught.contracts.pilot import ModelSOPilotSpec
-from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
+from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
+from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
 )
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import (
+    ModelSOEmptyPayload,
+    ModelSOMoveIntentPayload,
+    ModelSOSensorObservationPayload,
+    ModelSOWeaponFireIntentPayload,
+)
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
+from steel_onslaught.match.initiative import order_by_initiative
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
-    SOMatchEndReason,
     SOMatchStatus,
 )
-from steel_onslaught.pilots.aggressive import AggressivePilot
-from steel_onslaught.pilots.defensive import DefensivePilot
-from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
-from steel_onslaught.projections.leaderboard.handler import LeaderboardHandler
 from steel_onslaught.reducers.damage import (
-    WeaponDamageType,
     compute_armor_reduction,
     compute_effective_damage_after_vulnerability,
 )
@@ -71,9 +67,8 @@ from steel_onslaught.reducers.mode import (
     build_mode_transition_started_event,
     validate_mode_switch,
 )
-from steel_onslaught.reducers.movement import chebyshev, effective_speed
+from steel_onslaught.reducers.movement import chebyshev, effective_speed, mode_effective_speed
 from steel_onslaught.reducers.pilot_tick import ReducerPilotTick
-from steel_onslaught.reducers.scoring import ReducerScoring, verify_replay_validity
 from steel_onslaught.reducers.sensors import ReducerSensors
 from steel_onslaught.reducers.weapons import (
     interpolate_accuracy,
@@ -97,14 +92,12 @@ _SPAWN_B = ModelSOPosition(x=10, y=10)
 _FACING_A = 45
 _FACING_B = 225
 
-# Combat stats: hull/armor are not part of any contract yet (no hp field on
-# chassis contracts), so every mech fields the same provisional hull.
-_INITIAL_HP = 100
-_INITIAL_ARMOR = 10
-_INITIAL_MODE = "recon"
+# Combat stats: hull/armor come from the chassis contract (base_hp /
+# base_armor on ModelSOChassisConstraints), so chassis class drives durability.
+_INITIAL_MODE = ModeId.RECON
 
 # All mode names a module may be active in (budget normalization).
-_ALL_MODES = ("recon", "assault", "evasion")
+_ALL_MODES = tuple(ModeId)
 
 _INTENT_EVENT_TYPES = [
     SOEventType.MOVE_INTENT,
@@ -114,24 +107,16 @@ _INTENT_EVENT_TYPES = [
 ]
 
 
-def load_loadout(path: Path) -> ModelSOLoadout:
-    """Load and validate one loadout contract YAML."""
-    return ModelSOLoadout.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
-
-
-def _pilot_from_spec(spec: ModelSOPilotSpec) -> PilotProtocol:
-    """Construct the archetype implementation a resolved pilot spec drives."""
-    match spec.archetype:
-        case "aggressive":
-            return AggressivePilot(spec=spec)
-        case "defensive":
-            return DefensivePilot(spec=spec)
-        case "predictive":
-            return PredictivePilot(spec=spec)
-
-
 def _clamp(value: int, magnitude: int) -> int:
     return max(-magnitude, min(magnitude, value))
+
+
+@dataclass(frozen=True)
+class MatchIdentity:
+    """Public match/workflow identity shared by every composed participant."""
+
+    match_id: str
+    correlation_id: UUID
 
 
 class MatchRunner:
@@ -140,17 +125,15 @@ class MatchRunner:
     def __init__(
         self,
         *,
-        match_id: str,
+        identity: MatchIdentity,
         seed: int,
         loadout_a: ModelSOLoadout,
         loadout_b: ModelSOLoadout,
         bus: EventBus,
-        max_ticks: int = 200,
-        contracts_data_dir: Path | None = None,
-        catalog: MatchContractCatalog | None = None,
-        pilot_registry: PilotSpecRegistry | None = None,
-        loadout_dir_a: Path | None = None,
-        loadout_dir_b: Path | None = None,
+        event_factory: EventFactory,
+        catalog: MatchContractCatalog,
+        pilots: dict[str, PilotProtocol],
+        max_ticks: int,
         side_a: str = "a",
         side_b: str = "b",
         spawn_a: ModelSOPosition = _SPAWN_A,
@@ -159,7 +142,10 @@ class MatchRunner:
         facing_b: int = _FACING_B,
         arena_size: int = ARENA_SIZE_CELLS,
     ) -> None:
-        self._match_id = match_id
+        self._identity = identity
+        self._match_id = identity.match_id
+        self._correlation_id = identity.correlation_id
+        self._events = event_factory
         self._seed = seed
         self._rng = MatchRng(match_seed=seed)
         self._loadout_a = loadout_a
@@ -173,23 +159,19 @@ class MatchRunner:
         self._facing_a = facing_a
         self._facing_b = facing_b
         self._arena_size = arena_size
-        self._catalog = (
-            catalog if catalog is not None else MatchContractCatalog.load(contracts_data_dir)
-        )
-        self._pilot_registry = (
-            pilot_registry
-            if pilot_registry is not None
-            else PilotSpecRegistry.load(
-                contracts_data_dir / "pilots" if contracts_data_dir is not None else None
-            )
-        )
-        self._loadout_dir_a = loadout_dir_a
-        self._loadout_dir_b = loadout_dir_b
+        self._catalog = catalog
+        self._pilots = dict(pilots)
 
         # Canonical state fold — the same fold the replay engine uses.
         # Subscribed at construction time so callers can order later
         # subscribers (scoring, leaderboard) AFTER the fold.
-        self.fold = MatchStateFold(match_id, bus=bus, catalog=self._catalog)
+        self.fold = MatchStateFold(
+            self._match_id,
+            self._correlation_id,
+            event_factory=event_factory,
+            bus=bus,
+            catalog=self._catalog,
+        )
         bus.subscribe(self.fold.handle)
 
         # Per-tick buffers + MATCH_ENDED bookkeeping.
@@ -203,6 +185,10 @@ class MatchRunner:
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
+
+    @property
+    def identity(self) -> MatchIdentity:
+        return self._identity
 
     def run(self) -> ModelSOMatchState:
         """Drive the match to termination; return the final match state."""
@@ -221,14 +207,10 @@ class MatchRunner:
             facing=self._facing_b,
         )
         mechs = (mech_a, mech_b)
-        pilots: dict[str, PilotProtocol] = {
-            mech_a.mech_id: _pilot_from_spec(
-                self._pilot_registry.resolve(self._loadout_a, base_dir=self._loadout_dir_a)
-            ),
-            mech_b.mech_id: _pilot_from_spec(
-                self._pilot_registry.resolve(self._loadout_b, base_dir=self._loadout_dir_b)
-            ),
-        }
+        required_pilot_ids = {mech_a.mech_id, mech_b.mech_id}
+        missing_pilots = required_pilot_ids - set(self._pilots)
+        if missing_pilots:
+            raise ValueError(f"missing injected pilots for seats: {sorted(missing_pilots)}")
 
         self._bus.publish(
             self._make_match_event(
@@ -253,19 +235,41 @@ class MatchRunner:
                 break  # terminal tick (max_ticks bound or failure-cascade kill)
 
             ReducerSensors(
-                self._match_id, self.fold.state, self._catalog.sensors, emit=self._bus.publish
+                self._match_id,
+                self.fold.state,
+                self._catalog.sensors,
+                emit=self._bus.publish,
+                correlation_id=self._correlation_id,
+                event_factory=self._events,
             ).apply(tick_event)
 
             ReducerPilotTick(
                 self._match_id,
                 self.fold.state,
-                pilots,
+                self._pilots,
                 sensor_events=list(self._sensor_buffer),
                 emit=self._bus.publish,
                 weapon_specs=self._catalog.weapons,
+                correlation_id=self._correlation_id,
+                event_factory=self._events,
             ).apply(tick_event)
 
-            for intent in list(self._intent_buffer):
+            # Resolve intents in initiative order. Initiative is a real combat
+            # mechanic (match/initiative.py): lighter chassis and well-managed
+            # boilers act first; overloaded/redline boilers act late. This
+            # replaces a fixed insertion order, which gave a systematic
+            # first-actor disadvantage in same-tick kill exchanges and broke
+            # the side-swap symmetry the learning loop relies on. Ties break
+            # by a seeded RNG sub-seed so equal-initiative mechs don't get a
+            # fixed ordering across the match.
+            ordered_mechs = order_by_initiative(
+                list(self.fold.state.living_mechs()), rng=self._rng, tick=next_tick
+            )
+            initiative_order = {mech.mech_id: i for i, mech in enumerate(ordered_mechs)}
+            intents = sorted(
+                self._intent_buffer, key=lambda e: initiative_order.get(e.subject.mech_id, 0)
+            )
+            for intent in intents:
                 if self.fold.state.status is not SOMatchStatus.RUNNING:
                     break  # an earlier resolution ended the match
                 self._resolve_intent(intent)
@@ -300,8 +304,10 @@ class MatchRunner:
                 self._resolve_weapon_fire(intent, state, mech)
             case SOEventType.MODE_SWITCH_INTENT:
                 self._resolve_mode_switch(intent, state, mech)
+            case SOEventType.VENT_INTENT:
+                ModelSOEmptyPayload.model_validate(intent.payload)
             case _:
-                pass  # VENT_INTENT: ambient venting only (boiler vents per tick)
+                pass
 
     def _living_opponent(
         self, state: ModelSOMatchState, mech: ModelSOMechRuntimeState
@@ -317,9 +323,8 @@ class MatchRunner:
         state: ModelSOMatchState,
         mech: ModelSOMechRuntimeState,
     ) -> None:
-        direction = str(intent.payload.get("direction", ""))
-        if direction not in {"toward_enemy", "defensive"}:
-            return  # hold position (defensive "maintain range" / disengage-in-place)
+        payload = ModelSOMoveIntentPayload.model_validate(intent.payload)
+        direction = payload.direction
         enemy = self._living_opponent(state, mech)
         if enemy is None:
             return
@@ -358,6 +363,7 @@ class MatchRunner:
                     "ticks_consumed": 1,
                     "pressure_consumed": moved,
                 },
+                caused_by_intent=intent,
             )
         )
 
@@ -367,14 +373,15 @@ class MatchRunner:
         state: ModelSOMatchState,
         mech: ModelSOMechRuntimeState,
     ) -> None:
-        weapon_id = str(intent.payload.get("weapon_id", ""))
+        payload = ModelSOWeaponFireIntentPayload.model_validate(intent.payload)
+        weapon_id = payload.weapon_id
         spec = self._catalog.weapons.get(weapon_id)
         if spec is None:
-            return
+            raise UnknownWeaponError(weapon_id, owner_id=mech.mech_id)
 
-        target_param = intent.payload.get("target_mech_id")
+        target_param = payload.target_mech_id
         target = (
-            state.mech_states.get(str(target_param))
+            state.mech_states.get(target_param)
             if target_param is not None
             else self._living_opponent(state, mech)
         )
@@ -397,15 +404,13 @@ class MatchRunner:
 
         curve = [(point.range, point.hit_probability) for point in spec.accuracy_curve]
         base_accuracy = interpolate_accuracy(curve, distance)
-        lock_confidence = max(
-            (
-                float(observation.payload["confidence"])
-                for observation in self._sensor_buffer
-                if observation.subject.mech_id == mech.mech_id
-                and str(observation.payload.get("enemy_mech_id")) == target.mech_id
-            ),
-            default=0.0,
-        )
+        lock_confidence = 0.0
+        for observation in self._sensor_buffer:
+            if observation.subject.mech_id != mech.mech_id:
+                continue
+            sensor_payload = ModelSOSensorObservationPayload.model_validate(observation.payload)
+            if sensor_payload.enemy_mech_id == target.mech_id:
+                lock_confidence = max(lock_confidence, sensor_payload.confidence)
         hit_probability = resolve_hit_probability(
             base_accuracy,
             lock_confidence,
@@ -431,20 +436,22 @@ class MatchRunner:
                     "pressure_cost": spec.pressure_cost,
                     "heat_generated": spec.heat_generated,
                 },
+                caused_by_intent=intent,
             )
         )
         if not hit:
             return
 
         # --- Damage chain (Task 25) ---------------------------------------
-        damage_type = WeaponDamageType.HEAT if "heat" in weapon_id else WeaponDamageType.STANDARD
-        effectiveness = spec.target_class_effectiveness.get(target.chassis_class, 1.0)
+        damage_type = spec.damage_type
+        effectiveness = spec.target_class_effectiveness[target.chassis_class]
         damage_raw = int(spec.damage * effectiveness)
-        absorbed = compute_armor_reduction(
+        armor_reduction = compute_armor_reduction(
             damage_raw=damage_raw,
             armor_value=target.armor_value,
             weapon_damage_type=damage_type,
         )
+        absorbed = armor_reduction.absorbed
         vulnerability = self._catalog.chassis[target.chassis_id].penalties.heat_weapon_vulnerability
         effective = compute_effective_damage_after_vulnerability(
             damage_after_armor=damage_raw - absorbed,
@@ -469,7 +476,12 @@ class MatchRunner:
                 SOEventType.ARMOR_ABSORBED,
                 tick=state.tick,
                 mech=target,
-                payload={"target_id": target.mech_id, "absorbed_amount": absorbed},
+                payload={
+                    "target_id": target.mech_id,
+                    "absorbed_amount": absorbed,
+                    # Post-hit armor value; the fold degrades armor_value to this.
+                    "armor_after": armor_reduction.armor_after,
+                },
             )
         )
         # Re-read the target post-WEAPON_FIRED fold (its hp is unchanged by the
@@ -506,7 +518,11 @@ class MatchRunner:
         state: ModelSOMatchState,
         mech: ModelSOMechRuntimeState,
     ) -> None:
-        to_mode = str(intent.payload.get("target_mode", ""))
+        try:
+            payload = ModelSOModeSwitchIntentPayload.model_validate(intent.payload)
+        except ValidationError:
+            return  # malformed/unknown mode intent is non-canonical and silently dropped
+        to_mode = payload.target_mode
         if mech.transition_ticks_remaining > 0:
             return  # already mid-transition
         transition = self._catalog.transitions.get((mech.current_mode, to_mode))
@@ -516,7 +532,10 @@ class MatchRunner:
             return  # silent drop — PILOT_DECISION_MADE records the attempt
         self._bus.publish(
             build_mode_transition_started_event(
+                event_factory=self._events,
                 match_id=self._match_id,
+                correlation_id=self._correlation_id,
+                causation_id=intent.envelope.message_id,
                 tick=state.tick,
                 mech=mech,
                 transition=transition,
@@ -538,6 +557,8 @@ class MatchRunner:
     ) -> ModelSOMechRuntimeState:
         chassis = self._catalog.chassis[loadout.chassis_id]
         boiler_spec = self._catalog.boilers[loadout.boiler_id]
+        for weapon_id in loadout.modules.weapons:
+            _require_weapon_spec(self._catalog, weapon_id, owner_id=loadout.id)
         boiler = ModelSOBoilerState(
             match_id=self._match_id,
             mech_id=mech_id,
@@ -570,10 +591,11 @@ class MatchRunner:
             base_speed=chassis.constraints.base_speed,
             position=position,
             facing=facing,
-            speed=chassis.constraints.base_speed,
-            hp=_INITIAL_HP,
-            hp_max=_INITIAL_HP,
-            armor_value=_INITIAL_ARMOR,
+            speed=mode_effective_speed(chassis.constraints.base_speed, _INITIAL_MODE),
+            hp=chassis.constraints.base_hp,
+            hp_max=chassis.constraints.base_hp,
+            armor_value=chassis.constraints.base_armor,
+            armor_max=chassis.constraints.base_armor,
             current_mode=_INITIAL_MODE,
             weapon_cooldowns={weapon_id: 0 for weapon_id in loadout.modules.weapons},
             boiler=boiler,
@@ -582,8 +604,7 @@ class MatchRunner:
     def _make_match_event(
         self, event_type: SOEventType, *, tick: int, payload: dict[str, Any]
     ) -> ModelSOEventEnvelope:
-        return ModelSOEventEnvelope(
-            event_id=ulid.new().str,
+        return self._events.make(
             match_id=self._match_id,
             tick=tick,
             sequence_in_tick=0,  # bus re-stamps
@@ -591,7 +612,10 @@ class MatchRunner:
             producer_node=_PRODUCER_NODE,
             subject=_MATCH_SUBJECT,
             payload=payload,
-            emitted_at=datetime.now(UTC).isoformat(),
+            # Match-scoped correlation id, shared across all events of this match
+            # (the ONEX workflow identity). Root events (MATCH_STARTED) carry no
+            # causation_id; subsequent events chain off it where applicable.
+            correlation_id=self._correlation_id,
         )
 
     def _make_subject_event(
@@ -601,9 +625,27 @@ class MatchRunner:
         tick: int,
         mech: ModelSOMechRuntimeState,
         payload: dict[str, Any],
+        caused_by_intent: ModelSOEventEnvelope | None = None,
     ) -> ModelSOEventEnvelope:
-        return ModelSOEventEnvelope(
-            event_id=ulid.new().str,
+        """Build a mech-scoped event; optionally chains causation off an intent.
+
+        When *caused_by_intent* is set (a resolved event produced from a pilot
+        intent), the new event's causation_id links to that intent's
+        message_id — the ONEX causation chain that lets a downstream consumer
+        trace WEAPON_FIRED back to the WEAPON_FIRE_INTENT that triggered it.
+        """
+        if caused_by_intent is not None:
+            return self._events.caused_by(
+                caused_by_intent,
+                match_id=self._match_id,
+                tick=tick,
+                sequence_in_tick=0,  # bus re-stamps
+                event_type=event_type,
+                producer_node=_PRODUCER_NODE,
+                subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
+                payload=payload,
+            )
+        return self._events.make(
             match_id=self._match_id,
             tick=tick,
             sequence_in_tick=0,  # bus re-stamps
@@ -611,7 +653,7 @@ class MatchRunner:
             producer_node=_PRODUCER_NODE,
             subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
             payload=payload,
-            emitted_at=datetime.now(UTC).isoformat(),
+            correlation_id=self._correlation_id,
         )
 
 
@@ -641,7 +683,7 @@ def _module_budgets(
         )
     entries: list[ModelSOModuleBudget] = []
     for weapon_id in loadout.modules.weapons:
-        weapon = catalog.weapons[weapon_id]
+        weapon = _require_weapon_spec(catalog, weapon_id, owner_id=loadout.id)
         entries.append(
             ModelSOModuleBudget(
                 module_id=weapon_id,
@@ -650,7 +692,7 @@ def _module_budgets(
                 pressure_draw=0.0,
                 heat_output=float(weapon.heat_generated),
                 signature_impact=0.0,
-                active_modes=("assault",),
+                active_modes=(ModeId.ASSAULT,),
             )
         )
     for sensor_id in loadout.modules.sensors:
@@ -685,6 +727,19 @@ def _module_budgets(
     return entries
 
 
+def _require_weapon_spec(
+    catalog: MatchContractCatalog,
+    weapon_id: str,
+    *,
+    owner_id: str,
+) -> ModelSOWeaponSpec:
+    """Resolve one weapon contract or fail with a stable typed error."""
+    spec = catalog.weapons.get(weapon_id)
+    if spec is None:
+        raise UnknownWeaponError(weapon_id, owner_id=owner_id)
+    return spec
+
+
 def _require_valid_budgets(loadout: ModelSOLoadout, catalog: MatchContractCatalog) -> None:
     """Raise ``ValueError`` listing every violated budget axis (fail fast)."""
     violations = validate_loadout_budgets(
@@ -699,92 +754,3 @@ def _require_valid_budgets(loadout: ModelSOLoadout, catalog: MatchContractCatalo
             for violation in violations
         )
         raise ValueError(f"loadout {loadout.id!r} violates budgets: {details}")
-
-
-# ---------------------------------------------------------------------------
-# Proof-of-Life entrypoint (Task 34)
-# ---------------------------------------------------------------------------
-
-
-def run_match(
-    *,
-    red_loadout: str | Path,
-    blue_loadout: str | Path,
-    seed: int,
-    max_ticks: int,
-    ledger_path: Path,
-    leaderboard_path: Path,
-    contracts_data_dir: Path | None = None,
-) -> ModelSOMatchState:
-    """Wire the full Task 1-33 stack and drive one red-vs-blue duel to its end.
-
-    Composition (plan Task 34 step 3): load loadouts -> validate budgets ->
-    spawn match (40x40 arena, 30 cells apart) -> register the canonical fold,
-    scoring reducer (replay-validity hard gate), and leaderboard handler ->
-    run the tick loop until VICTORY_DECLARED or the max_ticks bound -> emit
-    the MATCH_ENDED re-statement -> MATCH_SCORED -> ledger flushed per event.
-
-    Subscriber order matters and is fixed here: ledger first (the canonical
-    record the replay-validity check reads), then the runner's fold, then
-    scoring, then the leaderboard projection.
-    """
-    catalog = MatchContractCatalog.load(contracts_data_dir)
-    pilot_registry = PilotSpecRegistry.load(
-        contracts_data_dir / "pilots" if contracts_data_dir is not None else None
-    )
-    red_path = Path(red_loadout)
-    blue_path = Path(blue_loadout)
-    red = load_loadout(red_path)
-    blue = load_loadout(blue_path)
-    _require_valid_budgets(red, catalog)
-    _require_valid_budgets(blue, catalog)
-
-    bus = InProcessEventBus()
-    ledger = SQLiteLedger(ledger_path)
-    bus.subscribe(ledger.append)  # 1st: every event lands in the ledger first
-
-    match_id = f"match.{ulid.new().str}"
-    runner = MatchRunner(  # 2nd: the canonical fold subscribes in __init__
-        match_id=match_id,
-        seed=seed,
-        loadout_a=red,
-        loadout_b=blue,
-        bus=bus,
-        max_ticks=max_ticks,
-        catalog=catalog,
-        pilot_registry=pilot_registry,
-        loadout_dir_a=red_path.parent,
-        loadout_dir_b=blue_path.parent,
-        side_a="red",
-        side_b="blue",
-        spawn_a=ModelSOPosition(x=5, y=5),
-        spawn_b=ModelSOPosition(x=35, y=35),  # Chebyshev 30 apart on a 40x40 grid
-        arena_size=ARENA_SIZE_CELLS,
-    )
-
-    scoring = ReducerScoring(  # 3rd: scores on the terminal event
-        match_id,
-        emit=bus.publish,
-        replay_validity_check=lambda: verify_replay_validity(ledger, match_id, runner.fold.state),
-    )
-    bus.subscribe(scoring.handle)
-
-    leaderboard = LeaderboardHandler(leaderboard_path)  # 4th: projection
-
-    def _on_match_scored(event: ModelSOEventEnvelope) -> None:
-        # The lifecycle reducer emits a skinny draw-backstop MATCH_SCORED;
-        # only the scoring reducer's full payload feeds the leaderboard.
-        if event.payload.get("kind") == "steel_onslaught.match_scored":
-            leaderboard.on_match_scored(event.payload)
-
-    bus.subscribe(_on_match_scored, event_types=[SOEventType.MATCH_SCORED])
-
-    final = runner.run()
-
-    # Hard gate (plan Task 29/34): a match whose ledger does not replay to the
-    # live state must never be reported as healthy.
-    if final.status is not SOMatchStatus.ENDED:
-        raise RuntimeError(f"match {match_id!r} did not terminate: {final.status.value}")
-    if final.end_reason is SOMatchEndReason.DRAW_MAX_TICKS and final.winner_id is not None:
-        raise RuntimeError("draw recorded a winner — lifecycle invariant violated")
-    return final

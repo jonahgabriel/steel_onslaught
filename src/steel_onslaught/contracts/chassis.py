@@ -20,6 +20,13 @@ class ModelSOChassisConstraints(BaseModel):
     base_turn_rate: int = Field(gt=0, description="Base turning rate (degrees/tick, discretised).")
     base_signature: int = Field(gt=0, description="Passive sensor signature emitted at idle.")
     base_vent_rate: int = Field(gt=0, description="Passive heat venting per tick (baseline).")
+    base_hp: int = Field(gt=0, description="Base hull hit points fielded at match start.")
+    base_armor: int = Field(
+        ge=0, description="Base armor capacity fielded at match start (armor_value's max)."
+    )
+    base_armor_regen: int = Field(
+        ge=0, description="Armor regenerated per tick toward base_armor (degrading-armor model)."
+    )
 
 
 class ModelSOChassisCompatibility(BaseModel):
@@ -27,9 +34,9 @@ class ModelSOChassisCompatibility(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    weapon_classes: list[str] = Field(min_length=1)
-    boiler_classes: list[str] = Field(min_length=1)
-    mobility_classes: list[str] = Field(min_length=1)
+    weapon_classes: tuple[str, ...] = Field(min_length=1)
+    boiler_classes: tuple[str, ...] = Field(min_length=1)
+    mobility_classes: tuple[str, ...] = Field(min_length=1)
 
 
 class ModelSOChassisPenalties(BaseModel):

@@ -56,11 +56,16 @@ from typing import Any
 
 import pytest
 
+from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.budget import validate_loadout_budgets
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
-from steel_onslaught.match.fold import MatchContractCatalog
-from steel_onslaught.match.runner import _module_budgets, load_loadout, run_match
+from steel_onslaught.match.composition import (
+    assemble_match_live,
+    load_loadout,
+    load_match_contract_catalog,
+)
+from steel_onslaught.match.runner import _module_budgets
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchStatus
+from tests.sqlite_ledger import open_sqlite_ledger
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOADOUTS = _REPO_ROOT / "contracts_data" / "loadouts"
@@ -83,10 +88,12 @@ CanonicalRow = tuple[int, int, str, str, str, str]
 def _canonical_rows(ledger_path: Path, match_id: str) -> list[CanonicalRow]:
     """Decision #3 canonical rows: drop event_id/emitted_at, normalize match_id."""
     rows: list[CanonicalRow] = []
-    for event in SQLiteLedger(ledger_path).read_all(match_id):
-        payload_json = json.dumps(event.payload, sort_keys=True, separators=(",", ":")).replace(
-            match_id, "<match>"
-        )
+    for event in open_sqlite_ledger(ledger_path).read_all(match_id):
+        payload_json = json.dumps(
+            event.model_dump(mode="json")["payload"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).replace(match_id, "<match>")
         subject_json = json.dumps(
             {"mech_id": event.subject.mech_id, "player_id": event.subject.player_id},
             sort_keys=True,
@@ -107,14 +114,56 @@ def _canonical_rows(ledger_path: Path, match_id: str) -> list[CanonicalRow]:
 
 def _run(blue_loadout: Path, out_dir: Path) -> tuple[ModelSOMatchState, list[CanonicalRow]]:
     ledger_path = out_dir / "match.sqlite"
-    state = run_match(
-        red_loadout=POL_RED,
-        blue_loadout=blue_loadout,
+    overlay = ModelSOApplicationOverlay.model_validate(
+        {
+            "schema_version": "1",
+            "bus": {"kind": "in_process"},
+            "event_ledger": {
+                "kind": "sqlite",
+                "path": ledger_path,
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+            },
+            "leaderboard": {
+                "kind": "sqlite",
+                "path": out_dir / "leaderboard.sqlite",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "storage_schema": "leaderboard_v1",
+            },
+            "learning_artifacts": {
+                "kind": "filesystem_yaml",
+                "evaluation_root": out_dir / "evaluations",
+                "lineage_root": out_dir / "lineage",
+            },
+            "evaluation_storage": {
+                "kind": "sqlite",
+                "root": out_dir / "evaluations",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+                "leaderboard_schema": "leaderboard_v1",
+            },
+            "contracts": {
+                "catalog_dir": _REPO_ROOT / "contracts_data",
+                "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",
+            },
+            "clock": {"kind": "system_utc"},
+            "identity": {"kind": "system"},
+        }
+    )
+    stack = assemble_match_live(
+        overlay=overlay,
+        red_loadout_path=POL_RED,
+        blue_loadout_path=blue_loadout,
         seed=SEED,
         max_ticks=MAX_TICKS,
-        ledger_path=ledger_path,
-        leaderboard_path=out_dir / "leaderboard.sqlite",
     )
+    state = stack.runner.run()
     return state, _canonical_rows(ledger_path, state.match_id)
 
 
@@ -197,7 +246,7 @@ def test_tuned_pilot_diverges_explainably(tmp_path: Path) -> None:
 @pytest.mark.integration
 def test_tuned_pilot_costs_nothing_on_any_budget_axis() -> None:
     """Addendum §7: budget validation output is identical with a tuned pilot."""
-    catalog = MatchContractCatalog.load()
+    catalog = load_match_contract_catalog(_REPO_ROOT / "contracts_data")
     template_loadout = load_loadout(POL_BLUE_TEMPLATE)
     tuned_loadout = load_loadout(POL_BLUE_TUNED)
 

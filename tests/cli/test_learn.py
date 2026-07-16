@@ -21,6 +21,7 @@ real-duel test is ``integration + slow``.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from datetime import timedelta
@@ -32,6 +33,8 @@ from click.testing import CliRunner
 from steel_onslaught.cli import learn as learn_module
 from steel_onslaught.cli.main import main
 from steel_onslaught.contracts.lineage import ParamDict, SOPromotionStatus
+from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.lineage_store import load_lineage_records
 from steel_onslaught.learning.loop import derive_seed_batteries
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
@@ -59,10 +62,10 @@ def _stub_evaluator_class(script: dict[int, ModelSOSeedOutcome]) -> type[object]
             self,
             *,
             archetype: str,
-            base_loadout: Path,
-            workdir: Path,
+            base_loadout: ModelSOLoadout,
             max_ticks: int,
-            contracts_data_dir: Path | None = None,
+            duel_executor: object,
+            artifacts: LearningArtifactStore,
         ) -> None:
             self._script = script
 
@@ -77,8 +80,59 @@ def _stub_evaluator_class(script: dict[int, ModelSOSeedOutcome]) -> type[object]
     return _StubDuelEvaluator
 
 
+def _write_overlay(tmp_path: Path) -> Path:
+    overlay_path = tmp_path / "application.json"
+    overlay_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "bus": {"kind": "in_process"},
+                "event_ledger": {
+                    "kind": "sqlite",
+                    "path": str(tmp_path / "global-events.sqlite"),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                },
+                "leaderboard": {
+                    "kind": "sqlite",
+                    "path": str(tmp_path / "global-leaderboard.sqlite"),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "storage_schema": "leaderboard_v1",
+                },
+                "learning_artifacts": {
+                    "kind": "filesystem_yaml",
+                    "evaluation_root": str(tmp_path / "work"),
+                    "lineage_root": str(tmp_path / "lineage"),
+                },
+                "evaluation_storage": {
+                    "kind": "sqlite",
+                    "root": str(tmp_path / "work"),
+                    "journal_mode": "WAL",
+                    "check_same_thread": False,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                    "leaderboard_schema": "leaderboard_v1",
+                },
+                "contracts": {
+                    "catalog_dir": str(Path("contracts_data").resolve()),
+                    "pilot_registry_dir": str(Path("contracts_data/pilots").resolve()),
+                },
+                "clock": {"kind": "system_utc"},
+                "identity": {"kind": "system"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return overlay_path
+
+
 def _learn_args(tmp_path: Path, **overrides: str) -> list[str]:
     options = {
+        "--overlay": str(_write_overlay(tmp_path)),
         "--archetype": "aggressive",
         "--parent": str(_PARENT_SPEC),
         "--strategy": "grid",
@@ -88,8 +142,6 @@ def _learn_args(tmp_path: Path, **overrides: str) -> list[str]:
         "--master-seed": str(_MASTER_SEED),
         "--base-loadout": str(_BASE_LOADOUT),
         "--max-ticks": "80",
-        "--lineage-root": str(tmp_path / "lineage"),
-        "--workdir": str(tmp_path / "work"),
     }
     options.update(overrides)
     args = ["learn"]
@@ -214,6 +266,38 @@ class TestLearnCompletedRuns:
             (tmp_path / "lineage").rglob("*.yaml")
         )
 
+    @pytest.mark.parametrize("preexisting", [False, True])
+    def test_learning_never_opens_global_runtime_stores(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        preexisting: bool,
+    ) -> None:
+        case_root = tmp_path / ("sentinel" if preexisting else "missing")
+        case_root.mkdir()
+        event_store = case_root / "global-events.sqlite"
+        leaderboard_store = case_root / "global-leaderboard.sqlite"
+        sentinel = b"not-a-sqlite-runtime-store"
+        if preexisting:
+            event_store.write_bytes(sentinel)
+            leaderboard_store.write_bytes(sentinel)
+
+        exit_code, output = _scripted_run(
+            case_root,
+            monkeypatch,
+            search_winner=SOSeedWinner.PARENT,
+            script_holdout=False,
+        )
+
+        assert exit_code == 0, output
+        if preexisting:
+            assert event_store.read_bytes() == sentinel
+            assert leaderboard_store.read_bytes() == sentinel
+        else:
+            assert not event_store.exists()
+            assert not leaderboard_store.exists()
+
 
 # ---------------------------------------------------------------------------
 # Persisted record: path printed, loadable, batteries match, recorded_at UTC
@@ -251,26 +335,21 @@ class TestLearnPersistedRecord:
 
 
 # ---------------------------------------------------------------------------
-# Source-scan: single wall-clock boundary (unit)
+# Source-scan: injected wall-clock boundary (unit)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-class TestSingleWallClockBoundary:
-    def test_learn_py_is_the_only_datetime_now_match(self) -> None:
-        """Decision #4: wall-clock enters exactly once, at the CLI effect
-        boundary. Across learning/ + cli/learn.py, only cli/learn.py matches
-        ``datetime.now`` — and exactly once."""
+class TestInjectedWallClockBoundary:
+    def test_learning_and_cli_do_not_construct_wall_clock(self) -> None:
+        """Decision #4: composition injects the clock into the CLI boundary."""
         learning_dir = Path("src/steel_onslaught/learning")
         for module_path in sorted(learning_dir.glob("*.py")):
             source = module_path.read_text(encoding="utf-8")
-            assert "datetime.now" not in source, (
-                f"{module_path} must not read the wall clock — the only boundary is cli/learn.py"
-            )
+            assert "datetime.now" not in source, f"{module_path} must not read the wall clock"
         learn_source = Path("src/steel_onslaught/cli/learn.py").read_text(encoding="utf-8")
-        assert learn_source.count("datetime.now") == 1, (
-            "cli/learn.py must read the wall clock exactly once"
-        )
+        assert "datetime.now" not in learn_source
+        assert "recorded_at=dependencies.clock.now()" in learn_source
 
 
 # ---------------------------------------------------------------------------
@@ -302,5 +381,7 @@ class TestLearnSmokeE2E:
         else:
             assert Path(record_line).exists()
             assert len(records) == 1
-        # Evaluation scratch stays inside --workdir (Decision #6).
+        # Evaluation scratch stays inside the overlay-selected artifact root (Decision #6).
         assert (tmp_path / "work").exists()
+        assert not (tmp_path / "global-events.sqlite").exists()
+        assert not (tmp_path / "global-leaderboard.sqlite").exists()

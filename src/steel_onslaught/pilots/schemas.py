@@ -17,12 +17,25 @@ Invariants enforced here:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Literal, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.immutable import FrozenJSONMapping
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -68,8 +81,8 @@ class ModelSOPosition(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    x: int
-    y: int
+    x: StrictInt
+    y: StrictInt
 
 
 class ModelSOPilotWeaponView(BaseModel):
@@ -97,7 +110,7 @@ class ModelSOSensorReading(BaseModel):
     heat_estimate: float | None = Field(
         default=None, description="Present iff a thermal sensor resolved target heat"
     )
-    mode_estimate: str | None = Field(
+    mode_estimate: ModeId | None = Field(
         default=None, description="Present iff an acoustic sensor resolved target mode"
     )
 
@@ -127,7 +140,7 @@ class ModelSOPilotObservation(BaseModel):
     # Own state.
     boiler: ModelSOBoilerState
     weapons: list[ModelSOPilotWeaponView]
-    current_mode: str = Field(description="Mode name without prefix, e.g. 'recon'")
+    current_mode: ModeId = Field(description="Closed current combat mode")
     mode_lock_expired: bool
     position: ModelSOPosition
     hp_percent: float = Field(ge=0.0, le=100.0)
@@ -148,7 +161,7 @@ class ModelSOConsideredAction(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     action: SOPilotAction
-    score: float
+    score: StrictFloat
 
 
 class ModelSOPilotDecision(BaseModel):
@@ -160,12 +173,18 @@ class ModelSOPilotDecision(BaseModel):
     kind: Literal["steel_onslaught.pilot_decision"] = "steel_onslaught.pilot_decision"
 
     action: SOPilotAction
-    action_params: dict[str, Any] = Field(
-        default_factory=dict, description="Kwargs for the chosen action, per action type"
+    action_params: FrozenJSONMapping = Field(
+        default_factory=dict,
+        validate_default=True,
+        description="Kwargs for the chosen action, per action type",
     )
     reason_code: SOPilotReasonCode
-    confidence: float
-    considered_actions: list[ModelSOConsideredAction]
+    confidence: StrictFloat
+    considered_actions: Annotated[
+        Sequence[ModelSOConsideredAction],
+        AfterValidator(tuple),
+        PlainSerializer(list, return_type=list[ModelSOConsideredAction]),
+    ]
 
     @field_validator("confidence")
     @classmethod

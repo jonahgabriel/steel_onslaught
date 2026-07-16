@@ -4,8 +4,6 @@
   "match_id": "match.fixture.0001",
   "tick": 0,
   "sequence_in_tick": 0,
-  "correlation_id": null,
-  "causation_id": null,
   "producer_node": "node.fixture_emitter",
   "subject": {
     "mech_id": "mech.a.01",
@@ -41,6 +39,7 @@
         "hp": 100,
         "hp_max": 100,
         "armor_value": 10,
+        "armor_max": 10,
         "alive": true,
         "pilot_alive": true,
         "current_mode": "recon",
@@ -106,6 +105,7 @@
         "hp": 100,
         "hp_max": 100,
         "armor_value": 10,
+        "armor_max": 10,
         "alive": true,
         "pilot_alive": true,
         "current_mode": "recon",
@@ -148,5 +148,11 @@
       }
     ]
   },
-  "emitted_at": "2026-04-30T00:00:00+00:00"
+  "envelope": {
+    "message_id": "ec84dcf4-0385-5853-96ec-763be6e2bf4b",
+    "correlation_id": "216a8b7b-6339-56ff-86ef-1af3393f4562",
+    "causation_id": null,
+    "emitted_at": "2026-04-30T00:00:00Z",
+    "entity_id": "match.fixture.0001"
+  }
 }

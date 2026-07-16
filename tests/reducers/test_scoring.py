@@ -22,26 +22,38 @@ Invariants covered:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 import ulid
+from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
 )
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
-from steel_onslaught.match.runner import MatchRunner, load_loadout
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
+from steel_onslaught.match.composition import (
+    load_loadout,
+    load_match_contract_catalog,
+    load_pilot_registry,
+    pilot_from_spec,
+)
+from steel_onslaught.match.runner import MatchIdentity, MatchRunner
 from steel_onslaught.match.state import ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.projections.leaderboard.handler import (
     LeaderboardHandler,
-    LeaderboardProjection,
+    ModelSOSQLiteLeaderboardConfig,
 )
 from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.scoring import (
@@ -49,6 +61,7 @@ from steel_onslaught.reducers.scoring import (
     compute_final_score,
     verify_replay_validity,
 )
+from tests.sqlite_ledger import open_sqlite_ledger
 
 _MATCH_ID = "match.scoring.001"
 
@@ -58,6 +71,35 @@ _PLAYER_A = "player.a"
 _PLAYER_B = "player.b"
 
 _RUPTURE_THRESHOLD = 100
+_TEST_CORRELATION_ID = UUID(int=1)
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
+
+
+class _FixedIdentities:
+    def __init__(self) -> None:
+        self._next = 0
+
+    def new_match_id(self) -> str:
+        return "match.test.fixed"
+
+    def new_correlation_id(self) -> UUID:
+        return _TEST_CORRELATION_ID
+
+    def new_event_id(self) -> str:
+        self._next += 1
+        return ulid.from_int(self._next).str
+
+    def new_message_id(self) -> UUID:
+        self._next += 1
+        return UUID(int=self._next)
+
+
+_CLOCK = _FixedClock()
+_EVENT_FACTORY = EventFactory(clock=_CLOCK, identities=_FixedIdentities())
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +144,8 @@ def _make_mech(mech_id: str, player_id: str, *, loadout_id: str) -> ModelSOMechR
         hp=100,
         hp_max=100,
         armor_value=10,
-        current_mode="recon",
+        armor_max=10,
+        current_mode=ModeId.RECON,
         boiler=_make_boiler(mech_id),
     )
 
@@ -129,7 +172,13 @@ def _env(
         producer_node="node.test.scoring",
         subject=subject,
         payload=payload,
-        emitted_at="2026-04-30T00:00:00+00:00",
+        envelope=ModelEnvelope(
+            message_id=uuid4(),
+            correlation_id=uuid4(),
+            causation_id=uuid4(),
+            entity_id=match_id,
+            emitted_at=datetime(2026, 4, 30, tzinfo=UTC),
+        ),
     )
 
 
@@ -158,6 +207,8 @@ def _weapon_fired(
         subject=subject,
         payload={
             "weapon_id": "module.weapon.machine_gun",
+            "target_id": _MECH_B if subject.mech_id == _MECH_A else _MECH_A,
+            "hit_probability": 0.5,
             "pressure_cost": pressure_cost,
             "heat_generated": heat_generated,
         },
@@ -174,12 +225,9 @@ def _hit_resolved(
         payload={
             "attacker_id": attacker_id,
             "defender_id": defender_id,
-            "weapon_id": "module.weapon.machine_gun",
             "result": {
                 "hit": hit,
-                "damage_raw": damage_after_armor + 4,
                 "damage_after_armor": damage_after_armor,
-                "critical": False,
             },
         },
     )
@@ -214,7 +262,9 @@ def _score_events(
     emitted: list[ModelSOEventEnvelope] = []
     reducer = ReducerScoring(
         match_id,
+        _TEST_CORRELATION_ID,
         emit=emitted.append,
+        event_factory=_EVENT_FACTORY,
         replay_validity_check=lambda: replay_valid,
     )
     for event in events:
@@ -224,7 +274,7 @@ def _score_events(
 
 def _single_scored_payload(
     events: list[ModelSOEventEnvelope], *, replay_valid: bool = True
-) -> dict[str, Any]:
+) -> Mapping[str, Any]:
     emitted = _score_events(events, replay_valid=replay_valid)
     scored = [e for e in emitted if e.event_type is SOEventType.MATCH_SCORED]
     assert len(scored) == 1
@@ -367,8 +417,30 @@ def test_two_replays_produce_identical_scores() -> None:
 def test_overload_penalty_counts_boiler_overloaded_events() -> None:
     events = [
         _match_started(),
-        _env(SOEventType.BOILER_OVERLOADED, tick=1, subject=_SUBJECT_B, payload={"heat": 80}),
-        _env(SOEventType.BOILER_OVERLOADED, tick=2, subject=_SUBJECT_B, payload={"heat": 85}),
+        _env(
+            SOEventType.BOILER_OVERLOADED,
+            tick=1,
+            subject=_SUBJECT_B,
+            payload={
+                "heat": 80,
+                "redline_threshold": 70,
+                "redline_consecutive_ticks": 3,
+                "accuracy_penalty_next_fire": 0.2,
+                "mode_switch_disabled_until": 4,
+            },
+        ),
+        _env(
+            SOEventType.BOILER_OVERLOADED,
+            tick=2,
+            subject=_SUBJECT_B,
+            payload={
+                "heat": 85,
+                "redline_threshold": 70,
+                "redline_consecutive_ticks": 4,
+                "accuracy_penalty_next_fire": 0.2,
+                "mode_switch_disabled_until": 5,
+            },
+        ),
         _match_ended(tick=3, winner_id=_PLAYER_A),
     ]
     payload = _single_scored_payload(events)
@@ -386,7 +458,13 @@ def test_mode_transition_pressure_counts_as_consumed() -> None:
             SOEventType.MODE_TRANSITION_STARTED,
             tick=1,
             subject=_SUBJECT_A,
-            payload={"costs": {"pressure": 5, "heat": 3}},
+            payload={
+                "from_mode": "recon",
+                "to_mode": "assault",
+                "costs": {"pressure": 5, "heat": 3, "transition_ticks": 1},
+                "sensor_dropout_ticks": 0,
+                "evasion_penalty": 0.0,
+            },
         ),
         _hit_resolved(tick=1, attacker_id=_MECH_A, defender_id=_MECH_B, damage_after_armor=6),
         _match_ended(tick=2, winner_id=_PLAYER_A),
@@ -441,7 +519,14 @@ def test_pressure_drained_while_disabled_is_wasted() -> None:
             SOEventType.BOILER_RUPTURED,
             tick=1,
             subject=_SUBJECT_A,
-            payload={"cause": "heat_threshold"},
+            payload={
+                "cause": "heat_threshold",
+                "heat": 100,
+                "rupture_threshold": 100,
+                "direct_damage": 40,
+                "area_damage": 15,
+                "area_radius_cells": 3,
+            },
         ),
         _weapon_fired(tick=1, subject=_SUBJECT_A, pressure_cost=10),
         _match_ended(tick=2, winner_id=_PLAYER_B),
@@ -528,7 +613,13 @@ def test_foreign_match_events_are_ignored() -> None:
 
 @pytest.mark.unit
 def test_match_ended_before_match_started_raises() -> None:
-    reducer = ReducerScoring(_MATCH_ID, emit=lambda _e: None, replay_validity_check=lambda: True)
+    reducer = ReducerScoring(
+        _MATCH_ID,
+        _TEST_CORRELATION_ID,
+        emit=lambda _e: None,
+        event_factory=_EVENT_FACTORY,
+        replay_validity_check=lambda: True,
+    )
     with pytest.raises(ReducerError, match="match_not_started"):
         reducer.apply(_match_ended(tick=2, winner_id=_PLAYER_A))
 
@@ -566,10 +657,19 @@ def test_draw_zeroes_victory_and_marks_is_draw() -> None:
 def test_payload_feeds_leaderboard_handler(tmp_path: Path) -> None:
     payload = _single_scored_payload(_standard_duel_events())
     db_path = tmp_path / "leaderboard.sqlite"
-    handler = LeaderboardHandler(db_path)
-    handler.on_match_scored(payload)
+    handler = LeaderboardHandler(
+        ModelSOSQLiteLeaderboardConfig(
+            path=db_path,
+            journal_mode="WAL",
+            check_same_thread=True,
+            transaction_mode="autocommit",
+            storage_schema="leaderboard_v1",
+        ),
+        clock=_CLOCK,
+    )
+    handler.on_match_scored(ModelSOMatchScoredPayload.model_validate(payload))
 
-    rows = LeaderboardProjection(db_path).top_n(1)
+    rows = handler.top_n(1)
     assert len(rows) == 1
     row = rows[0]
     assert row.match_id == _MATCH_ID
@@ -590,21 +690,50 @@ def test_payload_feeds_leaderboard_handler(tmp_path: Path) -> None:
 @pytest.mark.integration
 def test_verify_replay_validity_for_real_match(tmp_path: Path) -> None:
     match_id = "match.scoring.replay-check"
-    ledger = SQLiteLedger(tmp_path / f"{match_id}.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / f"{match_id}.sqlite")
     bus = InProcessEventBus()
     bus.subscribe(ledger.append)
+    event_factory = EventFactory(clock=_CLOCK, identities=_FixedIdentities())
+    catalog = load_match_contract_catalog(Path("contracts_data"))
+    registry = load_pilot_registry(Path("contracts_data/pilots"))
+    loadout_a = load_loadout(Path("contracts_data/loadouts/example_aggressive_light.yaml"))
+    loadout_b = load_loadout(Path("contracts_data/loadouts/example_predictive_heavy.yaml"))
 
     runner = MatchRunner(
-        match_id=match_id,
+        identity=MatchIdentity(match_id=match_id, correlation_id=_TEST_CORRELATION_ID),
         seed=99,
-        loadout_a=load_loadout(Path("contracts_data/loadouts/example_aggressive_light.yaml")),
-        loadout_b=load_loadout(Path("contracts_data/loadouts/example_predictive_heavy.yaml")),
+        loadout_a=loadout_a,
+        loadout_b=loadout_b,
         bus=bus,
+        event_factory=event_factory,
+        catalog=catalog,
+        pilots={
+            "mech.a.01": pilot_from_spec(registry.resolve(loadout_a)),
+            "mech.b.01": pilot_from_spec(registry.resolve(loadout_b)),
+        },
         max_ticks=5,
     )
     live_state = runner.run()
 
-    assert verify_replay_validity(ledger, match_id, live_state) is True
+    assert (
+        verify_replay_validity(
+            ledger,
+            match_id,
+            live_state,
+            catalog=catalog,
+            event_factory=event_factory,
+        )
+        is True
+    )
     # A mismatched live state must yield False, not raise.
     tampered = live_state.model_copy(update={"seed": live_state.seed + 1})
-    assert verify_replay_validity(ledger, match_id, tampered) is False
+    assert (
+        verify_replay_validity(
+            ledger,
+            match_id,
+            tampered,
+            catalog=catalog,
+            event_factory=event_factory,
+        )
+        is False
+    )

@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 
 from steel_onslaught.reducers.damage import (
+    ArmorReduction,
     WeaponDamageType,
     apply_damage,
     compute_armor_reduction,
@@ -29,88 +30,153 @@ from steel_onslaught.reducers.damage import (
 )
 
 # ---------------------------------------------------------------------------
-# compute_armor_reduction tests
+# compute_armor_reduction tests (degrading + capped-mitigation model)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
+def test_armor_reduction_returns_struct_with_armor_after() -> None:
+    """The reducer returns both absorbed and the post-hit armor value."""
+    result = compute_armor_reduction(
+        damage_raw=20,
+        armor_value=10,
+        weapon_damage_type=WeaponDamageType.STANDARD,
+    )
+    assert isinstance(result, ArmorReduction)
+    assert result.armor_after == 10 - result.absorbed
+
+
+@pytest.mark.unit
 def test_armor_reduction_pressure_weapon_reduces_more() -> None:
-    """Pressure-based weapons are reduced more by armor than heat weapons."""
+    """Pressure-based weapons are reduced more by armor than heat weapons.
+
+    Uses armor large enough that the mitigation cap (not the pool) is binding,
+    so the per-type cap difference shows: pressure cap 0.90 > heat cap 0.50.
+    """
     absorbed_pressure = compute_armor_reduction(
         damage_raw=20,
-        armor_value=10,
+        armor_value=100,
         weapon_damage_type=WeaponDamageType.PRESSURE,
-    )
+    ).absorbed
     absorbed_heat = compute_armor_reduction(
         damage_raw=20,
-        armor_value=10,
+        armor_value=100,
         weapon_damage_type=WeaponDamageType.HEAT,
-    )
-    # Pressure weapons: armor reduces more → absorbed_pressure > absorbed_heat
+    ).absorbed
+    # Pressure absorbs ceil(20*0.90)=18; heat absorbs ceil(20*0.50)=10.
     assert absorbed_pressure > absorbed_heat
 
 
 @pytest.mark.unit
 def test_armor_reduction_never_negative() -> None:
-    """Armor reduction never returns a negative value."""
-    # Even if armor_value is larger than damage_raw, absorbed should be >= 0.
-    absorbed = compute_armor_reduction(
+    """Armor reduction never returns a negative absorbed value."""
+    result = compute_armor_reduction(
         damage_raw=5,
         armor_value=100,
         weapon_damage_type=WeaponDamageType.PRESSURE,
     )
-    assert absorbed >= 0
+    assert result.absorbed >= 0
+    assert result.armor_after >= 0
 
 
 @pytest.mark.unit
 def test_armor_reduction_cannot_exceed_raw_damage() -> None:
     """Absorbed amount cannot exceed raw damage (armor cannot amplify)."""
-    absorbed = compute_armor_reduction(
+    result = compute_armor_reduction(
         damage_raw=10,
         armor_value=50,
         weapon_damage_type=WeaponDamageType.STANDARD,
     )
-    assert absorbed <= 10
+    assert result.absorbed <= 10
 
 
 @pytest.mark.unit
 def test_armor_reduction_zero_armor_absorbs_nothing() -> None:
-    """A mech with armor_value=0 absorbs 0 damage."""
-    absorbed = compute_armor_reduction(
+    """A mech with armor_value=0 absorbs 0 damage and armor stays 0."""
+    result = compute_armor_reduction(
         damage_raw=15,
         armor_value=0,
         weapon_damage_type=WeaponDamageType.PRESSURE,
     )
-    assert absorbed == 0
+    assert result.absorbed == 0
+    assert result.armor_after == 0
 
 
 @pytest.mark.unit
-def test_armor_reduction_standard_weapon() -> None:
-    """Standard weapon uses baseline armor efficiency (1.0 multiplier)."""
-    absorbed = compute_armor_reduction(
+def test_armor_reduction_standard_weapon_capped() -> None:
+    """Standard weapon: armor absorbs at most 75% of the hit (mitigation cap).
+
+    damage_raw=20, armor=10: cap = ceil(20*0.75)=15, absorbable=min(10,15)=10.
+    So absorbed=10, armor_after=0, and 10 damage leaks (50% — under the 75% cap
+    because armor ran out, which is the degrading behavior).
+    """
+    result = compute_armor_reduction(
         damage_raw=20,
         armor_value=10,
         weapon_damage_type=WeaponDamageType.STANDARD,
     )
-    # baseline efficiency = 1.0 → absorbed = min(10, 20) = 10
-    assert absorbed == 10
+    assert result.absorbed == 10
+    assert result.armor_after == 0
 
 
 @pytest.mark.unit
 def test_armor_reduction_heat_weapon_reduced_efficiency() -> None:
-    """Heat weapons: armor reduces less (lower efficiency than baseline)."""
+    """Heat weapons: armor absorbs less than standard (lower mitigation cap).
+
+    Armor large enough that the cap binds: standard cap 0.75 > heat cap 0.50.
+    """
     absorbed_standard = compute_armor_reduction(
         damage_raw=20,
-        armor_value=10,
+        armor_value=100,
         weapon_damage_type=WeaponDamageType.STANDARD,
-    )
+    ).absorbed
     absorbed_heat = compute_armor_reduction(
         damage_raw=20,
-        armor_value=10,
+        armor_value=100,
         weapon_damage_type=WeaponDamageType.HEAT,
-    )
+    ).absorbed
     # Heat weapons bypass armor more: absorbed_heat < absorbed_standard
     assert absorbed_heat < absorbed_standard
+
+
+@pytest.mark.unit
+def test_low_damage_weapon_always_leaks_some_damage() -> None:
+    """The original bug: a weapon with damage <= armor did ZERO damage.
+
+    Under the capped model, armor absorbs at most mitigation_cap of the hit, so
+    at least (1 - cap) of every hit leaks. A machine_gun (8 dmg) vs armor 16
+    must now deal nonzero damage (was 0 under flat subtraction).
+    """
+    result = compute_armor_reduction(
+        damage_raw=8,
+        armor_value=16,  # twice the damage — flat model absorbed all 8
+        weapon_damage_type=WeaponDamageType.STANDARD,  # cap 0.75
+    )
+    # cap = ceil(8 * 0.75) = 6 → absorbable = min(16, 6) = 6 → 2 leaks
+    assert result.absorbed == 6
+    assert 8 - result.absorbed == 2  # nonzero leakage — the fix
+
+
+@pytest.mark.unit
+def test_armor_degrades_across_repeated_hits() -> None:
+    """Sustained fire breaks armor: each hit degrades the pool further."""
+    armor = 16
+    damage_raw = 10  # standard, cap 0.75
+    leaked_total = 0
+    for _ in range(4):
+        result = compute_armor_reduction(
+            damage_raw=damage_raw,
+            armor_value=armor,
+            weapon_damage_type=WeaponDamageType.STANDARD,
+        )
+        leaked_total += damage_raw - result.absorbed
+        armor = result.armor_after
+    # Armor started at 16; across 4 hits it degrades and leakage increases.
+    # Hit 1: absorbed min(16, ceil(10*.75)=8)=8, leak 2, armor 8
+    # Hit 2: absorbed min(8, 8)=8, leak 2, armor 0
+    # Hit 3+: absorbed 0, leak 10 each
+    assert leaked_total == 2 + 2 + 10 + 10
+    assert armor == 0
 
 
 # ---------------------------------------------------------------------------
@@ -222,19 +288,19 @@ def test_should_destroy_positive_hp() -> None:
 
 @pytest.mark.unit
 def test_damage_outcome_absorbed_plus_applied_equals_raw() -> None:
-    """absorbed_amount + damage_applied <= damage_raw (armor never amplifies)."""
+    """absorbed_amount + damage_applied == damage_raw (conservation; no amplification)."""
     damage_raw = 20
     armor_value = 8
 
-    absorbed = compute_armor_reduction(
+    result = compute_armor_reduction(
         damage_raw=damage_raw,
         armor_value=armor_value,
         weapon_damage_type=WeaponDamageType.STANDARD,
     )
-    damage_after = max(0, damage_raw - absorbed)
+    damage_after = max(0, damage_raw - result.absorbed)
 
     # absorbed + damage_after must equal damage_raw (conservation)
-    assert absorbed + damage_after == damage_raw
+    assert result.absorbed + damage_after == damage_raw
 
 
 @pytest.mark.unit
@@ -246,12 +312,12 @@ def test_damage_total_never_exceeds_raw_across_multiple_hits() -> None:
     total_raw = sum(raws)
 
     for raw in raws:
-        absorbed = compute_armor_reduction(
+        result = compute_armor_reduction(
             damage_raw=raw,
             armor_value=armor_value,
             weapon_damage_type=WeaponDamageType.STANDARD,
         )
-        total_applied += max(0, raw - absorbed)
+        total_applied += max(0, raw - result.absorbed)
 
     assert total_applied <= total_raw
 

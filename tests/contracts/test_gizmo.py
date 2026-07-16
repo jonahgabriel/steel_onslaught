@@ -48,7 +48,7 @@ def test_emergency_condenser_loads_and_matches_design() -> None:
     assert spec.category == GizmoCategory.SAFETY
     assert spec.constraints["mass"] == 8
     assert spec.constraints["slots"] == 1
-    assert spec.constraints["compatible_chassis"] == ["medium", "heavy"]
+    assert spec.constraints["compatible_chassis"] == ("medium", "heavy")
 
     # effects.on_redline block from design §14.3
     on_redline = spec.effects["on_redline"]
@@ -62,7 +62,7 @@ def test_emergency_condenser_loads_and_matches_design() -> None:
     assert spec.tradeoffs["mode_switch_latency_delta"] == pytest.approx(0.1)
 
     # forbidden_stacking
-    assert spec.forbidden_stacking == ["gizmo.cooling.pressure_dump_valve"]
+    assert spec.forbidden_stacking == ("gizmo.cooling.pressure_dump_valve",)
 
 
 @pytest.mark.unit
@@ -78,7 +78,7 @@ def test_forbidden_stacking_cannot_contain_own_id() -> None:
             constraints={"mass": 4, "slots": 1, "compatible_chassis": ["medium"]},
             effects={},
             tradeoffs={},
-            forbidden_stacking=["gizmo.test.self_ref"],  # own id — must reject
+            forbidden_stacking=("gizmo.test.self_ref",),  # own id — must reject
         )
 
 
@@ -95,7 +95,7 @@ def test_unknown_category_rejected() -> None:
             constraints={"mass": 4, "slots": 1, "compatible_chassis": ["medium"]},
             effects={},
             tradeoffs={},
-            forbidden_stacking=[],
+            forbidden_stacking=(),
         )
 
 

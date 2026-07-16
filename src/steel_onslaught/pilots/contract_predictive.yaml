@@ -1,0 +1,33 @@
+---
+# ONEX Node Contract — Predictive pilot archetype (compute node).
+name: predictive_pilot_compute
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: compute
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  Predictive combat archetype — ONEX compute node. Pure, deterministic
+  decide(observation) -> decision. 1-tick lookahead via linear extrapolation
+  of the last <=3 sensor observations: pre-emptive mode switch -> fire with
+  confidence + hit-prob floors -> preemptive vent -> defensive regen move ->
+  close distance (fallback). Spec-driven thresholds.
+
+handler:
+  module: steel_onslaught.pilots.predictive
+  class: PredictivePilot
+
+handler_routing:
+  default_handler: steel_onslaught.pilots.predictive:PredictivePilot
+
+descriptor:
+  node_archetype: compute
+  purity: pure
+  idempotent: true
+  timeout_ms: 100
+
+event_bus:
+  subscribe_topics: []
+  publish_topics: []
+
+metadata:
+  transport_type: in_process

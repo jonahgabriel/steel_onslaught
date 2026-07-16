@@ -65,6 +65,8 @@ def test_rejects_invalid_chassis_class() -> None:
                     "base_turn_rate": 3,
                     "base_signature": 50,
                     "base_vent_rate": 3,
+                    "base_hp": 100,
+                    "base_armor": 10,
                 },
                 "compatibility": {
                     "weapon_classes": ["light", "medium"],
@@ -98,6 +100,8 @@ def test_rejects_negative_max_mass() -> None:
                     "base_turn_rate": 4,
                     "base_signature": 30,
                     "base_vent_rate": 2,
+                    "base_hp": 60,
+                    "base_armor": 6,
                 },
                 "compatibility": {
                     "weapon_classes": ["light"],
@@ -137,3 +141,57 @@ def test_compatibility_lists_are_nonempty() -> None:
         assert len(spec.compatibility.weapon_classes) > 0
         assert len(spec.compatibility.boiler_classes) > 0
         assert len(spec.compatibility.mobility_classes) > 0
+
+
+@pytest.mark.unit
+def test_base_hp_and_armor_increase_with_chassis_class() -> None:
+    """Durability is now chassis-driven: light < medium < heavy on both axes."""
+    light = _load("light_scout_mk1.yaml").constraints
+    medium = _load("medium_hunter_mk1.yaml").constraints
+    heavy = _load("heavy_ironclad_mk1.yaml").constraints
+    assert light.base_hp < medium.base_hp < heavy.base_hp
+    assert light.base_armor < medium.base_armor < heavy.base_armor
+
+
+@pytest.mark.unit
+def test_medium_matches_legacy_constants() -> None:
+    """Medium chassis matches the pre-contract provisional hull/armor (100/10),
+    so existing medium-vs-medium fixtures stay numerically stable."""
+    medium = _load("medium_hunter_mk1.yaml").constraints
+    assert medium.base_hp == 100
+    assert medium.base_armor == 10
+
+
+@pytest.mark.unit
+def test_rejects_zero_base_hp() -> None:
+    with pytest.raises(ValidationError):
+        ModelSOChassisSpec.model_validate(
+            {
+                "schema_version": "0.1.0",
+                "kind": "steel_onslaught.chassis",
+                "id": "chassis.light.test",
+                "display_name": "Test",
+                "chassis_class": "light",
+                "constraints": {
+                    "max_mass": 60,
+                    "max_module_slots": 4,
+                    "max_boiler_volume": 40,
+                    "base_speed": 6,
+                    "base_turn_rate": 4,
+                    "base_signature": 30,
+                    "base_vent_rate": 2,
+                    "base_hp": 0,
+                    "base_armor": 6,
+                },
+                "compatibility": {
+                    "weapon_classes": ["light"],
+                    "boiler_classes": ["compact"],
+                    "mobility_classes": ["wheeled"],
+                },
+                "penalties": {
+                    "mode_switch_latency_modifier": 1.0,
+                    "sensor_lock_penalty": 1.0,
+                    "heat_weapon_vulnerability": 1.0,
+                },
+            }
+        )

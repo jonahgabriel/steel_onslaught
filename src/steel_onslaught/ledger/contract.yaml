@@ -1,0 +1,56 @@
+---
+# ONEX Node Contract — append-only event ledger (effect node).
+#
+# Declares SQLiteLedger as an ONEX effect node: the sole write path for match
+# events. append-only enforcement is duplicated at the database layer (triggers
+# in 0001_events.sql). Canonical replay ordering is (tick, sequence_in_tick, event_id).
+name: match_ledger_effect
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: effect
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  Append-only SQLite event ledger — ONEX effect node. Every canonical event
+  lands here first (subscriber order: ledger -> fold -> scoring -> leaderboard).
+  The full ONEX ModelEnvelope is persisted as envelope_json and round-tripped
+  verbatim, so causation chains survive persistence. No update/delete API.
+
+handler:
+  module: steel_onslaught.ledger.sqlite_ledger
+  class: SQLiteLedger
+
+handler_routing:
+  default_handler: steel_onslaught.ledger.sqlite_ledger:SQLiteLedger
+
+descriptor:
+  node_archetype: effect
+  purity: impure
+  idempotent: false  # appending N events creates N rows
+  timeout_ms: 1000
+
+event_bus:
+  subscribe_topics:
+    - onex.evt.steel-onslaught.match-started.v1
+    - onex.evt.steel-onslaught.match-tick.v1
+    - onex.evt.steel-onslaught.movement-resolved.v1
+    - onex.evt.steel-onslaught.weapon-fired.v1
+    - onex.evt.steel-onslaught.mode-transition-started.v1
+    - onex.evt.steel-onslaught.damage-applied.v1
+    - onex.evt.steel-onslaught.armor-absorbed.v1
+    - onex.evt.steel-onslaught.mech-destroyed.v1
+    - onex.evt.steel-onslaught.pilot-killed.v1
+    - onex.evt.steel-onslaught.victory-declared.v1
+    - onex.evt.steel-onslaught.match-ended.v1
+    - onex.evt.steel-onslaught.match-scored.v1
+  publish_topics: []
+
+db_io:
+  db_tables:
+    - name: events
+      migration: "0001_events.sql"
+      access: write
+      database: match_ledger
+      role: append_only
+
+metadata:
+  transport_type: in_process

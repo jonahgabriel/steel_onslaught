@@ -21,21 +21,42 @@ When ``transition_ticks_remaining`` reaches 0, it emits
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections.abc import Mapping
 from typing import Any
-
-import ulid
+from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
-from steel_onslaught.contracts.mode import ModelSOModeTransition
+from steel_onslaught.contracts.mode import (
+    ModeId,
+    ModelSOModeSwitchIntentPayload,
+    ModelSOModeTransition,
+    ModelSOModeTransitionCompletedPayload,
+    ModelSOModeTransitionStartedPayload,
+)
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import ModelSOEmptyPayload
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 
 _PRODUCER_NODE = "node.reducer.mode"
+
+
+class MissingModeTransitionError(ValueError):
+    """A closed, valid mode pair has no injected transition contract."""
+
+    def __init__(self, from_mode: ModeId, to_mode: ModeId, *, owner_id: str) -> None:
+        self.from_mode = from_mode
+        self.to_mode = to_mode
+        self.owner_id = owner_id
+        super().__init__(
+            "missing_mode_transition: "
+            f"{from_mode.value}->{to_mode.value} referenced by {owner_id!r} "
+            "is absent from the injected transition catalog"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +70,7 @@ _PRODUCER_NODE = "node.reducer.mode"
 def validate_mode_switch(
     mech: ModelSOMechRuntimeState,
     transition: ModelSOModeTransition,
-    from_mode: str,
+    from_mode: ModeId,
     current_tick: int,
 ) -> bool:
     """Return True iff every mode-switch validation check passes."""
@@ -83,60 +104,64 @@ def validate_mode_switch(
 
 def build_mode_transition_started_event(
     *,
+    event_factory: EventFactory,
     match_id: str,
+    correlation_id: UUID,
+    causation_id: UUID | None = None,
     tick: int,
     mech: ModelSOMechRuntimeState,
     transition: ModelSOModeTransition,
 ) -> ModelSOEventEnvelope:
-    """Build the canonical MODE_TRANSITION_STARTED envelope for *mech*."""
-    return ModelSOEventEnvelope(
-        event_id=ulid.new().str,
+    """Build the canonical MODE_TRANSITION_STARTED envelope for *mech*.
+
+    *causation_id* (when set) links this event to the MODE_SWITCH_INTENT that
+    triggered it — the ONEX causation chain.
+    """
+    return event_factory.make(
         match_id=match_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
         tick=tick,
         sequence_in_tick=0,  # bus re-stamps
         event_type=SOEventType.MODE_TRANSITION_STARTED,
         producer_node=_PRODUCER_NODE,
         subject=ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id),
-        payload={
-            "from_mode": transition.from_mode,
-            "to_mode": transition.to_mode,
-            "costs": {
-                "pressure": transition.costs.pressure,
-                "heat": transition.costs.heat,
-                "transition_ticks": transition.costs.transition_ticks,
-            },
-            "sensor_dropout_ticks": transition.vulnerability.sensor_dropout_ticks,
-            "evasion_penalty": transition.vulnerability.evasion_penalty_during_transition,
-        },
-        emitted_at=datetime.now(UTC).isoformat(),
+        payload=ModelSOModeTransitionStartedPayload(
+            from_mode=transition.from_mode,
+            to_mode=transition.to_mode,
+            costs=transition.costs,
+            sensor_dropout_ticks=transition.vulnerability.sensor_dropout_ticks,
+            evasion_penalty=transition.vulnerability.evasion_penalty_during_transition,
+        ).model_dump(mode="json"),
     )
 
 
 def build_mode_transition_completed_event(
     *,
+    event_factory: EventFactory,
     match_id: str,
+    correlation_id: UUID,
     tick: int,
     mech_id: str,
     player_id: str,
-    from_mode: str,
-    new_mode: str,
+    from_mode: ModeId,
+    new_mode: ModeId,
     mode_lock_until: int,
 ) -> ModelSOEventEnvelope:
     """Build the canonical MODE_TRANSITION_COMPLETED envelope."""
-    return ModelSOEventEnvelope(
-        event_id=ulid.new().str,
+    return event_factory.make(
         match_id=match_id,
+        correlation_id=correlation_id,
         tick=tick,
         sequence_in_tick=0,  # bus re-stamps
         event_type=SOEventType.MODE_TRANSITION_COMPLETED,
         producer_node=_PRODUCER_NODE,
         subject=ModelSOEventSubject(mech_id=mech_id, player_id=player_id),
-        payload={
-            "from_mode": from_mode,
-            "new_mode": new_mode,
-            "mode_lock_until": mode_lock_until,
-        },
-        emitted_at=datetime.now(UTC).isoformat(),
+        payload=ModelSOModeTransitionCompletedPayload(
+            from_mode=from_mode,
+            new_mode=new_mode,
+            mode_lock_until=mode_lock_until,
+        ).model_dump(mode="json"),
     )
 
 
@@ -147,6 +172,8 @@ class ReducerModeTransition:
     ----------
     match_id:
         Owning match identifier.
+    correlation_id:
+        ONEX workflow correlation id shared across all events of this match.
     transitions:
         Mapping ``(from_mode, to_mode) -> ModelSOModeTransition`` for all
         valid directed mode pairs in this match's rule set.
@@ -158,10 +185,15 @@ class ReducerModeTransition:
     def __init__(
         self,
         match_id: str,
-        transitions: dict[tuple[str, str], ModelSOModeTransition],
+        transitions: Mapping[tuple[ModeId, ModeId], ModelSOModeTransition],
+        *,
+        correlation_id: UUID,
+        event_factory: EventFactory,
         bus: EventBus | None = None,
     ) -> None:
         self._match_id = match_id
+        self._correlation_id = correlation_id
+        self._events = event_factory
         self._transitions = transitions
         self._bus = bus
         # Mutable per-mech state cache, keyed by mech_id.  Seeded via
@@ -216,6 +248,7 @@ class ReducerModeTransition:
             case SOEventType.MODE_SWITCH_INTENT:
                 self._handle_intent(event)
             case SOEventType.MATCH_TICK:
+                ModelSOEmptyPayload.model_validate(event.payload)
                 self._current_tick = event.tick
                 self._tick_transitions()
             case _:
@@ -234,14 +267,15 @@ class ReducerModeTransition:
         if not mech.alive or not mech.pilot_alive:
             return  # dead mechs cannot switch modes
 
-        from_mode: str = event.payload.get("from_mode", "")
-        to_mode: str = event.payload.get("to_mode", "")
+        payload = ModelSOModeSwitchIntentPayload.model_validate(event.payload)
+        from_mode = mech.current_mode
+        to_mode = payload.target_mode
 
         # Validate — all failures are silent drops (the pilot_decision_made
         # event already records the attempted mode switch with a reason code).
         transition = self._transitions.get((from_mode, to_mode))
         if transition is None:
-            return  # unknown transition pair
+            raise MissingModeTransitionError(from_mode, to_mode, owner_id=mech_id)
 
         if not self._validate(mech, transition, from_mode):
             return  # one or more checks failed — drop silently
@@ -286,7 +320,7 @@ class ReducerModeTransition:
         self,
         mech: ModelSOMechRuntimeState,
         transition: ModelSOModeTransition,
-        from_mode: str,
+        from_mode: ModeId,
     ) -> bool:
         """Return True iff all validation checks pass for the given intent."""
         return validate_mode_switch(mech, transition, from_mode, self._current_tick)
@@ -324,7 +358,11 @@ class ReducerModeTransition:
             # (current_mode_at_start, to_mode).  Since current_mode hasn't been
             # updated yet, we check all transitions that end at to_mode — the
             # lock value is attached to the destination transition rule.
-            lock_ticks = self._lock_ticks_for_completion(mech.current_mode, to_mode)
+            lock_ticks = self._lock_ticks_for_completion(
+                mech.current_mode,
+                to_mode,
+                owner_id=mech_id,
+            )
 
             completed_mech = mech.model_copy(
                 update={
@@ -349,11 +387,17 @@ class ReducerModeTransition:
                 },
             )
 
-    def _lock_ticks_for_completion(self, from_mode: str, to_mode: str) -> int:
+    def _lock_ticks_for_completion(
+        self,
+        from_mode: ModeId,
+        to_mode: ModeId,
+        *,
+        owner_id: str,
+    ) -> int:
         """Return ``minimum_lock_ticks_after_switch`` for the completed transition."""
         transition = self._transitions.get((from_mode, to_mode))
         if transition is None:
-            return 0
+            raise MissingModeTransitionError(from_mode, to_mode, owner_id=owner_id)
         return transition.restrictions.minimum_lock_ticks_after_switch
 
     # ------------------------------------------------------------------
@@ -371,15 +415,14 @@ class ReducerModeTransition:
         if self._bus is None:
             return
         self._bus.publish(
-            ModelSOEventEnvelope(
-                event_id=ulid.new().str,
+            self._events.make(
                 match_id=self._match_id,
+                correlation_id=self._correlation_id,
                 tick=self._current_tick,
                 sequence_in_tick=0,  # bus re-stamps
                 event_type=event_type,
                 producer_node=_PRODUCER_NODE,
                 subject=ModelSOEventSubject(mech_id=mech_id, player_id=player_id),
                 payload=payload,
-                emitted_at=datetime.now(UTC).isoformat(),
             )
         )

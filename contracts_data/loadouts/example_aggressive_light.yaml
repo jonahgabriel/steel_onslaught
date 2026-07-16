@@ -4,7 +4,7 @@ id: loadout.example.aggressive_light
 
 chassis_id: chassis.light.scout_mk1
 boiler_id: boiler.compact.v1
-pilot_id: pilot.example.aggressive_v1
+pilot_id: pilot.template.aggressive
 
 modules:
   weapons:

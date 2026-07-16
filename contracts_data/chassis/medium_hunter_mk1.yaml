@@ -11,6 +11,9 @@ constraints:
   base_turn_rate: 3
   base_signature: 50
   base_vent_rate: 3
+  base_hp: 100
+  base_armor: 10
+  base_armor_regen: 1
 compatibility:
   weapon_classes:
     - "light"

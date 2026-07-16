@@ -25,11 +25,11 @@ class ModelSOLoadoutModules(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    weapons: list[str] = Field(default_factory=list)
-    sensors: list[str] = Field(default_factory=list)
-    cooling: list[str] = Field(default_factory=list)
-    armor: list[str] = Field(default_factory=list)
-    gizmos: list[str] = Field(default_factory=list)
+    weapons: tuple[str, ...] = ()
+    sensors: tuple[str, ...] = ()
+    cooling: tuple[str, ...] = ()
+    armor: tuple[str, ...] = ()
+    gizmos: tuple[str, ...] = ()
 
     def all_module_ids(self) -> tuple[str, ...]:
         """Every fielded module id, in category order (weapons first, gizmos last)."""

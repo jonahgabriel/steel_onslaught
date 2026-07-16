@@ -15,14 +15,14 @@ frame-for-frame in canonical ledger order — to every client that connects.
 
 REST endpoint (Task 33)
 -----------------------
-``create_replay_http_handler(ledger_dir)`` returns an
+``create_replay_http_handler(ledgers)`` returns an
 ``http.server.BaseHTTPRequestHandler`` subclass that serves:
 
   GET /api/replay/{match_id}/tick/{tick}
 
   200  JSON array of PILOT_DECISION_MADE envelopes for that tick (may be [])
   400  {"error": "invalid_tick"}  when tick < 0
-  404  {"error": "match_not_found"}  when no ledger in *ledger_dir* contains
+  404  {"error": "match_not_found"}  when no injected ledger contains
        any event with the requested match_id
 """
 
@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -42,7 +41,11 @@ from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
 
 from steel_onslaught.bus.protocol import EventBus, HandlerToken
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.ledger.protocol import QueryableEventLedger
+from steel_onslaught.match.composition import (
+    build_runtime_dependencies,
+    load_application_overlay,
+)
 
 DEFAULT_WS_HOST = "127.0.0.1"
 DEFAULT_WS_PORT = 8765
@@ -53,62 +56,36 @@ DEFAULT_WS_PORT = 8765
 
 _REPLAY_RE = re.compile(r"^/api/replay/([^/]+)/tick/(-?\d+)$")
 
-_SELECT_DECISIONS_SQL = """
-SELECT event_id, match_id, tick, sequence_in_tick, event_type,
-       correlation_id, causation_id, producer_node,
-       subject_json, payload_json, emitted_at, schema_version
-  FROM events
- WHERE match_id = ?
-   AND tick = ?
-   AND event_type = ?
- ORDER BY sequence_in_tick ASC, event_id ASC
-"""
 
-_CHECK_MATCH_SQL = "SELECT 1 FROM events WHERE match_id = ? LIMIT 1"
-
-
-def _find_ledger_for_match(ledger_dir: Path, match_id: str) -> Path | None:
-    """Return the first ``*.sqlite`` file under *ledger_dir* that contains
-    at least one event row for *match_id*, or ``None`` if none exists."""
-    for db_path in sorted(ledger_dir.glob("*.sqlite")):
-        try:
-            conn = sqlite3.connect(db_path)
-            try:
-                row = conn.execute(_CHECK_MATCH_SQL, (match_id,)).fetchone()
-                if row is not None:
-                    return db_path
-            finally:
-                conn.close()
-        except sqlite3.DatabaseError:
-            continue
+def _find_ledger_for_match(
+    ledgers: Sequence[QueryableEventLedger], match_id: str
+) -> QueryableEventLedger | None:
+    for ledger in ledgers:
+        if ledger.contains_match(match_id):
+            return ledger
     return None
 
 
-def _query_pilot_decisions(db_path: Path, match_id: str, tick: int) -> list[dict[str, Any]]:
+def _query_pilot_decisions(
+    ledger: QueryableEventLedger, match_id: str, tick: int
+) -> list[dict[str, Any]]:
     """Return serialised PILOT_DECISION_MADE envelopes for (*match_id*, *tick*)."""
-    from steel_onslaught.ledger.sqlite_ledger import _row_to_envelope
-
-    conn = sqlite3.connect(db_path)
-    try:
-        rows = conn.execute(
-            _SELECT_DECISIONS_SQL,
-            (match_id, tick, SOEventType.PILOT_DECISION_MADE.value),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    result: list[dict[str, Any]] = []
-    for row in rows:
-        env = _row_to_envelope(row)
-        result.append(json.loads(env.model_dump_json()))
-    return result
+    return [
+        json.loads(event.model_dump_json())
+        for event in ledger.read_at(
+            match_id,
+            tick,
+            event_types=frozenset({SOEventType.PILOT_DECISION_MADE}),
+        )
+    ]
 
 
-def create_replay_http_handler(ledger_dir: Path) -> type[BaseHTTPRequestHandler]:
+def create_replay_http_handler(
+    ledgers: Sequence[QueryableEventLedger],
+) -> type[BaseHTTPRequestHandler]:
     """Return an HTTP handler class that serves the replay REST API.
 
-    The returned class reads from ``*.sqlite`` files under *ledger_dir*.
-    Each handler instance is stateless; *ledger_dir* is captured by closure.
+    The returned class reads only through injected storage-neutral query ports.
 
     Endpoint:
         GET /api/replay/{match_id}/tick/{tick}
@@ -134,12 +111,12 @@ def create_replay_http_handler(ledger_dir: Path) -> type[BaseHTTPRequestHandler]
                 self._respond(400, {"error": "invalid_tick"})
                 return
 
-            db_path = _find_ledger_for_match(ledger_dir, match_id_param)
-            if db_path is None:
+            ledger = _find_ledger_for_match(ledgers, match_id_param)
+            if ledger is None:
                 self._respond(404, {"error": "match_not_found"})
                 return
 
-            decisions = _query_pilot_decisions(db_path, match_id_param, tick_val)
+            decisions = _query_pilot_decisions(ledger, match_id_param, tick_val)
             self._respond(200, decisions)
 
         def _respond(self, status: int, body: Any) -> None:
@@ -311,8 +288,8 @@ async def _serve_replay(
 
 @click.command(name="serve")
 @click.option(
-    "--ledger",
-    "ledger_path",
+    "--overlay",
+    "overlay_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
 )
@@ -328,12 +305,16 @@ async def _serve_replay(
     help="Seconds to pause between tick boundaries during replay (0 = no pacing).",
 )
 def serve_command(
-    ledger_path: Path, match_id: str, host: str, port: int, tick_delay: float
+    overlay_path: Path, match_id: str, host: str, port: int, tick_delay: float
 ) -> None:
     """Stream a recorded match to WebSocket clients (frontend on :5173)."""
-    events = list(SQLiteLedger(ledger_path).read_all(match_id))
+    overlay = load_application_overlay(overlay_path)
+    dependencies = build_runtime_dependencies(overlay)
+    events = list(dependencies.ledger.read_all(match_id))
     if not events:
-        raise click.ClickException(f"no events found for match {match_id!r} in {ledger_path}")
+        raise click.ClickException(
+            f"no events found for match {match_id!r} in {overlay.event_ledger.path}"
+        )
     try:
         asyncio.run(_serve_replay(events, host=host, port=port, tick_delay=tick_delay))
     except KeyboardInterrupt:

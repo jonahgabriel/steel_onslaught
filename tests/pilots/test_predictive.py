@@ -17,6 +17,7 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.schemas import (
@@ -120,7 +121,7 @@ def _observation(
         match_elapsed_ticks=tick,
         boiler=boiler if boiler is not None else _boiler(),
         weapons=weapons if weapons is not None else [_weapon()],
-        current_mode=current_mode,
+        current_mode=ModeId(current_mode),
         mode_lock_expired=mode_lock_expired,
         position=position or ModelSOPosition(x=0, y=0),
         hp_percent=hp_percent,
