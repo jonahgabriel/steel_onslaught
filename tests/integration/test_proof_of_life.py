@@ -221,13 +221,14 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.goto(f"http://localhost:{_VITE_PORT}/")  # dev server, started above
-            page.wait_for_selector(
-                f'[data-testid="victory-banner"][data-winner="{live_state.winner_id}"]',
-                timeout=10_000,
+            victory_selector = (
+                f'[data-testid="arena-victory"][data-winner="{live_state.winner_id}"]'
             )
-            # R10: assert the rendered banner names the correct winner.
-            banner_text = page.locator("[data-testid=victory-banner]").inner_text()
-            assert live_state.winner_id in banner_text
+            page.wait_for_selector(victory_selector, timeout=10_000)
+            # R10: assert the rendered arena victory state names the exact winner.
+            victory = page.locator(victory_selector)
+            assert victory.get_attribute("data-winner") == live_state.winner_id
+            assert live_state.winner_id in victory.inner_text()
             browser.close()
 
 
