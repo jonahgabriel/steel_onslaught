@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import ulid
 from omnibase_core.models.common.model_envelope import ModelEnvelope
@@ -54,6 +54,24 @@ class ModelSOEventSubject(BaseModel):
     player_id: str
 
 
+def legacy_identity_uuid(value: UUID | str) -> UUID:
+    """Return the canonical UUID for one pre-ONEX identity value.
+
+    Existing UUID identities are preserved exactly.  Legacy string identities
+    (including ULIDs and match ids) are mapped with UUIDv5 over the complete
+    value, making reconstruction stable across processes without truncation or
+    dependence on Python's randomized ``hash()`` implementation.
+    """
+    if isinstance(value, UUID):
+        return value
+    if not isinstance(value, str) or not value:
+        raise ValueError("legacy identity must be a non-empty string or UUID")
+    try:
+        return UUID(value)
+    except ValueError:
+        return uuid5(NAMESPACE_URL, f"steel-onslaught:legacy-identity:{value}")
+
+
 class ModelSOEventEnvelope(BaseModel):
     """A Steel Onslaught game event, ONEX-envelope-composed.
 
@@ -69,7 +87,7 @@ class ModelSOEventEnvelope(BaseModel):
     docs/plans/2026-07-02-determinism-boundaries.md.
     """
 
-    model_config = ConfigDict(extra="ignore", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: str = "0.1.0"
     event_id: str = Field(min_length=26, max_length=26)  # ULID; uniqueness only
@@ -126,30 +144,23 @@ class ModelSOEventEnvelope(BaseModel):
             "entity_id": str(match_id),
             "emitted_at": emitted_dt.isoformat(),
         }
-        # message_id: legacy event_id is a ULID string (not a UUID); derive a
-        # stable UUID from it so the ONEX message_id is deterministic per event.
+        # message_id: legacy event_id is normally a ULID string (not a UUID).
+        # Map its complete identity deterministically into the UUID domain.
         mid = data.get("event_id")
-        if isinstance(mid, str) and len(mid) >= 26:
-            envelope_dict["message_id"] = str(UUID(int=int.from_bytes(mid[:16].encode())))
-        else:
-            envelope_dict["message_id"] = str(uuid4())
+        if not isinstance(mid, (str, UUID)):
+            raise ValueError("legacy event_id must be a non-empty string or UUID")
+        envelope_dict["message_id"] = str(legacy_identity_uuid(mid))
 
-        # correlation_id / causation_id: coerce legacy string UUIDs to UUID form.
-        def _coerce_uuid(v: object) -> UUID | None:
-            if v is None:
-                return None
-            if isinstance(v, UUID):
-                return v
-            try:
-                return UUID(str(v))
-            except (ValueError, AttributeError):
-                # Not a UUID string (e.g. a match id) — derive a stable UUID.
-                return UUID(int=hash(str(v)) & ((1 << 128) - 1))
-
-        envelope_dict["correlation_id"] = str(
-            _coerce_uuid(legacy_corr if legacy_corr is not None else match_id)
-        )
-        caus = _coerce_uuid(legacy_caus)
+        # correlation_id / causation_id use the same identity mapping so a
+        # causation value equal to a parent's legacy event_id links to that
+        # parent's reconstructed message_id.
+        corr_source = legacy_corr if legacy_corr is not None else match_id
+        if not isinstance(corr_source, (str, UUID)):
+            raise ValueError("legacy correlation_id must be a non-empty string or UUID")
+        envelope_dict["correlation_id"] = str(legacy_identity_uuid(corr_source))
+        if legacy_caus is not None and not isinstance(legacy_caus, (str, UUID)):
+            raise ValueError("legacy causation_id must be a non-empty string or UUID")
+        caus = legacy_identity_uuid(legacy_caus) if legacy_caus is not None else None
         if caus is not None:
             envelope_dict["causation_id"] = str(caus)
         data = {

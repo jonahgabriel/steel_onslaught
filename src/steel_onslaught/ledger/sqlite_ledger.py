@@ -93,12 +93,12 @@ def _row_to_envelope(row: tuple[object, ...]) -> ModelSOEventEnvelope:
                 "envelope": json.loads(str(envelope_json)),
             }
         )
-    # Legacy row (pre-ONEX): reconstruct an envelope from the denormalized columns.
-    from datetime import UTC, datetime
-
+    # Legacy row (pre-ONEX): route the denormalized identity columns through
+    # ModelSOEventEnvelope's single deterministic legacy adapter.
     corr = str(_correlation_id) if _correlation_id is not None else None
     caus = str(_causation_id) if _causation_id is not None else None
-    emitted = str(_emitted_at) if _emitted_at is not None else datetime.now(UTC).isoformat()
+    if _emitted_at is None:
+        raise ValueError("legacy event row is missing required emitted_at metadata")
     return ModelSOEventEnvelope.model_validate(
         {
             "event_id": str(event_id),
@@ -110,13 +110,9 @@ def _row_to_envelope(row: tuple[object, ...]) -> ModelSOEventEnvelope:
             "event_type": str(event_type),
             "payload": json.loads(str(payload_json)),
             "schema_version": str(schema_version),
-            "envelope": {
-                "message_id": str(event_id),  # best-effort stable id for legacy rows
-                "correlation_id": corr if corr is not None else str(match_id),
-                "causation_id": caus,
-                "entity_id": str(match_id),
-                "emitted_at": emitted,
-            },
+            "correlation_id": corr if corr is not None else str(match_id),
+            "causation_id": caus,
+            "emitted_at": str(_emitted_at),
         }
     )
 

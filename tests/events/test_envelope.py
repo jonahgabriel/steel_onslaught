@@ -6,7 +6,12 @@ import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 from pydantic import ValidationError
 
-from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
+from steel_onslaught.events.envelope import (
+    ModelSOEventEnvelope,
+    ModelSOEventSubject,
+    SOEventType,
+    legacy_identity_uuid,
+)
 
 _CORR = uuid4()
 _CAUS = uuid4()
@@ -73,12 +78,74 @@ def _base_kwargs(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _legacy_flat_kwargs(**overrides: Any) -> dict[str, Any]:
+    """Return a valid pre-ONEX flat event shape."""
+    base: dict[str, Any] = {
+        "event_id": "01JABCDE0123456789ABCDEF01",
+        "match_id": "match.legacy.001",
+        "tick": 0,
+        "sequence_in_tick": 0,
+        "event_type": SOEventType.MATCH_STARTED,
+        "producer_node": "node.legacy",
+        "subject": {"mech_id": "mech.legacy", "player_id": "player.legacy"},
+        "payload": {},
+        "correlation_id": "match.legacy.001",
+        "causation_id": "01JABCDE0123456789ABCDEF00",
+        "emitted_at": "2026-04-30T16:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
+
+
 @pytest.mark.unit
 def test_envelope_round_trip() -> None:
     env = ModelSOEventEnvelope(**_base_kwargs())
     blob = env.model_dump_json()
     parsed = ModelSOEventEnvelope.model_validate_json(blob)
     assert parsed == env
+
+
+@pytest.mark.unit
+def test_envelope_rejects_unknown_field() -> None:
+    """Canonical event contracts fail closed on undeclared top-level fields."""
+    with pytest.raises(ValidationError) as exc_info:
+        ModelSOEventEnvelope(**_base_kwargs(unexpected_contract_field=True))
+
+    assert any(error["type"] == "extra_forbidden" for error in exc_info.value.errors())
+
+
+@pytest.mark.unit
+def test_legacy_identity_uuid_preserves_valid_uuid() -> None:
+    correlation_id = uuid4()
+    causation_id = uuid4()
+
+    assert legacy_identity_uuid(correlation_id) == correlation_id
+    assert legacy_identity_uuid(str(correlation_id)) == correlation_id
+    event = ModelSOEventEnvelope.model_validate(
+        _legacy_flat_kwargs(
+            correlation_id=str(correlation_id),
+            causation_id=str(causation_id),
+        )
+    )
+    assert event.correlation_id == correlation_id
+    assert event.causation_id == causation_id
+
+
+@pytest.mark.unit
+def test_legacy_identity_uuid_uses_complete_event_id() -> None:
+    """Distinct suffixes must not collide during legacy message reconstruction."""
+    first = ModelSOEventEnvelope.model_validate(
+        _legacy_flat_kwargs(event_id="01JABCDE0123456789ABCDEF01")
+    )
+    second = ModelSOEventEnvelope.model_validate(
+        _legacy_flat_kwargs(event_id="01JABCDE0123456789ABCDEF02")
+    )
+
+    assert first.envelope.message_id == legacy_identity_uuid(first.event_id)
+    assert second.envelope.message_id == legacy_identity_uuid(second.event_id)
+    assert first.envelope.message_id != second.envelope.message_id
+    assert first.correlation_id == legacy_identity_uuid("match.legacy.001")
+    assert first.causation_id == legacy_identity_uuid("01JABCDE0123456789ABCDEF00")
 
 
 @pytest.mark.unit
