@@ -9,17 +9,47 @@ Covers the Rev-5 divergence remediations:
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+import yaml  # type: ignore[import-untyped]
 
+from steel_onslaught.llm import client_http
 from steel_onslaught.llm.client_http import (
     OpenAICompatibleClient,
+    ProviderOverlayMissingError,
     ProviderRegistryError,
     client_for_provider,
     load_providers,
 )
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_provider_registry(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+    """Keep registry tests independent of any developer-local overlay file."""
+    monkeypatch.setattr(client_http, "_LOCAL_OVERLAY_YAML", tmp_path / "absent-overlay.yaml")
+    load_providers.cache_clear()
+    yield
+    load_providers.cache_clear()
+
+
+@pytest.fixture
+def with_local_overlay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Callable[[dict[str, str]], None]:
+    """Install a temporary provider-id to endpoint-url local overlay."""
+
+    def _install(endpoints: dict[str, str]) -> None:
+        overlay = tmp_path / "providers.local.yaml"
+        overlay.write_text(yaml.safe_dump({"endpoints": endpoints}), encoding="utf-8")
+        monkeypatch.setattr(client_http, "_LOCAL_OVERLAY_YAML", overlay)
+        load_providers.cache_clear()
+
+    return _install
+
 
 # ---------------------------------------------------------------------------
 # Fake httpx transport (records the POST url + headers; performs no network I/O)
@@ -164,7 +194,8 @@ def test_no_paid_openrouter_entries() -> None:
     assert "openrouter-glm" not in registry
     assert "openrouter-claude" not in registry
     for entry in registry.values():
-        assert "openrouter.ai" not in entry.endpoint_url
+        if entry.endpoint_url is not None:
+            assert "openrouter.ai" not in entry.endpoint_url
 
 
 @pytest.mark.unit
@@ -175,11 +206,19 @@ def test_glm_routes_direct_zai_with_declared_key() -> None:
 
 
 @pytest.mark.unit
-def test_local_providers_are_keyless_and_complete_url() -> None:
-    for pid in ("openai-compat", "qwen35", "qwen27", "deepseek"):
+def test_committed_local_provider_is_keyless_and_complete_url() -> None:
+    entry = load_providers()["openai-compat"]
+    assert entry.api_key_env is None
+    assert entry.endpoint_url is not None
+    assert entry.endpoint_url.endswith("/chat/completions")
+
+
+@pytest.mark.unit
+def test_private_providers_have_no_committed_endpoint() -> None:
+    for pid in ("qwen35", "qwen27", "deepseek"):
         entry = load_providers()[pid]
         assert entry.api_key_env is None
-        assert entry.endpoint_url.endswith("/chat/completions")
+        assert entry.endpoint_url is None
 
 
 # ---------------------------------------------------------------------------
@@ -212,3 +251,66 @@ def test_glm_client_from_registry_is_fail_closed(
     with pytest.raises(RuntimeError, match="missing_api_key"):
         client.complete("sys", "usr")
     assert fake_httpx.last_url is None
+
+
+# ---------------------------------------------------------------------------
+# Local endpoint overlay — private providers resolve without committed details
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_private_provider_without_overlay_fails_fast() -> None:
+    with pytest.raises(ProviderOverlayMissingError, match="missing_local_endpoint"):
+        client_for_provider("qwen35")
+
+
+@pytest.mark.unit
+def test_private_provider_resolves_from_overlay(
+    with_local_overlay: Callable[[dict[str, str]], None],
+) -> None:
+    with_local_overlay({"qwen35": "http://overlay.test:8000/v1/chat/completions"})
+    entry = load_providers()["qwen35"]
+    assert entry.endpoint_url == "http://overlay.test:8000/v1/chat/completions"
+    client = client_for_provider("qwen35")
+    assert client._endpoint_url == "http://overlay.test:8000/v1/chat/completions"
+    assert client._model == "Qwen3.6-35B-A3B"
+    assert client._timeout == 30.0
+
+
+@pytest.mark.unit
+def test_overlay_conflict_on_committed_endpoint_fails_fast(
+    with_local_overlay: Callable[[dict[str, str]], None],
+) -> None:
+    with_local_overlay({"glm-5.2": "http://overlay.test/v1/chat/completions"})
+    with pytest.raises(ProviderRegistryError, match="overlay_conflict"):
+        load_providers()
+
+
+@pytest.mark.unit
+def test_overlay_unknown_provider_fails_fast(
+    with_local_overlay: Callable[[dict[str, str]], None],
+) -> None:
+    with_local_overlay({"does-not-exist": "http://overlay.test/v1/chat/completions"})
+    with pytest.raises(ProviderRegistryError, match="overlay_unknown_provider"):
+        load_providers()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "invalid_overlay",
+    [
+        {"endpoints": ["not", "a", "mapping"]},
+        {"endpoints": {"qwen35": 8000}},
+    ],
+)
+def test_invalid_overlay_fails_fast(
+    invalid_overlay: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    overlay = tmp_path / "providers.local.yaml"
+    overlay.write_text(yaml.safe_dump(invalid_overlay), encoding="utf-8")
+    monkeypatch.setattr(client_http, "_LOCAL_OVERLAY_YAML", overlay)
+    load_providers.cache_clear()
+    with pytest.raises(ProviderRegistryError, match="local overlay"):
+        load_providers()

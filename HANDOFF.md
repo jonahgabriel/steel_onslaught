@@ -24,9 +24,9 @@
 ### Live model endpoints (probed 2026-07-02)
 | Provider ID | Endpoint | Model | Hardware |
 |---|---|---|---|
-| `qwen35` | `http://100.109.203.94:8000/v1` | Qwen3.6-35B-A3B | RTX 5090 |
-| `qwen27` | `http://100.109.203.94:8001/v1` | Qwen3.6-27B-MTP-IQ4_XS.gguf | RTX 4090 |
-| `deepseek` | `http://100.99.174.19:8101/v1` | deepseek-v4-pro / deepseek-v4-flash | M2 Ultra |
+| `qwen35` | `http://<tailscale-host>:8000/v1` | Qwen3.6-35B-A3B | RTX 5090 |
+| `qwen27` | `http://<tailscale-host>:8001/v1` | Qwen3.6-27B-MTP-IQ4_XS.gguf | RTX 4090 |
+| `deepseek` | `http://<tailscale-host>:8101/v1` | deepseek-v4-pro / deepseek-v4-flash | M2 Ultra |
 | `stub` | (none) | deterministic | — |
 
 ### Cross-model match proven
@@ -212,12 +212,12 @@ steel_onslaught (Python 3.12)
 ```
 
 ## Sibling repos (for reuse)
-- `/Users/jonah/Code/omni_home/omnibase_core` — ONEX primitives (ModelEnvelope, reducers, bus)
-- `/Users/jonah/Code/omni_home/omnibase_spi` — protocol contracts
-- `/Users/jonah/Code/omni_home/omnibase_infra` — Kafka/Postgres implementations (not pulled in)
-- `/Users/jonah/Code/omni_home/omnimarket` — production LLM handler (`HandlerLlmDelegationCall`), eval framework (search for it)
-- `/Users/jonah/Code/omni_home/omniclaude` — model config, routing architecture, vLLM backends
-- `/Users/jonah/Code/omni_home/omniintelligence` — review pairing, model registry
+- `$OMNI_HOME/omnibase_core` — ONEX primitives (ModelEnvelope, reducers, bus)
+- `$OMNI_HOME/omnibase_spi` — protocol contracts
+- `$OMNI_HOME/omnibase_infra` — Kafka/Postgres implementations (not pulled in)
+- `$OMNI_HOME/omnimarket` — production LLM handler (`HandlerLlmDelegationCall`), eval framework (search for it)
+- `$OMNI_HOME/omniclaude` — model config, routing architecture, vLLM backends
+- `$OMNI_HOME/omniintelligence` — review pairing, model registry
 
 ## Known issues
 - PoL Playwright test times out under Python 3.12 (subprocess startup; page renders fine).

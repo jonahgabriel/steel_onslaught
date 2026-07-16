@@ -33,7 +33,7 @@
 
 `omnimarket/src/omnimarket/nodes/node_llm_delegation_call_effect/contract.yaml`
 (read at
-`/Users/jonah/Code/omni_home/omnimarket/src/omnimarket/nodes/node_llm_delegation_call_effect/contract.yaml`):
+`$OMNI_HOME/omnimarket/src/omnimarket/nodes/node_llm_delegation_call_effect/contract.yaml`):
 
 ```yaml
 event_bus:
@@ -128,7 +128,7 @@ Rev 5 reconciliation table (Rev 4's reuse directive not yet applied).
 ### Reachability
 
 ```
-$ ssh -o BatchMode=yes -o ConnectTimeout=8 jonah@192.168.86.201 "echo SSH_OK; date"
+$ ssh -o BatchMode=yes -o ConnectTimeout=8 <user>@<lan-host> "echo SSH_OK; date"
 SSH_OK
 Thu Jul  2 09:49:21 PM EDT 2026
 ```
@@ -137,7 +137,7 @@ verified: 2026-07-02 via the command above — SSH reachable.
 ### Which lane runs the node
 
 ```
-$ ssh jonah@192.168.86.201 "docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'"
+$ ssh <user>@<lan-host> "docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}'"
 ```
 verified: 2026-07-02 via the command above. Findings:
 
@@ -150,7 +150,7 @@ verified: 2026-07-02 via the command above. Findings:
   are all `Up 6 hours (healthy)`.
 
 ```
-$ ssh jonah@192.168.86.201 "docker logs omninode-stability-test-runtime-effects --tail 5000 2>&1 | grep -i 'node_llm_delegation_call_effect'"
+$ ssh <user>@<lan-host> "docker logs omninode-stability-test-runtime-effects --tail 5000 2>&1 | grep -i 'node_llm_delegation_call_effect'"
 ```
 verified: 2026-07-02 via the command above — repeating, every ~5 minutes,
 across **all three** stability-test runtime containers (main, effects,
@@ -165,7 +165,7 @@ sourced from the same `omnimarket` package version the plan assumes
 ### Broker location + reachability
 
 ```
-$ ssh jonah@192.168.86.201 "docker ps --filter name=redpanda --format '{{.Names}}\t{{.Ports}}'"
+$ ssh <user>@<lan-host> "docker ps --filter name=redpanda --format '{{.Names}}\t{{.Ports}}'"
 ```
 verified: 2026-07-02 — three brokers, one per lane. stability-test:
 `0.0.0.0:39092->19092/tcp`. prod: `0.0.0.0:49092->19092/tcp`. judge:
@@ -176,30 +176,30 @@ the **per-lane host-mapped** ports, and there is no `dev` broker running at
 all right now.)
 
 ```
-$ ssh jonah@192.168.86.201 "docker exec omnibase-infra-stability-test-redpanda rpk cluster info --brokers localhost:19092"
+$ ssh <user>@<lan-host> "docker exec omnibase-infra-stability-test-redpanda rpk cluster info --brokers localhost:19092"
 ```
-verified: 2026-07-02 — `BROKERS: ID 0*  HOST 100.109.203.94  PORT 39092`.
-**The broker's advertised listener is a Tailscale IP (`100.109.203.94`), not
-the LAN IP (`192.168.86.201`).** A Kafka client can dial either address for
+verified: 2026-07-02 — `BROKERS: ID 0*  HOST <tailscale-host>  PORT 39092`.
+**The broker's advertised listener is a Tailscale IP (`<tailscale-host>`), not
+the LAN IP (`<lan-host>`).** A Kafka client can dial either address for
 the initial TCP bootstrap, but the broker's own metadata response — which
 the client library follows for every subsequent produce/fetch — points at
-`100.109.203.94:39092`. A game host without Tailscale reachability to that
+`<tailscale-host>:39092`. A game host without Tailscale reachability to that
 address will complete the bootstrap handshake and then fail silently on the
 first real produce/consume. Verified reachable from *this* probe host (which
 has Tailscale joined):
 ```
-$ nc -z -w3 100.109.203.94 39092  → succeeded
-$ nc -z -w3 192.168.86.201 39092  → succeeded
+$ nc -z -w3 <tailscale-host> 39092  → succeeded
+$ nc -z -w3 <lan-host> 39092  → succeeded
 ```
 verified: 2026-07-02 via the two `nc` commands above, run from the probing
 session's host. **Whichever machine actually runs `so run --loadout ... `
 against the Kafka lane must independently confirm Tailscale reachability to
-`100.109.203.94`** — this is not guaranteed for every laptop.
+`<tailscale-host>`** — this is not guaranteed for every laptop.
 
 ### Topic inventory
 
 ```
-$ ssh jonah@192.168.86.201 "docker exec omnibase-infra-stability-test-redpanda rpk topic list --brokers localhost:19092"
+$ ssh <user>@<lan-host> "docker exec omnibase-infra-stability-test-redpanda rpk topic list --brokers localhost:19092"
 ```
 verified: 2026-07-02 via the command above. All 7 contract-declared topics
 exist on the stability-test broker (name, partitions, replicas):
@@ -215,7 +215,7 @@ exist on the stability-test broker (name, partitions, replicas):
 | `onex.evt.omnimarket.delegation-model-degraded.v1` | 6 | 1 |
 
 Also independently confirmed via the live introspection endpoint:
-`curl http://192.168.86.201:18085/v1/introspection/manifest` (HTTP 200,
+`curl http://<lan-host>:18085/v1/introspection/manifest` (HTTP 200,
 verified: 2026-07-02) contains `delegation-execute`, `delegation-execute.v`,
 and the `handlers.handler_llm_delegation_call` module path — the manifest
 agrees with the static contract read in §1.
@@ -223,7 +223,7 @@ agrees with the static contract read in §1.
 ### Consumer wiring (corrected finding — see methodology note)
 
 ```
-$ ssh jonah@192.168.86.201 "docker exec omnibase-infra-stability-test-redpanda rpk group list --brokers localhost:19092" > full-groups.txt   # 522 lines, captured to a file, NOT piped through head
+$ ssh <user>@<lan-host> "docker exec omnibase-infra-stability-test-redpanda rpk group list --brokers localhost:19092" > full-groups.txt   # 522 lines, captured to a file, NOT piped through head
 $ grep -i 'delegation-execute\|llm_delegation_call' full-groups.txt
 ```
 verified: 2026-07-02 via the two commands above (redirected to a file this
@@ -255,7 +255,7 @@ proven to have processed real historical traffic, e.g.
 `node_llm_inference_effect`) reports `STATE Dead / MEMBERS 0` at the instant
 of the probe:
 ```
-$ ssh jonah@192.168.86.201 "docker exec omnibase-infra-stability-test-redpanda rpk group describe 'stability-test.omnimarket.node_llm_delegation_call_effect.consume.0.1.0' --brokers localhost:19092"
+$ ssh <user>@<lan-host> "docker exec omnibase-infra-stability-test-redpanda rpk group describe 'stability-test.omnimarket.node_llm_delegation_call_effect.consume.0.1.0' --brokers localhost:19092"
 GROUP   stability-test.omnimarket.node_llm_delegation_call_effect.consume.0.1.0
 STATE   Dead
 MEMBERS 0
@@ -271,7 +271,7 @@ now" as inconclusive rather than negative.
 ### Message traffic (the actual residual gap)
 
 ```
-$ ssh jonah@192.168.86.201 "docker exec omnibase-infra-stability-test-redpanda rpk topic describe <topic> --brokers localhost:19092 -p"
+$ ssh <user>@<lan-host> "docker exec omnibase-infra-stability-test-redpanda rpk topic describe <topic> --brokers localhost:19092 -p"
 ```
 verified: 2026-07-02, run per topic. High-watermarks (sum is illustrative,
 per-partition values checked):
@@ -340,7 +340,7 @@ correctness from.
 **Option C — REST/thin-publish ingress.** Checked for an existing HTTP
 ingress that fronts `delegation-execute.v1` (would let the game stay
 HTTP-only, reusing its existing `httpx` dependency). None found:
-`curl http://192.168.86.201:18085/openapi.json` → 404; the only live HTTP
+`curl http://<lan-host>:18085/openapi.json` → 404; the only live HTTP
 surfaces on stability-test are the introspection manifest
 (`/v1/introspection/manifest`, read-only) and the projection-api container
 (`omnimarket-stability-test-projection-api`, port `13002`, a read
@@ -369,7 +369,7 @@ construction.
    real PyPI version constraint over a `[tool.uv.sources]` local path entry
    — the existing `omnibase-core`/`omnibase-spi` local-path sources
    (`pyproject.toml:62-64`) already hardcode
-   `/Users/jonah/Code/omni_home/...` absolute paths, a pre-existing Rule-6
+   `$OMNI_HOME/...` absolute paths, a pre-existing Rule-6
    violation outside this task's declared surface; don't extend that
    pattern to a third dependency.
 2. Add `confluent-kafka` as a `kafka` extra (Option A above).
@@ -389,7 +389,7 @@ construction.
    read/write posture the rest of Phase E build work gets (dev-lane-start
    is pre-authorized; stability-test is the proof lane; no prod/judge
    mutation).
-6. Confirm Tailscale reachability (`100.109.203.94:39092`) from whichever
+6. Confirm Tailscale reachability (`<tailscale-host>:39092`) from whichever
    host will actually run the Kafka-lane game process (§2 broker
    reachability note) before relying on it for a demo.
 

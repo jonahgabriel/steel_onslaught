@@ -19,3 +19,7 @@ build/
 .idea/
 .vscode/
 node_modules/
+
+# Local LLM endpoint overlay — real private addresses, never committed.
+# The committed providers.local.yaml.example carries placeholder hosts.
+src/steel_onslaught/llm/providers.local.yaml
