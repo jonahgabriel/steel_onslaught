@@ -13,7 +13,14 @@ import pytest
 _SRC = Path(__file__).parents[1] / "src" / "steel_onslaught"
 _ROOT = _SRC / "match" / "composition.py"
 _FORBIDDEN_SYMBOLS = {
+    "builtins.__import__": "__import__",
+    "builtins.globals": "globals",
+    "builtins.vars": "vars",
     "datetime.datetime.now": "datetime.now",
+    "httpx.Client": "httpx.Client",
+    "importlib.import_module": "importlib.import_module",
+    "os.environ": "os.environ",
+    "os.getenv": "os.getenv",
     "steel_onslaught.bus.in_process.InProcessEventBus": "InProcessEventBus",
     "steel_onslaught.contracts.pilot_registry.PilotSpecRegistry": "PilotSpecRegistry",
     "steel_onslaught.events.factory.EventFactory": "EventFactory",
@@ -31,6 +38,19 @@ _FORBIDDEN_SYMBOLS = {
     "steel_onslaught.match.evaluation_storage.SQLiteEvaluationStorageAllocator": (
         "SQLiteEvaluationStorageAllocator"
     ),
+    "steel_onslaught.match.composition.ApplicationPilotFactory": "ApplicationPilotFactory",
+    "steel_onslaught.llm.adaptation.OpponentAwareClient": "OpponentAwareClient",
+    "steel_onslaught.llm.client_http.HttpxJsonTransport": "HttpxJsonTransport",
+    "steel_onslaught.llm.client_http.NoSecretResolver": "NoSecretResolver",
+    "steel_onslaught.llm.client_http.OpenAICompatibleClient": "OpenAICompatibleClient",
+    "steel_onslaught.llm.client_http.StaticLlmClientFactory": "StaticLlmClientFactory",
+    "steel_onslaught.llm.client_http.SystemSleeper": "SystemSleeper",
+    "steel_onslaught.llm.effect.LedgerLlmCompletionObserver": ("LedgerLlmCompletionObserver"),
+    "steel_onslaught.llm.effect.ObservedLlmClient": "ObservedLlmClient",
+    "steel_onslaught.llm.personas.PersonaRegistry.load": "PersonaRegistry.load",
+    "steel_onslaught.llm.pilot.LLMPilot": "LLMPilot",
+    "steel_onslaught.llm.stub.StubLlmClient": "StubLlmClient",
+    "steel_onslaught.llm.tuner.LlmTunerGenerator": "LlmTunerGenerator",
     "steel_onslaught.pilots.aggressive.AggressivePilot": "AggressivePilot",
     "steel_onslaught.pilots.defensive.DefensivePilot": "DefensivePilot",
     "steel_onslaught.pilots.predictive.PredictivePilot": "PredictivePilot",
@@ -60,15 +80,15 @@ _APPROVED_CALLS = Counter(
             "steel_onslaught.contracts.pilot_registry.PilotSpecRegistry",
         ): 1,
         (
-            "pilot_from_spec",
+            "ApplicationPilotFactory.from_spec",
             "steel_onslaught.pilots.aggressive.AggressivePilot",
         ): 1,
         (
-            "pilot_from_spec",
+            "ApplicationPilotFactory.from_spec",
             "steel_onslaught.pilots.defensive.DefensivePilot",
         ): 1,
         (
-            "pilot_from_spec",
+            "ApplicationPilotFactory.from_spec",
             "steel_onslaught.pilots.predictive.PredictivePilot",
         ): 1,
         (
@@ -109,6 +129,30 @@ _APPROVED_CALLS = Counter(
         ): 1,
         (
             "build_learning_dependencies",
+            "steel_onslaught.match.composition.SystemIdentityProvider",
+        ): 1,
+        (
+            "build_learning_dependencies",
+            "steel_onslaught.events.factory.EventFactory",
+        ): 1,
+        (
+            "build_learning_dependencies",
+            "steel_onslaught.llm.effect.LedgerLlmCompletionObserver",
+        ): 1,
+        (
+            "build_learning_dependencies",
+            "steel_onslaught.llm.client_http.StaticLlmClientFactory",
+        ): 1,
+        (
+            "build_learning_dependencies",
+            "steel_onslaught.llm.effect.ObservedLlmClient",
+        ): 1,
+        (
+            "build_learning_dependencies",
+            "steel_onslaught.llm.tuner.LlmTunerGenerator",
+        ): 1,
+        (
+            "build_learning_dependencies",
             "steel_onslaught.learning.filesystem_artifacts.ModelSOFilesystemLearningArtifactsConfig",
         ): 1,
         (
@@ -118,6 +162,67 @@ _APPROVED_CALLS = Counter(
         (
             "build_evaluation_storage_allocator",
             "steel_onslaught.match.evaluation_storage.SQLiteEvaluationStorageAllocator",
+        ): 1,
+        (
+            "ApplicationPilotFactory.with_observer",
+            "steel_onslaught.match.composition.ApplicationPilotFactory",
+        ): 1,
+        (
+            "ApplicationPilotFactory.llm_pilot",
+            "steel_onslaught.llm.effect.ObservedLlmClient",
+        ): 1,
+        (
+            "ApplicationPilotFactory.llm_pilot",
+            "steel_onslaught.llm.adaptation.OpponentAwareClient",
+        ): 1,
+        (
+            "ApplicationPilotFactory.llm_pilot",
+            "steel_onslaught.llm.pilot.LLMPilot",
+        ): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.llm.client_http.NoSecretResolver",
+        ): 1,
+        ("build_llm_dependencies", "httpx.Client"): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.llm.client_http.HttpxJsonTransport",
+        ): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.llm.client_http.SystemSleeper",
+        ): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.llm.stub.StubLlmClient",
+        ): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.llm.client_http.OpenAICompatibleClient",
+        ): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.llm.client_http.StaticLlmClientFactory",
+        ): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.llm.personas.PersonaRegistry.load",
+        ): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.match.composition.ApplicationPilotFactory",
+        ): 1,
+        (
+            "build_llm_dependencies",
+            "steel_onslaught.llm.tuner.LlmTunerGenerator",
+        ): 1,
+        (
+            "build_pilot_duel_executor_with_dependencies.execute",
+            "steel_onslaught.llm.effect.LedgerLlmCompletionObserver",
+        ): 1,
+        (
+            "assemble_match_with_dependencies",
+            "steel_onslaught.llm.effect.LedgerLlmCompletionObserver",
         ): 1,
     }
 )
@@ -311,7 +416,12 @@ class _ReferenceScanner(ast.NodeVisitor):
         self._scopes = [
             _Scope(
                 kind="module",
-                symbols={"getattr": frozenset({"builtins.getattr"})},
+                symbols={
+                    "__import__": frozenset({"builtins.__import__"}),
+                    "getattr": frozenset({"builtins.getattr"}),
+                    "globals": frozenset({"builtins.globals"}),
+                    "vars": frozenset({"builtins.vars"}),
+                },
             )
         ]
         self.usages: list[_Usage] = []
@@ -820,6 +930,9 @@ def test_effectful_construction_is_confined_to_exact_root_calls() -> None:
             "getattr(ledger, 'SQLiteLedger')(cfg)"
         ),
         "from datetime import datetime as dt\ndt.now()",
+        "import os\nos.getenv('LLM_API_KEY')",
+        "from os import environ as environment\nvalue = environment['LLM_API_KEY']",
+        "from os import getenv as read_env\nresolver = read_env\nresolver('LLM_API_KEY')",
         "import uuid as ids\nmaker = ids.uuid4\nmaker()",
         "import ulid as identity\ngetattr(identity, 'new')()",
         (
@@ -840,6 +953,10 @@ def test_effectful_construction_is_confined_to_exact_root_calls() -> None:
             "from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger\n"
             "def register(*, factory):\n    pass\nregister(factory=SQLiteLedger)"
         ),
+        "__import__('steel_onslaught.ledger.sqlite_ledger').SQLiteLedger(cfg)",
+        "import importlib\nimportlib.import_module('steel_onslaught.ledger.sqlite_ledger')",
+        "globals()['SQLiteLedger'](cfg)",
+        "vars(module)['SQLiteLedger'](cfg)",
     ],
 )
 def test_guard_detects_alias_getattr_and_higher_order_evasions(source: str) -> None:

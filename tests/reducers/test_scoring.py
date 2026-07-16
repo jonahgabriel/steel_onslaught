@@ -46,7 +46,6 @@ from steel_onslaught.match.composition import (
     load_loadout,
     load_match_contract_catalog,
     load_pilot_registry,
-    pilot_from_spec,
 )
 from steel_onslaught.match.runner import MatchIdentity, MatchRunner
 from steel_onslaught.match.state import ModelSOMechRuntimeState
@@ -61,6 +60,7 @@ from steel_onslaught.reducers.scoring import (
     compute_final_score,
     verify_replay_validity,
 )
+from tests.runtime import pilot_from_spec
 from tests.sqlite_ledger import open_sqlite_ledger
 
 _MATCH_ID = "match.scoring.001"

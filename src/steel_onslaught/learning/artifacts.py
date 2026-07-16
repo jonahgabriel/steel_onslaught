@@ -5,11 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from steel_onslaught.contracts.lineage import ModelSOLineageRecord
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
+
+if TYPE_CHECKING:
+    from steel_onslaught.events.envelope import ModelSOEventEnvelope
+    from steel_onslaught.llm.experiment import (
+        ModelSOExperimentRow,
+        ModelSOExperimentSummary,
+        ModelSOTunerUsage,
+    )
 
 
 @dataclass(frozen=True)
@@ -41,6 +49,19 @@ class LearningArtifactStore(Protocol):
         *,
         recorded_at: datetime,
     ) -> Path: ...
+
+    def write_experiment_summary(self, summary: ModelSOExperimentSummary) -> Path: ...
+
+    def write_experiment_rows(self, rows: tuple[ModelSOExperimentRow, ...]) -> Path: ...
+
+    def write_tuner_usage(
+        self,
+        usage: ModelSOTunerUsage,
+        *,
+        lineage_record: Path | None,
+    ) -> Path: ...
+
+    def write_llm_event(self, event: ModelSOEventEnvelope) -> Path: ...
 
 
 __all__ = [

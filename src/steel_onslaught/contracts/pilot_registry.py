@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 
@@ -19,6 +22,9 @@ class PilotSpecRegistry:
     def get(self, spec_id: str) -> ModelSOPilotSpec | None:
         """Return the registered spec for *spec_id*, or None."""
         return self._specs.get(spec_id)
+
+    def as_mapping(self) -> Mapping[str, ModelSOPilotSpec]:
+        return MappingProxyType(self._specs)
 
     def resolve(self, loadout: ModelSOLoadout) -> ModelSOPilotSpec:
         """Resolve an exact pilot id; paths and archetype guesses are forbidden."""

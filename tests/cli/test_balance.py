@@ -30,6 +30,7 @@ from steel_onslaught.projections.balance.matrix import (
     ModelSOBalanceMatrix,
     ModelSOBalancePairing,
 )
+from tests.overlay import complete_test_overlay
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _REPO_LOADOUTS = _REPO_ROOT / "contracts_data/loadouts"
@@ -62,46 +63,49 @@ def _write_overlay(tmp_path: Path, *, name: str) -> tuple[Path, Path, Path, Path
     overlay_path = tmp_path / f"{name}-application.json"
     overlay_path.write_text(
         json.dumps(
-            {
-                "schema_version": "1",
-                "bus": {"kind": "in_process"},
-                "event_ledger": {
-                    "kind": "sqlite",
-                    "path": str(event_store),
-                    "journal_mode": "WAL",
-                    "check_same_thread": False,
-                    "transaction_mode": "autocommit",
-                    "event_schema": "canonical_event_v1",
+            complete_test_overlay(
+                {
+                    "schema_version": "1",
+                    "bus": {"kind": "in_process"},
+                    "event_ledger": {
+                        "kind": "sqlite",
+                        "path": str(event_store),
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "event_schema": "canonical_event_v1",
+                    },
+                    "leaderboard": {
+                        "kind": "sqlite",
+                        "path": str(leaderboard_store),
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "storage_schema": "leaderboard_v1",
+                    },
+                    "learning_artifacts": {
+                        "kind": "filesystem_yaml",
+                        "evaluation_root": str(tmp_path / f"{name}-artifacts"),
+                        "lineage_root": str(tmp_path / f"{name}-lineage"),
+                    },
+                    "evaluation_storage": {
+                        "kind": "sqlite",
+                        "root": str(evaluation_root),
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "event_schema": "canonical_event_v1",
+                        "leaderboard_schema": "leaderboard_v1",
+                    },
+                    "contracts": {
+                        "catalog_dir": str(_REPO_ROOT / "contracts_data"),
+                        "pilot_registry_dir": str(_REPO_ROOT / "contracts_data/pilots"),
+                    },
+                    "clock": {"kind": "system_utc"},
+                    "identity": {"kind": "system"},
                 },
-                "leaderboard": {
-                    "kind": "sqlite",
-                    "path": str(leaderboard_store),
-                    "journal_mode": "WAL",
-                    "check_same_thread": False,
-                    "transaction_mode": "autocommit",
-                    "storage_schema": "leaderboard_v1",
-                },
-                "learning_artifacts": {
-                    "kind": "filesystem_yaml",
-                    "evaluation_root": str(tmp_path / f"{name}-artifacts"),
-                    "lineage_root": str(tmp_path / f"{name}-lineage"),
-                },
-                "evaluation_storage": {
-                    "kind": "sqlite",
-                    "root": str(evaluation_root),
-                    "journal_mode": "WAL",
-                    "check_same_thread": False,
-                    "transaction_mode": "autocommit",
-                    "event_schema": "canonical_event_v1",
-                    "leaderboard_schema": "leaderboard_v1",
-                },
-                "contracts": {
-                    "catalog_dir": str(_REPO_ROOT / "contracts_data"),
-                    "pilot_registry_dir": str(_REPO_ROOT / "contracts_data/pilots"),
-                },
-                "clock": {"kind": "system_utc"},
-                "identity": {"kind": "system"},
-            }
+                tmp_path,
+            )
         ),
         encoding="utf-8",
     )

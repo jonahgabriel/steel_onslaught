@@ -25,6 +25,7 @@ TEMPLATE_IDS = {
     "pilot.template.aggressive",
     "pilot.template.defensive",
     "pilot.template.predictive",
+    "pilot.template.llm",
 }
 
 
@@ -238,6 +239,6 @@ def test_null_parent_census() -> None:
         spec = ModelSOPilotSpec.model_validate(yaml.safe_load(path.read_text()))
         if spec.lineage.parent is None:
             assert spec.id in TEMPLATE_IDS, (
-                f"{path.name}: null lineage.parent is only permitted for the three "
+                f"{path.name}: null lineage.parent is only permitted for the "
                 f"pilot.template.* specs, got {spec.id}"
             )

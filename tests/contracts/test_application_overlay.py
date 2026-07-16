@@ -8,54 +8,149 @@ import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.match.composition import (
+    build_llm_dependencies,
     load_application_overlay,
     load_match_contract_catalog,
+    load_pilot_registry,
 )
+from tests.overlay import complete_test_overlay
 
 _CONTRACTS_DATA = Path(__file__).parent.parent.parent / "contracts_data"
 
 
+def _require_object_dict(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    assert all(isinstance(key, str) for key in value)
+    return value
+
+
 def _overlay_data(tmp_path: Path) -> dict[str, object]:
+    return complete_test_overlay(
+        {
+            "schema_version": "1",
+            "bus": {"kind": "in_process"},
+            "event_ledger": {
+                "kind": "sqlite",
+                "path": tmp_path / "events.sqlite3",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+            },
+            "leaderboard": {
+                "kind": "sqlite",
+                "path": tmp_path / "leaderboard.sqlite3",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "storage_schema": "leaderboard_v1",
+            },
+            "learning_artifacts": {
+                "kind": "filesystem_yaml",
+                "evaluation_root": tmp_path / "evaluations",
+                "lineage_root": tmp_path / "lineage",
+            },
+            "evaluation_storage": {
+                "kind": "sqlite",
+                "root": tmp_path / "evaluation_storage",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+                "leaderboard_schema": "leaderboard_v1",
+            },
+            "contracts": {
+                "catalog_dir": tmp_path / "catalog",
+                "pilot_registry_dir": tmp_path / "pilots",
+            },
+            "clock": {"kind": "system_utc"},
+            "identity": {"kind": "system"},
+        },
+        tmp_path,
+    )
+
+
+def _http_provider() -> dict[str, object]:
     return {
-        "schema_version": "1",
-        "bus": {"kind": "in_process"},
-        "event_ledger": {
-            "kind": "sqlite",
-            "path": tmp_path / "events.sqlite3",
-            "journal_mode": "WAL",
-            "check_same_thread": True,
-            "transaction_mode": "autocommit",
-            "event_schema": "canonical_event_v1",
+        "kind": "openai_compatible",
+        "provider_id": "primary",
+        "endpoint_url": "https://provider.test/v1/chat/completions",
+        "model": "explicit-model",
+        "secret_ref": {"kind": "opaque", "ref": "secret://llm/primary"},
+        "timeout_seconds": 30.0,
+        "max_tokens": None,
+        "retry": {
+            "max_attempts": 3,
+            "initial_backoff_seconds": 0.25,
+            "backoff_multiplier": 2.0,
         },
-        "leaderboard": {
-            "kind": "sqlite",
-            "path": tmp_path / "leaderboard.sqlite3",
-            "journal_mode": "WAL",
-            "check_same_thread": True,
-            "transaction_mode": "autocommit",
-            "storage_schema": "leaderboard_v1",
-        },
-        "learning_artifacts": {
-            "kind": "filesystem_yaml",
-            "evaluation_root": tmp_path / "evaluations",
-            "lineage_root": tmp_path / "lineage",
-        },
-        "evaluation_storage": {
-            "kind": "sqlite",
-            "root": tmp_path / "evaluation_storage",
-            "journal_mode": "WAL",
-            "check_same_thread": True,
-            "transaction_mode": "autocommit",
-            "event_schema": "canonical_event_v1",
-            "leaderboard_schema": "leaderboard_v1",
-        },
-        "contracts": {
-            "catalog_dir": tmp_path / "catalog",
-            "pilot_registry_dir": tmp_path / "pilots",
-        },
-        "clock": {"kind": "system_utc"},
-        "identity": {"kind": "system"},
     }
+
+
+def _with_http_provider(tmp_path: Path) -> dict[str, object]:
+    raw = _overlay_data(tmp_path)
+    llm = dict(_require_object_dict(raw["llm"]))
+    llm["providers"] = [_http_provider()]
+    llm["secret_resolver"] = {"kind": "injected"}
+    raw["llm"] = llm
+    return raw
+
+
+class _NamedGraphResolver:
+    def resolve(self, reference: object) -> str:
+        return "fixture-secret"
+
+
+@pytest.mark.unit
+def test_full_named_provider_graph_resolves_every_shipped_llm_spec(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    llm = dict(_require_object_dict(raw["llm"]))
+    llm["providers"] = [
+        {"kind": "stub", "provider_id": "stub", "model": "fixture-stub"},
+        *[
+            {
+                "kind": "openai_compatible",
+                "provider_id": provider_id,
+                "endpoint_url": f"https://{provider_id}.fixture.invalid/v1/chat/completions",
+                "model": model,
+                "secret_ref": {"kind": "opaque", "ref": f"secret://llm/{provider_id}"},
+                "timeout_seconds": 30.0,
+                "max_tokens": None,
+                "retry": {
+                    "max_attempts": 1,
+                    "initial_backoff_seconds": 0.0,
+                    "backoff_multiplier": 1.0,
+                },
+            }
+            for provider_id, model in (
+                ("qwen35", "Qwen3.6-35B-A3B"),
+                ("qwen27", "Qwen3.6-27B-MTP-IQ4_XS.gguf"),
+                ("deepseek", "deepseek-v4-pro"),
+            )
+        ],
+    ]
+    llm["secret_resolver"] = {"kind": "injected"}
+    raw["llm"] = llm
+    overlay = ModelSOApplicationOverlay.model_validate(raw)
+    dependencies = build_llm_dependencies(
+        overlay,
+        secret_resolver=_NamedGraphResolver(),
+    )
+    try:
+        registry = load_pilot_registry(_CONTRACTS_DATA / "pilots")
+        shipped = {
+            spec.id: spec for spec in registry.as_mapping().values() if spec.archetype == "llm"
+        }
+        assert {spec.parameters.provider for spec in shipped.values()} == {  # type: ignore[union-attr]
+            "stub",
+            "qwen35",
+            "qwen27",
+            "deepseek",
+        }
+        for spec in shipped.values():
+            dependencies.pilot_factory.from_spec(spec)
+    finally:
+        dependencies.close()
 
 
 @pytest.mark.unit
@@ -122,6 +217,7 @@ def test_overlay_rejects_unsupported_adapter_kind(tmp_path: Path) -> None:
         "learning_artifacts",
         "evaluation_storage",
         "contracts",
+        "llm",
         "clock",
         "identity",
     ],
@@ -169,3 +265,125 @@ def test_overlay_relative_paths_resolve_from_overlay_directory(tmp_path: Path) -
     assert overlay.event_ledger.path == tmp_path / "events.sqlite3"
     assert overlay.contracts.catalog_dir == tmp_path / "catalog"
     assert overlay.evaluation_storage.root == tmp_path / "evaluation_storage"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field",
+    [
+        "provider_id",
+        "endpoint_url",
+        "model",
+        "secret_ref",
+        "timeout_seconds",
+        "max_tokens",
+        "retry",
+    ],
+)
+def test_http_provider_requires_every_historical_field(tmp_path: Path, field: str) -> None:
+    raw = _with_http_provider(tmp_path)
+    llm = raw["llm"]
+    assert isinstance(llm, dict)
+    provider = dict(llm["providers"][0])
+    del provider[field]
+    llm["providers"] = [provider]
+    with pytest.raises(ValueError, match=field):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_http_provider_accepts_explicit_nullable_max_tokens(tmp_path: Path) -> None:
+    overlay = ModelSOApplicationOverlay.model_validate(_with_http_provider(tmp_path))
+    provider = overlay.llm.providers[0]
+    assert provider.max_tokens is None  # type: ignore[union-attr]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("max_tokens",), "128"),
+        (("timeout_seconds",), "30.0"),
+        (("retry", "max_attempts"), "3"),
+        (("retry", "initial_backoff_seconds"), float("inf")),
+    ],
+)
+def test_http_provider_rejects_coercion_and_non_finite_values(
+    tmp_path: Path, path: tuple[str, ...], value: object
+) -> None:
+    raw = _with_http_provider(tmp_path)
+    llm = raw["llm"]
+    assert isinstance(llm, dict)
+    provider = dict(llm["providers"][0])
+    if len(path) == 1:
+        provider[path[0]] = value
+    else:
+        nested = dict(provider[path[0]])
+        nested[path[1]] = value
+        provider[path[0]] = nested
+    llm["providers"] = [provider]
+    with pytest.raises(ValueError):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "provider.test/chat",
+        "ftp://provider.test/chat",
+        "https://user@provider.test/chat",
+        "https://provider.test/chat?q=secret",
+    ],
+)
+def test_http_provider_rejects_non_complete_or_credential_bearing_endpoint(
+    tmp_path: Path, endpoint: str
+) -> None:
+    raw = _with_http_provider(tmp_path)
+    llm = raw["llm"]
+    assert isinstance(llm, dict)
+    provider = dict(llm["providers"][0])
+    provider["endpoint_url"] = endpoint
+    llm["providers"] = [provider]
+    with pytest.raises(ValueError, match="endpoint_url"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_llm_registry_rejects_unknown_kind_unknown_field_and_duplicate_id(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    llm = raw["llm"]
+    assert isinstance(llm, dict)
+    llm["providers"] = [{"kind": "implicit", "provider_id": "x", "model": "x"}]
+    with pytest.raises(ValueError, match="kind"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+    llm["providers"] = [
+        {"kind": "stub", "provider_id": "same", "model": "a", "fallback": True},
+    ]
+    with pytest.raises(ValueError, match="fallback"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+    llm["providers"] = [
+        {"kind": "stub", "provider_id": "same", "model": "a"},
+        {"kind": "stub", "provider_id": "same", "model": "b"},
+    ]
+    with pytest.raises(ValueError, match="unique provider_id"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_secret_bearing_provider_requires_injected_resolver_and_bounded_ref(tmp_path: Path) -> None:
+    raw = _with_http_provider(tmp_path)
+    llm = raw["llm"]
+    assert isinstance(llm, dict)
+    llm["secret_resolver"] = {"kind": "none"}
+    with pytest.raises(ValueError, match="secret-bearing"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+    llm["secret_resolver"] = {"kind": "injected"}
+    provider = dict(llm["providers"][0])
+    provider["secret_ref"] = {"kind": "opaque", "ref": "sk-raw-secret"}
+    llm["providers"] = [provider]
+    with pytest.raises(ValueError, match="secret_ref"):
+        ModelSOApplicationOverlay.model_validate(raw)

@@ -141,6 +141,7 @@ def test_decision_line_with_mode_detail_and_labels() -> None:
                 "reason_code": "mode_advantage",
                 "confidence": 0.81,
                 "considered_actions": [{"action": "switch_mode", "score": 0.81}],
+                "rationale": None,
             },
             tick=142,
         )
@@ -163,6 +164,7 @@ def test_decision_line_without_labels_or_params() -> None:
                 "reason_code": "heat_critical",
                 "confidence": 1.0,
                 "considered_actions": [{"action": "vent", "score": 1.0}],
+                "rationale": None,
             },
             tick=7,
         )
@@ -182,6 +184,7 @@ def test_decision_line_with_weapon_detail() -> None:
                 "reason_code": "target_in_range",
                 "confidence": 0.9,
                 "considered_actions": [{"action": "fire_weapon", "score": 0.9}],
+                "rationale": None,
             },
             tick=9,
         )

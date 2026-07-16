@@ -21,13 +21,16 @@ Phase 2 meta is the parent pairing; pool-wide metas arrive with populations
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from uuid import UUID
 
 import click
 from pydantic import ValidationError
 
-from steel_onslaught.contracts.lineage import spec_hash
+from steel_onslaught.cli.application import CliApplicationFactory
+from steel_onslaught.contracts.lineage import ParamDict, spec_hash
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.learning.artifacts import LearningArtifactStore
@@ -41,9 +44,11 @@ from steel_onslaught.learning.loop import (
 from steel_onslaught.learning.protocols import ModelSOPairedComparison
 from steel_onslaught.learning.spec_adapter import PilotSpecView
 from steel_onslaught.learning.stats import wilson_interval
+from steel_onslaught.llm.context_arms import ContextArm
+from steel_onslaught.llm.experiment import correlation_id_for
+from steel_onslaught.llm.schemas import ModelSOLlmEvidenceContext
 from steel_onslaught.match.composition import (
-    build_duel_executor,
-    build_learning_dependencies,
+    LearningDependencies,
     load_application_overlay,
     load_loadout,
     load_pilot_spec,
@@ -67,6 +72,8 @@ def _run_learn(
     recorded_at: datetime,
     duel_executor: DuelExecutor,
     artifacts: LearningArtifactStore,
+    candidates: Sequence[tuple[ParamDict, str]] | None = None,
+    generator_id: str | None = None,
 ) -> tuple[ModelSOLearnResult, Path | None]:
     """The testable composition; the caller injects the clock.
 
@@ -101,6 +108,8 @@ def _run_learn(
         evaluator=evaluator,
         opponent_spec_hashes=[spec_hash(archetype, parent_params)],
         config=config,
+        candidates=candidates,
+        generator_id=generator_id,
     )
     record_path: Path | None = None
     if result.record is not None:
@@ -222,6 +231,23 @@ def _print_summary(result: ModelSOLearnResult, record_path: Path | None) -> None
     help="Loadout both sides field; only the pilot parameters differ.",
 )
 @click.option("--max-ticks", type=click.IntRange(min=1), default=200, show_default=True)
+@click.option(
+    "--llm-provider",
+    default=None,
+    help="Overlay-declared provider id; required only for strategy=external.",
+)
+@click.option(
+    "--llm-arm",
+    type=click.Choice([arm.value for arm in ContextArm]),
+    default=None,
+    help="Context arm; required only for strategy=external.",
+)
+@click.option(
+    "--design-doc",
+    "design_doc_path",
+    type=_EXISTING_FILE,
+    default=None,
+)
 def learn_command(
     overlay_path: Path,
     archetype: str,
@@ -233,15 +259,47 @@ def learn_command(
     master_seed: int,
     base_loadout: Path,
     max_ticks: int,
+    llm_provider: str | None,
+    llm_arm: str | None,
+    design_doc_path: Path | None,
 ) -> None:
     """Bounded pilot-spec search with promotion gate and hidden-seed holdout."""
+    dependencies: LearningDependencies | None = None
     try:
         overlay = load_application_overlay(overlay_path)
-        dependencies = build_learning_dependencies(overlay)
+        dependencies = CliApplicationFactory.packaged().learning(overlay)
+        parent_spec = load_pilot_spec(parent_path)
+        strategy = SOSearchStrategy(strategy_name)
+        candidates: Sequence[tuple[ParamDict, str]] | None = None
+        generator_id: str | None = None
+        if strategy is SOSearchStrategy.EXTERNAL:
+            if llm_provider is None or llm_arm is None:
+                raise ValueError("strategy=external requires explicit --llm-provider and --llm-arm")
+            view = PilotSpecView(parent_spec)
+            generation = dependencies.tuner_generator.generate(
+                provider_id=llm_provider,
+                arm=ContextArm(llm_arm),
+                archetype=archetype,
+                parent_params=view.parameters,
+                bounds=view.bounds,
+                n_proposals=max_evaluations - 1,
+                evidence_context=ModelSOLlmEvidenceContext(
+                    match_id=f"learn.{master_seed}",
+                    mech_id=f"tuner.{archetype}",
+                    player_id="learning.operator",
+                    tick=0,
+                    correlation_id=UUID(correlation_id_for(f"learn.{master_seed}.{archetype}")),
+                ),
+                design_doc_path=design_doc_path,
+            )
+            candidates = generation.candidates
+            generator_id = generation.generator_id
+        elif llm_provider is not None or llm_arm is not None or design_doc_path is not None:
+            raise ValueError("LLM generator options require strategy=external")
         result, record_path = _run_learn(
             archetype=archetype,
-            parent_spec=load_pilot_spec(parent_path),
-            strategy=SOSearchStrategy(strategy_name),
+            parent_spec=parent_spec,
+            strategy=strategy,
             n_search_seeds=n_search_seeds,
             n_holdout_seeds=n_holdout_seeds,
             max_evaluations=max_evaluations,
@@ -249,9 +307,14 @@ def learn_command(
             base_loadout=load_loadout(base_loadout),
             max_ticks=max_ticks,
             recorded_at=dependencies.clock.now(),
-            duel_executor=build_duel_executor(overlay),
+            duel_executor=dependencies.duel_executor,
             artifacts=dependencies.artifacts,
+            candidates=candidates,
+            generator_id=generator_id,
         )
     except (ValueError, ValidationError) as exc:
         raise click.ClickException(str(exc)) from exc
+    finally:
+        if dependencies is not None:
+            dependencies.close()
     _print_summary(result, record_path)

@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 
 class _ClosedBinding(BaseModel):
@@ -38,6 +48,7 @@ class ModelSOFilesystemLearningArtifactsBinding(_ClosedBinding):
     kind: Literal["filesystem_yaml"]
     evaluation_root: Path
     lineage_root: Path
+    experiment_root: Path
 
 
 class ModelSOSQLiteEvaluationStorageBinding(_ClosedBinding):
@@ -65,6 +76,104 @@ class ModelSOSystemIdentityBinding(_ClosedBinding):
     kind: Literal["system"]
 
 
+class ModelSOSecretRef(_ClosedBinding):
+    """Opaque reference resolved by an injected capability, never secret material."""
+
+    kind: Literal["opaque"]
+    ref: StrictStr = Field(
+        min_length=12,
+        max_length=140,
+        pattern=r"^secret://[a-z][a-z0-9_.-]{0,63}/[a-z][a-z0-9_.-]{0,63}$",
+    )
+
+
+class ModelSONoSecretResolverBinding(_ClosedBinding):
+    kind: Literal["none"]
+
+
+class ModelSOInjectedSecretResolverBinding(_ClosedBinding):
+    kind: Literal["injected"]
+
+
+class ModelSOLlmRetryBinding(_ClosedBinding):
+    """Explicit deterministic retry policy for one HTTP provider."""
+
+    max_attempts: StrictInt = Field(ge=1, le=5)
+    initial_backoff_seconds: StrictFloat = Field(ge=0.0, le=60.0, allow_inf_nan=False)
+    backoff_multiplier: StrictFloat = Field(ge=1.0, le=4.0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _bounded_schedule(self) -> Self:
+        final_backoff = self.initial_backoff_seconds * (
+            self.backoff_multiplier ** (self.max_attempts - 1)
+        )
+        if final_backoff > 300.0:
+            raise ValueError("retry schedule exceeds the 300 second backoff bound")
+        return self
+
+
+class ModelSOStubLlmProviderBinding(_ClosedBinding):
+    kind: Literal["stub"]
+    provider_id: StrictStr = Field(min_length=1)
+    model: StrictStr = Field(min_length=1)
+
+
+class ModelSOOpenAICompatibleProviderBinding(_ClosedBinding):
+    kind: Literal["openai_compatible"]
+    provider_id: StrictStr = Field(min_length=1)
+    endpoint_url: StrictStr = Field(min_length=1)
+    model: StrictStr = Field(min_length=1)
+    secret_ref: ModelSOSecretRef | None
+    timeout_seconds: StrictFloat = Field(gt=0.0, le=300.0, allow_inf_nan=False)
+    max_tokens: StrictInt | None = Field(gt=0, le=32768)
+    retry: ModelSOLlmRetryBinding
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def _complete_http_endpoint(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("endpoint_url must be a complete http(s) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("endpoint_url must not contain user information")
+        if parsed.query or parsed.fragment:
+            raise ValueError("endpoint_url must not contain a query or fragment")
+        return value
+
+
+LlmProviderBinding = Annotated[
+    ModelSOStubLlmProviderBinding | ModelSOOpenAICompatibleProviderBinding,
+    Field(discriminator="kind"),
+]
+SecretResolverBinding = Annotated[
+    ModelSONoSecretResolverBinding | ModelSOInjectedSecretResolverBinding,
+    Field(discriminator="kind"),
+]
+
+
+class ModelSOLlmBindings(_ClosedBinding):
+    """Complete provider, persona, and secret-capability selection."""
+
+    providers: tuple[LlmProviderBinding, ...] = Field(min_length=1)
+    personas_dir: Path
+    secret_resolver: SecretResolverBinding
+
+    @model_validator(mode="after")
+    def _unique_provider_ids(self) -> Self:
+        provider_ids = [provider.provider_id for provider in self.providers]
+        if len(provider_ids) != len(set(provider_ids)):
+            raise ValueError("providers must declare unique provider_id values")
+        if self.secret_resolver.kind == "none" and any(
+            isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
+            and provider.secret_ref is not None
+            for provider in self.providers
+        ):
+            raise ValueError(
+                "secret_resolver kind 'none' cannot be used with secret-bearing providers"
+            )
+        return self
+
+
 BusBinding = Annotated[ModelSOInProcessBusBinding, Field(discriminator="kind")]
 EventLedgerBinding = Annotated[ModelSOSQLiteEventLedgerBinding, Field(discriminator="kind")]
 LeaderboardBinding = Annotated[ModelSOSQLiteLeaderboardBinding, Field(discriminator="kind")]
@@ -88,6 +197,7 @@ class ModelSOApplicationOverlay(_ClosedBinding):
     learning_artifacts: LearningArtifactsBinding
     evaluation_storage: EvaluationStorageBinding
     contracts: ModelSOContractBindings
+    llm: ModelSOLlmBindings
     clock: ClockBinding
     identity: IdentityBinding
 
@@ -97,9 +207,16 @@ __all__ = [
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOInProcessBusBinding",
+    "ModelSOInjectedSecretResolverBinding",
+    "ModelSOLlmBindings",
+    "ModelSOLlmRetryBinding",
+    "ModelSONoSecretResolverBinding",
+    "ModelSOOpenAICompatibleProviderBinding",
     "ModelSOSQLiteEvaluationStorageBinding",
     "ModelSOSQLiteEventLedgerBinding",
     "ModelSOSQLiteLeaderboardBinding",
+    "ModelSOSecretRef",
+    "ModelSOStubLlmProviderBinding",
     "ModelSOSystemClockBinding",
     "ModelSOSystemIdentityBinding",
 ]

@@ -703,6 +703,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "httpx" },
     { name = "omnibase-core" },
     { name = "omnibase-spi" },
     { name = "pydantic" },
@@ -724,6 +725,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "omnibase-core", specifier = ">=0.46.2" },
     { name = "omnibase-spi", specifier = ">=0.22.0" },

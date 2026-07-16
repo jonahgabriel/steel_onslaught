@@ -38,6 +38,7 @@ from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.lineage_store import load_lineage_records
 from steel_onslaught.learning.loop import derive_seed_batteries
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
+from tests.overlay import complete_test_overlay
 
 _PARENT_SPEC = Path("contracts_data/pilots/template_aggressive.yaml")
 _BASE_LOADOUT = Path("contracts_data/loadouts/example_aggressive_light.yaml")
@@ -84,46 +85,49 @@ def _write_overlay(tmp_path: Path) -> Path:
     overlay_path = tmp_path / "application.json"
     overlay_path.write_text(
         json.dumps(
-            {
-                "schema_version": "1",
-                "bus": {"kind": "in_process"},
-                "event_ledger": {
-                    "kind": "sqlite",
-                    "path": str(tmp_path / "global-events.sqlite"),
-                    "journal_mode": "WAL",
-                    "check_same_thread": False,
-                    "transaction_mode": "autocommit",
-                    "event_schema": "canonical_event_v1",
+            complete_test_overlay(
+                {
+                    "schema_version": "1",
+                    "bus": {"kind": "in_process"},
+                    "event_ledger": {
+                        "kind": "sqlite",
+                        "path": str(tmp_path / "global-events.sqlite"),
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "event_schema": "canonical_event_v1",
+                    },
+                    "leaderboard": {
+                        "kind": "sqlite",
+                        "path": str(tmp_path / "global-leaderboard.sqlite"),
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "storage_schema": "leaderboard_v1",
+                    },
+                    "learning_artifacts": {
+                        "kind": "filesystem_yaml",
+                        "evaluation_root": str(tmp_path / "work"),
+                        "lineage_root": str(tmp_path / "lineage"),
+                    },
+                    "evaluation_storage": {
+                        "kind": "sqlite",
+                        "root": str(tmp_path / "work"),
+                        "journal_mode": "WAL",
+                        "check_same_thread": False,
+                        "transaction_mode": "autocommit",
+                        "event_schema": "canonical_event_v1",
+                        "leaderboard_schema": "leaderboard_v1",
+                    },
+                    "contracts": {
+                        "catalog_dir": str(Path("contracts_data").resolve()),
+                        "pilot_registry_dir": str(Path("contracts_data/pilots").resolve()),
+                    },
+                    "clock": {"kind": "system_utc"},
+                    "identity": {"kind": "system"},
                 },
-                "leaderboard": {
-                    "kind": "sqlite",
-                    "path": str(tmp_path / "global-leaderboard.sqlite"),
-                    "journal_mode": "WAL",
-                    "check_same_thread": False,
-                    "transaction_mode": "autocommit",
-                    "storage_schema": "leaderboard_v1",
-                },
-                "learning_artifacts": {
-                    "kind": "filesystem_yaml",
-                    "evaluation_root": str(tmp_path / "work"),
-                    "lineage_root": str(tmp_path / "lineage"),
-                },
-                "evaluation_storage": {
-                    "kind": "sqlite",
-                    "root": str(tmp_path / "work"),
-                    "journal_mode": "WAL",
-                    "check_same_thread": False,
-                    "transaction_mode": "autocommit",
-                    "event_schema": "canonical_event_v1",
-                    "leaderboard_schema": "leaderboard_v1",
-                },
-                "contracts": {
-                    "catalog_dir": str(Path("contracts_data").resolve()),
-                    "pilot_registry_dir": str(Path("contracts_data/pilots").resolve()),
-                },
-                "clock": {"kind": "system_utc"},
-                "identity": {"kind": "system"},
-            }
+                tmp_path,
+            )
         ),
         encoding="utf-8",
     )

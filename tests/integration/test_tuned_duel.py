@@ -65,6 +65,7 @@ from steel_onslaught.match.composition import (
 )
 from steel_onslaught.match.runner import _module_budgets
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchStatus
+from tests.overlay import complete_test_overlay
 from tests.sqlite_ledger import open_sqlite_ledger
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -115,46 +116,49 @@ def _canonical_rows(ledger_path: Path, match_id: str) -> list[CanonicalRow]:
 def _run(blue_loadout: Path, out_dir: Path) -> tuple[ModelSOMatchState, list[CanonicalRow]]:
     ledger_path = out_dir / "match.sqlite"
     overlay = ModelSOApplicationOverlay.model_validate(
-        {
-            "schema_version": "1",
-            "bus": {"kind": "in_process"},
-            "event_ledger": {
-                "kind": "sqlite",
-                "path": ledger_path,
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
+        complete_test_overlay(
+            {
+                "schema_version": "1",
+                "bus": {"kind": "in_process"},
+                "event_ledger": {
+                    "kind": "sqlite",
+                    "path": ledger_path,
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                },
+                "leaderboard": {
+                    "kind": "sqlite",
+                    "path": out_dir / "leaderboard.sqlite",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "storage_schema": "leaderboard_v1",
+                },
+                "learning_artifacts": {
+                    "kind": "filesystem_yaml",
+                    "evaluation_root": out_dir / "evaluations",
+                    "lineage_root": out_dir / "lineage",
+                },
+                "evaluation_storage": {
+                    "kind": "sqlite",
+                    "root": out_dir / "evaluations",
+                    "journal_mode": "WAL",
+                    "check_same_thread": True,
+                    "transaction_mode": "autocommit",
+                    "event_schema": "canonical_event_v1",
+                    "leaderboard_schema": "leaderboard_v1",
+                },
+                "contracts": {
+                    "catalog_dir": _REPO_ROOT / "contracts_data",
+                    "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",
+                },
+                "clock": {"kind": "system_utc"},
+                "identity": {"kind": "system"},
             },
-            "leaderboard": {
-                "kind": "sqlite",
-                "path": out_dir / "leaderboard.sqlite",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "storage_schema": "leaderboard_v1",
-            },
-            "learning_artifacts": {
-                "kind": "filesystem_yaml",
-                "evaluation_root": out_dir / "evaluations",
-                "lineage_root": out_dir / "lineage",
-            },
-            "evaluation_storage": {
-                "kind": "sqlite",
-                "root": out_dir / "evaluations",
-                "journal_mode": "WAL",
-                "check_same_thread": True,
-                "transaction_mode": "autocommit",
-                "event_schema": "canonical_event_v1",
-                "leaderboard_schema": "leaderboard_v1",
-            },
-            "contracts": {
-                "catalog_dir": _REPO_ROOT / "contracts_data",
-                "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",
-            },
-            "clock": {"kind": "system_utc"},
-            "identity": {"kind": "system"},
-        }
+            out_dir,
+        )
     )
     stack = assemble_match_live(
         overlay=overlay,

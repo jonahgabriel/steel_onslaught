@@ -169,6 +169,7 @@ class ModelSOPilotDecisionPayload(_ClosedPayload):
     reason_code: SOPilotReasonCode
     confidence: StrictFloat
     considered_actions: tuple[ModelSOConsideredAction, ...]
+    rationale: str | None
 
     @field_validator("confidence")
     @classmethod
@@ -180,6 +181,36 @@ class ModelSOPilotDecisionPayload(_ClosedPayload):
         if self.action not in {candidate.action for candidate in self.considered_actions}:
             raise ValueError("considered_actions must include the chosen action")
         return self
+
+
+class ModelSOLlmCompletionRequestedPayload(_ClosedPayload):
+    provider_id: str
+    persona_id: str
+    system_prompt_length: StrictInt = Field(ge=0)
+    user_prompt_length: StrictInt = Field(ge=0)
+
+
+class ModelSOLlmCompletionResolvedPayload(_ClosedPayload):
+    provider_id: str
+    model: str
+    finish_reason: str
+    prompt_tokens: StrictInt = Field(ge=0)
+    completion_tokens: StrictInt = Field(ge=0)
+    response_length: StrictInt = Field(ge=0)
+
+
+class ModelSOLlmCompletionFailedPayload(_ClosedPayload):
+    provider_id: str
+    reason_code: Literal[
+        "provider_error",
+        "invalid_response",
+        "consumer_error",
+        "abandoned",
+    ]
+    model: str | None
+    prompt_tokens: StrictInt | None = Field(ge=0)
+    completion_tokens: StrictInt | None = Field(ge=0)
+    cost_usd: StrictFloat | None = Field(ge=0.0, allow_inf_nan=False)
 
 
 class ModelSOMoveIntentPayload(_ClosedPayload):
@@ -296,6 +327,9 @@ CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = Mapping
         SOEventType.MOVEMENT_RESOLVED: ModelSOMovementResolvedPayload,
         SOEventType.SENSOR_OBSERVATION: ModelSOSensorObservationPayload,
         SOEventType.PILOT_DECISION_MADE: ModelSOPilotDecisionPayload,
+        SOEventType.LLM_COMPLETION_REQUESTED: ModelSOLlmCompletionRequestedPayload,
+        SOEventType.LLM_COMPLETION_RESOLVED: ModelSOLlmCompletionResolvedPayload,
+        SOEventType.LLM_COMPLETION_FAILED: ModelSOLlmCompletionFailedPayload,
         SOEventType.BOILER_UPDATED: ModelSOBoilerUpdatedPayload,
         SOEventType.HEAT_REDLINE_ENTERED: ModelSOHeatRedlinePayload,
         SOEventType.HEAT_REDLINE_EXITED: ModelSOHeatRedlinePayload,
@@ -326,6 +360,8 @@ __all__ = [
     "ModelSOHeatRedlinePayload",
     "ModelSOHitResolvedPayload",
     "ModelSOHitResult",
+    "ModelSOLlmCompletionRequestedPayload",
+    "ModelSOLlmCompletionResolvedPayload",
     "ModelSOMatchEndedPayload",
     "ModelSOMatchScoredPayload",
     "ModelSOMatchStartedPayload",

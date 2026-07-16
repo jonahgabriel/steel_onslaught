@@ -116,6 +116,7 @@ def _build_observation(
     return ModelSOPilotObservation(
         match_id=state.match_id,
         mech_id=mech.mech_id,
+        player_id=mech.player_id,
         tick=state.tick,
         match_elapsed_ticks=state.tick,
         boiler=mech.boiler,
@@ -138,6 +139,9 @@ def _decision_payload(decision: ModelSOPilotDecision) -> dict[str, Any]:
         "considered_actions": [
             {"action": c.action.value, "score": c.score} for c in decision.considered_actions
         ],
+        # Rationale is None for heuristic pilots and populated by LLM pilots.
+        # The closed event payload contract validates it before canonical append.
+        "rationale": decision.rationale,
     }
 
 

@@ -23,12 +23,9 @@ from pathlib import Path
 
 import click
 
+from steel_onslaught.cli.application import CliApplicationFactory
 from steel_onslaught.contracts.loadout import ModelSOLoadout
-from steel_onslaught.match.composition import (
-    build_duel_executor,
-    load_application_overlay,
-    load_loadout,
-)
+from steel_onslaught.match.composition import load_application_overlay, load_loadout
 from steel_onslaught.match.duel import ModelSOEvaluationStorageKey
 from steel_onslaught.projections.balance.matrix import (
     ModelSOBalanceMatrix,
@@ -112,66 +109,65 @@ def balance_command(
         )
 
     overlay = load_application_overlay(overlay_path)
-    execute_duel = build_duel_executor(overlay)
-
-    pairings: list[ModelSOBalancePairing] = []
-    for pairing_index, (
-        (config_a, loadout_a),
-        (config_b, loadout_b),
-    ) in enumerate(itertools.combinations(configs, 2), start=1):
-        wins_a = wins_b = draws = 0
-        for seed in range(1, seed_count + 1):
-            result = execute_duel(
-                loadout_a=loadout_a,
-                loadout_b=loadout_b,
-                seed=seed,
-                max_ticks=max_ticks,
-                storage=ModelSOEvaluationStorageKey(
-                    namespace="balance",
-                    duel=f"pairing_{pairing_index}_seed_{seed}",
-                ),
-                match_id=f"match.balance.{pairing_index}.{seed}",
-                loadout_path_a=None,
-                loadout_path_b=None,
-                side_a=_SIDE_A,
-                side_b=_SIDE_B,
-            )
-            final = result.final_state
-            winner_id = final.winner_id
-            if winner_id is None:
-                draws += 1
-            elif winner_id == f"player.{_SIDE_A}":
-                wins_a += 1
-            elif winner_id == f"player.{_SIDE_B}":
-                wins_b += 1
-            else:  # pragma: no cover - lifecycle invariant violation
-                raise click.ClickException(
-                    f"unrecognized winner_id {winner_id!r} for {config_a} vs {config_b}"
+    with CliApplicationFactory.packaged().duel(overlay) as execute_duel:
+        pairings: list[ModelSOBalancePairing] = []
+        for pairing_index, (
+            (config_a, loadout_a),
+            (config_b, loadout_b),
+        ) in enumerate(itertools.combinations(configs, 2), start=1):
+            wins_a = wins_b = draws = 0
+            for seed in range(1, seed_count + 1):
+                result = execute_duel(
+                    loadout_a=loadout_a,
+                    loadout_b=loadout_b,
+                    seed=seed,
+                    max_ticks=max_ticks,
+                    storage=ModelSOEvaluationStorageKey(
+                        namespace="balance",
+                        duel=f"pairing_{pairing_index}_seed_{seed}",
+                    ),
+                    match_id=f"match.balance.{pairing_index}.{seed}",
+                    loadout_path_a=None,
+                    loadout_path_b=None,
+                    side_a=_SIDE_A,
+                    side_b=_SIDE_B,
                 )
-        pairings.append(
-            ModelSOBalancePairing(
-                config_a=config_a,
-                config_b=config_b,
-                wins_a=wins_a,
-                wins_b=wins_b,
-                draws=draws,
+                final = result.final_state
+                winner_id = final.winner_id
+                if winner_id is None:
+                    draws += 1
+                elif winner_id == f"player.{_SIDE_A}":
+                    wins_a += 1
+                elif winner_id == f"player.{_SIDE_B}":
+                    wins_b += 1
+                else:  # pragma: no cover - lifecycle invariant violation
+                    raise click.ClickException(
+                        f"unrecognized winner_id {winner_id!r} for {config_a} vs {config_b}"
+                    )
+            pairings.append(
+                ModelSOBalancePairing(
+                    config_a=config_a,
+                    config_b=config_b,
+                    wins_a=wins_a,
+                    wins_b=wins_b,
+                    draws=draws,
+                )
             )
-        )
 
-    matrix = ModelSOBalanceMatrix(seeds=seed_count, pairings=tuple(pairings))
+        matrix = ModelSOBalanceMatrix(seeds=seed_count, pairings=tuple(pairings))
 
-    width = max(len(config_id) for config_id, _ in configs)
-    click.echo(f"{'config_a':<{width}}  {'config_b':<{width}}  {'a':>3} {'b':>3} {'draw':>4}")
-    for pairing in matrix.pairings:
+        width = max(len(config_id) for config_id, _ in configs)
+        click.echo(f"{'config_a':<{width}}  {'config_b':<{width}}  {'a':>3} {'b':>3} {'draw':>4}")
+        for pairing in matrix.pairings:
+            click.echo(
+                f"{pairing.config_a:<{width}}  {pairing.config_b:<{width}}  "
+                f"{pairing.wins_a:>3} {pairing.wins_b:>3} {pairing.draws:>4}"
+            )
         click.echo(
-            f"{pairing.config_a:<{width}}  {pairing.config_b:<{width}}  "
-            f"{pairing.wins_a:>3} {pairing.wins_b:>3} {pairing.draws:>4}"
+            f"overall draw rate: {matrix.draw_rate:.4f} "
+            f"({matrix.total_draws}/{matrix.total_matches} matches)"
         )
-    click.echo(
-        f"overall draw rate: {matrix.draw_rate:.4f} "
-        f"({matrix.total_draws}/{matrix.total_matches} matches)"
-    )
 
-    if csv_path is not None:
-        csv_path.write_text(matrix.to_csv(), encoding="utf-8")
-        click.echo(f"csv: {csv_path}", err=True)
+        if csv_path is not None:
+            csv_path.write_text(matrix.to_csv(), encoding="utf-8")
+            click.echo(f"csv: {csv_path}", err=True)
