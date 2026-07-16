@@ -30,7 +30,8 @@ from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.ledger.protocol import EventLedger
+from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import ARENA_SIZE_CELLS, MatchRunner
 from steel_onslaught.pilots.schemas import ModelSOPosition
@@ -50,7 +51,7 @@ class LiveMatchStack:
     match_id: str
     bus: EventBus
     runner: MatchRunner
-    ledger: SQLiteLedger
+    ledger: EventLedger
     scoring: ReducerScoring
     leaderboard: LeaderboardHandler
 
@@ -84,7 +85,15 @@ def assemble_match_live(
 
     bus: EventBus = InProcessEventBus()
     # 1. Ledger effect — every event lands in the append-only record first.
-    ledger = SQLiteLedger(ledger_path)
+    ledger = SQLiteLedger(
+        ModelSOSQLiteLedgerConfig(
+            path=ledger_path,
+            journal_mode="WAL",
+            check_same_thread=True,
+            transaction_mode="autocommit",
+            event_schema="canonical_event_v1",
+        )
+    )
     bus.subscribe(ledger.append)
 
     # 2. Canonical fold — MatchRunner subscribes MatchStateFold in __init__.
@@ -112,7 +121,9 @@ def assemble_match_live(
         match_id,
         runner._correlation_id,
         emit=bus.publish,
-        replay_validity_check=lambda: verify_replay_validity(ledger, match_id, runner.fold.state),
+        replay_validity_check=lambda: verify_replay_validity(
+            ledger, match_id, runner.fold.state, catalog=catalog
+        ),
     )
     bus.subscribe(scoring.handle)
 

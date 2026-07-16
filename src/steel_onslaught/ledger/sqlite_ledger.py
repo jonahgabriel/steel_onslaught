@@ -1,21 +1,4 @@
-"""Append-only SQLite event ledger for Steel Onslaught.
-
-Provides ``SQLiteLedger``, the sole write path for match events.
-The public API is intentionally restricted to ``append``, ``read_all``,
-and ``read_after`` — there is no ``update``, ``delete``, ``truncate``,
-``clear``, or ``reset`` method. Append-only enforcement is duplicated at
-the database layer via BEFORE UPDATE / BEFORE DELETE triggers (migration
-0001_events.sql) so that even raw SQL connections cannot mutate history.
-
-Canonical replay ordering is ``(tick ASC, sequence_in_tick ASC, event_id ASC)``.
-``emitted_at`` is stored as metadata but MUST NOT be used for ordering.
-
-The full ONEX ``ModelEnvelope`` (message_id / correlation_id / causation_id /
-emitted_at) is persisted as a JSON column and round-tripped verbatim, so
-causation chains survive persistence. The denormalized correlation_id /
-causation_id / emitted_at columns are retained as legacy/secondary for
-back-compat with existing rows and external SQL consumers.
-"""
+"""Strict SQLite adapter for the canonical Steel event-ledger protocol."""
 
 from __future__ import annotations
 
@@ -23,9 +6,37 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Literal
 
-from steel_onslaught.events.envelope import ModelSOEventEnvelope
-from steel_onslaught.ledger.migrate import run_migrations
+from pydantic import BaseModel, ConfigDict
+
+from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.ledger.codec import (
+    LegacyLedgerFormatError,
+    PersistedEventFormatError,
+    dump_persisted_event,
+    load_persisted_event,
+)
+from steel_onslaught.ledger.migrate import SQLiteEventSchema, run_migrations
+from steel_onslaught.ledger.protocol import QueryableEventLedger
+
+
+class ModelSOSQLiteLedgerConfig(BaseModel):
+    """Complete, immutable SQLite adapter configuration.
+
+    Every operational policy is explicit. The adapter does not select a path,
+    transaction mode, threading policy, journal mode, or schema on behalf of
+    its caller.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: Path
+    journal_mode: Literal["WAL"]
+    check_same_thread: bool
+    transaction_mode: Literal["autocommit"]
+    event_schema: SQLiteEventSchema
+
 
 _INSERT_SQL = """
 INSERT INTO events
@@ -36,133 +47,150 @@ INSERT INTO events
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
-_SELECT_ALL_SQL = """
-SELECT event_id, match_id, tick, sequence_in_tick, event_type,
-       correlation_id, causation_id, producer_node,
-       subject_json, payload_json, emitted_at, schema_version,
-       envelope_json
-  FROM events
- WHERE match_id = ?
- ORDER BY tick ASC, sequence_in_tick ASC, event_id ASC
-"""
-
-_SELECT_AFTER_SQL = """
-SELECT event_id, match_id, tick, sequence_in_tick, event_type,
-       correlation_id, causation_id, producer_node,
-       subject_json, payload_json, emitted_at, schema_version,
-       envelope_json
-  FROM events
- WHERE match_id = ?
-   AND tick > ?
- ORDER BY tick ASC, sequence_in_tick ASC, event_id ASC
+_SELECT_COLUMNS = """
+event_id, match_id, tick, sequence_in_tick, event_type, envelope_json
 """
 
 
-def _row_to_envelope(row: tuple[object, ...]) -> ModelSOEventEnvelope:
-    (
-        event_id,
-        match_id,
-        tick,
-        sequence_in_tick,
-        event_type,
-        _correlation_id,  # legacy column; superseded by envelope_json
-        _causation_id,  # legacy column; superseded by envelope_json
-        producer_node,
-        subject_json,
-        payload_json,
-        _emitted_at,  # legacy column; superseded by envelope_json
-        schema_version,
-        envelope_json,
-    ) = row
-    subject_data = json.loads(str(subject_json))
-    # The canonical ONEX envelope is persisted verbatim in envelope_json;
-    # prefer it when present (new rows) and fall back to reconstructing from
-    # the legacy columns for rows written before the ONEX migration.
-    if envelope_json is not None:
-        return ModelSOEventEnvelope.model_validate(
-            {
-                "event_id": str(event_id),
-                "match_id": str(match_id),
-                "tick": int(str(tick)),
-                "sequence_in_tick": int(str(sequence_in_tick)),
-                "producer_node": str(producer_node),
-                "subject": subject_data,
-                "event_type": str(event_type),
-                "payload": json.loads(str(payload_json)),
-                "schema_version": str(schema_version),
-                "envelope": json.loads(str(envelope_json)),
-            }
+def _decode_row(row: tuple[object, ...]) -> ModelSOEventEnvelope:
+    event_id, match_id, tick, sequence_in_tick, event_type, event_json = row
+    if event_json is None:
+        raise LegacyLedgerFormatError(
+            f"legacy event row {event_id!r} has no canonical envelope_json; "
+            "runtime migration is forbidden"
         )
-    # Legacy row (pre-ONEX): route the denormalized identity columns through
-    # ModelSOEventEnvelope's single deterministic legacy adapter.
-    corr = str(_correlation_id) if _correlation_id is not None else None
-    caus = str(_causation_id) if _causation_id is not None else None
-    if _emitted_at is None:
-        raise ValueError("legacy event row is missing required emitted_at metadata")
-    return ModelSOEventEnvelope.model_validate(
-        {
-            "event_id": str(event_id),
-            "match_id": str(match_id),
-            "tick": int(str(tick)),
-            "sequence_in_tick": int(str(sequence_in_tick)),
-            "producer_node": str(producer_node),
-            "subject": subject_data,
-            "event_type": str(event_type),
-            "payload": json.loads(str(payload_json)),
-            "schema_version": str(schema_version),
-            "correlation_id": corr if corr is not None else str(match_id),
-            "causation_id": caus,
-            "emitted_at": str(_emitted_at),
-        }
+    try:
+        event = load_persisted_event(str(event_json))
+    except PersistedEventFormatError as exc:
+        raise PersistedEventFormatError(
+            f"event row {event_id!r} is not a canonical persisted event: {exc}"
+        ) from exc
+    projection = (
+        str(event_id),
+        str(match_id),
+        int(str(tick)),
+        int(str(sequence_in_tick)),
+        str(event_type),
     )
+    canonical = (
+        event.event_id,
+        event.match_id,
+        event.tick,
+        event.sequence_in_tick,
+        event.event_type.value,
+    )
+    if projection != canonical:
+        raise PersistedEventFormatError(
+            f"event row {event_id!r} index projection differs from canonical envelope_json"
+        )
+    return event
 
 
-class SQLiteLedger:
-    """Append-only SQLite-backed event ledger.
+class SQLiteLedger(QueryableEventLedger):
+    """Append-only SQLite implementation of the storage-neutral ledger ports."""
 
-    All writes go through ``append``; there is intentionally no ``update``,
-    ``delete``, ``truncate``, ``clear``, or ``reset`` method.  The database
-    triggers enforce the same invariant at the SQL layer.
-    """
+    def __init__(self, config: ModelSOSQLiteLedgerConfig) -> None:
+        self._config = config
+        self._conn = sqlite3.connect(
+            config.path,
+            check_same_thread=config.check_same_thread,
+        )
+        try:
+            journal_mode = self._conn.execute(
+                f"PRAGMA journal_mode={config.journal_mode}"
+            ).fetchone()
+            if journal_mode is None or str(journal_mode[0]).upper() != config.journal_mode:
+                raise RuntimeError(
+                    f"SQLite refused required journal mode {config.journal_mode!r}: "
+                    f"{journal_mode!r}"
+                )
+            run_migrations(self._conn, schema=config.event_schema)
+            self._validate_existing_rows()
+        except BaseException:
+            self._conn.close()
+            raise
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._conn = sqlite3.connect(path)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        run_migrations(self._conn)
+    @property
+    def config(self) -> ModelSOSQLiteLedgerConfig:
+        return self._config
 
-    def append(self, env: ModelSOEventEnvelope) -> None:
-        """Insert *env* as a new row.  Raises ``sqlite3.IntegrityError`` on
-        duplicate ``event_id`` or duplicate ``(match_id, tick, sequence_in_tick)``."""
+    def _validate_existing_rows(self) -> None:
+        cursor = self._conn.execute(f"SELECT {_SELECT_COLUMNS} FROM events")
+        for row in cursor:
+            _decode_row(row)
+
+    def append(self, event: ModelSOEventEnvelope) -> None:
+        """Append one complete canonical event and commit it immediately."""
+        canonical_json = dump_persisted_event(event)
         self._conn.execute(
             _INSERT_SQL,
             (
-                env.event_id,
-                env.match_id,
-                env.tick,
-                env.sequence_in_tick,
-                env.event_type.value,
-                str(env.correlation_id),
-                str(env.causation_id) if env.causation_id is not None else None,
-                env.producer_node,
-                env.subject.model_dump_json(),
-                json.dumps(env.payload),
-                env.emitted_at,
-                env.schema_version,
-                env.envelope.model_dump_json(),
+                event.event_id,
+                event.match_id,
+                event.tick,
+                event.sequence_in_tick,
+                event.event_type.value,
+                str(event.correlation_id),
+                str(event.causation_id) if event.causation_id is not None else None,
+                event.producer_node,
+                event.subject.model_dump_json(),
+                json.dumps(event.payload, separators=(",", ":"), ensure_ascii=False),
+                event.emitted_at,
+                event.schema_version,
+                canonical_json,
             ),
         )
         self._conn.commit()
 
     def read_all(self, match_id: str) -> Iterator[ModelSOEventEnvelope]:
-        """Yield all events for *match_id* in canonical order
-        ``(tick ASC, sequence_in_tick ASC, event_id ASC)``."""
-        cursor = self._conn.execute(_SELECT_ALL_SQL, (match_id,))
+        cursor = self._conn.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM events "
+            "WHERE match_id = ? ORDER BY tick ASC, sequence_in_tick ASC, event_id ASC",
+            (match_id,),
+        )
         for row in cursor:
-            yield _row_to_envelope(row)
+            yield _decode_row(row)
 
     def read_after(self, match_id: str, after_tick: int) -> Iterator[ModelSOEventEnvelope]:
-        """Yield events for *match_id* with ``tick > after_tick`` in canonical order."""
-        cursor = self._conn.execute(_SELECT_AFTER_SQL, (match_id, after_tick))
+        cursor = self._conn.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM events "
+            "WHERE match_id = ? AND tick > ? "
+            "ORDER BY tick ASC, sequence_in_tick ASC, event_id ASC",
+            (match_id, after_tick),
+        )
         for row in cursor:
-            yield _row_to_envelope(row)
+            yield _decode_row(row)
+
+    def contains_match(self, match_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM events WHERE match_id = ? LIMIT 1", (match_id,)
+        ).fetchone()
+        return row is not None
+
+    def read_at(
+        self,
+        match_id: str,
+        tick: int,
+        *,
+        event_types: frozenset[SOEventType] | None,
+    ) -> Iterator[ModelSOEventEnvelope]:
+        params: list[object] = [match_id, tick]
+        event_filter = ""
+        if event_types is not None:
+            if not event_types:
+                return
+            ordered_types = sorted(event_type.value for event_type in event_types)
+            placeholders = ", ".join("?" for _ in ordered_types)
+            event_filter = f" AND event_type IN ({placeholders})"
+            params.extend(ordered_types)
+        cursor = self._conn.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM events "
+            f"WHERE match_id = ? AND tick = ?{event_filter} "
+            "ORDER BY sequence_in_tick ASC, event_id ASC",
+            params,
+        )
+        for row in cursor:
+            yield _decode_row(row)
+
+
+__all__ = ["ModelSOSQLiteLedgerConfig", "SQLiteLedger"]

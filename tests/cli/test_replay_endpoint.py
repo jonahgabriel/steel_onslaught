@@ -32,6 +32,7 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from tests.sqlite_ledger import open_cross_thread_sqlite_ledger
 
 _MATCH_ID = "match.test.replay.endpoint"
 _EMITTED_AT = datetime(2026, 4, 30, 16, 0, 0, tzinfo=UTC)
@@ -126,7 +127,7 @@ def _get(url: str) -> tuple[int, Any]:
 
 @pytest.fixture()
 def ledger_with_events(tmp_path: Path) -> SQLiteLedger:
-    ledger = SQLiteLedger(tmp_path / "test_endpoint.sqlite")
+    ledger = open_cross_thread_sqlite_ledger(tmp_path / "test_endpoint.sqlite")
     # tick 5: two pilot decisions + one boiler event
     ledger.append(_make_decision_event(_MATCH_ID, tick=5, seq=0))
     ledger.append(_make_other_event(_MATCH_ID, tick=5, seq=1))
@@ -146,20 +147,19 @@ def ledger_with_events(tmp_path: Path) -> SQLiteLedger:
 
 
 @pytest.mark.unit
-def test_create_replay_http_handler_is_callable(tmp_path: Path) -> None:
-    """``create_replay_http_handler`` must accept a ledger dir and return
+def test_create_replay_http_handler_is_callable() -> None:
+    """``create_replay_http_handler`` must accept ledger ports and return
     a BaseHTTPRequestHandler subclass."""
-    handler_class = create_replay_http_handler(tmp_path)
+    handler_class = create_replay_http_handler([])
     assert issubclass(handler_class, BaseHTTPRequestHandler)
 
 
 @pytest.mark.integration
 def test_endpoint_returns_pilot_decisions_for_tick(
     ledger_with_events: SQLiteLedger,
-    tmp_path: Path,
 ) -> None:
     """200 + list of PILOT_DECISION_MADE envelopes for a tick that has them."""
-    handler_class = create_replay_http_handler(tmp_path)
+    handler_class = create_replay_http_handler([ledger_with_events])
     server, base_url = _start_test_server(handler_class)
     try:
         status, body = _get(f"{base_url}/api/replay/{_MATCH_ID}/tick/5")
@@ -175,10 +175,9 @@ def test_endpoint_returns_pilot_decisions_for_tick(
 @pytest.mark.integration
 def test_endpoint_returns_empty_list_when_no_decisions(
     ledger_with_events: SQLiteLedger,
-    tmp_path: Path,
 ) -> None:
     """200 + [] for a tick that exists but has no PILOT_DECISION_MADE events."""
-    handler_class = create_replay_http_handler(tmp_path)
+    handler_class = create_replay_http_handler([ledger_with_events])
     server, base_url = _start_test_server(handler_class)
     try:
         status, body = _get(f"{base_url}/api/replay/{_MATCH_ID}/tick/6")
@@ -191,10 +190,9 @@ def test_endpoint_returns_empty_list_when_no_decisions(
 @pytest.mark.integration
 def test_endpoint_returns_404_for_unknown_match(
     ledger_with_events: SQLiteLedger,
-    tmp_path: Path,
 ) -> None:
     """404 + {"error": "match_not_found"} for an unknown match_id."""
-    handler_class = create_replay_http_handler(tmp_path)
+    handler_class = create_replay_http_handler([ledger_with_events])
     server, base_url = _start_test_server(handler_class)
     try:
         status, body = _get(f"{base_url}/api/replay/UNKNOWN_MATCH_XYZ/tick/0")
@@ -207,10 +205,9 @@ def test_endpoint_returns_404_for_unknown_match(
 @pytest.mark.integration
 def test_endpoint_returns_400_for_negative_tick(
     ledger_with_events: SQLiteLedger,
-    tmp_path: Path,
 ) -> None:
     """400 + {"error": "invalid_tick"} for tick < 0 (negative in the path)."""
-    handler_class = create_replay_http_handler(tmp_path)
+    handler_class = create_replay_http_handler([ledger_with_events])
     server, base_url = _start_test_server(handler_class)
     try:
         # Negative ticks cannot appear in a URL path segment without encoding.
@@ -225,10 +222,9 @@ def test_endpoint_returns_400_for_negative_tick(
 @pytest.mark.integration
 def test_endpoint_envelopes_are_valid_json_and_parseable(
     ledger_with_events: SQLiteLedger,
-    tmp_path: Path,
 ) -> None:
     """Each item in the 200 response parses into a ModelSOEventEnvelope."""
-    handler_class = create_replay_http_handler(tmp_path)
+    handler_class = create_replay_http_handler([ledger_with_events])
     server, base_url = _start_test_server(handler_class)
     try:
         status, body = _get(f"{base_url}/api/replay/{_MATCH_ID}/tick/5")

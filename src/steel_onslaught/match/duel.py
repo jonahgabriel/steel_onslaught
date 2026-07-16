@@ -21,7 +21,7 @@ import ulid
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import ARENA_SIZE_CELLS, MatchRunner
 from steel_onslaught.match.state import ModelSOMatchState
@@ -57,7 +57,15 @@ def run_duel(
     ``player.<side>`` for a decisive ending and ``None`` on a draw.
     """
     bus = InProcessEventBus()
-    ledger = SQLiteLedger(ledger_path)
+    ledger = SQLiteLedger(
+        ModelSOSQLiteLedgerConfig(
+            path=ledger_path,
+            journal_mode="WAL",
+            check_same_thread=True,
+            transaction_mode="autocommit",
+            event_schema="canonical_event_v1",
+        )
+    )
     bus.subscribe(ledger.append)
     runner = MatchRunner(
         match_id=match_id if match_id is not None else f"match.{ulid.new().str}",

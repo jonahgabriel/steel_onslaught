@@ -57,7 +57,8 @@ from steel_onslaught.events.envelope import (
     SOEventType,
     make_event,
 )
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.ledger.protocol import EventLedger
+from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.state import ModelSOMatchState
 from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.lifecycle import ModelSOMatchStartedPayload
@@ -207,16 +208,18 @@ def compute_final_score(
 
 
 def verify_replay_validity(
-    ledger: SQLiteLedger,
+    ledger: EventLedger,
     match_id: str,
     live_state: ModelSOMatchState,
+    *,
+    catalog: MatchContractCatalog,
 ) -> bool:
     """Return True when the replay engine reproduces *live_state* exactly.
 
     Implements the plan's definition:
     ``replay.reconstruct_at_tick(final_tick) == live_state``.
     """
-    engine = ReplayEngine(ledger, match_id)
+    engine = ReplayEngine(ledger, match_id, catalog=catalog)
     return engine.reconstruct_at_tick(live_state.tick) == live_state
 
 

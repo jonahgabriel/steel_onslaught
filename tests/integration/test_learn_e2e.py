@@ -78,11 +78,11 @@ from steel_onslaught.learning.protocols import (
 )
 from steel_onslaught.learning.spec_adapter import PilotSpecView, bounds_for_archetype
 from steel_onslaught.learning.stats import paired_comparison
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.duel import run_duel
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import load_loadout
 from steel_onslaught.replay.engine import ReplayEngine
+from tests.sqlite_ledger import open_sqlite_ledger
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -512,7 +512,11 @@ def test_replay_equals_live_fold_on_retained_gate_ledger(
         side_b="blue",
     )
 
-    replay = ReplayEngine(SQLiteLedger(retained_ledger), match_id=match_id)
+    replay = ReplayEngine(
+        open_sqlite_ledger(retained_ledger),
+        match_id=match_id,
+        catalog=MatchContractCatalog.load(None),
+    )
     assert replay.reconstruct_at_tick(live_state.tick) == live_state
 
 

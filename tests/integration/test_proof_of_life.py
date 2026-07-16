@@ -36,11 +36,12 @@ import pytest
 from click.testing import CliRunner
 
 from steel_onslaught.cli.main import main as cli_main
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import run_match
 from steel_onslaught.match.state import SOMatchEndReason, SOMatchStatus
 from steel_onslaught.projections.leaderboard.handler import LeaderboardProjection
 from steel_onslaught.replay.engine import ReplayEngine
+from tests.sqlite_ledger import open_sqlite_ledger
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOADOUTS = _REPO_ROOT / "contracts_data" / "loadouts"
@@ -116,7 +117,11 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
     assert live_state.winner_id in {"player.red", "player.blue"}
 
     # 2) Replay reconstructs canonical state exactly (R9 data flow proof).
-    replay = ReplayEngine(SQLiteLedger(ledger_path), match_id=live_state.match_id)
+    replay = ReplayEngine(
+        open_sqlite_ledger(ledger_path),
+        match_id=live_state.match_id,
+        catalog=MatchContractCatalog.load(None),
+    )
     reconstructed = replay.reconstruct_at_tick(live_state.tick)
     assert reconstructed == live_state, "replay must reproduce canonical state exactly"
 
@@ -194,5 +199,9 @@ def test_proof_of_life_draw_max_ticks(tmp_path: Path) -> None:
     assert lb.draw_count() == 1
 
     # The draw replays exactly, too (same fold, same ledger discipline).
-    replay = ReplayEngine(SQLiteLedger(ledger_path), match_id=live_state.match_id)
+    replay = ReplayEngine(
+        open_sqlite_ledger(ledger_path),
+        match_id=live_state.match_id,
+        catalog=MatchContractCatalog.load(None),
+    )
     assert replay.reconstruct_at_tick(live_state.tick) == live_state

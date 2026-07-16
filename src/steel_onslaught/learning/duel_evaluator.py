@@ -49,7 +49,7 @@ from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import spec_from_params
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.match.duel import run_duel
 from steel_onslaught.match.fold import MatchContractCatalog
 
@@ -254,7 +254,15 @@ class DuelEvaluator:
     @staticmethod
     def _count_overloads(ledger_path: Path, match_id: str, *, mech_id: str) -> int:
         """Count BOILER_OVERLOADED ledger events for one mech in one duel."""
-        ledger = SQLiteLedger(ledger_path)
+        ledger = SQLiteLedger(
+            ModelSOSQLiteLedgerConfig(
+                path=ledger_path,
+                journal_mode="WAL",
+                check_same_thread=True,
+                transaction_mode="autocommit",
+                event_schema="canonical_event_v1",
+            )
+        )
         return sum(
             1
             for envelope in ledger.read_all(match_id)

@@ -38,7 +38,7 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import MatchRunner, load_loadout
 from steel_onslaught.match.state import ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
@@ -52,6 +52,7 @@ from steel_onslaught.reducers.scoring import (
     compute_final_score,
     verify_replay_validity,
 )
+from tests.sqlite_ledger import open_sqlite_ledger
 
 _MATCH_ID = "match.scoring.001"
 
@@ -600,7 +601,7 @@ def test_payload_feeds_leaderboard_handler(tmp_path: Path) -> None:
 @pytest.mark.integration
 def test_verify_replay_validity_for_real_match(tmp_path: Path) -> None:
     match_id = "match.scoring.replay-check"
-    ledger = SQLiteLedger(tmp_path / f"{match_id}.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / f"{match_id}.sqlite")
     bus = InProcessEventBus()
     bus.subscribe(ledger.append)
 
@@ -614,7 +615,8 @@ def test_verify_replay_validity_for_real_match(tmp_path: Path) -> None:
     )
     live_state = runner.run()
 
-    assert verify_replay_validity(ledger, match_id, live_state) is True
+    catalog = MatchContractCatalog.load(None)
+    assert verify_replay_validity(ledger, match_id, live_state, catalog=catalog) is True
     # A mismatched live state must yield False, not raise.
     tampered = live_state.model_copy(update={"seed": live_state.seed + 1})
-    assert verify_replay_validity(ledger, match_id, tampered) is False
+    assert verify_replay_validity(ledger, match_id, tampered, catalog=catalog) is False

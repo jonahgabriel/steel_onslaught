@@ -12,6 +12,7 @@ from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.runner import MatchRunner, load_loadout
 from steel_onslaught.match.state import SOMatchEndReason, SOMatchStatus
+from tests.sqlite_ledger import open_sqlite_ledger
 
 LOADOUT_A = Path("contracts_data/loadouts/example_aggressive_light.yaml")
 LOADOUT_B = Path("contracts_data/loadouts/example_predictive_heavy.yaml")
@@ -95,7 +96,7 @@ def test_pilot_decisions_emitted_per_living_mech_per_tick() -> None:
 
 @pytest.mark.integration
 def test_run_with_ledger_persists_all_events_in_canonical_order(tmp_path: Path) -> None:
-    ledger = SQLiteLedger(tmp_path / "ledger.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "ledger.sqlite")
     _, collected = _run_match(max_ticks=5, ledger=ledger)
 
     persisted = list(ledger.read_all(MATCH_ID))

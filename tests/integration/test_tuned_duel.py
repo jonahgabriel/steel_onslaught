@@ -57,10 +57,10 @@ from typing import Any
 import pytest
 
 from steel_onslaught.contracts.budget import validate_loadout_budgets
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import _module_budgets, load_loadout, run_match
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchStatus
+from tests.sqlite_ledger import open_sqlite_ledger
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOADOUTS = _REPO_ROOT / "contracts_data" / "loadouts"
@@ -83,7 +83,7 @@ CanonicalRow = tuple[int, int, str, str, str, str]
 def _canonical_rows(ledger_path: Path, match_id: str) -> list[CanonicalRow]:
     """Decision #3 canonical rows: drop event_id/emitted_at, normalize match_id."""
     rows: list[CanonicalRow] = []
-    for event in SQLiteLedger(ledger_path).read_all(match_id):
+    for event in open_sqlite_ledger(ledger_path).read_all(match_id):
         payload_json = json.dumps(event.payload, sort_keys=True, separators=(",", ":")).replace(
             match_id, "<match>"
         )

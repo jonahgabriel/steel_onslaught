@@ -1,6 +1,6 @@
 """Replay engine — Tasks 27 + 34.
 
-Reads events from a ``SQLiteLedger`` in canonical order
+Reads events from an ``EventLedger`` in canonical order
 ``(tick ASC, sequence_in_tick ASC, event_id ASC)`` and folds them through
 ``MatchStateFold`` — the SAME fold the live match runner subscribes to the
 bus — producing a ``ModelSOMatchState`` that is ``==`` to the live final
@@ -18,7 +18,7 @@ API
 
 Usage::
 
-    replay = ReplayEngine(ledger, match_id="match.2026-04-30.001")
+    replay = ReplayEngine(ledger, match_id="match.2026-04-30.001", catalog=catalog)
     final  = replay.reconstruct_at_tick(200)   # fold through all events
     state3 = replay.reconstruct_at_tick(3)      # fold only through tick 3
     t4     = replay.step_forward()              # advance one tick
@@ -27,11 +27,8 @@ Usage::
 
 from __future__ import annotations
 
-from pathlib import Path
-from uuid import uuid4
-
 from steel_onslaught.events.envelope import ModelSOEventEnvelope
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.state import ModelSOMatchState
 
@@ -40,11 +37,9 @@ class ReplayEngine:
     """Reconstruct ``ModelSOMatchState`` at any tick from a ledger.
 
     Args:
-        ledger:   Open ``SQLiteLedger`` holding the target match's events.
+        ledger:   Event ledger holding the target match's canonical events.
         match_id: The match identifier whose events are replayed.
-        contracts_data_dir: Optional override for the static contract catalog
-                  the fold needs (mode transitions, weapon cooldowns, safety
-                  gizmos).  Defaults to the package-relative contracts_data/.
+        catalog:  Already resolved static contract catalog for the fold.
 
     The engine caches the full ordered event list on first construction to
     avoid repeated ledger scans.  The ledger is expected to be complete
@@ -54,22 +49,24 @@ class ReplayEngine:
 
     def __init__(
         self,
-        ledger: SQLiteLedger,
+        ledger: EventLedger,
         match_id: str,
         *,
-        contracts_data_dir: Path | None = None,
+        catalog: MatchContractCatalog,
     ) -> None:
         self._ledger = ledger
         self._match_id = match_id
-        self._catalog = MatchContractCatalog.load(contracts_data_dir)
+        self._catalog = catalog
         # Cache the full canonical event list once.
         self._events: list[ModelSOEventEnvelope] = list(ledger.read_all(match_id))
+        if not self._events:
+            raise ValueError(f"no events for match_id={match_id!r}")
         # ONEX workflow correlation id shared across every event of this match.
         # Derived from the ledger (the replay path never emits, so the fold's
         # bus=None; correlation_id is threaded only to satisfy the factory
         # signature and stays unused on this path). All events of one match
         # share it (the runner generates one per match).
-        self._correlation_id = self._events[0].correlation_id if self._events else uuid4()
+        self._correlation_id = self._events[0].correlation_id
         # Current cursor position — updated by reconstruct_at_tick / step_*.
         self._cursor_tick: int = 0
 

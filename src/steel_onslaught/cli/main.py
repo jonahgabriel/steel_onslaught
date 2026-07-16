@@ -23,7 +23,7 @@ from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.cli.balance import balance_command
 from steel_onslaught.cli.learn import learn_command
 from steel_onslaught.cli.serve import serve_command
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.match.runner import MatchRunner, load_loadout
 from steel_onslaught.projections.cli.renderer import CliTextRenderer
 
@@ -74,7 +74,15 @@ def run_command(
     renderer = CliTextRenderer(out=click.get_text_stream("stdout"), color=not no_color)
     renderer.attach(bus)
     if ledger_path is not None:
-        ledger = SQLiteLedger(ledger_path)
+        ledger = SQLiteLedger(
+            ModelSOSQLiteLedgerConfig(
+                path=ledger_path,
+                journal_mode="WAL",
+                check_same_thread=True,
+                transaction_mode="autocommit",
+                event_schema="canonical_event_v1",
+            )
+        )
         bus.subscribe(ledger.append)
 
     match_id = f"match.{ulid.new().str}"
@@ -104,7 +112,15 @@ def replay_command(
     no_color: bool,
 ) -> None:
     """Re-emit a recorded match's events through a fresh bus + renderer."""
-    ledger = SQLiteLedger(ledger_path)
+    ledger = SQLiteLedger(
+        ModelSOSQLiteLedgerConfig(
+            path=ledger_path,
+            journal_mode="WAL",
+            check_same_thread=True,
+            transaction_mode="autocommit",
+            event_schema="canonical_event_v1",
+        )
+    )
     bus = InProcessEventBus()
     renderer = CliTextRenderer(out=click.get_text_stream("stdout"), color=not no_color)
     renderer.attach(bus)

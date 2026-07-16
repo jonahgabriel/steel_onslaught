@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 
 import ulid
 from omnibase_core.models.common.model_envelope import ModelEnvelope
@@ -54,24 +54,6 @@ class ModelSOEventSubject(BaseModel):
     player_id: str
 
 
-def legacy_identity_uuid(value: UUID | str) -> UUID:
-    """Return the canonical UUID for one pre-ONEX identity value.
-
-    Existing UUID identities are preserved exactly.  Legacy string identities
-    (including ULIDs and match ids) are mapped with UUIDv5 over the complete
-    value, making reconstruction stable across processes without truncation or
-    dependence on Python's randomized ``hash()`` implementation.
-    """
-    if isinstance(value, UUID):
-        return value
-    if not isinstance(value, str) or not value:
-        raise ValueError("legacy identity must be a non-empty string or UUID")
-    try:
-        return UUID(value)
-    except ValueError:
-        return uuid5(NAMESPACE_URL, f"steel-onslaught:legacy-identity:{value}")
-
-
 class ModelSOEventEnvelope(BaseModel):
     """A Steel Onslaught game event, ONEX-envelope-composed.
 
@@ -100,76 +82,8 @@ class ModelSOEventEnvelope(BaseModel):
     payload: dict[str, Any]
     # The ONEX canonical envelope: tracing identity + causation chain.
     # entity_id is the match_id (partition key); message_id is a fresh UUID
-    # per event (distinct from the ULID event_id, which is retained for
-    # backward compatibility with existing ledger rows).
+    # per event (distinct from the application-level ULID event_id).
     envelope: ModelEnvelope
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_legacy_flat_fields(cls, data: Any) -> Any:
-        """Backward-compatible construction from the pre-ONEX flat envelope shape.
-
-        Existing callers/tests construct with the legacy fields
-        ``correlation_id``/``causation_id``/``emitted_at`` (strings/scalars)
-        rather than the composed ``envelope`` dict. This translates the flat
-        shape into the composed ONEX envelope so those constructions keep
-        working during the migration. New code should use ``make_event()``.
-        """
-        if not isinstance(data, dict):
-            return data
-        if "envelope" in data:
-            return data  # already the composed shape
-        legacy_corr = data.get("correlation_id")
-        legacy_caus = data.get("causation_id")
-        legacy_emitted = data.get("emitted_at")
-        match_id = data.get("match_id")
-        if match_id is None:
-            return data  # let required-field validation surface the real error
-        emitted_dt: datetime
-        if isinstance(legacy_emitted, datetime):
-            emitted_dt = legacy_emitted
-        else:
-            # Tolerate ISO strings and fall back to now for legacy rows.
-            try:
-                emitted_dt = (
-                    datetime.fromisoformat(str(legacy_emitted))
-                    if legacy_emitted
-                    else datetime.now(UTC)
-                )
-            except ValueError:
-                emitted_dt = datetime.now(UTC)
-            if emitted_dt.tzinfo is None:
-                emitted_dt = emitted_dt.replace(tzinfo=UTC)
-        envelope_dict: dict[str, Any] = {
-            "entity_id": str(match_id),
-            "emitted_at": emitted_dt.isoformat(),
-        }
-        # message_id: legacy event_id is normally a ULID string (not a UUID).
-        # Map its complete identity deterministically into the UUID domain.
-        mid = data.get("event_id")
-        if not isinstance(mid, (str, UUID)):
-            raise ValueError("legacy event_id must be a non-empty string or UUID")
-        envelope_dict["message_id"] = str(legacy_identity_uuid(mid))
-
-        # correlation_id / causation_id use the same identity mapping so a
-        # causation value equal to a parent's legacy event_id links to that
-        # parent's reconstructed message_id.
-        corr_source = legacy_corr if legacy_corr is not None else match_id
-        if not isinstance(corr_source, (str, UUID)):
-            raise ValueError("legacy correlation_id must be a non-empty string or UUID")
-        envelope_dict["correlation_id"] = str(legacy_identity_uuid(corr_source))
-        if legacy_caus is not None and not isinstance(legacy_caus, (str, UUID)):
-            raise ValueError("legacy causation_id must be a non-empty string or UUID")
-        caus = legacy_identity_uuid(legacy_caus) if legacy_caus is not None else None
-        if caus is not None:
-            envelope_dict["causation_id"] = str(caus)
-        data = {
-            k: v
-            for k, v in data.items()
-            if k not in {"correlation_id", "causation_id", "emitted_at"}
-        }
-        data["envelope"] = envelope_dict
-        return data
 
     @model_validator(mode="after")
     def _envelope_entity_matches_match_id(self) -> ModelSOEventEnvelope:
@@ -181,10 +95,8 @@ class ModelSOEventEnvelope(BaseModel):
             )
         return self
 
-    # -- Backward-compatible accessors delegating to the composed envelope --
-    # These keep the 165 existing field reads working during the ONEX migration;
-    # the legacy string-typed correlation_id/causation_id/emitted_at are derived
-    # from the canonical UUID/datetime values on the envelope.
+    # Read-only conveniences over the canonical composed envelope. They do not
+    # define or accept a second, flat input protocol.
 
     @property
     def correlation_id(self) -> UUID:

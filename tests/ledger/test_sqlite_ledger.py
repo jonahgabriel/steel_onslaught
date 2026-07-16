@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
-import subprocess
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
@@ -18,11 +15,11 @@ from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
     SOEventType,
-    legacy_identity_uuid,
 )
+from steel_onslaught.ledger.codec import LegacyLedgerFormatError, dump_persisted_event
 from steel_onslaught.ledger.migrate import run_migrations
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
-from steel_onslaught.replay.engine import ReplayEngine
+from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
+from tests.sqlite_ledger import open_sqlite_ledger
 
 # 26-character ULID-shaped IDs used across all tests
 _EID1 = "01JABCDE0123456789ABCDEF01"
@@ -66,39 +63,40 @@ def _make_env(
     )
 
 
-def _insert_legacy_event(
-    ledger: SQLiteLedger,
-    *,
-    event_id: str = _EID1,
-    match_id: str = "match.legacy.001",
-    correlation_id: str = "match.legacy.001",
-    causation_id: str = "01JABCDE0123456789ABCDEF00",
-) -> None:
-    """Insert one row in the schema shape that predates envelope_json."""
-    ledger._conn.execute(
+def _create_legacy_database(path: Path) -> None:
+    """Create one pre-canonical database without ``envelope_json``."""
+    conn = sqlite3.connect(path)
+    conn.executescript(
         """
+        CREATE TABLE events (
+            event_id TEXT PRIMARY KEY,
+            match_id TEXT NOT NULL,
+            tick INTEGER NOT NULL,
+            sequence_in_tick INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            correlation_id TEXT,
+            causation_id TEXT,
+            producer_node TEXT NOT NULL,
+            subject_json TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            emitted_at TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            UNIQUE (match_id, tick, sequence_in_tick)
+        );
         INSERT INTO events
             (event_id, match_id, tick, sequence_in_tick, event_type,
              correlation_id, causation_id, producer_node,
              subject_json, payload_json, emitted_at, schema_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (
+            '01JABCDE0123456789ABCDEF01', 'match.legacy.001', 0, 0,
+            'pilot_decision_made', 'match.legacy.001', NULL, 'node.legacy',
+            '{"mech_id":"mech.legacy","player_id":"player.legacy"}',
+            '{"action":"remain"}', '2026-04-30T16:00:00+00:00', '0.1.0'
+        );
         """,
-        (
-            event_id,
-            match_id,
-            0,
-            0,
-            SOEventType.PILOT_DECISION_MADE.value,
-            correlation_id,
-            causation_id,
-            "node.legacy",
-            json.dumps({"mech_id": "mech.legacy", "player_id": "player.legacy"}),
-            json.dumps({"action": "remain"}),
-            "2026-04-30T16:00:00+00:00",
-            "0.1.0",
-        ),
     )
-    ledger._conn.commit()
+    conn.commit()
+    conn.close()
 
 
 @pytest.mark.unit
@@ -106,7 +104,7 @@ def test_migrate_creates_events_table(tmp_path: Path) -> None:
     """Migrating a fresh DB creates the events table with the expected schema."""
     db_path = tmp_path / "test.sqlite"
     conn = sqlite3.connect(db_path)
-    run_migrations(conn)
+    run_migrations(conn, schema="canonical_event_v1")
 
     cursor = conn.execute("PRAGMA table_info(events)")
     columns = {row[1]: row[2] for row in cursor.fetchall()}
@@ -123,6 +121,7 @@ def test_migrate_creates_events_table(tmp_path: Path) -> None:
     assert "payload_json" in columns
     assert "emitted_at" in columns
     assert "schema_version" in columns
+    assert "envelope_json" in columns
     conn.close()
 
 
@@ -131,13 +130,14 @@ def test_migrate_creates_append_only_triggers(tmp_path: Path) -> None:
     """Migration creates the two append-only triggers."""
     db_path = tmp_path / "test.sqlite"
     conn = sqlite3.connect(db_path)
-    run_migrations(conn)
+    run_migrations(conn, schema="canonical_event_v1")
 
     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name")
     trigger_names = {row[0] for row in cursor.fetchall()}
 
     assert "events_no_update" in trigger_names
     assert "events_no_delete" in trigger_names
+    assert "events_require_canonical_envelope" in trigger_names
     conn.close()
 
 
@@ -146,8 +146,8 @@ def test_migrate_is_idempotent(tmp_path: Path) -> None:
     """Running migrations twice is idempotent — no errors, no duplicate objects."""
     db_path = tmp_path / "test.sqlite"
     conn = sqlite3.connect(db_path)
-    run_migrations(conn)
-    run_migrations(conn)  # second run must not raise
+    run_migrations(conn, schema="canonical_event_v1")
+    run_migrations(conn, schema="canonical_event_v1")  # second run must not raise
 
     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
     trigger_names = [row[0] for row in cursor.fetchall()]
@@ -159,7 +159,7 @@ def test_migrate_is_idempotent(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_append_and_read_all_round_trip(tmp_path: Path) -> None:
     """append() inserts one row; read_all() returns it as an equivalent envelope."""
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
     env = _make_env(_EID1)
 
     ledger.append(env)
@@ -177,12 +177,16 @@ def test_append_and_read_all_round_trip(tmp_path: Path) -> None:
     assert result.payload == env.payload
     assert result.emitted_at == env.emitted_at
     assert result.schema_version == env.schema_version
+    stored_json = ledger._conn.execute(
+        "SELECT envelope_json FROM events WHERE event_id = ?", (_EID1,)
+    ).fetchone()[0]
+    assert stored_json == dump_persisted_event(env)
 
 
 @pytest.mark.unit
 def test_append_rejects_duplicate_event_id(tmp_path: Path) -> None:
     """append() is rejected if event_id already exists (PRIMARY KEY violation)."""
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
     env = _make_env(_EID1)
     ledger.append(env)
 
@@ -193,7 +197,7 @@ def test_append_rejects_duplicate_event_id(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_append_rejects_duplicate_tick_sequence(tmp_path: Path) -> None:
     """append() is rejected if (match_id, tick, sequence_in_tick) already exists."""
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
     env1 = _make_env(_EID1, tick=0, sequence_in_tick=0)
     env2 = _make_env(
         _EID2,  # different event_id
@@ -209,7 +213,7 @@ def test_append_rejects_duplicate_tick_sequence(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_update_trigger_raises(tmp_path: Path) -> None:
     """A direct UPDATE on events raises IntegrityError with 'append-only' message."""
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
     env = _make_env(_EID1)
     ledger.append(env)
 
@@ -221,7 +225,7 @@ def test_update_trigger_raises(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_delete_trigger_raises(tmp_path: Path) -> None:
     """A direct DELETE on events raises IntegrityError with 'append-only' message."""
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
     env = _make_env(_EID1)
     ledger.append(env)
 
@@ -233,7 +237,7 @@ def test_delete_trigger_raises(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_read_all_canonical_order(tmp_path: Path) -> None:
     """read_all() returns events in (tick ASC, sequence_in_tick ASC, event_id ASC)."""
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
 
     # Insert out of natural order to prove sorting
     envs = [
@@ -256,7 +260,7 @@ def test_read_all_canonical_order(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_read_after_filters_by_tick(tmp_path: Path) -> None:
     """read_after(match_id, after_tick) returns only events with tick > after_tick."""
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
 
     tick_seq_pairs = [(0, 0), (1, 0), (2, 0), (3, 0)]
     for i, (tick, seq) in enumerate(tick_seq_pairs):
@@ -271,7 +275,7 @@ def test_read_after_filters_by_tick(tmp_path: Path) -> None:
 @pytest.mark.unit
 def test_read_all_isolates_by_match_id(tmp_path: Path) -> None:
     """read_all() only returns events matching the given match_id."""
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
 
     ledger.append(_make_env(_EID1, match_id="match.test.001"))
     ledger.append(
@@ -298,7 +302,7 @@ def test_correlation_and_causation_preserved(tmp_path: Path) -> None:
     """append/read preserves the ONEX correlation_id and causation_id (UUIDs)."""
     corr = uuid4()
     caus = uuid4()
-    ledger = SQLiteLedger(tmp_path / "test.sqlite")
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
     env = ModelSOEventEnvelope(
         event_id=_EID1,
         match_id="match.test.001",
@@ -323,68 +327,136 @@ def test_correlation_and_causation_preserved(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_null_envelope_legacy_row_reads_and_replays_with_stable_identity(tmp_path: Path) -> None:
-    """Pre-ONEX rows reconstruct identically across reads and hash-seeded processes."""
+def test_storage_read_never_calls_event_clock_or_uuid_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
+    event = _make_env(_EID1)
+    ledger.append(event)
+
+    import steel_onslaught.events.envelope as event_module
+
+    class _ForbiddenClock:
+        @classmethod
+        def now(cls, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("storage read must not consult a clock")
+
+    def _forbidden_uuid() -> None:
+        raise AssertionError("storage read must not generate a UUID")
+
+    monkeypatch.setattr(event_module, "datetime", _ForbiddenClock)
+    monkeypatch.setattr(event_module, "uuid4", _forbidden_uuid)
+
+    assert list(ledger.read_all(event.match_id)) == [event]
+
+
+@pytest.mark.unit
+def test_legacy_row_fails_during_adapter_initialization(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy.sqlite"
-    match_id = "match.legacy.001"
-    legacy_cause = "01JABCDE0123456789ABCDEF00"
-    ledger = SQLiteLedger(db_path)
-    _insert_legacy_event(ledger, match_id=match_id, causation_id=legacy_cause)
+    _create_legacy_database(db_path)
 
-    envelope_json = ledger._conn.execute(
-        "SELECT envelope_json FROM events WHERE event_id = ?", (_EID1,)
-    ).fetchone()
-    assert envelope_json == (None,)
+    with pytest.raises(LegacyLedgerFormatError, match="runtime migration is forbidden"):
+        open_sqlite_ledger(db_path)
 
-    first = next(ledger.read_all(match_id))
-    second = next(ledger.read_all(match_id))
-    assert first.envelope == second.envelope
-    assert first.envelope.message_id == legacy_identity_uuid(_EID1)
-    assert first.correlation_id == legacy_identity_uuid(match_id)
-    assert first.causation_id == legacy_identity_uuid(legacy_cause)
 
-    replay = ReplayEngine(ledger, match_id)
-    replayed = replay.reconstruct_at_tick(0)
-    assert replayed.match_id == match_id
-    assert replay.events_at_tick(0) == [first]
-
-    script = """
-import json
-import sys
-from pathlib import Path
-from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
-
-event = next(SQLiteLedger(Path(sys.argv[1])).read_all(sys.argv[2]))
-print(json.dumps({
-    "message_id": str(event.envelope.message_id),
-    "correlation_id": str(event.correlation_id),
-    "causation_id": str(event.causation_id),
-}, sort_keys=True))
-"""
-    process_results: list[str] = []
-    for hash_seed in ("1", "2"):
-        env = dict(os.environ)
-        env["PYTHONHASHSEED"] = hash_seed
-        result = subprocess.run(
-            [sys.executable, "-c", script, str(db_path), match_id],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=env,
+@pytest.mark.unit
+def test_forward_write_trigger_rejects_null_canonical_envelope(tmp_path: Path) -> None:
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
+    with pytest.raises(sqlite3.IntegrityError, match="complete canonical envelope_json"):
+        ledger._conn.execute(
+            """
+            INSERT INTO events
+                (event_id, match_id, tick, sequence_in_tick, event_type,
+                 producer_node, subject_json, payload_json, emitted_at, schema_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _EID1,
+                "match.legacy.001",
+                0,
+                0,
+                SOEventType.MATCH_STARTED.value,
+                "node.legacy",
+                "{}",
+                "{}",
+                "2026-04-30T16:00:00+00:00",
+                "0.1.0",
+            ),
         )
-        process_results.append(result.stdout.strip())
 
-    assert process_results[0] == process_results[1]
-    process_identity = json.loads(process_results[0])
-    assert UUID(process_identity["message_id"]) == first.envelope.message_id
-    assert UUID(process_identity["correlation_id"]) == first.correlation_id
-    assert UUID(process_identity["causation_id"]) == first.causation_id
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "event_json",
+    [
+        "not-json",
+        json.dumps(
+            {
+                "event_id": _EID1,
+                "match_id": "match.invalid.001",
+                "tick": 0,
+                "sequence_in_tick": 0,
+                "event_type": "match_started",
+                "envelope": {
+                    "message_id": str(uuid4()),
+                    "correlation_id": str(uuid4()),
+                    "causation_id": None,
+                    "entity_id": "match.invalid.001",
+                },
+            }
+        ),
+    ],
+)
+def test_forward_write_trigger_rejects_malformed_canonical_envelope(
+    tmp_path: Path, event_json: str
+) -> None:
+    ledger = open_sqlite_ledger(tmp_path / "test.sqlite")
+    with pytest.raises(sqlite3.IntegrityError, match="complete canonical envelope_json"):
+        ledger._conn.execute(
+            """
+            INSERT INTO events
+                (event_id, match_id, tick, sequence_in_tick, event_type,
+                 producer_node, subject_json, payload_json, emitted_at,
+                 schema_version, envelope_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _EID1,
+                "match.invalid.001",
+                0,
+                0,
+                SOEventType.MATCH_STARTED.value,
+                "node.invalid",
+                "{}",
+                "{}",
+                "2026-04-30T16:00:00+00:00",
+                "0.1.0",
+                event_json,
+            ),
+        )
+
+
+@pytest.mark.unit
+def test_sqlite_config_rejects_unknown_fields(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        ModelSOSQLiteLedgerConfig.model_validate(
+            {
+                "path": tmp_path / "test.sqlite",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+                "fallback_path": tmp_path / "fallback.sqlite",
+            }
+        )
 
 
 @pytest.mark.unit
 def test_no_mutation_api() -> None:
     """SQLiteLedger public API is frozen to the allowlist — no update/delete/truncate."""
-    allowed_public_methods = frozenset({"append", "read_all", "read_after"})
+    allowed_public_methods = frozenset(
+        {"append", "read_all", "read_after", "contains_match", "read_at"}
+    )
 
     public_methods = {
         name
