@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -14,9 +15,11 @@ from steel_onslaught.contracts.mode import ModelSOModeTransitionCompletedPayload
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.events.payloads import (
     CURRENT_CONSUMED_PAYLOAD_MODELS,
+    ModelSOCurrentLiveMechSnapshot,
     ModelSOMatchStartedPayload,
     ModelSOPilotDecisionPayload,
 )
+from steel_onslaught.match.state import ModelSOMechRuntimeState
 from tests.fixtures.event_samples import build_sample_envelopes
 
 EXPECTED_CURRENT_CONSUMED_EVENT_TYPES = frozenset(
@@ -182,16 +185,77 @@ def test_nested_payload_models_reject_extra_fields(
 
 
 @pytest.mark.unit
-def test_match_started_default_cooldowns_are_frozen() -> None:
+def test_runtime_default_cooldowns_remain_frozen_but_live_snapshot_requires_field() -> None:
     sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
     raw = sample.model_dump(mode="json")["payload"]
     del raw["mechs"][0]["weapon_cooldowns"]
 
-    validated = _validate(SOEventType.MATCH_STARTED, raw)
-    assert isinstance(validated, ModelSOMatchStartedPayload)
-    mech = validated.mechs[0]
+    with pytest.raises(ValidationError, match="weapon_cooldowns"):
+        _validate(SOEventType.MATCH_STARTED, raw)
+
+    runtime_data = raw["mechs"][0]
+    runtime_data["sensor_ids"] = tuple(runtime_data["sensor_ids"])
+    runtime_data["gizmo_ids"] = tuple(runtime_data["gizmo_ids"])
+    mech = ModelSOMechRuntimeState.model_validate(runtime_data)
     with pytest.raises(TypeError):
         mech.weapon_cooldowns["weapon.forged"] = 1  # type: ignore[index]
+
+
+@pytest.mark.unit
+def test_current_live_python_mech_fields_exactly_match_typescript() -> None:
+    typescript = (Path(__file__).resolve().parents[2] / "frontend/src/types.ts").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"const MECH_FIELDS = \[(.*?)\] as const;", typescript, re.DOTALL)
+    assert match is not None
+    typescript_fields = frozenset(re.findall(r'"([a-z_]+)"', match.group(1)))
+
+    assert frozenset(ModelSOCurrentLiveMechSnapshot.model_fields) == typescript_fields
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field_name",
+    sorted(ModelSOCurrentLiveMechSnapshot.model_fields),
+)
+def test_current_match_started_rejects_each_missing_mech_field(field_name: str) -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    del raw["mechs"][0][field_name]
+
+    with pytest.raises(ValidationError, match=field_name):
+        _validate(SOEventType.MATCH_STARTED, raw)
+
+
+@pytest.mark.unit
+def test_internal_runtime_defaults_do_not_become_current_live_wire_defaults() -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    legacy_state_data = sample.model_dump(mode="python")["payload"]["mechs"][0]
+    del legacy_state_data["side"]
+    legacy_state_data["sensor_ids"] = tuple(legacy_state_data["sensor_ids"])
+    legacy_state_data["gizmo_ids"] = tuple(legacy_state_data["gizmo_ids"])
+    legacy_state = ModelSOMechRuntimeState.model_validate(legacy_state_data)
+    assert legacy_state.side == "neutral"
+    assert "side" not in legacy_state.model_fields_set
+    with pytest.raises(ValidationError, match="missing required current-live fields"):
+        ModelSOMatchStartedPayload.model_validate(
+            {
+                "seed": 12345,
+                "max_ticks": 200,
+                "mechs": (legacy_state,),
+            }
+        )
+
+
+@pytest.mark.unit
+def test_current_match_started_preserves_explicit_red_blue_sides() -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    validated = _validate(SOEventType.MATCH_STARTED, sample.model_dump(mode="json")["payload"])
+
+    assert isinstance(validated, ModelSOMatchStartedPayload)
+    assert [mech.side for mech in validated.mechs] == ["red", "blue"]
+    expected_fields = frozenset(ModelSOCurrentLiveMechSnapshot.model_fields)
+    assert all(mech.model_fields_set == expected_fields for mech in validated.mechs)
 
 
 @pytest.mark.unit

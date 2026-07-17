@@ -59,10 +59,13 @@ def _fold(
 
 
 def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:
-    """Minimal mech dict for a MATCH_STARTED payload (two mechs, opposite players)."""
+    """Complete current-live mech snapshot for a MATCH_STARTED payload."""
     return {
+        "schema_version": "0.1.0",
+        "kind": "steel_onslaught.mech_runtime_state",
         "mech_id": mech_id,
         "player_id": player_id,
+        "side": "red" if player_id == "player.a" else "blue",
         "loadout_id": "loadout.a",
         "pilot_id": "pilot.aggressive",
         "chassis_id": "chassis.medium.hunter_mk1",
@@ -77,8 +80,19 @@ def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:
         "hp_max": 100,
         "armor_value": 10,
         "armor_max": 10,
+        "alive": True,
+        "pilot_alive": True,
         "current_mode": "recon",
+        "mode_lock_until": 0,
+        "transition_ticks_remaining": 0,
+        "transition_to_mode": None,
+        "sensor_dropout_ticks_remaining": 0,
+        "mode_switch_disabled_until": 0,
         "weapon_cooldowns": {},
+        "evasion": 0.0,
+        "accuracy_penalty_next_fire": 0.0,
+        "jamming_intensity": 0.0,
+        "under_sensor_lock": False,
         "boiler": {
             "match_id": _MATCH_ID,
             "mech_id": mech_id,
@@ -98,6 +112,9 @@ def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:
             "modifier_venting_penalty": 0.0,
             "modifier_mode_switch_heat_delta": 0,
         },
+        "redline_consecutive_ticks": 0,
+        "overloaded": False,
+        "overloaded_consecutive_ticks": 0,
     }
 
 
