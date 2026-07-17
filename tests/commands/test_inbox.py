@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from functools import partial
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from steel_onslaught.commands.authority import (
 )
 from steel_onslaught.commands.inbox import (
     ActionNotAvailableError,
+    HumanDecisionCancelledError,
     HumanDecisionNotReadyError,
     HumanTurnDecisionConflictError,
     ModelSOHumanActionAdmission,
@@ -397,6 +399,51 @@ def test_prompt_freshness_and_missing_decision_never_fallback() -> None:
             session_id="session.local_operator",
             side="red",
         )
+
+
+@pytest.mark.unit
+def test_condition_wait_wakes_for_admitted_action_and_shutdown_cancels() -> None:
+    inbox = ProcessLocalHumanDecisionInbox(sessions=_Sessions())
+    observation = _observation()
+    prompt = _prompt(observation)
+    _publish(inbox, prompt)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        admitted = pool.submit(
+            inbox.wait_for_observation,
+            observation,
+            principal_id="principal.local_operator",
+            session_id="session.local_operator",
+            side="red",
+        )
+        with pytest.raises(FutureTimeoutError):
+            admitted.result(timeout=0.05)
+
+        command = _command(prompt)
+        inbox.submit_action(
+            command,
+            principal_id="principal.local_operator",
+            session_id="session.local_operator",
+            side="red",
+        )
+        assert admitted.result(timeout=1) is command
+
+        next_observation = _observation(tick=4)
+        next_prompt = _prompt(next_observation, turn_id="turn.local.004")
+        _publish(inbox, next_prompt)
+        cancelled = pool.submit(
+            inbox.wait_for_observation,
+            next_observation,
+            principal_id="principal.local_operator",
+            session_id="session.local_operator",
+            side="red",
+        )
+        with pytest.raises(FutureTimeoutError):
+            cancelled.result(timeout=0.05)
+
+        inbox.shutdown()
+        with pytest.raises(HumanDecisionCancelledError, match="shut down"):
+            cancelled.result(timeout=1)
 
 
 @pytest.mark.unit

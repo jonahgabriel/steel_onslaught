@@ -25,6 +25,7 @@ from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.contracts.player_selection import ModelSOHumanDecisionSource
 from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -215,6 +216,28 @@ class _StubPilot:
             reason_code=SOPilotReasonCode.NO_VIABLE_ACTION,
             confidence=0.5,
             considered_actions=[ModelSOConsideredAction(action=self._action, score=0.5)],
+        )
+
+
+class _HumanCommandPilot:
+    """Returns one decision carrying durable browser-command provenance."""
+
+    source = ModelSOHumanDecisionSource(
+        kind="human",
+        input_source="browser_command",
+        command_id=UUID(int=12),
+        turn_id="turn.match_01jabcde.tick_000001.red",
+        observation_sha256="6" * 64,
+    )
+
+    def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
+        return ModelSOPilotDecision(
+            action=SOPilotAction.REMAIN,
+            action_params={},
+            reason_code=SOPilotReasonCode.NO_VIABLE_ACTION,
+            confidence=0.5,
+            considered_actions=(ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=0.5),),
+            decision_source=self.source,
         )
 
 
@@ -514,6 +537,20 @@ def test_pilot_decision_payload_contains_action_and_reason() -> None:
     assert "action" in payload
     assert "reason_code" in payload
     assert "considered_actions" in payload
+
+
+@pytest.mark.unit
+def test_human_command_provenance_is_emitted_with_pilot_decision() -> None:
+    state = _match_state([_mech()])
+    reducer, emitted = _make_reducer(state, {MECH_RED: _HumanCommandPilot()})
+
+    reducer.apply(_tick_event())
+
+    decision_events = [e for e in emitted if e.event_type == SOEventType.PILOT_DECISION_MADE]
+    assert len(decision_events) == 1
+    assert decision_events[0].payload["decision_source"] == (
+        _HumanCommandPilot.source.model_dump(mode="json")
+    )
 
 
 @pytest.mark.unit

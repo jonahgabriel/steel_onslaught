@@ -37,6 +37,7 @@ from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loado
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
+from steel_onslaught.contracts.player_selection import ModelSOMatchLaunchProvenance, Side
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -134,6 +135,7 @@ class MatchRunner:
         side_b: str = "b",
         facing_a: int = _FACING_A,
         facing_b: int = _FACING_B,
+        launch_provenance: ModelSOMatchLaunchProvenance | None = None,
     ) -> None:
         self._identity = identity
         self._match_id = identity.match_id
@@ -156,6 +158,14 @@ class MatchRunner:
         self._obstacles = self._arena.obstacle_cells
         self._catalog = catalog
         self._pilots = dict(pilots)
+        self._launch_provenance = self._validate_launch_provenance(
+            launch_provenance,
+            identity=identity,
+            loadout_a=loadout_a,
+            loadout_b=loadout_b,
+            side_a=side_a,
+            side_b=side_b,
+        )
 
         # Canonical state fold — the same fold the replay engine uses.
         # Subscribed at construction time so callers can order later
@@ -209,16 +219,19 @@ class MatchRunner:
         if missing_pilots:
             raise ValueError(f"missing injected pilots for seats: {sorted(missing_pilots)}")
 
+        started_payload: dict[str, Any] = {
+            "seed": self._seed,
+            "max_ticks": self._max_ticks,
+            "mechs": [mech.model_dump(mode="json") for mech in mechs],
+            "arena": self._arena.model_dump(mode="json"),
+        }
+        if self._launch_provenance is not None:
+            started_payload["launch_provenance"] = self._launch_provenance.model_dump(mode="json")
         self._bus.publish(
             self._make_match_event(
                 SOEventType.MATCH_STARTED,
                 tick=0,
-                payload={
-                    "seed": self._seed,
-                    "max_ticks": self._max_ticks,
-                    "mechs": [mech.model_dump(mode="json") for mech in mechs],
-                    "arena": self._arena.model_dump(mode="json"),
-                },
+                payload=started_payload,
             )
         )
 
@@ -287,6 +300,39 @@ class MatchRunner:
                 )
             )
         return self.fold.state
+
+    @staticmethod
+    def _validate_launch_provenance(
+        provenance: ModelSOMatchLaunchProvenance | None,
+        *,
+        identity: MatchIdentity,
+        loadout_a: ModelSOLoadout,
+        loadout_b: ModelSOLoadout,
+        side_a: str,
+        side_b: str,
+    ) -> ModelSOMatchLaunchProvenance | None:
+        if provenance is None:
+            return None
+        if not isinstance(provenance, ModelSOMatchLaunchProvenance):
+            raise TypeError("launch_provenance must be ModelSOMatchLaunchProvenance")
+        if provenance.match_id != identity.match_id:
+            raise ValueError("launch provenance match_id must equal runner identity match_id")
+
+        assignments = {assignment.side: assignment for assignment in provenance.seat_assignments}
+        expected: dict[Side, tuple[str, str, str]] = {
+            "red": (f"player.{side_a}", loadout_a.id, loadout_a.pilot_id),
+            "blue": (f"player.{side_b}", loadout_b.id, loadout_b.pilot_id),
+        }
+        for side, (player_id, loadout_id, pilot_spec_id) in expected.items():
+            assignment = assignments[side]  # Model validation guarantees exact red/blue sides.
+            actual = (assignment.player_id, assignment.loadout_id, assignment.pilot_spec_id)
+            wanted = (player_id, loadout_id, pilot_spec_id)
+            if actual != wanted:
+                raise ValueError(
+                    f"launch provenance {side} assignment must match runner "
+                    "player/loadout/pilot bindings"
+                )
+        return provenance
 
     # ------------------------------------------------------------------
     # Intent resolution (live-only; canonical truth is the emitted events)

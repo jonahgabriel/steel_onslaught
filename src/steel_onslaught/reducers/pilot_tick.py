@@ -169,7 +169,7 @@ def _build_observation(
 
 
 def _decision_payload(decision: ModelSOPilotDecision) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "action": decision.action.value,
         "action_params": decision.action_params,
         "reason_code": decision.reason_code.value,
@@ -181,6 +181,9 @@ def _decision_payload(decision: ModelSOPilotDecision) -> dict[str, Any]:
         # The closed event payload contract validates it before canonical append.
         "rationale": decision.rationale,
     }
+    if decision.decision_source is not None:
+        payload["decision_source"] = decision.decision_source.model_dump(mode="json")
+    return payload
 
 
 def _intent_for(decision: ModelSOPilotDecision) -> tuple[SOEventType, dict[str, Any]] | None:

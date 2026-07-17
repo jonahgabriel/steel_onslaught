@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from threading import Lock
+from threading import Condition, Lock
 from typing import Literal
 from uuid import UUID
 
@@ -51,6 +51,10 @@ class HumanTurnDecisionConflictError(HumanDecisionInboxError):
 
 class HumanDecisionNotReadyError(HumanDecisionInboxError):
     """No authenticated action has been admitted for the requested observation."""
+
+
+class HumanDecisionCancelledError(HumanDecisionInboxError):
+    """A blocked process-local decision was cancelled by explicit shutdown."""
 
 
 class _ClosedInboxModel(BaseModel):
@@ -146,14 +150,19 @@ class ProcessLocalHumanDecisionInbox:
         self._decisions: dict[
             tuple[PrincipalId, SessionId, Side, str, str, int, Sha256Digest], _ActionState
         ] = {}
-        self._lock = Lock()
+        self._condition = Condition(Lock())
+        self._shutdown = False
 
     @property
     def action_admission_count(self) -> int:
         """Number of distinct accepted action command ids in this process."""
 
-        with self._lock:
+        with self._condition:
             return len(self._commands)
+
+    def _raise_if_shutdown(self) -> None:
+        if self._shutdown:
+            raise HumanDecisionCancelledError("human decision inbox is shut down")
 
     def publish_prompt(
         self,
@@ -173,7 +182,8 @@ class ProcessLocalHumanDecisionInbox:
         )
         prompt_sha256 = canonical_prompt_sha256(prompt)
         prompt_key = (principal_id, session_id, prompt.side, prompt.match_id)
-        with self._lock:
+        with self._condition:
+            self._raise_if_shutdown()
             existing = self._prompts.get(prompt_key)
             if existing is not None:
                 if existing.prompt_sha256 == prompt_sha256:
@@ -217,7 +227,8 @@ class ProcessLocalHumanDecisionInbox:
         owner_key = (principal_id, session_id, side)
         prompt_key = (*owner_key, command.match_id)
 
-        with self._lock:
+        with self._condition:
+            self._raise_if_shutdown()
             existing_command = self._commands.get(command.command_id)
             if existing_command is not None:
                 if existing_command.command_sha256 != command_sha256:
@@ -275,6 +286,7 @@ class ProcessLocalHumanDecisionInbox:
             )
             self._commands[command.command_id] = state
             self._decisions[decision_key] = state
+            self._condition.notify_all()
             return admission
 
     def consume_for_observation(
@@ -298,7 +310,8 @@ class ProcessLocalHumanDecisionInbox:
         owner_key = (principal_id, session_id, side)
         prompt_key = (*owner_key, observation.match_id)
 
-        with self._lock:
+        with self._condition:
+            self._raise_if_shutdown()
             prompt_state = self._prompts.get(prompt_key)
             if prompt_state is None:
                 raise StaleHumanTurnError("no active prompt for observation match")
@@ -324,9 +337,62 @@ class ProcessLocalHumanDecisionInbox:
                 )
             return decision.command
 
+    def wait_for_observation(
+        self,
+        observation: ModelSOPilotObservation,
+        *,
+        principal_id: PrincipalId,
+        session_id: SessionId,
+        side: Side,
+    ) -> ModelSOPlayerActionCommand:
+        """Wait for one exact admitted action; shutdown is the only cancellation path."""
+
+        permission: SessionPermission = "seat:red" if side == "red" else "seat:blue"
+        require_session_permission(
+            self._sessions,
+            principal_id=principal_id,
+            session_id=session_id,
+            permission=permission,
+        )
+        observation_sha256 = canonical_observation_sha256(observation)
+        owner_key = (principal_id, session_id, side)
+        prompt_key = (*owner_key, observation.match_id)
+
+        with self._condition:
+            self._raise_if_shutdown()
+            prompt_state = self._prompts.get(prompt_key)
+            if prompt_state is None:
+                raise StaleHumanTurnError("no active prompt for observation match")
+            prompt = prompt_state.prompt
+            if (
+                prompt.expected_tick != observation.tick
+                or prompt.observation_sha256 != observation_sha256
+            ):
+                raise StaleHumanTurnError(
+                    "observation tick/hash does not match the active human prompt"
+                )
+            decision_key = (
+                *owner_key,
+                prompt.match_id,
+                prompt.turn_id,
+                prompt.expected_tick,
+                prompt.observation_sha256,
+            )
+            self._condition.wait_for(lambda: self._shutdown or decision_key in self._decisions)
+            self._raise_if_shutdown()
+            return self._decisions[decision_key].command
+
+    def shutdown(self) -> None:
+        """Cancel all current/future waits for this process-local inbox."""
+
+        with self._condition:
+            self._shutdown = True
+            self._condition.notify_all()
+
 
 __all__ = [
     "ActionNotAvailableError",
+    "HumanDecisionCancelledError",
     "HumanDecisionInboxError",
     "HumanDecisionNotReadyError",
     "HumanTurnDecisionConflictError",

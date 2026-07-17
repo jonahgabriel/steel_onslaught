@@ -7,11 +7,18 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
 from steel_onslaught.contracts.mode import ModelSOModeTransitionCompletedPayload
+from steel_onslaught.contracts.player_selection import (
+    ModelSOHumanDecisionSource,
+    ModelSOHumanSeatAssignment,
+    ModelSOMatchLaunchProvenance,
+    ModelSOModelSeatAssignment,
+)
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.events.payloads import (
     CURRENT_CONSUMED_PAYLOAD_MODELS,
@@ -317,6 +324,55 @@ def test_current_match_started_preserves_explicit_red_blue_sides() -> None:
 
 
 @pytest.mark.unit
+def test_match_started_accepts_closed_selected_launch_provenance() -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    launch_provenance = ModelSOMatchLaunchProvenance(
+        schema_version="1",
+        kind="steel_onslaught.match_launch_provenance",
+        match_id="match.01JABCDE0123456789ABCDEFGX",
+        launch_command_id=UUID(int=11),
+        launch_command_sha256="1" * 64,
+        overlay_sha256="2" * 64,
+        roster_id="roster.playable.local",
+        roster_sha256="3" * 64,
+        seat_assignments=(
+            ModelSOHumanSeatAssignment(
+                kind="human",
+                side="red",
+                player_id="player.red",
+                option_id="player_option.browser_human",
+                loadout_id="loadout.playable.red_light",
+                pilot_spec_id="pilot.human.browser",
+                option_sha256="4" * 64,
+                human_identity_id="human_identity.local_browser",
+                input_source="browser_command",
+            ),
+            ModelSOModelSeatAssignment(
+                kind="model",
+                side="blue",
+                player_id="player.blue",
+                option_id="player_option.local_model",
+                loadout_id="loadout.playable.blue_heavy",
+                pilot_spec_id="pilot.model.local",
+                option_sha256="5" * 64,
+                model_identity_id="model_identity.local_model",
+                persona_id="persona.local_model",
+                input_source="llm_completion",
+            ),
+        ),
+    )
+
+    validated = ModelSOMatchStartedPayload.model_validate(
+        {**raw, "launch_provenance": launch_provenance}
+    )
+
+    assert validated.launch_provenance == launch_provenance
+    assert validated.launch_provenance.seat_assignments[0].kind == "human"
+    assert validated.launch_provenance.seat_assignments[1].kind == "model"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("event_type", "mutate"),
     [
@@ -389,6 +445,23 @@ def test_pilot_decision_event_validation_preserves_exact_emitted_keys() -> None:
     validated = ModelSOPilotDecisionPayload.model_validate(raw)
 
     assert validated.model_dump(mode="json") == raw
+
+
+@pytest.mark.unit
+def test_pilot_decision_event_accepts_human_command_provenance() -> None:
+    sample = build_sample_envelopes()[SOEventType.PILOT_DECISION_MADE]
+    raw = sample.model_dump(mode="json")["payload"]
+    source = ModelSOHumanDecisionSource(
+        kind="human",
+        input_source="browser_command",
+        command_id=UUID(int=12),
+        turn_id="turn.match_01jabcde.tick_000001.red",
+        observation_sha256="6" * 64,
+    )
+
+    validated = ModelSOPilotDecisionPayload.model_validate({**raw, "decision_source": source})
+
+    assert validated.decision_source == source
 
 
 @pytest.mark.unit

@@ -616,6 +616,81 @@ describe("types parity against Python-emitted fixtures", () => {
     expect(() => parseEnvelope(raw)).toThrow(/considered_actions/);
   });
 
+  it("accepts closed selected-launch and human-command provenance", () => {
+    const started = corruptPayload("match_started", (payload) => {
+      payload["launch_provenance"] = {
+        schema_version: "1",
+        kind: "steel_onslaught.match_launch_provenance",
+        match_id: "match.01JABCDE0123456789ABCDEFGX",
+        launch_command_id: "11111111-1111-4111-8111-111111111111",
+        launch_command_sha256: "1".repeat(64),
+        overlay_sha256: "2".repeat(64),
+        roster_id: "roster.playable.local",
+        roster_sha256: "3".repeat(64),
+        seat_assignments: [
+          {
+            kind: "human",
+            side: "red",
+            player_id: "player.red",
+            option_id: "player_option.browser_human",
+            loadout_id: "loadout.playable.red_light",
+            pilot_spec_id: "pilot.human.browser",
+            option_sha256: "4".repeat(64),
+            human_identity_id: "human_identity.local_browser",
+            input_source: "browser_command",
+          },
+          {
+            kind: "model",
+            side: "blue",
+            player_id: "player.blue",
+            option_id: "player_option.local_model",
+            loadout_id: "loadout.playable.blue_heavy",
+            pilot_spec_id: "pilot.model.local",
+            option_sha256: "5".repeat(64),
+            model_identity_id: "model_identity.local_model",
+            persona_id: "persona.local_model",
+            input_source: "llm_completion",
+          },
+        ],
+      };
+    });
+    const decision = corruptPayload("pilot_decision_made", (payload) => {
+      payload["decision_source"] = {
+        kind: "human",
+        input_source: "browser_command",
+        command_id: "22222222-2222-4222-8222-222222222222",
+        turn_id: "turn.match_01jabcde.tick_000001.red",
+        observation_sha256: "6".repeat(64),
+      };
+    });
+
+    expect(parseEnvelope(started).payload).toHaveProperty("launch_provenance");
+    expect(parseEnvelope(decision).payload).toHaveProperty("decision_source");
+  });
+
+  it("accepts the explicit human-input pilot reason", () => {
+    const decision = corruptPayload("pilot_decision_made", (payload) => {
+      payload["reason_code"] = "human_input";
+    });
+
+    expect(parseEnvelope(decision).payload).toHaveProperty("reason_code", "human_input");
+  });
+
+  it("rejects unknown or contradictory provenance fields", () => {
+    const decision = corruptPayload("pilot_decision_made", (payload) => {
+      payload["decision_source"] = {
+        kind: "human",
+        input_source: "llm_completion",
+        command_id: "22222222-2222-4222-8222-222222222222",
+        turn_id: "turn.match_01jabcde.tick_000001.red",
+        observation_sha256: "6".repeat(64),
+        unexpected: true,
+      };
+    });
+
+    expect(() => parseEnvelope(decision)).toThrow(/unexpected|browser_command/);
+  });
+
   for (const [description, mutate] of [
     [
       "identical winner and loser IDs",

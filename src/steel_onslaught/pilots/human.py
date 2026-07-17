@@ -24,11 +24,14 @@ from steel_onslaught.contracts.commands import (
     ModelSOVentPlayerAction,
     PlayerAction,
 )
-from steel_onslaught.contracts.player_selection import Side
+from steel_onslaught.contracts.player_selection import ModelSOHumanDecisionSource, Side
 from steel_onslaught.immutable import FrozenJSONMapping
 from steel_onslaught.pilots.schemas import (
+    ModelSOConsideredAction,
+    ModelSOPilotDecision,
     ModelSOPilotObservation,
     SOPilotAction,
+    SOPilotReasonCode,
     available_actions,
 )
 
@@ -63,13 +66,13 @@ class ModelSOHumanInputSelection(BaseModel):
 
 
 class HumanPilot:
-    """Consume an authenticated pre-submitted action into a local closed result.
+    """Consume an authenticated action into a local result or event-ready decision.
 
     ``consume`` never waits and never falls back.  Missing, stale, or unauthorized
-    input propagates the inbox's fail-closed exception.  Runtime composition is
-    intentionally outside this Phase 52 class.  This class deliberately has no
-    ``decide`` method until the shared decision payload gains explicit human
-    provenance in a later phase.
+    input propagates the inbox's fail-closed exception.  ``decide`` waits only on
+    the inbox condition for the exact published observation; accepted action or
+    explicit shutdown are its only exits.  Neither path polls or synthesizes a
+    fallback.
     """
 
     def __init__(
@@ -92,6 +95,38 @@ class HumanPilot:
             session_id=self._session_id,
             side=self._side,
         )
+        return self._selection(command, observation)
+
+    def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
+        """Wait for one exact admitted command and return its typed provenance."""
+
+        command = self._inbox.wait_for_observation(
+            observation,
+            principal_id=self._principal_id,
+            session_id=self._session_id,
+            side=self._side,
+        )
+        selection = self._selection(command, observation)
+        return ModelSOPilotDecision(
+            action=selection.action,
+            action_params=selection.action_params,
+            reason_code=SOPilotReasonCode.HUMAN_INPUT,
+            confidence=1.0,
+            considered_actions=(ModelSOConsideredAction(action=selection.action, score=1.0),),
+            decision_source=ModelSOHumanDecisionSource(
+                kind="human",
+                input_source="browser_command",
+                command_id=command.command_id,
+                turn_id=command.turn_id,
+                observation_sha256=command.observation_sha256,
+            ),
+        )
+
+    @staticmethod
+    def _selection(
+        command: ModelSOPlayerActionCommand,
+        observation: ModelSOPilotObservation,
+    ) -> ModelSOHumanInputSelection:
         action, action_params = _translate_action(command.action)
         if action not in available_actions(observation):
             raise ValueError(

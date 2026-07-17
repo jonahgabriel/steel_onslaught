@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from uuid import UUID
 
 import pytest
@@ -13,6 +14,7 @@ from steel_onslaught.commands.authority import (
     SessionId,
 )
 from steel_onslaught.commands.inbox import (
+    HumanDecisionCancelledError,
     HumanDecisionNotReadyError,
     ProcessLocalHumanDecisionInbox,
     canonical_observation_sha256,
@@ -37,6 +39,7 @@ from steel_onslaught.pilots.schemas import (
     ModelSOPosition,
     PilotProtocol,
     SOPilotAction,
+    SOPilotReasonCode,
 )
 
 _MATCH_ID = "match.01J00000000000000000000000"
@@ -110,7 +113,14 @@ def _observation() -> ModelSOPilotObservation:
     )
 
 
-def _prepare(action: PlayerAction) -> tuple[HumanPilot, ModelSOPilotObservation]:
+def _pending(
+    action: PlayerAction,
+) -> tuple[
+    HumanPilot,
+    ModelSOPilotObservation,
+    ProcessLocalHumanDecisionInbox,
+    ModelSOPlayerActionCommand,
+]:
     observation = _observation()
     prompt = ModelSOHumanTurnPrompt(
         schema_version="1",
@@ -138,12 +148,6 @@ def _prepare(action: PlayerAction) -> tuple[HumanPilot, ModelSOPilotObservation]
         principal_id="principal.local_operator",
         session_id="session.local_operator",
     )
-    inbox.submit_action(
-        command,
-        principal_id="principal.local_operator",
-        session_id="session.local_operator",
-        side="red",
-    )
     return (
         HumanPilot(
             inbox=inbox,
@@ -152,7 +156,20 @@ def _prepare(action: PlayerAction) -> tuple[HumanPilot, ModelSOPilotObservation]
             side="red",
         ),
         observation,
+        inbox,
+        command,
     )
+
+
+def _prepare(action: PlayerAction) -> tuple[HumanPilot, ModelSOPilotObservation]:
+    pilot, observation, inbox, command = _pending(action)
+    inbox.submit_action(
+        command,
+        principal_id="principal.local_operator",
+        session_id="session.local_operator",
+        side="red",
+    )
+    return pilot, observation
 
 
 @pytest.mark.unit
@@ -196,7 +213,7 @@ def test_human_pilot_returns_closed_local_input_provenance(
 
     result = pilot.consume(observation)
 
-    assert not isinstance(pilot, PilotProtocol)
+    assert isinstance(pilot, PilotProtocol)
     assert isinstance(result, ModelSOHumanInputSelection)
     assert result.source == "human_input"
     assert result.action is expected_action
@@ -231,6 +248,54 @@ def test_human_pilot_never_waits_or_falls_back_when_action_is_missing() -> None:
 
     with pytest.raises(HumanDecisionNotReadyError):
         pilot.consume(observation)
+
+
+@pytest.mark.unit
+def test_human_pilot_decide_waits_and_returns_exact_command_provenance() -> None:
+    pilot, observation, inbox, command = _pending(ModelSORemainPlayerAction(kind="remain"))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(pilot.decide, observation)
+        with pytest.raises(TimeoutError):
+            future.result(timeout=0.02)
+        first = inbox.submit_action(
+            command,
+            principal_id="principal.local_operator",
+            session_id="session.local_operator",
+            side="red",
+        )
+        assert (
+            inbox.submit_action(
+                command,
+                principal_id="principal.local_operator",
+                session_id="session.local_operator",
+                side="red",
+            )
+            is first
+        )
+        decision = future.result(timeout=1.0)
+
+    assert isinstance(pilot, PilotProtocol)
+    assert decision.action is SOPilotAction.REMAIN
+    assert decision.reason_code is SOPilotReasonCode.HUMAN_INPUT
+    assert decision.decision_source is not None
+    assert decision.decision_source.kind == "human"
+    assert decision.decision_source.command_id == command.command_id
+    assert decision.decision_source.turn_id == command.turn_id
+    assert decision.decision_source.observation_sha256 == command.observation_sha256
+
+
+@pytest.mark.unit
+def test_human_pilot_decide_has_explicit_shutdown_cancellation() -> None:
+    pilot, observation, inbox, _command = _pending(ModelSORemainPlayerAction(kind="remain"))
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(pilot.decide, observation)
+        with pytest.raises(TimeoutError):
+            future.result(timeout=0.02)
+        inbox.shutdown()
+        with pytest.raises(HumanDecisionCancelledError, match="shut down"):
+            future.result(timeout=1.0)
 
 
 @pytest.mark.unit

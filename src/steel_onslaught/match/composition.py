@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -16,6 +16,15 @@ from pydantic import BaseModel
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.commands.authority import (
+    AuthenticatedSessionCapability,
+    ModelSOStartMatchAuthorityContext,
+)
+from steel_onslaught.commands.coordinator import (
+    ProcessLocalHumanLoopbackCoordinator,
+    ProcessLocalMatchLaunchCoordinator,
+)
+from steel_onslaught.commands.inbox import ProcessLocalHumanDecisionInbox
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOOpenAICompatibleProviderBinding,
@@ -24,11 +33,18 @@ from steel_onslaught.contracts.application import (
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
+from steel_onslaught.contracts.commands import ModelSOStartMatchCommand
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeTransition
 from steel_onslaught.contracts.pilot import ModelSOLlmPilotParams, ModelSOPilotSpec
 from steel_onslaught.contracts.pilot_registry import PilotResolutionError, PilotSpecRegistry
+from steel_onslaught.contracts.player_selection import (
+    ModelSOHumanSeatAssignment,
+    ModelSOMatchLaunchProvenance,
+    ModelSOPlayerRosterBinding,
+    Side,
+)
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
@@ -88,6 +104,7 @@ from steel_onslaught.match.runner import (
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchEndReason, SOMatchStatus
 from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.defensive import DefensivePilot
+from steel_onslaught.pilots.human import HumanPilot
 from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.schemas import PilotProtocol
 from steel_onslaught.projections.leaderboard.handler import (
@@ -327,8 +344,12 @@ class LiveMatchStack:
     event_factory: EventFactory
     catalog: MatchContractCatalog
     closer: ProtocolResourceCloser
+    _launch_provenance: ModelSOMatchLaunchProvenance | None = None
+    _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
 
     def close(self) -> None:
+        if self._human_inbox is not None:
+            self._human_inbox.shutdown()
         self.closer.close()
 
     def __enter__(self) -> Self:
@@ -340,6 +361,22 @@ class LiveMatchStack:
     @property
     def match_id(self) -> str:
         return self.identity.match_id
+
+    @property
+    def launch_provenance(self) -> ModelSOMatchLaunchProvenance:
+        """Exact selected-launch truth for an admitted loopback stack."""
+
+        if self._launch_provenance is None:
+            raise RuntimeError("legacy match stack has no selected launch provenance")
+        return self._launch_provenance
+
+    @property
+    def human_inbox(self) -> ProcessLocalHumanLoopbackCoordinator:
+        """Authenticated process-local prompt/action surface for human seats."""
+
+        if self._human_inbox is None:
+            raise RuntimeError("match stack has no process-local human seat")
+        return self._human_inbox
 
 
 def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
@@ -934,13 +971,22 @@ def assemble_match_with_dependencies(
     side_a: str = "red",
     side_b: str = "blue",
     pilots_override: Mapping[str, PilotProtocol] | None = None,
+    launch_provenance: ModelSOMatchLaunchProvenance | None = None,
 ) -> LiveMatchStack:
     """Pure DI seam used by production root and hermetic tests."""
     _require_valid_budgets(red, dependencies.catalog)
     _require_valid_budgets(blue, dependencies.catalog)
     mech_a = f"mech.{side_a}.01"
     mech_b = f"mech.{side_b}.01"
-    if pilots_override is None:
+    required = {mech_a, mech_b}
+    pilots = dict(pilots_override or {})
+    unexpected = set(pilots) - required
+    if unexpected:
+        raise ValueError(
+            f"pilots_override keys must be a subset of {sorted(required)}; "
+            f"got unexpected {sorted(unexpected)}"
+        )
+    if required - set(pilots):
         bound_pilot_factory = dependencies.pilot_factory.with_observer(
             LedgerLlmCompletionObserver(
                 correlation_id=identity.correlation_id,
@@ -949,22 +995,14 @@ def assemble_match_with_dependencies(
             )
         )
         match_dependencies = replace(dependencies, pilot_factory=bound_pilot_factory)
-        pilots = {
-            mech_a: _resolved_pilot(
+        if mech_a not in pilots:
+            pilots[mech_a] = _resolved_pilot(
                 red, loadout_path=red_loadout_path, dependencies=match_dependencies
-            ),
-            mech_b: _resolved_pilot(
-                blue, loadout_path=blue_loadout_path, dependencies=match_dependencies
-            ),
-        }
-    else:
-        required = {mech_a, mech_b}
-        if set(pilots_override) != required:
-            raise ValueError(
-                f"pilots_override keys must be exactly {sorted(required)}; "
-                f"got {sorted(pilots_override)}"
             )
-        pilots = dict(pilots_override)
+        if mech_b not in pilots:
+            pilots[mech_b] = _resolved_pilot(
+                blue, loadout_path=blue_loadout_path, dependencies=match_dependencies
+            )
     dependencies.bus.subscribe(dependencies.ledger.append)
     runner = MatchRunner(
         identity=identity,
@@ -979,6 +1017,7 @@ def assemble_match_with_dependencies(
         max_ticks=max_ticks,
         side_a=side_a,
         side_b=side_b,
+        launch_provenance=launch_provenance,
     )
     scoring = ReducerScoring(
         identity.match_id,
@@ -1011,6 +1050,88 @@ def assemble_match_with_dependencies(
         catalog=dependencies.catalog,
         closer=dependencies.closer,
     )
+
+
+def assemble_selected_match_live(
+    *,
+    overlay: ModelSOApplicationOverlay,
+    roster: ModelSOPlayerRosterBinding,
+    sessions: AuthenticatedSessionCapability,
+    command: ModelSOStartMatchCommand,
+    context: ModelSOStartMatchAuthorityContext,
+    identity: MatchIdentity,
+    loadouts: Mapping[str, ModelSOLoadout],
+    runtime_factory: Callable[[ModelSOApplicationOverlay], RuntimeDependencies],
+    seed: int,
+    max_ticks: int,
+) -> LiveMatchStack:
+    """Admit one selected human/stub match before constructing its runtime."""
+
+    provenance = ProcessLocalMatchLaunchCoordinator(
+        overlay=overlay,
+        roster=roster,
+        sessions=sessions,
+    ).admit_start_match(
+        command,
+        context=context,
+        match_id=identity.match_id,
+    )
+    assignments = {assignment.side: assignment for assignment in provenance.seat_assignments}
+    selected_loadouts: dict[str, ModelSOLoadout] = {}
+    sides: tuple[Side, Side] = ("red", "blue")
+    for side in sides:
+        loadout_id = assignments[side].loadout_id
+        try:
+            loadout = loadouts[loadout_id]
+        except KeyError as exc:
+            raise ValueError(f"selected {side} loadout is unavailable: {loadout_id!r}") from exc
+        if loadout.id != loadout_id:
+            raise ValueError(
+                f"selected {side} loadout mapping key {loadout_id!r} does not match "
+                f"loadout id {loadout.id!r}"
+            )
+        selected_loadouts[side] = loadout
+
+    dependencies = runtime_factory(overlay)
+    try:
+        inbox = ProcessLocalHumanLoopbackCoordinator(sessions=sessions)
+        human_claims = {claim.side: claim for claim in context.human_seats}
+        pilots: dict[str, PilotProtocol] = {}
+        for side in sides:
+            assignment = assignments[side]
+            mech_id = f"mech.{side}.01"
+            if isinstance(assignment, ModelSOHumanSeatAssignment):
+                try:
+                    claim = human_claims[side]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"admitted human seat {side!r} has no authenticated authority claim"
+                    ) from exc
+                pilots[mech_id] = HumanPilot(
+                    inbox=cast(ProcessLocalHumanDecisionInbox, inbox),
+                    principal_id=claim.principal_id,
+                    session_id=claim.session_id,
+                    side=side,
+                )
+
+        stack = assemble_match_with_dependencies(
+            dependencies=dependencies,
+            red=selected_loadouts["red"],
+            blue=selected_loadouts["blue"],
+            seed=seed,
+            max_ticks=max_ticks,
+            identity=identity,
+            pilots_override=pilots,
+            launch_provenance=provenance,
+        )
+        return replace(
+            stack,
+            _launch_provenance=provenance,
+            _human_inbox=inbox,
+        )
+    except Exception:
+        dependencies.close()
+        raise
 
 
 def assemble_match_live(
@@ -1092,6 +1213,7 @@ __all__ = [
     "RuntimeDependencies",
     "assemble_match_live",
     "assemble_match_with_dependencies",
+    "assemble_selected_match_live",
     "build_adaptation_dependencies",
     "build_duel_executor",
     "build_duel_executor_with_dependencies",

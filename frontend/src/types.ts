@@ -105,6 +105,7 @@ export type SOPilotReasonCode =
   | "predicted_intercept"
   | "evade_sensor_lock"
   | "no_viable_action"
+  | "human_input"
   | "llm_decision"
   | "llm_fallback";
 export type SOMatchEndReason = "last_mech_standing" | "pilot_killed" | "draw_max_ticks" | "aborted";
@@ -172,6 +173,62 @@ export interface SOMechRuntimeState {
   overloaded_consecutive_ticks: number;
 }
 
+export interface SOHumanSeatAssignment {
+  kind: "human";
+  side: "red" | "blue";
+  player_id: string;
+  option_id: string;
+  loadout_id: string;
+  pilot_spec_id: string;
+  option_sha256: string;
+  human_identity_id: string;
+  input_source: "browser_command";
+}
+
+export interface SOModelSeatAssignment {
+  kind: "model";
+  side: "red" | "blue";
+  player_id: string;
+  option_id: string;
+  loadout_id: string;
+  pilot_spec_id: string;
+  option_sha256: string;
+  model_identity_id: string;
+  persona_id: string;
+  input_source: "llm_completion";
+}
+
+export type SOSeatAssignment = SOHumanSeatAssignment | SOModelSeatAssignment;
+
+export interface SOMatchLaunchProvenance {
+  schema_version: "1";
+  kind: "steel_onslaught.match_launch_provenance";
+  match_id: string;
+  launch_command_id: string;
+  launch_command_sha256: string;
+  overlay_sha256: string;
+  roster_id: string;
+  roster_sha256: string;
+  seat_assignments: [SOSeatAssignment, SOSeatAssignment];
+}
+
+export interface SOHumanDecisionSource {
+  kind: "human";
+  input_source: "browser_command";
+  command_id: string;
+  turn_id: string;
+  observation_sha256: string;
+}
+
+export interface SOModelDecisionSource {
+  kind: "model";
+  input_source: "llm_completion";
+  model_identity_id: string;
+  persona_id: string;
+}
+
+export type SODecisionSource = SOHumanDecisionSource | SOModelDecisionSource;
+
 // ---------------------------------------------------------------------------
 // Per-event payloads
 // ---------------------------------------------------------------------------
@@ -181,6 +238,7 @@ export interface MatchStartedPayload {
   max_ticks: number;
   mechs: SOMechRuntimeState[];
   arena: SOArenaSnapshot;
+  launch_provenance?: SOMatchLaunchProvenance;
 }
 
 export type MatchTickPayload = Record<string, never>;
@@ -210,6 +268,7 @@ export interface PilotDecisionMadePayload {
   confidence: number;
   considered_actions: ConsideredAction[];
   rationale: string | null;
+  decision_source?: SODecisionSource;
 }
 
 export interface LlmCompletionRequestedPayload {
@@ -697,6 +756,7 @@ function parsePilotReason(value: unknown, context: string): SOPilotReasonCode {
     value === "predicted_intercept" ||
     value === "evade_sensor_lock" ||
     value === "no_viable_action" ||
+    value === "human_input" ||
     value === "llm_decision" ||
     value === "llm_fallback"
   ) {
@@ -788,6 +848,277 @@ function parsePosition(value: unknown, context: string): SOPosition {
   const record = asRecord(value, context);
   rejectUnknown(record, ["x", "y"], context);
   return { x: integer(record, "x", context), y: integer(record, "y", context) };
+}
+
+function exactString(value: unknown, expected: string, context: string): string {
+  if (value !== expected) {
+    fail(context, `must equal ${JSON.stringify(expected)}`);
+  }
+  return value;
+}
+
+function patternString(
+  value: unknown,
+  pattern: RegExp,
+  description: string,
+  context: string,
+): string {
+  if (typeof value !== "string" || !pattern.test(value)) {
+    fail(context, `must be ${description}`);
+  }
+  return value;
+}
+
+function parseSeatAssignment(value: unknown, context: string): SOSeatAssignment {
+  const record = asRecord(value, context);
+  const kind = record["kind"];
+  const side = parseSide(record["side"], `${context}.side`);
+  if (side === "neutral") {
+    fail(context, "seat assignment side must be red or blue");
+  }
+  const common = {
+    side,
+    player_id: patternString(
+      record["player_id"],
+      /^player\.[a-z0-9][a-z0-9_.-]*$/,
+      "a player id",
+      `${context}.player_id`,
+    ),
+    option_id: patternString(
+      record["option_id"],
+      /^player_option\.[a-z0-9][a-z0-9_.-]*$/,
+      "a player option id",
+      `${context}.option_id`,
+    ),
+    loadout_id: patternString(
+      record["loadout_id"],
+      /^loadout\.[a-z0-9][a-z0-9_.-]*$/,
+      "a loadout id",
+      `${context}.loadout_id`,
+    ),
+    pilot_spec_id: patternString(
+      record["pilot_spec_id"],
+      /^pilot\.[a-z0-9][a-z0-9_.-]*$/,
+      "a pilot spec id",
+      `${context}.pilot_spec_id`,
+    ),
+    option_sha256: patternString(
+      record["option_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.option_sha256`,
+    ),
+  };
+  if (kind === "human") {
+    rejectUnknown(
+      record,
+      [
+        "kind",
+        "side",
+        "player_id",
+        "option_id",
+        "loadout_id",
+        "pilot_spec_id",
+        "option_sha256",
+        "human_identity_id",
+        "input_source",
+      ],
+      context,
+    );
+    return {
+      kind,
+      ...common,
+      human_identity_id: patternString(
+        record["human_identity_id"],
+        /^human_identity\.[a-z0-9][a-z0-9_.-]*$/,
+        "a human identity id",
+        `${context}.human_identity_id`,
+      ),
+      input_source: exactString(
+        record["input_source"],
+        "browser_command",
+        `${context}.input_source`,
+      ) as "browser_command",
+    };
+  }
+  if (kind === "model") {
+    rejectUnknown(
+      record,
+      [
+        "kind",
+        "side",
+        "player_id",
+        "option_id",
+        "loadout_id",
+        "pilot_spec_id",
+        "option_sha256",
+        "model_identity_id",
+        "persona_id",
+        "input_source",
+      ],
+      context,
+    );
+    return {
+      kind,
+      ...common,
+      model_identity_id: patternString(
+        record["model_identity_id"],
+        /^model_identity\.[a-z0-9][a-z0-9_.-]*$/,
+        "a model identity id",
+        `${context}.model_identity_id`,
+      ),
+      persona_id: patternString(
+        record["persona_id"],
+        /^[a-z][a-z0-9_.-]*$/,
+        "a persona id",
+        `${context}.persona_id`,
+      ),
+      input_source: exactString(
+        record["input_source"],
+        "llm_completion",
+        `${context}.input_source`,
+      ) as "llm_completion",
+    };
+  }
+  fail(context, `unknown seat assignment kind ${JSON.stringify(kind)}`);
+}
+
+function parseMatchLaunchProvenance(value: unknown, context: string): SOMatchLaunchProvenance {
+  const record = asRecord(value, context);
+  rejectUnknown(
+    record,
+    [
+      "schema_version",
+      "kind",
+      "match_id",
+      "launch_command_id",
+      "launch_command_sha256",
+      "overlay_sha256",
+      "roster_id",
+      "roster_sha256",
+      "seat_assignments",
+    ],
+    context,
+  );
+  const assignments = record["seat_assignments"];
+  if (!Array.isArray(assignments) || assignments.length !== 2) {
+    fail(context, "seat_assignments must contain exactly two assignments");
+  }
+  const first = parseSeatAssignment(assignments[0], `${context}.seat_assignments[0]`);
+  const second = parseSeatAssignment(assignments[1], `${context}.seat_assignments[1]`);
+  if (new Set([first.side, second.side]).size !== 2) {
+    fail(context, "seat_assignments must contain one red and one blue side");
+  }
+  if (first.player_id === second.player_id) {
+    fail(context, "seat_assignments must use distinct player ids");
+  }
+  return {
+    schema_version: exactString(record["schema_version"], "1", `${context}.schema_version`) as "1",
+    kind: exactString(
+      record["kind"],
+      "steel_onslaught.match_launch_provenance",
+      `${context}.kind`,
+    ) as "steel_onslaught.match_launch_provenance",
+    match_id: patternString(
+      record["match_id"],
+      /^match\.[0-7][0-9A-HJKMNP-TV-Z]{25}$/,
+      "a canonical match id",
+      `${context}.match_id`,
+    ),
+    launch_command_id: patternString(
+      record["launch_command_id"],
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      "a UUID",
+      `${context}.launch_command_id`,
+    ),
+    launch_command_sha256: patternString(
+      record["launch_command_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.launch_command_sha256`,
+    ),
+    overlay_sha256: patternString(
+      record["overlay_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.overlay_sha256`,
+    ),
+    roster_id: patternString(
+      record["roster_id"],
+      /^roster\.[a-z0-9][a-z0-9_.-]*$/,
+      "a roster id",
+      `${context}.roster_id`,
+    ),
+    roster_sha256: patternString(
+      record["roster_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.roster_sha256`,
+    ),
+    seat_assignments: [first, second],
+  };
+}
+
+function parseDecisionSource(value: unknown, context: string): SODecisionSource {
+  const record = asRecord(value, context);
+  const kind = record["kind"];
+  if (kind === "human") {
+    rejectUnknown(
+      record,
+      ["kind", "input_source", "command_id", "turn_id", "observation_sha256"],
+      context,
+    );
+    return {
+      kind,
+      input_source: exactString(
+        record["input_source"],
+        "browser_command",
+        `${context}.input_source`,
+      ) as "browser_command",
+      command_id: patternString(
+        record["command_id"],
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        "a UUID",
+        `${context}.command_id`,
+      ),
+      turn_id: patternString(
+        record["turn_id"],
+        /^turn\.[a-z0-9][a-z0-9_.-]*$/,
+        "a turn id",
+        `${context}.turn_id`,
+      ),
+      observation_sha256: patternString(
+        record["observation_sha256"],
+        /^[0-9a-f]{64}$/,
+        "a lowercase SHA-256 digest",
+        `${context}.observation_sha256`,
+      ),
+    };
+  }
+  if (kind === "model") {
+    rejectUnknown(record, ["kind", "input_source", "model_identity_id", "persona_id"], context);
+    return {
+      kind,
+      input_source: exactString(
+        record["input_source"],
+        "llm_completion",
+        `${context}.input_source`,
+      ) as "llm_completion",
+      model_identity_id: patternString(
+        record["model_identity_id"],
+        /^model_identity\.[a-z0-9][a-z0-9_.-]*$/,
+        "a model identity id",
+        `${context}.model_identity_id`,
+      ),
+      persona_id: patternString(
+        record["persona_id"],
+        /^[a-z][a-z0-9_.-]*$/,
+        "a persona id",
+        `${context}.persona_id`,
+      ),
+    };
+  }
+  fail(context, `unknown decision source kind ${JSON.stringify(kind)}`);
 }
 
 function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
@@ -1057,7 +1388,7 @@ type PayloadParsers = { [K in SOEventType]: (value: unknown, context: string) =>
 const PAYLOAD_PARSERS: PayloadParsers = {
   match_started: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["seed", "max_ticks", "mechs", "arena"], context);
+    rejectUnknown(record, ["seed", "max_ticks", "mechs", "arena", "launch_provenance"], context);
     const mechs = record["mechs"];
     if (!Array.isArray(mechs)) {
       fail(context, 'field "mechs" must be an array');
@@ -1097,11 +1428,16 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         fail(context, `mechs[${index}].position must equal arena.${spawnName}`);
       }
     }
+    const launchProvenance =
+      "launch_provenance" in record
+        ? parseMatchLaunchProvenance(record["launch_provenance"], `${context}.launch_provenance`)
+        : undefined;
     return {
       seed: nonNegativeInt(record, "seed", context),
       max_ticks: positiveInt(record, "max_ticks", context),
       mechs: parsedMechs,
       arena,
+      ...(launchProvenance === undefined ? {} : { launch_provenance: launchProvenance }),
     };
   },
   match_tick: (value, context) => {
@@ -1136,7 +1472,15 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(
       record,
-      ["action", "action_params", "reason_code", "confidence", "considered_actions", "rationale"],
+      [
+        "action",
+        "action_params",
+        "reason_code",
+        "confidence",
+        "considered_actions",
+        "rationale",
+        "decision_source",
+      ],
       context,
     );
     const considered = record["considered_actions"];
@@ -1157,6 +1501,10 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       fail(context, "considered_actions must include the chosen action");
     }
     const confidence = num(record, "confidence", context);
+    const decisionSource =
+      "decision_source" in record
+        ? parseDecisionSource(record["decision_source"], `${context}.decision_source`)
+        : undefined;
     return {
       action,
       action_params: openRecord(record["action_params"], `${context}.action_params`),
@@ -1164,6 +1512,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       confidence: Math.min(1, Math.max(0, confidence)),
       considered_actions,
       rationale: nullableStr(record, "rationale", context),
+      ...(decisionSource === undefined ? {} : { decision_source: decisionSource }),
     };
   },
   llm_completion_requested: (value, context) => {

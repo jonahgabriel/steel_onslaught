@@ -35,6 +35,7 @@ from pydantic import (
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.contracts.player_selection import DecisionSource
 from steel_onslaught.immutable import FrozenJSONMapping
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,7 @@ class SOPilotReasonCode(StrEnum):
     PREDICTED_INTERCEPT = "predicted_intercept"
     EVADE_SENSOR_LOCK = "evade_sensor_lock"
     NO_VIABLE_ACTION = "no_viable_action"
+    HUMAN_INPUT = "human_input"
     # LLM-pilot-specific: a decision made by the LLM, or a REMAIN fallback when
     # the LLM call failed / returned an invalid action.
     LLM_DECISION = "llm_decision"
@@ -208,6 +210,11 @@ class ModelSOPilotDecision(BaseModel):
     rationale: str | None = Field(
         default=None,
         description="Freeform natural-language reasoning (LLM pilots); None for heuristics.",
+    )
+    decision_source: DecisionSource | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Exact human-command or model-completion provenance when available.",
     )
 
     @field_validator("confidence")

@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
@@ -20,18 +21,33 @@ from pydantic import ValidationError
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.arena import ModelSOArenaSpec, neutral_historical_arena_snapshot
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.contracts.player_selection import (
+    ModelSOHumanDecisionSource,
+    ModelSOHumanSeatAssignment,
+    ModelSOMatchLaunchProvenance,
+    ModelSOModelSeatAssignment,
+)
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.immutable import thaw_json_mapping
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
-from steel_onslaught.match.composition import load_loadout
+from steel_onslaught.match.composition import load_loadout, load_pilot_registry
 from steel_onslaught.match.fold import MatchContractCatalog, MissingMatchContractError
+from steel_onslaught.match.runner import MatchIdentity, MatchRunner
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchStatus
-from steel_onslaught.pilots.schemas import ModelSOPosition
+from steel_onslaught.pilots.schemas import (
+    ModelSOConsideredAction,
+    ModelSOPilotDecision,
+    ModelSOPilotObservation,
+    ModelSOPosition,
+    SOPilotAction,
+    SOPilotReasonCode,
+)
 from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.movement import chebyshev
 from steel_onslaught.replay.engine import ReplayEngine
 from tests.fixtures.event_samples import build_sample_envelopes
-from tests.runtime import match_runner, runtime_dependencies
+from tests.runtime import match_runner, pilot_from_spec, runtime_dependencies
 from tests.sqlite_ledger import open_sqlite_ledger
 
 LOADOUT_A = Path("contracts_data/loadouts/example_aggressive_light.yaml")
@@ -40,6 +56,27 @@ LOADOUT_B = Path("contracts_data/loadouts/example_predictive_heavy.yaml")
 MATCH_ID = "match.2026-04-30.replay-test"
 SEED = 12345
 MAX_TICKS = 5  # short so tests run fast
+
+
+class _ReplayHumanDecisionPilot:
+    source = ModelSOHumanDecisionSource(
+        kind="human",
+        input_source="browser_command",
+        command_id=UUID("33333333-3333-4333-8333-333333333333"),
+        turn_id="turn.match_01jabcde.tick_000001.red",
+        observation_sha256="6" * 64,
+    )
+
+    def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
+        del observation
+        return ModelSOPilotDecision(
+            action=SOPilotAction.REMAIN,
+            action_params={},
+            reason_code=SOPilotReasonCode.HUMAN_INPUT,
+            confidence=1.0,
+            considered_actions=(ModelSOConsideredAction(action=SOPilotAction.REMAIN, score=1.0),),
+            decision_source=self.source,
+        )
 
 
 class _MemoryLedger:
@@ -304,6 +341,116 @@ def test_replay_reproduces_live_state(tmp_path: Path) -> None:
     replay = _replay(ledger)
     reconstructed = replay.reconstruct_at_tick(live_state.tick)
     assert reconstructed == live_state
+
+
+@pytest.mark.integration
+def test_sqlite_replay_preserves_selected_launch_and_human_decision_provenance(
+    tmp_path: Path,
+) -> None:
+    match_id = "match.01JABCDE0123456789ABCDEFGX"
+    red = load_loadout(LOADOUT_A)
+    blue = load_loadout(LOADOUT_B)
+    provenance = ModelSOMatchLaunchProvenance(
+        schema_version="1",
+        kind="steel_onslaught.match_launch_provenance",
+        match_id=match_id,
+        launch_command_id=UUID("11111111-1111-4111-8111-111111111111"),
+        launch_command_sha256="1" * 64,
+        overlay_sha256="2" * 64,
+        roster_id="roster.local_play",
+        roster_sha256="3" * 64,
+        seat_assignments=(
+            ModelSOHumanSeatAssignment(
+                kind="human",
+                side="red",
+                player_id="player.red",
+                option_id="player_option.browser_human",
+                loadout_id=red.id,
+                pilot_spec_id=red.pilot_id,
+                option_sha256="4" * 64,
+                human_identity_id="human_identity.local_operator",
+                input_source="browser_command",
+            ),
+            ModelSOModelSeatAssignment(
+                kind="model",
+                side="blue",
+                player_id="player.blue",
+                option_id="player_option.local_stub",
+                loadout_id=blue.id,
+                pilot_spec_id=blue.pilot_id,
+                option_sha256="5" * 64,
+                model_identity_id="model_identity.local_stub",
+                persona_id="predictive",
+                input_source="llm_completion",
+            ),
+        ),
+    )
+    runtime = runtime_dependencies()
+    registry = load_pilot_registry(Path("contracts_data/pilots"))
+    ledger = open_sqlite_ledger(tmp_path / "selected-provenance.sqlite")
+    bus = InProcessEventBus()
+    bus.subscribe(ledger.append)
+    runner = MatchRunner(
+        identity=MatchIdentity(
+            match_id=match_id,
+            correlation_id=runtime.event_factory.identities.new_correlation_id(),
+        ),
+        seed=SEED,
+        loadout_a=red,
+        loadout_b=blue,
+        bus=bus,
+        event_factory=runtime.event_factory,
+        catalog=runtime.catalog,
+        arena=runtime.arena,
+        pilots={
+            "mech.red.01": _ReplayHumanDecisionPilot(),
+            "mech.blue.01": pilot_from_spec(registry.resolve(blue)),
+        },
+        max_ticks=2,
+        side_a="red",
+        side_b="blue",
+        launch_provenance=provenance,
+    )
+
+    live_final = runner.run()
+    persisted = list(ledger.read_all(match_id))
+    started = persisted[0]
+    human_decision = next(
+        event
+        for event in persisted
+        if event.event_type is SOEventType.PILOT_DECISION_MADE
+        and event.subject.mech_id == "mech.red.01"
+    )
+    assert thaw_json_mapping(started.payload)["launch_provenance"] == provenance.model_dump(
+        mode="json"
+    )
+    assert thaw_json_mapping(human_decision.payload)[
+        "decision_source"
+    ] == _ReplayHumanDecisionPilot.source.model_dump(mode="json")
+
+    replay = ReplayEngine(
+        ledger,
+        match_id,
+        catalog=runtime.catalog,
+        event_factory=runtime.event_factory,
+    )
+    replayed_started = replay.events_at_tick(0)[0]
+    replayed_decision = next(
+        event
+        for event in replay.events_at_tick(human_decision.tick)
+        if event.event_id == human_decision.event_id
+    )
+    replayed_final = replay.reconstruct_at_tick(live_final.tick)
+
+    assert replayed_final == live_final
+    assert replayed_final.status is SOMatchStatus.ENDED
+    assert replayed_final.end_reason is live_final.end_reason
+    assert thaw_json_mapping(replayed_started.payload)[
+        "launch_provenance"
+    ] == provenance.model_dump(mode="json")
+    assert thaw_json_mapping(replayed_decision.payload)[
+        "decision_source"
+    ] == _ReplayHumanDecisionPilot.source.model_dump(mode="json")
 
 
 @pytest.mark.integration
