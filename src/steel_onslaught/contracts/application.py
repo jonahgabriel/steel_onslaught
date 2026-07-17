@@ -17,7 +17,10 @@ from pydantic import (
     model_validator,
 )
 
-from steel_onslaught.contracts.player_selection import ModelSOModelIdentityBinding
+from steel_onslaught.contracts.player_selection import (
+    ModelSOModelIdentityBinding,
+    ModelSOPlayerRosterProjection,
+)
 
 
 class _ClosedBinding(BaseModel):
@@ -248,12 +251,18 @@ class ModelSOApplicationOverlay(_ClosedBinding):
 
 
 class ModelSOFrontendBootstrap(_ClosedBinding):
-    """Strict public projection of one overlay for browser composition."""
+    """Strict public projection for receive-only browser composition.
+
+    ``player_roster`` is explicitly null until a validated server-owned roster
+    is supplied to the export boundary.  Null is safe unavailability, never a
+    signal for the browser to infer or discover player options.
+    """
 
     schema_version: Literal["1"]
     kind: Literal["steel_onslaught.frontend_bootstrap"]
     overlay_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     frontend_transport: ModelSOFrontendTransportBinding
+    player_roster: ModelSOPlayerRosterProjection | None = None
 
 
 __all__ = [

@@ -22,6 +22,7 @@ def test_main_is_the_only_browser_transport_composition_root() -> None:
         "lib/event_stream.ts",
         "lib/transport.ts",
         "lib/useTransport.ts",
+        "views/MatchSetup.tsx",
         "views/PressureDeck.tsx",
     ):
         source = _source(relative)
@@ -48,6 +49,27 @@ def test_inner_frontend_layers_have_no_constructor_or_scheduler_fallbacks() -> N
     assert "cancelAnimationFrame" not in hook
     assert "requestAnimationFrame" not in deck
     assert "cancelAnimationFrame" not in deck
+
+
+@pytest.mark.unit
+def test_player_selector_has_no_command_transport_or_ambient_authority() -> None:
+    main = _source("main.tsx")
+    app = _source("App.tsx")
+    setup = _source("views/MatchSetup.tsx")
+    event_stream = _source("lib/event_stream.ts")
+
+    assert main.count("new WebSocket(") == 1
+    assert "matchStartCapability" not in main
+    assert "capability={matchStartCapability}" in app
+    assert ".send(" not in event_stream
+    for source in (app, setup):
+        assert ".send(" not in source
+        assert "new WebSocket(" not in source
+        assert "localStorage" not in source
+        assert "sessionStorage" not in source
+        assert "window.location" not in source
+        assert "URLSearchParams" not in source
+        assert "import.meta.env" not in source
 
 
 @pytest.mark.unit

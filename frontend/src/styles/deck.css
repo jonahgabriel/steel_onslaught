@@ -42,6 +42,83 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ---- safe player-selection intent overlay ---- */
+.so-match-setup {
+  position: fixed;
+  z-index: 60;
+  top: 4.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(44rem, calc(100vw - 2rem));
+  padding: 0.85rem 1rem;
+  background: rgba(22, 24, 29, 0.97);
+  box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.55);
+}
+.so-setup-heading,
+.so-setup-seats {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.so-setup-heading {
+  justify-content: space-between;
+  margin-bottom: 0.65rem;
+}
+.so-setup-heading h2 {
+  margin: 0;
+  color: var(--phosphor);
+  font-family: var(--font-stencil);
+  letter-spacing: 0.16em;
+}
+.so-setup-heading span,
+.so-match-setup p {
+  color: var(--ash);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+}
+.so-setup-seat {
+  display: grid;
+  flex: 1;
+  gap: 0.25rem;
+  min-width: 0;
+  color: var(--ash);
+  font-family: var(--font-stencil);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+}
+.so-setup-seat select {
+  min-width: 0;
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--seam);
+  background: #0d0f13;
+  color: var(--steam);
+  font-family: var(--font-mono);
+}
+.so-match-setup button {
+  width: 100%;
+  margin-top: 0.7rem;
+  padding: 0.42rem 0.65rem;
+  border: 1px solid var(--phosphor);
+  background: var(--phosphor);
+  color: var(--coal);
+  font-family: var(--font-stencil);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+}
+.so-match-setup button:disabled {
+  border-color: var(--seam);
+  background: #0d0f13;
+  color: var(--ash);
+  cursor: not-allowed;
+}
+.so-match-setup select:focus-visible,
+.so-match-setup button:focus-visible {
+  outline: 2px solid var(--phosphor);
+  outline-offset: 2px;
+}
+
 /* Riveted-plate grain overlay — feTurbulence, ~3% opacity, fixed. */
 .pd-grain {
   position: fixed;

@@ -29,7 +29,6 @@ REST endpoint (Task 33)
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
@@ -45,6 +44,7 @@ from websockets.http11 import Request, Response
 
 from steel_onslaught.bus.protocol import EventBus, HandlerToken
 from steel_onslaught.cli.application import CliApplicationFactory
+from steel_onslaught.commands.authority import canonical_overlay_sha256
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOFrontendBootstrap,
@@ -63,16 +63,10 @@ FRONTEND_EXPECTED_OVERLAY_HEADER = "X-Steel-Onslaught-Expected-Overlay"
 
 def build_frontend_bootstrap(overlay: ModelSOApplicationOverlay) -> ModelSOFrontendBootstrap:
     """Project one overlay into its public, path-and-secret-free browser binding."""
-    overlay_bytes = json.dumps(
-        overlay.model_dump(mode="json"),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
     return ModelSOFrontendBootstrap(
         schema_version="1",
         kind="steel_onslaught.frontend_bootstrap",
-        overlay_sha256=hashlib.sha256(overlay_bytes).hexdigest(),
+        overlay_sha256=canonical_overlay_sha256(overlay),
         frontend_transport=overlay.frontend_transport,
     )
 
