@@ -121,7 +121,7 @@ def test_resolve_move_raises_on_unknown_direction() -> None:
     contract violation.  We synthesize a minimal intent and feed it directly.
     """
     bus = InProcessEventBus()
-    runner, _runtime = match_runner(
+    runner, runtime = match_runner(
         bus=bus,
         match_id=MATCH_ID,
         seed=1,
@@ -146,6 +146,7 @@ def test_resolve_move_raises_on_unknown_direction() -> None:
                     _mech_payload("mech.a.01", "player.a"),
                     _mech_payload("mech.b.01", "player.b"),
                 ],
+                "arena": runtime.arena.to_snapshot().model_dump(mode="json"),
             },
             envelope=_onex_envelope(MATCH_ID),
         )
@@ -170,7 +171,7 @@ def test_resolve_move_raises_on_unknown_direction() -> None:
 def test_resolve_move_raises_on_missing_direction() -> None:
     """A MOVE_INTENT with no direction key at all also fails loud."""
     bus = InProcessEventBus()
-    runner, _runtime = match_runner(
+    runner, runtime = match_runner(
         bus=bus,
         match_id=MATCH_ID,
         seed=1,
@@ -194,6 +195,7 @@ def test_resolve_move_raises_on_missing_direction() -> None:
                     _mech_payload("mech.a.01", "player.a"),
                     _mech_payload("mech.b.01", "player.b"),
                 ],
+                "arena": runtime.arena.to_snapshot().model_dump(mode="json"),
             },
             envelope=_onex_envelope(MATCH_ID),
         )
@@ -217,7 +219,7 @@ def test_resolve_move_raises_on_missing_direction() -> None:
 @pytest.mark.unit
 def test_resolve_weapon_fire_raises_on_unknown_weapon_id() -> None:
     bus = InProcessEventBus()
-    runner, _runtime = match_runner(
+    runner, runtime = match_runner(
         bus=bus,
         match_id=MATCH_ID,
         seed=1,
@@ -241,6 +243,7 @@ def test_resolve_weapon_fire_raises_on_unknown_weapon_id() -> None:
                     _mech_payload("mech.a.01", "player.a"),
                     _mech_payload("mech.b.01", "player.b"),
                 ],
+                "arena": runtime.arena.to_snapshot().model_dump(mode="json"),
             },
             envelope=_onex_envelope(MATCH_ID),
         )
@@ -295,6 +298,7 @@ def test_pilot_from_spec_raises_on_unknown_archetype() -> None:
 
 def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:
     """Complete current-live mech snapshot for a MATCH_STARTED payload."""
+    position = {"x": 5, "y": 5} if player_id == "player.a" else {"x": 35, "y": 35}
     return {
         "schema_version": "0.1.0",
         "kind": "steel_onslaught.mech_runtime_state",
@@ -308,7 +312,7 @@ def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:
         "sensor_ids": [],
         "gizmo_ids": [],
         "base_speed": 4,
-        "position": {"x": 5, "y": 5},
+        "position": position,
         "facing": 45,
         "speed": 4,
         "hp": 100,

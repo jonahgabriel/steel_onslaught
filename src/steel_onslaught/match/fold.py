@@ -49,6 +49,10 @@ from typing import Literal, TypeVar
 from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.contracts.arena import (
+    ModelSOArenaSpec,
+    ModelSOCurrentLiveArenaSnapshot,
+)
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.gizmo import GizmoCategory, ModelSOGizmoSpec
@@ -92,7 +96,7 @@ _PRODUCER_NODE = "node.match.fold"
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 
 _ContractT = TypeVar("_ContractT")
-_ContractKind = Literal["chassis", "weapon", "sensor", "gizmo", "transition"]
+_ContractKind = Literal["arena", "chassis", "weapon", "sensor", "gizmo", "transition"]
 
 
 class MissingMatchContractError(ValueError):
@@ -144,6 +148,7 @@ class MatchContractCatalog:
     validated contract snapshot.
     """
 
+    arenas: Mapping[str, ModelSOArenaSpec]
     chassis: Mapping[str, ModelSOChassisSpec]
     boilers: Mapping[str, ModelSOBoilerSpec]
     sensors: Mapping[str, ModelSOSensorSpec]
@@ -155,6 +160,7 @@ class MatchContractCatalog:
     def __init__(
         self,
         *,
+        arenas: Mapping[str, ModelSOArenaSpec],
         chassis: Mapping[str, ModelSOChassisSpec],
         boilers: Mapping[str, ModelSOBoilerSpec],
         sensors: Mapping[str, ModelSOSensorSpec],
@@ -162,6 +168,7 @@ class MatchContractCatalog:
         gizmos: Mapping[str, ModelSOGizmoSpec],
         transitions: Mapping[tuple[ModeId, ModeId], ModelSOModeTransition],
     ) -> None:
+        object.__setattr__(self, "arenas", MappingProxyType(dict(arenas)))
         object.__setattr__(self, "chassis", MappingProxyType(dict(chassis)))
         object.__setattr__(self, "boilers", MappingProxyType(dict(boilers)))
         object.__setattr__(self, "sensors", MappingProxyType(dict(sensors)))
@@ -200,12 +207,14 @@ class MatchStateFold:
         event_factory: EventFactory,
         catalog: MatchContractCatalog,
         bus: EventBus | None = None,
+        historical_arena_migration: ModelSOCurrentLiveArenaSnapshot | None = None,
     ) -> None:
         self._match_id = match_id
         self._correlation_id = correlation_id
         self._events = event_factory
         self._bus = bus
         self._catalog = catalog
+        self._historical_arena_migration = historical_arena_migration
         self._lifecycle = ReducerMatchLifecycle(
             match_id, correlation_id, event_factory=event_factory, bus=bus
         )
@@ -218,6 +227,7 @@ class MatchStateFold:
         )
         self._boilers: dict[str, ReducerBoiler] = {}
         self._mech_states: dict[str, ModelSOMechRuntimeState] = {}
+        self._arena: ModelSOCurrentLiveArenaSnapshot | None = None
         # Active emission buffer; set per `apply` call (commit-then-emit).
         self._sink: list[ModelSOEventEnvelope] | None = None
 
@@ -289,7 +299,7 @@ class MatchStateFold:
 
             match event.event_type:
                 case SOEventType.MATCH_STARTED:
-                    self._on_match_started()
+                    self._on_match_started(payload)
                 case SOEventType.MATCH_TICK:
                     self._on_match_tick(event)
                 case SOEventType.MOVEMENT_RESOLVED:
@@ -330,7 +340,7 @@ class MatchStateFold:
     def _require_contract(
         self,
         contracts: Mapping[str, _ContractT],
-        contract_kind: Literal["chassis", "weapon", "sensor", "gizmo"],
+        contract_kind: _ContractKind,
         contract_id: str,
         *,
         owner_id: str,
@@ -362,6 +372,29 @@ class MatchStateFold:
 
     def _validate_match_started_contracts(self, payload: ModelSOMatchStartedPayload) -> None:
         """Validate every static mech reference before lifecycle state mutates."""
+        if payload.arena.arena_id == "historical_open_field":
+            expected_arena = self._historical_arena_migration
+            if expected_arena is None:
+                raise MissingMatchContractError(
+                    "arena",
+                    payload.arena.arena_id,
+                    owner_id=payload.arena.arena_id,
+                )
+        else:
+            arena = self._require_contract(
+                self._catalog.arenas,
+                "arena",
+                payload.arena.arena_id,
+                owner_id=payload.arena.arena_id,
+            )
+            expected_arena = arena.to_snapshot()
+        if payload.arena != expected_arena:
+            raise MatchContractStateMismatchError(
+                "arena",
+                payload.arena.model_dump(mode="json"),
+                expected_arena.model_dump(mode="json"),
+                owner_id=payload.arena.arena_id,
+            )
         for mech in payload.mechs:
             chassis = self._require_contract(
                 self._catalog.chassis,
@@ -413,7 +446,8 @@ class MatchStateFold:
                     owner_id=mech.mech_id,
                 )
 
-    def _on_match_started(self) -> None:
+    def _on_match_started(self, payload: ModelSOMatchStartedPayload) -> None:
+        self._arena = payload.arena
         self._mech_states = dict(self._lifecycle.state.mech_states)
         composite = self.state
         self._boilers = {
@@ -441,7 +475,13 @@ class MatchStateFold:
         self._mech_states = dict(working.mech_states)
 
     def _on_movement_resolved(self, event: ModelSOEventEnvelope) -> None:
-        reducer = ReducerMovement(self._match_id, self.state)
+        if self._arena is None:
+            raise RuntimeError("MATCH_STARTED arena must be validated before movement")
+        reducer = ReducerMovement(
+            self._match_id,
+            self.state,
+            arena=self._arena,
+        )
         new_state = reducer.apply(event)
         self._mech_states = dict(new_state.mech_states)
 

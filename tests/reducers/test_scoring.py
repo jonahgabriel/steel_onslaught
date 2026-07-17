@@ -33,6 +33,7 @@ import ulid
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.arena import neutral_historical_arena_snapshot
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
@@ -130,6 +131,9 @@ def _make_boiler(mech_id: str) -> ModelSOBoilerState:
 
 
 def _make_mech(mech_id: str, player_id: str, *, loadout_id: str) -> ModelSOMechRuntimeState:
+    position = (
+        ModelSOPosition(x=0, y=0) if mech_id == _MECH_A else ModelSOPosition(x=1, y=1)
+    )
     return ModelSOMechRuntimeState(
         mech_id=mech_id,
         player_id=player_id,
@@ -138,7 +142,7 @@ def _make_mech(mech_id: str, player_id: str, *, loadout_id: str) -> ModelSOMechR
         chassis_id="chassis.medium.hunter_mk1",
         chassis_class="medium",
         base_speed=3,
-        position=ModelSOPosition(x=0, y=0),
+        position=position,
         facing=0,
         speed=3,
         hp=100,
@@ -194,6 +198,11 @@ def _match_started(*, tick: int = 0) -> ModelSOEventEnvelope:
             "seed": 7,
             "max_ticks": 10,
             "mechs": [mech.model_dump(mode="json") for mech in mechs],
+            "arena": neutral_historical_arena_snapshot(
+                size=40,
+                spawn_a=ModelSOPosition(x=0, y=0),
+                spawn_b=ModelSOPosition(x=1, y=1),
+            ).model_dump(mode="json"),
         },
     )
 
@@ -707,6 +716,7 @@ def test_verify_replay_validity_for_real_match(tmp_path: Path) -> None:
         bus=bus,
         event_factory=event_factory,
         catalog=catalog,
+        arena=catalog.arenas["open_field"],
         pilots={
             "mech.a.01": pilot_from_spec(registry.resolve(loadout_a)),
             "mech.b.01": pilot_from_spec(registry.resolve(loadout_b)),

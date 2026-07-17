@@ -15,14 +15,20 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from pydantic import ValidationError
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.arena import ModelSOArenaSpec, neutral_historical_arena_snapshot
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
 from steel_onslaught.match.composition import load_loadout
 from steel_onslaught.match.fold import MatchContractCatalog, MissingMatchContractError
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchStatus
+from steel_onslaught.pilots.schemas import ModelSOPosition
+from steel_onslaught.reducers.errors import ReducerError
+from steel_onslaught.reducers.movement import chebyshev
 from steel_onslaught.replay.engine import ReplayEngine
 from tests.fixtures.event_samples import build_sample_envelopes
 from tests.runtime import match_runner, runtime_dependencies
@@ -54,7 +60,66 @@ class _MemoryLedger:
         )
 
 
-@pytest.mark.unit
+def _arena_for_replay(*, obstacle: bool) -> ModelSOArenaSpec:
+    return ModelSOArenaSpec(
+        schema_version="0.1.0",
+        kind="steel_onslaught.arena",
+        arena_id="replay_wall" if obstacle else "replay_open",
+        display_name="Replay movement test arena",
+        size=40,
+        spawn_a=ModelSOPosition(x=5, y=5),
+        spawn_b=ModelSOPosition(x=35, y=35),
+        obstacles=(ModelSOPosition(x=6, y=5),) if obstacle else (),
+        rects=(),
+    )
+
+
+def _started_for_arena(
+    arena: ModelSOArenaSpec,
+) -> tuple[ModelSOEventEnvelope, MatchContractCatalog, EventFactory]:
+    bus = InProcessEventBus()
+    events: list[ModelSOEventEnvelope] = []
+    bus.subscribe(events.append)
+    runner, runtime = match_runner(
+        bus=bus,
+        match_id="match.test.replay-forged-movement",
+        seed=SEED,
+        loadout_a=load_loadout(LOADOUT_A),
+        loadout_b=load_loadout(LOADOUT_B),
+        max_ticks=1,
+        arena_override=arena,
+    )
+    runner.run()
+    started = next(event for event in events if event.event_type is SOEventType.MATCH_STARTED)
+    return started, runtime.catalog, runtime.event_factory
+
+
+def _forged_movement(
+    started: ModelSOEventEnvelope,
+    destination: ModelSOPosition,
+) -> ModelSOEventEnvelope:
+    origin = ModelSOPosition(x=5, y=5)
+    raw = started.model_dump(mode="json")
+    raw.update(
+        {
+            "event_id": "01J00000000000000000000000",
+            "tick": 1,
+            "sequence_in_tick": 0,
+            "event_type": SOEventType.MOVEMENT_RESOLVED.value,
+            "producer_node": "node.test.forged",
+            "subject": {"mech_id": "mech.a.01", "player_id": "player.a"},
+            "payload": {
+                "from": origin.model_dump(mode="json"),
+                "to": destination.model_dump(mode="json"),
+                "ticks_consumed": 1,
+                "pressure_consumed": chebyshev(origin, destination),
+            },
+        }
+    )
+    return ModelSOEventEnvelope.model_validate(raw)
+
+
+@pytest.mark.integration
 def test_replay_uses_injected_catalog_without_lookup() -> None:
     event = build_sample_envelopes()[SOEventType.MATCH_STARTED]
     runtime = runtime_dependencies()
@@ -79,6 +144,83 @@ def test_replay_rejects_empty_stream_without_identity_fallback() -> None:
             catalog=runtime.catalog,
             event_factory=runtime.event_factory,
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("destination", "has_wall", "error"),
+    [
+        (ModelSOPosition(x=7, y=5), True, "obstacle_blocked"),
+        (ModelSOPosition(x=-1, y=5), False, "arena_bounds"),
+        (ModelSOPosition(x=6, y=5), True, "obstacle_blocked"),
+    ],
+    ids=["cross-wall-path", "out-of-bounds-destination", "obstacle-endpoint"],
+)
+def test_replay_rejects_forged_arena_movement(
+    destination: ModelSOPosition,
+    has_wall: bool,
+    error: str,
+) -> None:
+    arena = _arena_for_replay(obstacle=has_wall)
+    started, catalog, event_factory = _started_for_arena(arena)
+    movement = _forged_movement(started, destination)
+    replay = ReplayEngine(
+        _MemoryLedger([started, movement]),
+        started.match_id,
+        catalog=catalog,
+        event_factory=event_factory,
+    )
+
+    with pytest.raises(ReducerError, match=error):
+        replay.reconstruct_at_tick(1)
+
+
+@pytest.mark.integration
+def test_historical_arena_migration_requires_explicit_offline_opt_in(
+    tmp_path: Path,
+) -> None:
+    _live_state, ledger = _run_and_record(tmp_path, max_ticks=1)
+    current = next(ledger.read_all(MATCH_ID))
+    raw = current.model_dump(mode="json")
+    del raw["payload"]["arena"]
+    historical = ModelSOEventEnvelope.model_validate(raw)
+    runtime = runtime_dependencies()
+    default_replay = ReplayEngine(
+        _MemoryLedger([historical]),
+        historical.match_id,
+        catalog=runtime.catalog,
+        event_factory=runtime.event_factory,
+    )
+
+    with pytest.raises(ValueError, match="explicit offline arena migration"):
+        default_replay.reconstruct_at_tick(0)
+
+    explicit = ReplayEngine(
+        _MemoryLedger([historical]),
+        historical.match_id,
+        catalog=runtime.catalog,
+        event_factory=runtime.event_factory,
+        historical_arena_migration=neutral_historical_arena_snapshot(
+            size=40,
+            spawn_a=ModelSOPosition(x=5, y=5),
+            spawn_b=ModelSOPosition(x=35, y=35),
+        ),
+    )
+    assert explicit.reconstruct_at_tick(0).status is SOMatchStatus.RUNNING
+
+    mismatched = ReplayEngine(
+        _MemoryLedger([historical]),
+        historical.match_id,
+        catalog=runtime.catalog,
+        event_factory=runtime.event_factory,
+        historical_arena_migration=neutral_historical_arena_snapshot(
+            size=40,
+            spawn_a=ModelSOPosition(x=4, y=4),
+            spawn_b=ModelSOPosition(x=35, y=35),
+        ),
+    )
+    with pytest.raises(ValidationError, match="canonical roster order"):
+        mismatched.reconstruct_at_tick(0)
 
 
 def _run_and_record(
@@ -140,6 +282,7 @@ def _catalog_without(
         case "gizmo":
             gizmos.pop(contract_id)
     return MatchContractCatalog(
+        arenas=dict(catalog.arenas),
         chassis=chassis,
         boilers=boilers,
         sensors=sensors,
@@ -205,6 +348,7 @@ def test_replay_rejects_missing_mode_transition_contract(tmp_path: Path) -> None
     transitions = dict(runtime.catalog.transitions)
     transitions.pop((ModeId.RECON, ModeId.ASSAULT))
     catalog = MatchContractCatalog(
+        arenas=dict(runtime.catalog.arenas),
         chassis=dict(runtime.catalog.chassis),
         boilers=dict(runtime.catalog.boilers),
         sensors=dict(runtime.catalog.sensors),

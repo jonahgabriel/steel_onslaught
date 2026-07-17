@@ -71,6 +71,7 @@ class ModelSOSQLiteEvaluationStorageBinding(_ClosedBinding):
 class ModelSOContractBindings(_ClosedBinding):
     catalog_dir: Path
     pilot_registry_dir: Path
+    arena_id: StrictStr = Field(pattern=r"^[a-z][a-z0-9_]*$")
 
 
 class ModelSOSystemClockBinding(_ClosedBinding):

@@ -148,7 +148,22 @@
         "overloaded": false,
         "overloaded_consecutive_ticks": 0
       }
-    ]
+    ],
+    "arena": {
+      "schema_version": "0.1.0",
+      "kind": "steel_onslaught.arena_snapshot",
+      "arena_id": "open_field",
+      "size": 40,
+      "spawn_a": {
+        "x": 5,
+        "y": 5
+      },
+      "spawn_b": {
+        "x": 35,
+        "y": 35
+      },
+      "obstacles": []
+    }
   },
   "envelope": {
     "message_id": "ec84dcf4-0385-5853-96ec-763be6e2bf4b",

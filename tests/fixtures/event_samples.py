@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid5
 
+from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
@@ -171,6 +172,15 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
             "seed": 12345,
             "max_ticks": 200,
             "mechs": [mech_a.model_dump(mode="json"), mech_b.model_dump(mode="json")],
+            "arena": ModelSOCurrentLiveArenaSnapshot(
+                schema_version="0.1.0",
+                kind="steel_onslaught.arena_snapshot",
+                arena_id="open_field",
+                size=40,
+                spawn_a=mech_a.position,
+                spawn_b=mech_b.position,
+                obstacles=(),
+            ).model_dump(mode="json"),
         },
         SOEventType.MATCH_TICK: {},
         SOEventType.MECH_SPAWNED: {"position": {"x": 5, "y": 5}, "facing": 90},

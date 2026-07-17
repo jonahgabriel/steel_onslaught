@@ -289,6 +289,8 @@ def _make_reducer(
         weapon_specs={},
         correlation_id=_TEST_CORRELATION_ID,
         event_factory=_EVENT_FACTORY,
+        obstacles=frozenset(),
+        arena_size=40,
     )
     return reducer, emitted
 

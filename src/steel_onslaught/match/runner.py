@@ -31,6 +31,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
@@ -50,6 +51,7 @@ from steel_onslaught.events.payloads import (
     ModelSOWeaponFireIntentPayload,
 )
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
+from steel_onslaught.match.geometry import chebyshev_line, greedy_sidestep, line_of_sight_clear
 from steel_onslaught.match.initiative import order_by_initiative
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
@@ -82,13 +84,6 @@ _PRODUCER_NODE = "node.match.runner"
 # Match-scoped events have no single mech/player subject.
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 
-# Arena: square grid of this many cells per side (positions 0..size-1).
-ARENA_SIZE_CELLS = 40
-
-# Default spawn geometry for the minimal two-mech duel (Task 28 tests).
-# 10 Chebyshev cells apart so short-range sensors (range 15) acquire from tick 1.
-_SPAWN_A = ModelSOPosition(x=0, y=0)
-_SPAWN_B = ModelSOPosition(x=10, y=10)
 _FACING_A = 45
 _FACING_B = 225
 
@@ -132,15 +127,13 @@ class MatchRunner:
         bus: EventBus,
         event_factory: EventFactory,
         catalog: MatchContractCatalog,
+        arena: ModelSOArenaSpec,
         pilots: dict[str, PilotProtocol],
         max_ticks: int,
         side_a: str = "a",
         side_b: str = "b",
-        spawn_a: ModelSOPosition = _SPAWN_A,
-        spawn_b: ModelSOPosition = _SPAWN_B,
         facing_a: int = _FACING_A,
         facing_b: int = _FACING_B,
-        arena_size: int = ARENA_SIZE_CELLS,
     ) -> None:
         self._identity = identity
         self._match_id = identity.match_id
@@ -154,11 +147,13 @@ class MatchRunner:
         self._max_ticks = max_ticks
         self._side_a = side_a
         self._side_b = side_b
-        self._spawn_a = spawn_a
-        self._spawn_b = spawn_b
+        self._arena = arena.to_snapshot()
+        self._spawn_a = self._arena.spawn_a
+        self._spawn_b = self._arena.spawn_b
         self._facing_a = facing_a
         self._facing_b = facing_b
-        self._arena_size = arena_size
+        self._arena_size = self._arena.size
+        self._obstacles = self._arena.obstacle_cells
         self._catalog = catalog
         self._pilots = dict(pilots)
 
@@ -222,6 +217,7 @@ class MatchRunner:
                     "seed": self._seed,
                     "max_ticks": self._max_ticks,
                     "mechs": [mech.model_dump(mode="json") for mech in mechs],
+                    "arena": self._arena.model_dump(mode="json"),
                 },
             )
         )
@@ -254,6 +250,8 @@ class MatchRunner:
                 weapon_specs=self._catalog.weapons,
                 correlation_id=self._correlation_id,
                 event_factory=self._events,
+                obstacles=self._obstacles,
+                arena_size=self._arena_size,
             ).apply(tick_event)
 
             # Resolve intents in initiative order. Initiative is a real combat
@@ -346,13 +344,24 @@ class MatchRunner:
             dx = _clamp(from_pos.x - enemy.position.x, step)
             dy = _clamp(from_pos.y - enemy.position.y, step)
 
-        to_pos = ModelSOPosition(
+        intended = ModelSOPosition(
             x=min(max(from_pos.x + dx, 0), self._arena_size - 1),
             y=min(max(from_pos.y + dy, 0), self._arena_size - 1),
         )
+        to_pos = self._walk_to(from_pos, intended)
         moved = chebyshev(from_pos, to_pos)
+        if moved == 0 and self._obstacles:
+            to_pos = greedy_sidestep(
+                from_pos,
+                enemy.position,
+                obstacles=self._obstacles,
+                size=self._arena_size,
+                toward=direction == "toward_enemy",
+                forbidden=frozenset({(enemy.position.x, enemy.position.y)}),
+            )
+            moved = chebyshev(from_pos, to_pos)
         if moved == 0:
-            return  # pinned against the arena edge or already adjacent
+            return  # pinned against the arena edge, terrain, or already adjacent
 
         self._bus.publish(
             self._make_subject_event(
@@ -368,6 +377,18 @@ class MatchRunner:
                 caused_by_intent=intent,
             )
         )
+
+    def _walk_to(
+        self,
+        from_pos: ModelSOPosition,
+        intended: ModelSOPosition,
+    ) -> ModelSOPosition:
+        last = from_pos
+        for x, y in chebyshev_line(from_pos, intended):
+            if (x, y) in self._obstacles:
+                break
+            last = ModelSOPosition(x=x, y=y)
+        return last
 
     def _resolve_weapon_fire(
         self,
@@ -403,6 +424,24 @@ class MatchRunner:
             )
         except ReducerError:
             return  # rejected: PILOT_DECISION_MADE already records the attempt
+
+        if not line_of_sight_clear(mech.position, target.position, self._obstacles):
+            self._bus.publish(
+                self._make_subject_event(
+                    SOEventType.WEAPON_FIRED,
+                    tick=state.tick,
+                    mech=mech,
+                    payload={
+                        "weapon_id": weapon_id,
+                        "target_id": target.mech_id,
+                        "hit_probability": 0.0,
+                        "pressure_cost": spec.pressure_cost,
+                        "heat_generated": spec.heat_generated,
+                    },
+                    caused_by_intent=intent,
+                )
+            )
+            return
 
         curve = [(point.range, point.hit_probability) for point in spec.accuracy_curve]
         base_accuracy = interpolate_accuracy(curve, distance)

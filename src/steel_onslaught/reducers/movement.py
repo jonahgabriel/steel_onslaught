@@ -20,6 +20,8 @@ Invariant enforcement (raises ReducerError)
 - ``mech_not_found``: subject mech_id absent from match state.
 - ``invalid_facing``: facing < 0 or >= 360.
 - ``position_mismatch``: payload "from" != mech's current position.
+- ``arena_bounds``: payload destination lies outside the injected arena.
+- ``obstacle_blocked``: canonical Chebyshev traversal crosses authoritative terrain.
 - ``speed_exceeded``: Chebyshev distance > effective_speed * ticks_consumed.
 - ``pressure_cost_mismatch``: payload pressure_consumed != Chebyshev distance.
 - ``insufficient_pressure``: boiler pressure_current < pressure_consumed.
@@ -27,12 +29,14 @@ Invariant enforcement (raises ReducerError)
 
 from __future__ import annotations
 
+from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.payloads import (
     ModelSOMechSpawnedPayload,
     ModelSOMovementResolvedPayload,
 )
+from steel_onslaught.match.geometry import chebyshev_line
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.errors import ReducerError
@@ -79,9 +83,16 @@ class ReducerMovement:
     each ``apply`` call.
     """
 
-    def __init__(self, match_id: str, state: ModelSOMatchState) -> None:
+    def __init__(
+        self,
+        match_id: str,
+        state: ModelSOMatchState,
+        *,
+        arena: ModelSOCurrentLiveArenaSnapshot,
+    ) -> None:
         self._match_id = match_id
         self._state = state
+        self._arena = arena
 
     @property
     def state(self) -> ModelSOMatchState:
@@ -147,7 +158,27 @@ class ReducerMovement:
                 f"but MOVEMENT_RESOLVED payload declares from={from_pos}"
             )
 
-        # 2. Pressure cost must equal Chebyshev distance (1 per cell).
+        # 2. The authoritative arena rejects shaped canonical movement at ingress.
+        if not (0 <= to_pos.x < self._arena.size and 0 <= to_pos.y < self._arena.size):
+            raise ReducerError(
+                f"arena_bounds: mech {mech_id!r} destination "
+                f"{(to_pos.x, to_pos.y)} is outside [0, {self._arena.size})"
+            )
+        obstacles = self._arena.obstacle_cells
+        blocked_cell = next(
+            (
+                cell
+                for cell in chebyshev_line(from_pos, to_pos)
+                if cell in obstacles
+            ),
+            None,
+        )
+        if blocked_cell is not None:
+            raise ReducerError(
+                f"obstacle_blocked: mech {mech_id!r} movement path crosses {blocked_cell}"
+            )
+
+        # 3. Pressure cost must equal Chebyshev distance (1 per cell).
         distance = chebyshev(from_pos, to_pos)
         if pressure_consumed != distance:
             raise ReducerError(
@@ -155,7 +186,7 @@ class ReducerMovement:
                 f"but pressure_consumed={pressure_consumed}"
             )
 
-        # 3. Speed limit: distance <= effective_speed * ticks_consumed.
+        # 4. Speed limit: distance <= effective_speed * ticks_consumed.
         speed = effective_speed(mech)
         max_cells = speed * ticks_consumed
         if distance > max_cells:
@@ -165,7 +196,7 @@ class ReducerMovement:
                 f"but move covers {distance} cells"
             )
 
-        # 4. Pressure availability.
+        # 5. Pressure availability.
         if mech.boiler.pressure_current < pressure_consumed:
             raise ReducerError(
                 f"insufficient_pressure: mech {mech_id!r} has "
@@ -173,7 +204,7 @@ class ReducerMovement:
                 f"but move costs {pressure_consumed}"
             )
 
-        # 5. Apply: update position + deduct pressure.
+        # 6. Apply: update position + deduct pressure.
         new_boiler = mech.boiler.model_copy(
             update={
                 "pressure_current": mech.boiler.pressure_current - pressure_consumed,

@@ -25,6 +25,7 @@ from omnibase_core.models.common.model_envelope import ModelEnvelope
 from pydantic import ValidationError
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
@@ -35,6 +36,9 @@ from steel_onslaught.match.fold import (
     MissingMatchContractError,
 )
 from steel_onslaught.match.state import SOMatchStatus
+from steel_onslaught.pilots.schemas import ModelSOPosition
+from steel_onslaught.reducers.errors import ReducerError
+from steel_onslaught.reducers.movement import chebyshev
 from tests.runtime import runtime_dependencies
 
 _MATCH_ID = "match.test.fold-purity"
@@ -58,7 +62,12 @@ def _fold(
     )
 
 
-def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:
+def _mech_payload(
+    mech_id: str,
+    player_id: str,
+    *,
+    position: ModelSOPosition,
+) -> dict[str, object]:
     """Complete current-live mech snapshot for a MATCH_STARTED payload."""
     return {
         "schema_version": "0.1.0",
@@ -73,7 +82,7 @@ def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:
         "sensor_ids": [],
         "gizmo_ids": [],
         "base_speed": 4,
-        "position": {"x": 5, "y": 5},
+        "position": position.model_dump(mode="json"),
         "facing": 45,
         "speed": 4,
         "hp": 100,
@@ -118,8 +127,9 @@ def _mech_payload(mech_id: str, player_id: str) -> dict[str, object]:
     }
 
 
-def _match_started_env() -> ModelSOEventEnvelope:
+def _match_started_env(arena: ModelSOArenaSpec | None = None) -> ModelSOEventEnvelope:
     mid = "match.test.fold-purity"
+    selected_arena = arena or runtime_dependencies().arena
     return ModelSOEventEnvelope(
         event_id="01JPUREPUREPUREPUREPUREPUR",
         match_id=mid,
@@ -132,9 +142,18 @@ def _match_started_env() -> ModelSOEventEnvelope:
             "seed": 1,
             "max_ticks": 10,
             "mechs": [
-                _mech_payload("mech.a.01", "player.a"),
-                _mech_payload("mech.b.01", "player.b"),
+                _mech_payload(
+                    "mech.a.01",
+                    "player.a",
+                    position=selected_arena.spawn_a,
+                ),
+                _mech_payload(
+                    "mech.b.01",
+                    "player.b",
+                    position=selected_arena.spawn_b,
+                ),
             ],
+            "arena": selected_arena.to_snapshot().model_dump(mode="json"),
         },
         envelope=ModelEnvelope(correlation_id=uuid4(), entity_id=mid, emitted_at=datetime.now(UTC)),
     )
@@ -164,6 +183,53 @@ def _tick_env(tick: int) -> ModelSOEventEnvelope:
     )
 
 
+def _movement_env(destination: ModelSOPosition) -> ModelSOEventEnvelope:
+    origin = ModelSOPosition(x=5, y=5)
+    return ModelSOEventEnvelope(
+        event_id="01JPUREPUREPUREPUREPUREM01",
+        match_id=_MATCH_ID,
+        tick=1,
+        sequence_in_tick=0,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a"),
+        event_type=SOEventType.MOVEMENT_RESOLVED,
+        payload={
+            "from": origin.model_dump(mode="json"),
+            "to": destination.model_dump(mode="json"),
+            "ticks_consumed": 1,
+            "pressure_consumed": chebyshev(origin, destination),
+        },
+        envelope=ModelEnvelope(correlation_id=uuid4(), entity_id=_MATCH_ID),
+    )
+
+
+def _arena_with_wall(*, obstacle: bool) -> ModelSOArenaSpec:
+    return ModelSOArenaSpec(
+        schema_version="0.1.0",
+        kind="steel_onslaught.arena",
+        arena_id="fold_wall" if obstacle else "fold_open",
+        display_name="Fold movement test arena",
+        size=40,
+        spawn_a=ModelSOPosition(x=5, y=5),
+        spawn_b=ModelSOPosition(x=35, y=35),
+        obstacles=(ModelSOPosition(x=6, y=5),) if obstacle else (),
+        rects=(),
+    )
+
+
+def _catalog_with_arena(arena: ModelSOArenaSpec) -> MatchContractCatalog:
+    current = runtime_dependencies().catalog
+    return MatchContractCatalog(
+        arenas={**current.arenas, arena.arena_id: arena},
+        chassis=current.chassis,
+        boilers=current.boilers,
+        sensors=current.sensors,
+        weapons=current.weapons,
+        gizmos=current.gizmos,
+        transitions=current.transitions,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Structural: delta exists and returns the intents list (the ONEX shape)
 # ---------------------------------------------------------------------------
@@ -181,6 +247,40 @@ def test_delta_returns_intents_list() -> None:
     fold = _fold()
     produced = fold.delta(_match_started_env())
     assert isinstance(produced, list)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("destination", "has_wall", "error"),
+    [
+        (ModelSOPosition(x=7, y=5), True, "obstacle_blocked"),
+        (ModelSOPosition(x=-1, y=5), False, "arena_bounds"),
+        (ModelSOPosition(x=6, y=5), True, "obstacle_blocked"),
+    ],
+    ids=["cross-wall-path", "out-of-bounds-destination", "obstacle-endpoint"],
+)
+def test_fold_rejects_forged_arena_movement_before_state_mutation(
+    destination: ModelSOPosition,
+    has_wall: bool,
+    error: str,
+) -> None:
+    arena = _arena_with_wall(obstacle=has_wall)
+    fold = _fold(catalog=_catalog_with_arena(arena))
+    fold.apply(_match_started_env(arena))
+    before = fold.state
+
+    with pytest.raises(ReducerError, match=error):
+        fold.apply(_movement_env(destination))
+
+    assert fold.state == before
+
+
+@pytest.mark.unit
+def test_fold_rejects_movement_when_match_arena_is_unavailable() -> None:
+    fold = _fold()
+
+    with pytest.raises(RuntimeError, match="MATCH_STARTED arena"):
+        fold.apply(_movement_env(ModelSOPosition(x=6, y=5)))
 
 
 @pytest.mark.unit
@@ -290,6 +390,7 @@ def test_match_started_requires_exact_in_flight_transition_before_lifecycle_muta
     transitions = dict(runtime.catalog.transitions)
     transitions.pop((ModeId.RECON, ModeId.ASSAULT))
     catalog = MatchContractCatalog(
+        arenas=dict(runtime.catalog.arenas),
         chassis=dict(runtime.catalog.chassis),
         boilers=dict(runtime.catalog.boilers),
         sensors=dict(runtime.catalog.sensors),

@@ -11,11 +11,22 @@
 import type {
   PayloadMap,
   PilotDecisionMadePayload,
+  SOArenaSnapshot,
   SOEventEnvelopeOf,
   SOEventType,
   SOPilotAction,
   SOPilotReasonCode,
 } from "../types";
+
+export const TEST_ARENA: SOArenaSnapshot = {
+  schema_version: "0.1.0",
+  kind: "steel_onslaught.arena_snapshot",
+  arena_id: "arena.test.open_field",
+  size: 40,
+  spawn_a: { x: 5, y: 5 },
+  spawn_b: { x: 35, y: 35 },
+  obstacles: [],
+};
 
 let idCounter = 0;
 

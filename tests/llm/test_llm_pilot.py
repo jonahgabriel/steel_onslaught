@@ -17,6 +17,7 @@ from steel_onslaught.pilots.schemas import (
     ModelSOPilotWeaponView,
     ModelSOPosition,
     ModelSOSensorReading,
+    SOCompassDirection,
     SOPilotAction,
     SOPilotReasonCode,
 )
@@ -75,6 +76,8 @@ def _observation(
     weapons: list[ModelSOPilotWeaponView] | None = None,
     enemy_confidence: float | None = 0.9,
     heat: int = 10,
+    has_line_of_sight_to_enemy: bool = False,
+    blocked_directions: tuple[SOCompassDirection, ...] = (),
 ) -> ModelSOPilotObservation:
     return ModelSOPilotObservation(
         match_id="m",
@@ -89,6 +92,8 @@ def _observation(
         position=ModelSOPosition(x=10, y=10),
         hp_percent=80.0,
         under_sensor_lock=False,
+        has_line_of_sight_to_enemy=has_line_of_sight_to_enemy,
+        blocked_directions=blocked_directions,
         enemy_observations=[
             ModelSOSensorReading(
                 enemy_mech_id="mech.b", tick=1, distance_estimate=8.0, confidence=enemy_confidence
@@ -129,6 +134,45 @@ def test_rationale_carried_in_decision() -> None:
     decision = pilot.decide(_observation())
     assert decision.rationale is not None
     assert len(decision.rationale) > 0
+
+
+class _RecordingClient:
+    def __init__(self) -> None:
+        self.request: ModelSOLlmCompletionRequest | None = None
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        self.request = request
+        return LlmResponse(
+            text=json.dumps(
+                {
+                    "action": "remain",
+                    "action_params": {},
+                    "confidence": 0.9,
+                    "rationale": "terrain blocks the route",
+                }
+            ),
+            usage=LlmUsage(prompt_tokens=1, completion_tokens=1, cost_usd=0.0),
+            model="recording",
+            finish_reason="stop",
+        )
+
+
+@pytest.mark.unit
+def test_terrain_awareness_reaches_llm_prompt_serialization() -> None:
+    client = _RecordingClient()
+    pilot = LLMPilot(client=client, persona=_persona("terrain-aware"))
+
+    decision = pilot.decide(
+        _observation(
+            has_line_of_sight_to_enemy=False,
+            blocked_directions=(SOCompassDirection.N, SOCompassDirection.E),
+        )
+    )
+
+    assert decision.action is SOPilotAction.REMAIN
+    assert client.request is not None
+    assert "line_of_sight_to_enemy: False" in client.request.user_prompt
+    assert "blocked_directions: [n, e]" in client.request.user_prompt
 
 
 # ---------------------------------------------------------------------------

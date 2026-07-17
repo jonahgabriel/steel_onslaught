@@ -89,6 +89,19 @@ class ModelSOPosition(BaseModel):
     y: StrictInt
 
 
+class SOCompassDirection(StrEnum):
+    """Eight deterministic king-move directions exposed as terrain awareness."""
+
+    N = "n"
+    NE = "ne"
+    E = "e"
+    SE = "se"
+    S = "s"
+    SW = "sw"
+    W = "w"
+    NW = "nw"
+
+
 class ModelSOPilotWeaponView(BaseModel):
     """Per-weapon readiness view exposed to the pilot."""
 
@@ -150,6 +163,8 @@ class ModelSOPilotObservation(BaseModel):
     position: ModelSOPosition
     hp_percent: float = Field(ge=0.0, le=100.0)
     under_sensor_lock: bool
+    has_line_of_sight_to_enemy: bool = False
+    blocked_directions: tuple[SOCompassDirection, ...] = ()
 
     # Enemy state as observed (noisy, possibly stale; newest last).
     enemy_observations: list[ModelSOSensorReading]

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.factory import EventFactory
@@ -68,13 +70,16 @@ class SequentialIdentities:
 class TestRuntime:
     event_factory: EventFactory
     catalog: MatchContractCatalog
+    arena: ModelSOArenaSpec
 
 
 def runtime_dependencies() -> TestRuntime:
     identities = SequentialIdentities()
+    catalog = load_match_contract_catalog(_CONTRACTS)
     return TestRuntime(
         event_factory=EventFactory(clock=FixedClock(), identities=identities),
-        catalog=load_match_contract_catalog(_CONTRACTS),
+        catalog=catalog,
+        arena=catalog.arenas["open_field"],
     )
 
 
@@ -90,16 +95,48 @@ def match_runner(
     side_b: str = "b",
     spawn_a: ModelSOPosition | None = None,
     spawn_b: ModelSOPosition | None = None,
+    arena_override: ModelSOArenaSpec | None = None,
+    pilots_override: Mapping[str, PilotProtocol] | None = None,
 ) -> tuple[MatchRunner, TestRuntime]:
     runtime = runtime_dependencies()
-    resolved_spawn_a = spawn_a or ModelSOPosition(x=0, y=0)
-    resolved_spawn_b = spawn_b or ModelSOPosition(x=10, y=10)
+    if arena_override is not None and (spawn_a is not None or spawn_b is not None):
+        raise ValueError("arena_override cannot be combined with spawn overrides")
+    arena = arena_override or runtime.arena
+    if spawn_a is not None or spawn_b is not None:
+        arena = ModelSOArenaSpec(
+            schema_version="0.1.0",
+            kind="steel_onslaught.arena",
+            arena_id="test_open_field",
+            display_name="Injected test open field",
+            size=40,
+            spawn_a=spawn_a or arena.spawn_a,
+            spawn_b=spawn_b or arena.spawn_b,
+            obstacles=(),
+            rects=(),
+        )
+    if runtime.arena != arena or runtime.catalog.arenas.get(arena.arena_id) != arena:
+        runtime = TestRuntime(
+            event_factory=runtime.event_factory,
+            catalog=MatchContractCatalog(
+                arenas={**runtime.catalog.arenas, arena.arena_id: arena},
+                chassis=runtime.catalog.chassis,
+                boilers=runtime.catalog.boilers,
+                sensors=runtime.catalog.sensors,
+                weapons=runtime.catalog.weapons,
+                gizmos=runtime.catalog.gizmos,
+                transitions=runtime.catalog.transitions,
+            ),
+            arena=arena,
+        )
     identities = runtime.event_factory.identities
-    registry = load_pilot_registry(_CONTRACTS / "pilots")
-    pilots = {
-        f"mech.{side_a}.01": pilot_from_spec(registry.resolve(loadout_a)),
-        f"mech.{side_b}.01": pilot_from_spec(registry.resolve(loadout_b)),
-    }
+    if pilots_override is None:
+        registry = load_pilot_registry(_CONTRACTS / "pilots")
+        pilots = {
+            f"mech.{side_a}.01": pilot_from_spec(registry.resolve(loadout_a)),
+            f"mech.{side_b}.01": pilot_from_spec(registry.resolve(loadout_b)),
+        }
+    else:
+        pilots = dict(pilots_override)
     runner = MatchRunner(
         identity=MatchIdentity(
             match_id=match_id,
@@ -111,12 +148,11 @@ def match_runner(
         bus=bus,
         event_factory=runtime.event_factory,
         catalog=runtime.catalog,
+        arena=arena,
         pilots=pilots,
         max_ticks=max_ticks,
         side_a=side_a,
         side_b=side_b,
-        spawn_a=resolved_spawn_a,
-        spawn_b=resolved_spawn_b,
     )
     return runner, runtime
 

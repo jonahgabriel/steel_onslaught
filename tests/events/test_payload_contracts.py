@@ -228,6 +228,63 @@ def test_current_match_started_rejects_each_missing_mech_field(field_name: str) 
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "schema_version",
+        "kind",
+        "arena_id",
+        "size",
+        "spawn_a",
+        "spawn_b",
+        "obstacles",
+    ],
+)
+def test_current_match_started_rejects_each_missing_arena_field(field_name: str) -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    del raw["arena"][field_name]
+
+    with pytest.raises(ValidationError, match=field_name):
+        _validate(SOEventType.MATCH_STARTED, raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
+        ("roster-count", "exactly two mechs"),
+        ("out-of-bounds", "outside arena"),
+        ("obstacle", "occupies an arena obstacle"),
+        ("swapped-spawns", "canonical roster order"),
+    ],
+)
+def test_current_match_started_cross_validates_roster_positions_against_arena(
+    case: str,
+    error: str,
+) -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    if case == "roster-count":
+        raw["mechs"] = raw["mechs"][:1]
+    elif case == "out-of-bounds":
+        raw["mechs"][0]["position"] = {"x": raw["arena"]["size"], "y": 5}
+    elif case == "obstacle":
+        raw["arena"]["obstacles"] = [{"x": 6, "y": 5}]
+        raw["mechs"][0]["position"] = {"x": 6, "y": 5}
+    elif case == "swapped-spawns":
+        first = raw["mechs"][0]["position"]
+        second = raw["mechs"][1]["position"]
+        raw["mechs"][0]["position"] = second
+        raw["mechs"][1]["position"] = first
+    else:  # pragma: no cover - closed parametrization
+        raise AssertionError(case)
+
+    with pytest.raises(ValidationError, match=error):
+        _validate(SOEventType.MATCH_STARTED, raw)
+
+
+@pytest.mark.unit
 def test_internal_runtime_defaults_do_not_become_current_live_wire_defaults() -> None:
     sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
     legacy_state_data = sample.model_dump(mode="python")["payload"]["mechs"][0]
@@ -243,6 +300,7 @@ def test_internal_runtime_defaults_do_not_become_current_live_wire_defaults() ->
                 "seed": 12345,
                 "max_ticks": 200,
                 "mechs": (legacy_state,),
+                "arena": sample.model_dump(mode="python")["payload"]["arena"],
             }
         )
 

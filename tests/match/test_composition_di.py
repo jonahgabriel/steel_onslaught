@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 
 from steel_onslaught.bus.protocol import EventHandler
+from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
@@ -20,7 +21,7 @@ from steel_onslaught.match import composition
 from steel_onslaught.match.composition import RuntimeDependencies
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import MatchIdentity
-from steel_onslaught.pilots.schemas import PilotProtocol
+from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
 from steel_onslaught.projections.leaderboard.protocol import (
     LeaderboardRepository,
     ModelSOLeaderboardEntry,
@@ -183,6 +184,17 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
         identities=identities,
         event_factory=event_factory,
         catalog=cast(MatchContractCatalog, _Catalog()),
+        arena=ModelSOArenaSpec(
+            schema_version="0.1.0",
+            kind="steel_onslaught.arena",
+            arena_id="injected_test_arena",
+            display_name="Injected test arena",
+            size=40,
+            spawn_a=ModelSOPosition(x=5, y=5),
+            spawn_b=ModelSOPosition(x=35, y=35),
+            obstacles=(),
+            rects=(),
+        ),
         pilot_registry=cast(Any, _Registry()),
         pilot_factory=_PilotFactory(),
         closer=_Closer(),

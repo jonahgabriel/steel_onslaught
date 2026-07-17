@@ -77,6 +77,8 @@ def _serialize_observation(obs: ModelSOPilotObservation) -> str:
         f"  mode_lock_expired: {obs.mode_lock_expired}",
         f"position: ({obs.position.x},{obs.position.y})"
         f"  under_sensor_lock: {obs.under_sensor_lock}",
+        f"terrain: line_of_sight_to_enemy: {obs.has_line_of_sight_to_enemy}"
+        f"  blocked_directions: [{', '.join(d.value for d in obs.blocked_directions)}]",
         f"boiler: pressure {b.pressure_current}/{b.pressure_maximum}"
         f"  heat {b.heat_current}/{b.heat_rupture_threshold}"
         f"  redline: {b.status_redline}",

@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.mode import (
     ModeId,
     ModelSOModeSwitchIntentPayload,
@@ -73,6 +74,7 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
     seed: StrictInt = Field(ge=0)
     max_ticks: StrictInt = Field(gt=0)
     mechs: tuple[ModelSOCurrentLiveMechSnapshot, ...] = Field(min_length=1)
+    arena: ModelSOCurrentLiveArenaSnapshot = Field(...)
 
     @field_validator("mechs", mode="before")
     @classmethod
@@ -103,11 +105,36 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         return normalized
 
     @model_validator(mode="after")
-    def _mech_ids_unique(self) -> ModelSOMatchStartedPayload:
+    def _validate_current_roster_against_arena(self) -> ModelSOMatchStartedPayload:
         ids = [mech.mech_id for mech in self.mechs]
         duplicates = sorted({mech_id for mech_id in ids if ids.count(mech_id) > 1})
         if duplicates:
             raise ValueError(f"duplicate mech_ids in match_started payload: {duplicates}")
+        if len(self.mechs) != 2:
+            raise ValueError(
+                "current-live match_started requires exactly two mechs in canonical roster order"
+            )
+        expected_spawns = (self.arena.spawn_a, self.arena.spawn_b)
+        obstacles = self.arena.obstacle_cells
+        for index, (mech, expected_spawn) in enumerate(
+            zip(self.mechs, expected_spawns, strict=True)
+        ):
+            position = mech.position
+            cell = (position.x, position.y)
+            if not (0 <= position.x < self.arena.size and 0 <= position.y < self.arena.size):
+                raise ValueError(
+                    f"mechs[{index}].position {cell} is outside arena {self.arena.arena_id!r}"
+                )
+            if cell in obstacles:
+                raise ValueError(
+                    f"mechs[{index}].position {cell} occupies an arena obstacle"
+                )
+            if position != expected_spawn:
+                spawn_name = "spawn_a" if index == 0 else "spawn_b"
+                raise ValueError(
+                    f"mechs[{index}].position {cell} must equal arena.{spawn_name} "
+                    "in canonical roster order"
+                )
         return self
 
 

@@ -73,6 +73,16 @@ export interface SOPosition {
   y: number;
 }
 
+export interface SOArenaSnapshot {
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.arena_snapshot";
+  arena_id: string;
+  size: number;
+  spawn_a: SOPosition;
+  spawn_b: SOPosition;
+  obstacles: SOPosition[];
+}
+
 export type SOModeId = "recon" | "assault" | "evasion";
 export type SOPilotAction =
   | "remain"
@@ -170,6 +180,7 @@ export interface MatchStartedPayload {
   seed: number;
   max_ticks: number;
   mechs: SOMechRuntimeState[];
+  arena: SOArenaSnapshot;
 }
 
 export type MatchTickPayload = Record<string, never>;
@@ -779,6 +790,69 @@ function parsePosition(value: unknown, context: string): SOPosition {
   return { x: integer(record, "x", context), y: integer(record, "y", context) };
 }
 
+function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
+  const record = asRecord(value, context);
+  const fields = [
+    "schema_version",
+    "kind",
+    "arena_id",
+    "size",
+    "spawn_a",
+    "spawn_b",
+    "obstacles",
+  ] as const;
+  rejectUnknown(record, fields, context);
+  requireFields(record, fields, context);
+  if (record["schema_version"] !== "0.1.0") {
+    fail(context, 'field "schema_version" must be "0.1.0"');
+  }
+  if (record["kind"] !== "steel_onslaught.arena_snapshot") {
+    fail(context, 'field "kind" must be "steel_onslaught.arena_snapshot"');
+  }
+  const arenaId = str(record, "arena_id", context);
+  if (!/^[a-z][a-z0-9_]*$/.test(arenaId)) {
+    fail(context, 'field "arena_id" is not a valid arena slug');
+  }
+  const size = positiveInt(record, "size", context);
+  const spawnA = parsePosition(record["spawn_a"], `${context}.spawn_a`);
+  const spawnB = parsePosition(record["spawn_b"], `${context}.spawn_b`);
+  const rawObstacles = record["obstacles"];
+  if (!Array.isArray(rawObstacles)) {
+    fail(context, 'field "obstacles" must be an array');
+  }
+  const obstacles = rawObstacles.map((cell, index) =>
+    parsePosition(cell, `${context}.obstacles[${index}]`),
+  );
+  const cells = new Set(obstacles.map((cell) => `${cell.x},${cell.y}`));
+  if (cells.size !== obstacles.length) {
+    fail(context, 'field "obstacles" contains duplicate cells');
+  }
+  for (const [label, position] of [
+    ["spawn_a", spawnA],
+    ["spawn_b", spawnB],
+    ...obstacles.map((cell, index) => [`obstacles[${index}]`, cell] as const),
+  ] as const) {
+    if (position.x < 0 || position.y < 0 || position.x >= size || position.y >= size) {
+      fail(context, `${label} must lie inside the arena`);
+    }
+  }
+  if (spawnA.x === spawnB.x && spawnA.y === spawnB.y) {
+    fail(context, "spawn points must be distinct");
+  }
+  if (cells.has(`${spawnA.x},${spawnA.y}`) || cells.has(`${spawnB.x},${spawnB.y}`)) {
+    fail(context, "spawn points must not occupy obstacles");
+  }
+  return {
+    schema_version: "0.1.0",
+    kind: "steel_onslaught.arena_snapshot",
+    arena_id: arenaId,
+    size,
+    spawn_a: spawnA,
+    spawn_b: spawnB,
+    obstacles,
+  };
+}
+
 function parseSubject(value: unknown, context: string): SOEventSubject {
   const record = asRecord(value, context);
   rejectUnknown(record, ["mech_id", "player_id"], context);
@@ -983,7 +1057,7 @@ type PayloadParsers = { [K in SOEventType]: (value: unknown, context: string) =>
 const PAYLOAD_PARSERS: PayloadParsers = {
   match_started: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["seed", "max_ticks", "mechs"], context);
+    rejectUnknown(record, ["seed", "max_ticks", "mechs", "arena"], context);
     const mechs = record["mechs"];
     if (!Array.isArray(mechs)) {
       fail(context, 'field "mechs" must be an array');
@@ -997,10 +1071,37 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     if (new Set(parsedMechs.map((mech) => mech.mech_id)).size !== parsedMechs.length) {
       fail(context, 'field "mechs" contains duplicate mech_id values');
     }
+    if (parsedMechs.length !== 2) {
+      fail(context, 'field "mechs" must contain exactly two mechs in canonical roster order');
+    }
+    const arena = parseArenaSnapshot(record["arena"], `${context}.arena`);
+    const obstacles = new Set(arena.obstacles.map((cell) => `${cell.x},${cell.y}`));
+    const expectedSpawns = [arena.spawn_a, arena.spawn_b] as const;
+    for (const [index, mech] of parsedMechs.entries()) {
+      const position = mech.position;
+      const cell = `${position.x},${position.y}`;
+      if (
+        position.x < 0 ||
+        position.y < 0 ||
+        position.x >= arena.size ||
+        position.y >= arena.size
+      ) {
+        fail(context, `mechs[${index}].position must lie inside the arena`);
+      }
+      if (obstacles.has(cell)) {
+        fail(context, `mechs[${index}].position must not occupy an arena obstacle`);
+      }
+      const expected = expectedSpawns[index];
+      if (expected === undefined || position.x !== expected.x || position.y !== expected.y) {
+        const spawnName = index === 0 ? "spawn_a" : "spawn_b";
+        fail(context, `mechs[${index}].position must equal arena.${spawnName}`);
+      }
+    }
     return {
       seed: nonNegativeInt(record, "seed", context),
       max_ticks: positiveInt(record, "max_ticks", context),
       mechs: parsedMechs,
+      arena,
     };
   },
   match_tick: (value, context) => {
@@ -1599,7 +1700,27 @@ export function parseHistoricalReplayEnvelope(raw: unknown): SOEventEnvelope {
       const mech = asRecord(value, `${context}.payload.mechs[${index}]`);
       return "side" in mech ? mech : { ...mech, side: "neutral" };
     });
-    projected = { ...record, payload: { ...payload, mechs } };
+    const first = asRecord(mechs[0], `${context}.payload.mechs[0]`);
+    const second = asRecord(mechs[1], `${context}.payload.mechs[1]`);
+    projected = {
+      ...record,
+      payload: {
+        ...payload,
+        mechs,
+        arena:
+          "arena" in payload
+            ? payload["arena"]
+            : {
+                schema_version: "0.1.0",
+                kind: "steel_onslaught.arena_snapshot",
+                arena_id: "historical_open_field",
+                size: 40,
+                spawn_a: first["position"],
+                spawn_b: second["position"],
+                obstacles: [],
+              },
+      },
+    };
   } else if (record["event_type"] === "llm_completion_resolved") {
     const payload = asRecord(record["payload"], `${context}.payload`);
     if (!("cost_usd" in payload)) {

@@ -11,8 +11,15 @@ def complete_test_overlay(raw: dict[str, object], root: Path) -> dict[str, objec
     learning = raw.get("learning_artifacts")
     if not isinstance(learning, dict):
         raise TypeError("test overlay must declare learning_artifacts")
+    contracts = raw.get("contracts")
+    if not isinstance(contracts, dict):
+        raise TypeError("test overlay must declare contracts")
     return {
         **raw,
+        "contracts": {
+            **contracts,
+            "arena_id": "open_field",
+        },
         "learning_artifacts": {
             **learning,
             "experiment_root": str(root / "experiments"),

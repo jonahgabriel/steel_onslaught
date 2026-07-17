@@ -1,0 +1,9 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.arena
+arena_id: open_field
+display_name: Open Field
+size: 40
+spawn_a: {x: 5, y: 5}
+spawn_b: {x: 35, y: 35}
+obstacles: []
+rects: []

@@ -61,6 +61,16 @@ const CURRENT_LIVE_MECH_FIELDS = [
   "overloaded_consecutive_ticks",
 ] as const;
 
+const CURRENT_LIVE_ARENA_FIELDS = [
+  "schema_version",
+  "kind",
+  "arena_id",
+  "size",
+  "spawn_a",
+  "spawn_b",
+  "obstacles",
+] as const;
+
 type MutableObject = Record<string, unknown>;
 
 function loadFixture(eventType: string): MutableObject {
@@ -278,14 +288,98 @@ describe("types parity against Python-emitted fixtures", () => {
     ).toThrow(/under_sensor_lock/);
   });
 
+  it.each(CURRENT_LIVE_ARENA_FIELDS)("rejects missing current-live arena field %s", (field) => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          delete objectValue(payload["arena"], "arena")[field];
+        }),
+      ),
+    ).toThrow(new RegExp(field));
+  });
+
+  it("rejects invalid current-live arena bounds and duplicate obstacles", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          objectValue(payload["arena"], "arena")["obstacles"] = [{ x: 40, y: 0 }];
+        }),
+      ),
+    ).toThrow(/inside the arena/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          objectValue(payload["arena"], "arena")["obstacles"] = [
+            { x: 4, y: 4 },
+            { x: 4, y: 4 },
+          ];
+        }),
+      ),
+    ).toThrow(/duplicate/);
+  });
+
+  it("rejects a current-live roster without exactly two canonical seats", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          arrayValue(payload["mechs"], "mechs").pop();
+        }),
+      ),
+    ).toThrow(/exactly two mechs/);
+  });
+
+  it("rejects current-live mech positions outside arena bounds", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const mech = objectValue(arrayValue(payload["mechs"], "mechs")[0], "mechs[0]");
+          mech["position"] = { x: 40, y: 5 };
+        }),
+      ),
+    ).toThrow(/position must lie inside the arena/);
+  });
+
+  it("rejects current-live mech positions on arena obstacles", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          objectValue(payload["arena"], "arena")["obstacles"] = [{ x: 6, y: 5 }];
+          const mech = objectValue(arrayValue(payload["mechs"], "mechs")[0], "mechs[0]");
+          mech["position"] = { x: 6, y: 5 };
+        }),
+      ),
+    ).toThrow(/position must not occupy an arena obstacle/);
+  });
+
+  it("binds current-live mech positions to spawn points in canonical roster order", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const mechs = arrayValue(payload["mechs"], "mechs");
+          const first = objectValue(mechs[0], "mechs[0]");
+          const second = objectValue(mechs[1], "mechs[1]");
+          const firstPosition = first["position"];
+          first["position"] = second["position"];
+          second["position"] = firstPosition;
+        }),
+      ),
+    ).toThrow(/mechs\[0\]\.position must equal arena\.spawn_a/);
+  });
+
   it("projects only sanctioned fields for versioned historical replay", () => {
     const historicalStarted = corruptPayload("match_started", (payload) => {
       const mechs = arrayValue(payload["mechs"], "mechs");
       delete objectValue(mechs[0], "mechs[0]")["side"];
+      delete payload["arena"];
     });
     const started = parseHistoricalReplayEnvelope(historicalStarted);
     if (started.event_type !== "match_started") throw new Error("wrong historical event type");
     expect(started.payload.mechs[0]?.side).toBe("neutral");
+    expect(started.payload.arena.arena_id).toBe("historical_open_field");
+    expect(started.payload.mechs.map((mech) => mech.position)).toEqual([
+      started.payload.arena.spawn_a,
+      started.payload.arena.spawn_b,
+    ]);
 
     const historicalResolved = corruptPayload("llm_completion_resolved", (payload) => {
       delete payload["cost_usd"];

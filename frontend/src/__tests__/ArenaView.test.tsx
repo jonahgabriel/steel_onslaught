@@ -97,27 +97,48 @@ describe("ArenaView", () => {
     const blue = started.payload.mechs.find((mech) => mech.side === "blue");
     if (red === undefined || blue === undefined) throw new Error("fixture sides missing");
     const sharedPosition = { x: 11, y: 13 };
-    const coLocated = {
-      ...started,
-      payload: {
-        ...started.payload,
-        // BLUE intentionally folds first: position-based lookup would color
-        // RED's tracer blue when both mechs occupy this crossing cell.
-        mechs: [
-          { ...blue, position: sharedPosition },
-          { ...red, position: sharedPosition },
-        ],
+    const moveRed = makeEnvelope(
+      "movement_resolved",
+      {
+        from: red.position,
+        to: sharedPosition,
+        ticks_consumed: 30,
+        pressure_consumed: 8,
       },
-    };
+      { matchId: started.match_id, tick: 1, mechId: red.mech_id, playerId: red.player_id },
+    );
+    const moveBlue = makeEnvelope(
+      "movement_resolved",
+      {
+        from: blue.position,
+        to: sharedPosition,
+        ticks_consumed: 30,
+        pressure_consumed: 24,
+      },
+      { matchId: started.match_id, tick: 1, mechId: blue.mech_id, playerId: blue.player_id },
+    );
+    const blueFires = makeEnvelope(
+      "weapon_fired",
+      {
+        weapon_id: "module.weapon.machine_gun",
+        target_id: red.mech_id,
+        hit_probability: 0.65,
+        pressure_cost: 4,
+        heat_generated: 6,
+      },
+      { matchId: started.match_id, tick: 1, mechId: blue.mech_id, playerId: blue.player_id },
+    );
     const { socket, subscribe } = makeStubStream();
     render(<ArenaView subscribe={subscribe} />);
     await act(async () => {
-      socket.emit(JSON.stringify(coLocated));
-      socket.emit(fixtureText("weapon_fired"));
+      socket.emit(JSON.stringify(started));
+      socket.emit(JSON.stringify(moveRed));
+      socket.emit(JSON.stringify(moveBlue));
+      socket.emit(JSON.stringify(blueFires));
     });
 
     expect(screen.getByTestId("tracer-light").style.getPropertyValue("--so-side")).toContain(
-      "--ember",
+      "--arc",
     );
   });
 

@@ -21,6 +21,7 @@ from steel_onslaught.contracts.application import (
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOStubLlmProviderBinding,
 )
+from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
@@ -80,7 +81,6 @@ from steel_onslaught.match.evaluation_storage import (
 )
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import (
-    ARENA_SIZE_CELLS,
     MatchIdentity,
     MatchRunner,
     _require_valid_budgets,
@@ -89,7 +89,7 @@ from steel_onslaught.match.state import ModelSOMatchState, SOMatchEndReason, SOM
 from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.defensive import DefensivePilot
 from steel_onslaught.pilots.predictive import PredictivePilot
-from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
+from steel_onslaught.pilots.schemas import PilotProtocol
 from steel_onslaught.projections.leaderboard.handler import (
     LeaderboardHandler,
     ModelSOSQLiteLeaderboardConfig,
@@ -248,6 +248,7 @@ class RuntimeDependencies:
     identities: IdentityProvider
     event_factory: EventFactory
     catalog: MatchContractCatalog
+    arena: ModelSOArenaSpec
     pilot_registry: PilotSpecRegistry
     pilot_factory: ProtocolPilotFactory
     closer: ProtocolResourceCloser
@@ -401,6 +402,20 @@ def _load_specs[ModelT: BaseModel](directory: Path, model: type[ModelT]) -> dict
     return specs
 
 
+def _load_arena_specs(directory: Path) -> dict[str, ModelSOArenaSpec]:
+    if not directory.is_dir():
+        raise FileNotFoundError(f"required contract directory does not exist: {directory}")
+    specs: dict[str, ModelSOArenaSpec] = {}
+    for path in sorted(directory.glob("*.yaml")):
+        spec = ModelSOArenaSpec.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        if spec.arena_id in specs:
+            raise ValueError(f"duplicate arena id {spec.arena_id!r} under {directory}")
+        specs[spec.arena_id] = spec
+    if not specs:
+        raise ValueError(f"required contract directory contains no YAML specs: {directory}")
+    return specs
+
+
 def load_match_contract_catalog(directory: Path) -> MatchContractCatalog:
     transitions: dict[tuple[ModeId, ModeId], ModelSOModeTransition] = {}
     transitions_dir = directory / "modes" / "transitions"
@@ -417,6 +432,7 @@ def load_match_contract_catalog(directory: Path) -> MatchContractCatalog:
     if not transitions:
         raise ValueError(f"required contract directory contains no YAML specs: {transitions_dir}")
     return MatchContractCatalog(
+        arenas=_load_arena_specs(directory / "arenas"),
         chassis=_load_specs(directory / "chassis", ModelSOChassisSpec),
         boilers=_load_specs(directory / "boilers", ModelSOBoilerSpec),
         sensors=_load_specs(directory / "sensors", ModelSOSensorSpec),
@@ -584,6 +600,13 @@ def build_runtime_dependencies(
         )
         pilot_registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
         _validate_llm_pilot_bindings(pilot_registry, llm)
+        catalog = load_match_contract_catalog(overlay.contracts.catalog_dir)
+        try:
+            arena = catalog.arenas[overlay.contracts.arena_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"unknown arena_id {overlay.contracts.arena_id!r} in application overlay"
+            ) from exc
         return RuntimeDependencies(
             bus=bus,
             ledger=ledger,
@@ -591,7 +614,8 @@ def build_runtime_dependencies(
             clock=clock,
             identities=identities,
             event_factory=event_factory,
-            catalog=load_match_contract_catalog(overlay.contracts.catalog_dir),
+            catalog=catalog,
+            arena=arena,
             pilot_registry=pilot_registry,
             pilot_factory=llm.pilot_factory,
             closer=llm.closer if owns_llm else NoopResourceCloser(),
@@ -950,13 +974,11 @@ def assemble_match_with_dependencies(
         bus=dependencies.bus,
         event_factory=dependencies.event_factory,
         catalog=dependencies.catalog,
+        arena=dependencies.arena,
         pilots=pilots,
         max_ticks=max_ticks,
         side_a=side_a,
         side_b=side_b,
-        spawn_a=ModelSOPosition(x=5, y=5),
-        spawn_b=ModelSOPosition(x=35, y=35),
-        arena_size=ARENA_SIZE_CELLS,
     )
     scoring = ReducerScoring(
         identity.match_id,
