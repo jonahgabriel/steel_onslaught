@@ -486,7 +486,7 @@ def test_sqlite_applies_required_autocommit_policy(tmp_path: Path) -> None:
 def test_no_mutation_api() -> None:
     """SQLiteLedger public API is frozen to the allowlist — no update/delete/truncate."""
     allowed_public_methods = frozenset(
-        {"append", "read_all", "read_after", "contains_match", "read_at"}
+        {"append", "read_all", "read_after", "read_match_ids", "contains_match", "read_at"}
     )
 
     public_methods = {
@@ -500,3 +500,28 @@ def test_no_mutation_api() -> None:
         f"SQLiteLedger exposes forbidden public methods: {forbidden}. "
         f"Allowed: {allowed_public_methods}"
     )
+
+
+@pytest.mark.unit
+def test_replay_catalog_lists_matches_and_reads_strict_canonical_envelopes(
+    tmp_path: Path,
+) -> None:
+    ledger = open_sqlite_ledger(tmp_path / "catalog.sqlite")
+    event_b = _make_env(
+        _EID2,
+        event_type=SOEventType.MATCH_TICK,
+        match_id="match.b",
+        payload={},
+    )
+    event_a = _make_env(
+        _EID1,
+        event_type=SOEventType.MATCH_TICK,
+        match_id="match.a",
+        payload={},
+    )
+    ledger.append(event_b)
+    ledger.append(event_a)
+
+    match_ids = list(ledger.read_match_ids())
+    assert match_ids == ["match.a", "match.b"]
+    assert [list(ledger.read_all(match_id)) for match_id in match_ids] == [[event_a], [event_b]]

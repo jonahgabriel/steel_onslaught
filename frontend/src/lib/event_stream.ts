@@ -9,8 +9,6 @@
  */
 import { parseEnvelopeFrame, type SOEventEnvelope } from "../types";
 
-export const DEFAULT_WS_URL = "ws://127.0.0.1:8765";
-
 export type EnvelopeHandler = (envelope: SOEventEnvelope) => void;
 
 /** Minimal receive-only socket surface (satisfied by the browser WebSocket). */
@@ -19,18 +17,12 @@ export interface WebSocketLike {
   close(): void;
 }
 
-export interface EventStreamOptions {
-  /** Injected socket (tests); when omitted a WebSocket to `url` is opened. */
-  socket?: WebSocketLike;
-  url?: string;
-}
-
 export class EventStream {
   private readonly socket: WebSocketLike;
   private readonly handlers = new Set<EnvelopeHandler>();
 
-  constructor(options: EventStreamOptions = {}) {
-    this.socket = options.socket ?? new WebSocket(options.url ?? DEFAULT_WS_URL);
+  constructor(socket: WebSocketLike) {
+    this.socket = socket;
     this.socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
         throw new Error(`EventStream: expected a text frame, got ${typeof event.data}`);

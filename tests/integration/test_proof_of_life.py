@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from scripts.export_frontend_bootstrap import export_frontend_bootstrap
 from steel_onslaught.cli.main import main as cli_main
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.match.composition import assemble_match_live
@@ -54,6 +55,7 @@ DRAW_SEED = 99999
 
 _WS_PORT = 8765
 _VITE_PORT = 5173
+_VITE_BOOTSTRAP = _REPO_ROOT / "frontend" / ".steel-onslaught-bootstrap.generated.json"
 
 
 def _write_overlay(
@@ -151,6 +153,20 @@ def _subprocess_server(args: list[str], *, cwd: Path, port: int) -> Iterator[Non
             proc.wait(timeout=10)
 
 
+@contextlib.contextmanager
+def _generated_vite_bootstrap(overlay_path: Path) -> Iterator[None]:
+    """Generate the ignored Vite authority and restore any prior local copy."""
+    previous = _VITE_BOOTSTRAP.read_bytes() if _VITE_BOOTSTRAP.exists() else None
+    export_frontend_bootstrap(overlay_path, _VITE_BOOTSTRAP)
+    try:
+        yield
+    finally:
+        if previous is None:
+            _VITE_BOOTSTRAP.unlink(missing_ok=True)
+        else:
+            _VITE_BOOTSTRAP.write_bytes(previous)
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
@@ -209,11 +225,10 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
         str(overlay_path),
         "--match",
         live_state.match_id,
-        "--port",
-        str(_WS_PORT),
     ]
     vite_cmd = ["npm", "run", "dev"]
     with (
+        _generated_vite_bootstrap(overlay_path),
         _subprocess_server(serve_cmd, cwd=_REPO_ROOT, port=_WS_PORT),
         _subprocess_server(vite_cmd, cwd=_REPO_ROOT / "frontend", port=_VITE_PORT),
     ):
@@ -221,13 +236,14 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
             browser = p.chromium.launch()
             page = browser.new_page()
             page.goto(f"http://localhost:{_VITE_PORT}/")  # dev server, started above
-            page.wait_for_selector(
-                f'[data-testid="victory-banner"][data-winner="{live_state.winner_id}"]',
-                timeout=10_000,
+            victory_selector = (
+                f'[data-testid="arena-victory"][data-winner="{live_state.winner_id}"]'
             )
-            # R10: assert the rendered banner names the correct winner.
-            banner_text = page.locator("[data-testid=victory-banner]").inner_text()
-            assert live_state.winner_id in banner_text
+            page.wait_for_selector(victory_selector, timeout=10_000)
+            # R10: assert the rendered arena victory state names the exact winner.
+            victory = page.locator(victory_selector)
+            assert victory.get_attribute("data-winner") == live_state.winner_id
+            assert live_state.winner_id in victory.inner_text()
             browser.close()
 
 

@@ -242,6 +242,20 @@ def test_distinct_run_and_event_identities_preserve_both_artifacts(tmp_path: Pat
 
 
 @pytest.mark.unit
+def test_resolved_llm_cost_survives_artifact_materialization_exactly(tmp_path: Path) -> None:
+    event = build_sample_envelopes()[SOEventType.LLM_COMPLETION_RESOLVED]
+    assert event.payload["cost_usd"] == 0.0
+
+    path = _store(tmp_path).write_llm_event(event)
+    persisted = ModelSOEventEnvelope.model_validate(
+        yaml.safe_load(path.read_text(encoding="utf-8"))
+    )
+
+    assert persisted == event
+    assert persisted.payload["cost_usd"] == 0.0
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("kind", ["summary", "rows", "usage", "llm_event"])
 def test_conflicting_logical_identity_refuses_fork_and_preserves_first_claim(
     tmp_path: Path,

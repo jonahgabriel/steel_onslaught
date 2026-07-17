@@ -1,45 +1,34 @@
 /**
- * App — Tasks 31 + 32 + 34.
+ * App — PRESSURE DECK shell.
  *
- * Connects the WebSocket event stream (Task 31) to the tactical-board
- * projection (Task 32).  The stream is created inside the effect so React
- * StrictMode's mount/unmount/mount cycle opens a fresh socket per mount;
- * `so serve` streams the full recorded match to every client, so the final
- * mount always receives the complete event sequence (Task 34 Proof of Life).
+ * Owns the client-side match transport (via `useTransport`). With the server's
+ * default `--tick-delay 0`, the WebSocket streams at full speed and the client
+ * transport paces it; nonzero server pacing remains available. The deck folds
+ * ONLY the envelopes the transport releases, so pause/step/speed/match-switch
+ * affect the arena, spec panels, river and odometer together. The UI never
+ * sends anything back — it is a pure projection.
  */
-import { useCallback, useEffect, useRef } from "react";
-import { type EnvelopeHandler, EventStream } from "./lib/event_stream";
-import TacticalBoard from "./views/TacticalBoard";
+import type { FrontendApplication } from "./lib/application";
+import { useTransport } from "./lib/useTransport";
+import PressureDeck from "./views/PressureDeck";
 
-export default function App(): React.JSX.Element {
-  // Stable handler registry so TacticalBoard's subscription survives the
-  // stream being torn down and recreated across StrictMode remounts.
-  const handlersRef = useRef<Set<EnvelopeHandler>>(new Set());
-
-  useEffect(() => {
-    const stream = new EventStream();
-    const unsubscribe = stream.subscribe((envelope) => {
-      for (const handler of [...handlersRef.current]) {
-        handler(envelope);
-      }
-    });
-    return () => {
-      unsubscribe();
-      stream.close();
-    };
-  }, []);
-
-  const subscribe = useCallback((handler: EnvelopeHandler) => {
-    handlersRef.current.add(handler);
-    return () => {
-      handlersRef.current.delete(handler);
-    };
-  }, []);
-
+export default function App({
+  application,
+}: {
+  application: FrontendApplication;
+}): React.JSX.Element {
+  const { subscribe, snapshot, controls } = useTransport({
+    transport: application.transport,
+    makeStream: application.makeStream,
+    scheduler: application.scheduler,
+    clock: application.clock,
+  });
   return (
-    <main data-testid="app-root">
-      <h1>Steel Onslaught</h1>
-      <TacticalBoard subscribe={subscribe} />
-    </main>
+    <PressureDeck
+      subscribe={subscribe}
+      transport={snapshot}
+      controls={controls}
+      scheduler={application.scheduler}
+    />
   );
 }

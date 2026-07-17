@@ -24,7 +24,7 @@ from steel_onslaught.contracts.mode import (
     ModelSOModeTransitionStartedPayload,
 )
 from steel_onslaught.events.envelope import SOEventType
-from steel_onslaught.immutable import FrozenJSONMapping, thaw_json_mapping
+from steel_onslaught.immutable import FrozenJSONMapping, FrozenMapping, thaw_json_mapping
 from steel_onslaught.match.state import ModelSOMechRuntimeState, SOMatchEndReason
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
@@ -42,10 +42,37 @@ class ModelSOEmptyPayload(_ClosedPayload):
     """Canonical empty payload used by MATCH_TICK."""
 
 
+class ModelSOCurrentLiveMechSnapshot(ModelSOMechRuntimeState):
+    """Strict live MATCH_STARTED snapshot; reducer defaults are not wire defaults."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["0.1.0"] = Field(...)
+    kind: Literal["steel_onslaught.mech_runtime_state"] = Field(...)
+    side: Literal["red", "blue", "neutral"] = Field(...)
+    sensor_ids: tuple[str, ...] = Field(...)
+    gizmo_ids: tuple[str, ...] = Field(...)
+    alive: bool = Field(...)
+    pilot_alive: bool = Field(...)
+    mode_lock_until: int = Field(ge=0)
+    transition_ticks_remaining: int = Field(ge=0)
+    transition_to_mode: ModeId | None = Field(...)
+    sensor_dropout_ticks_remaining: int = Field(ge=0)
+    mode_switch_disabled_until: int = Field(ge=0)
+    weapon_cooldowns: FrozenMapping[int] = Field(...)
+    evasion: float = Field(ge=0.0, le=1.0)
+    accuracy_penalty_next_fire: float = Field(ge=0.0, le=1.0)
+    jamming_intensity: float = Field(ge=0.0, le=1.0)
+    under_sensor_lock: bool = Field(...)
+    redline_consecutive_ticks: int = Field(ge=0)
+    overloaded: bool = Field(...)
+    overloaded_consecutive_ticks: int = Field(ge=0)
+
+
 class ModelSOMatchStartedPayload(_ClosedPayload):
     seed: StrictInt = Field(ge=0)
     max_ticks: StrictInt = Field(gt=0)
-    mechs: tuple[ModelSOMechRuntimeState, ...] = Field(min_length=1)
+    mechs: tuple[ModelSOCurrentLiveMechSnapshot, ...] = Field(min_length=1)
 
     @field_validator("mechs", mode="before")
     @classmethod
@@ -53,7 +80,18 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         if not isinstance(value, list | tuple):
             return value
         normalized: list[object] = []
-        for mech in value:
+        required_fields = frozenset(ModelSOCurrentLiveMechSnapshot.model_fields)
+        for index, mech in enumerate(value):
+            if isinstance(mech, ModelSOCurrentLiveMechSnapshot):
+                normalized.append(mech)
+                continue
+            if isinstance(mech, ModelSOMechRuntimeState):
+                missing = sorted(required_fields - mech.model_fields_set)
+                if missing:
+                    raise ValueError(
+                        f"mechs[{index}] is missing required current-live fields: {missing}"
+                    )
+                mech = mech.model_dump(mode="python")
             if not isinstance(mech, Mapping):
                 normalized.append(mech)
                 continue
@@ -197,6 +235,7 @@ class ModelSOLlmCompletionResolvedPayload(_ClosedPayload):
     prompt_tokens: StrictInt = Field(ge=0)
     completion_tokens: StrictInt = Field(ge=0)
     response_length: StrictInt = Field(ge=0)
+    cost_usd: StrictFloat | None = Field(ge=0.0, allow_inf_nan=False)
 
 
 class ModelSOLlmCompletionFailedPayload(_ClosedPayload):
@@ -355,6 +394,7 @@ __all__ = [
     "ModelSOBoilerOverloadedPayload",
     "ModelSOBoilerRupturedPayload",
     "ModelSOBoilerUpdatedPayload",
+    "ModelSOCurrentLiveMechSnapshot",
     "ModelSODamageAppliedPayload",
     "ModelSOEmptyPayload",
     "ModelSOHeatRedlinePayload",

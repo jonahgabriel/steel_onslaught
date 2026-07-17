@@ -9,9 +9,9 @@ Each frame is exactly ``envelope.model_dump_json()``: compact separators,
 declaration field order, no whitespace normalization — the same form
 ``JSON.stringify`` produces after a lossless parse on the TS side.
 
-The ``so serve`` command replays a recorded match from a SQLite ledger:
-it binds a WebSocket server (default port 8765) and streams the full match —
-frame-for-frame in canonical ledger order — to every client that connects.
+The ``so serve`` command replays recorded matches from the event catalog
+selected by the application overlay. It binds a WebSocket server (default
+port 8765) and streams canonical envelopes to every client that connects.
 
 REST endpoint (Task 33)
 -----------------------
@@ -29,26 +29,109 @@ REST endpoint (Task 33)
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import click
 from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
+from websockets.datastructures import Headers
+from websockets.http11 import Request, Response
 
 from steel_onslaught.bus.protocol import EventBus, HandlerToken
 from steel_onslaught.cli.application import CliApplicationFactory
+from steel_onslaught.contracts.application import (
+    ModelSOApplicationOverlay,
+    ModelSOFrontendBootstrap,
+)
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
-from steel_onslaught.ledger.protocol import QueryableEventLedger
+from steel_onslaught.ledger.protocol import QueryableEventLedger, ReplayEventCatalog
 from steel_onslaught.match.composition import (
     load_application_overlay,
 )
 
 DEFAULT_WS_HOST = "127.0.0.1"
 DEFAULT_WS_PORT = 8765
+FRONTEND_BOOTSTRAP_PATH = "/steel-onslaught/bootstrap.json"
+FRONTEND_EXPECTED_OVERLAY_HEADER = "X-Steel-Onslaught-Expected-Overlay"
+
+
+def build_frontend_bootstrap(overlay: ModelSOApplicationOverlay) -> ModelSOFrontendBootstrap:
+    """Project one overlay into its public, path-and-secret-free browser binding."""
+    overlay_bytes = json.dumps(
+        overlay.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return ModelSOFrontendBootstrap(
+        schema_version="1",
+        kind="steel_onslaught.frontend_bootstrap",
+        overlay_sha256=hashlib.sha256(overlay_bytes).hexdigest(),
+        frontend_transport=overlay.frontend_transport,
+    )
+
+
+def _bootstrap_process_request(
+    bootstrap: ModelSOFrontendBootstrap,
+) -> Callable[[ServerConnection, Request], Response | None]:
+    """Return the sole public HTTP surface for frontend composition."""
+    stream_path = urlparse(bootstrap.frontend_transport.websocket_url).path
+    body = bootstrap.model_dump_json().encode("utf-8")
+
+    def process_request(_connection: ServerConnection, request: Request) -> Response | None:
+        if request.path == FRONTEND_BOOTSTRAP_PATH:
+            expected_overlay = request.headers.get(FRONTEND_EXPECTED_OVERLAY_HEADER)
+            if expected_overlay is not None and expected_overlay != bootstrap.overlay_sha256:
+                mismatch = b'{"error":"overlay_identity_mismatch"}'
+                return Response(
+                    409,
+                    "Conflict",
+                    Headers(
+                        {
+                            "Content-Type": "application/json",
+                            "Content-Length": str(len(mismatch)),
+                            "Cache-Control": "no-store",
+                        }
+                    ),
+                    mismatch,
+                )
+            return Response(
+                200,
+                "OK",
+                Headers(
+                    {
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(body)),
+                        "Cache-Control": "no-store",
+                        "ETag": f'"{bootstrap.overlay_sha256}"',
+                        "X-Steel-Onslaught-Contract": (bootstrap.frontend_transport.contract),
+                    }
+                ),
+                body,
+            )
+        if request.path != stream_path:
+            not_found = b'{"error":"not_found"}'
+            return Response(
+                404,
+                "Not Found",
+                Headers(
+                    {
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(not_found)),
+                    }
+                ),
+                not_found,
+            )
+        return None
+
+    return process_request
+
 
 # ---------------------------------------------------------------------------
 # REST endpoint: GET /api/replay/{match_id}/tick/{tick}  (Task 33)
@@ -252,6 +335,7 @@ async def _stream_match(
 async def _serve_replay(
     events: list[ModelSOEventEnvelope],
     *,
+    bootstrap: ModelSOFrontendBootstrap,
     host: str,
     port: int,
     tick_delay: float = 0.0,
@@ -271,7 +355,12 @@ async def _serve_replay(
         await _stream_match(connection.send, paced_frames, tick_delay)
         await connection.wait_closed()
 
-    server = await serve(_stream_to_client, host, port)
+    server = await serve(
+        _stream_to_client,
+        host,
+        port,
+        process_request=_bootstrap_process_request(bootstrap),
+    )
     try:
         sockets = list(server.sockets)
         bound_port = sockets[0].getsockname()[1] if sockets else port
@@ -286,6 +375,20 @@ async def _serve_replay(
         await server.wait_closed()
 
 
+STREAM_ALL_MATCHES = "all"
+
+
+def _collect_events(catalog: ReplayEventCatalog, match_id: str) -> list[ModelSOEventEnvelope]:
+    """Collect one match or the deterministic catalog-wide replay stream."""
+    if match_id != STREAM_ALL_MATCHES:
+        return list(catalog.read_all(match_id))
+    return [
+        event
+        for catalog_match_id in sorted(catalog.read_match_ids())
+        for event in catalog.read_all(catalog_match_id)
+    ]
+
+
 @click.command(name="serve")
 @click.option(
     "--overlay",
@@ -293,29 +396,48 @@ async def _serve_replay(
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     required=True,
 )
-@click.option("--match", "match_id", required=True)
-@click.option("--host", default=DEFAULT_WS_HOST, show_default=True)
-@click.option("--port", type=click.IntRange(min=0), default=DEFAULT_WS_PORT, show_default=True)
+@click.option(
+    "--match",
+    "match_id",
+    required=True,
+    help="Match identifier to replay, or 'all' for every catalogued match.",
+)
 @click.option(
     "--tick-delay",
     "tick_delay",
     type=click.FloatRange(min=0),
     default=0.0,
     show_default=True,
-    help="Seconds to pause between tick boundaries during replay (0 = no pacing).",
+    help="Legacy server-side pacing in seconds (0 = full speed). The frontend "
+    "transport owns play/pause/speed controls.",
 )
-def serve_command(
-    overlay_path: Path, match_id: str, host: str, port: int, tick_delay: float
-) -> None:
-    """Stream a recorded match to WebSocket clients (frontend on :5173)."""
+def serve_command(overlay_path: Path, match_id: str, tick_delay: float) -> None:
+    """Stream recorded match envelopes to WebSocket clients."""
     overlay = load_application_overlay(overlay_path)
+    frontend_endpoint = urlparse(overlay.frontend_transport.websocket_url)
+    host = frontend_endpoint.hostname
+    endpoint_port = frontend_endpoint.port
+    if frontend_endpoint.scheme != "ws" or host is None or endpoint_port is None:
+        raise click.ClickException(
+            "so serve requires a complete ws endpoint selected by frontend_transport"
+        )
+    port = endpoint_port
+    bootstrap = build_frontend_bootstrap(overlay)
     with CliApplicationFactory.packaged().runtime(overlay) as dependencies:
-        events = list(dependencies.ledger.read_all(match_id))
+        events = _collect_events(dependencies.ledger, match_id)
         if not events:
             raise click.ClickException(
                 f"no events found for match {match_id!r} in {overlay.event_ledger.path}"
             )
         try:
-            asyncio.run(_serve_replay(events, host=host, port=port, tick_delay=tick_delay))
+            asyncio.run(
+                _serve_replay(
+                    events,
+                    bootstrap=bootstrap,
+                    host=host,
+                    port=port,
+                    tick_delay=tick_delay,
+                )
+            )
         except KeyboardInterrupt:
             click.echo("serve interrupted", err=True)

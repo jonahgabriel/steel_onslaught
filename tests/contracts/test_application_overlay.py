@@ -1,12 +1,18 @@
 """Closed-schema tests for the sole Slice-1 application overlay."""
 
+import json
 from pathlib import Path
 from shutil import copytree
 
 import pytest
 import yaml  # type: ignore[import-untyped]
 
-from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from scripts.export_frontend_bootstrap import export_frontend_bootstrap
+from steel_onslaught.cli.serve import build_frontend_bootstrap
+from steel_onslaught.contracts.application import (
+    ModelSOApplicationOverlay,
+    ModelSOFrontendBootstrap,
+)
 from steel_onslaught.match.composition import (
     build_llm_dependencies,
     load_application_overlay,
@@ -220,6 +226,7 @@ def test_overlay_rejects_unsupported_adapter_kind(tmp_path: Path) -> None:
         "llm",
         "clock",
         "identity",
+        "frontend_transport",
     ],
 )
 def test_overlay_requires_every_binding(tmp_path: Path, binding: str) -> None:
@@ -240,6 +247,7 @@ def test_overlay_requires_every_binding(tmp_path: Path, binding: str) -> None:
         ("evaluation_storage", {"kind": "postgres"}),
         ("clock", {"kind": "local_time"}),
         ("identity", {"kind": "random_int"}),
+        ("frontend_transport", {"kind": "server_sent_events"}),
     ],
 )
 def test_overlay_rejects_every_unsupported_binding_kind(
@@ -265,6 +273,98 @@ def test_overlay_relative_paths_resolve_from_overlay_directory(tmp_path: Path) -
     assert overlay.event_ledger.path == tmp_path / "events.sqlite3"
     assert overlay.contracts.catalog_dir == tmp_path / "catalog"
     assert overlay.evaluation_storage.root == tmp_path / "evaluation_storage"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8765/events",
+        "ws://user@127.0.0.1:8765/events",
+        "ws://127.0.0.1:8765",
+        "ws://127.0.0.1:8765/events?match=ambient",
+        "ws://127.0.0.1:8765/events#fragment",
+    ],
+)
+def test_frontend_transport_rejects_non_closed_websocket_authority(
+    tmp_path: Path, url: str
+) -> None:
+    raw = _overlay_data(tmp_path)
+    frontend = dict(_require_object_dict(raw["frontend_transport"]))
+    frontend["websocket_url"] = url
+    raw["frontend_transport"] = frontend
+
+    with pytest.raises(ValueError, match="websocket_url"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_frontend_transport_is_frozen_and_rejects_unknown_policy(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    frontend = dict(_require_object_dict(raw["frontend_transport"]))
+    frontend["ambient_fallback"] = True
+    raw["frontend_transport"] = frontend
+    with pytest.raises(ValueError, match="ambient_fallback"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+    overlay = ModelSOApplicationOverlay.model_validate(_overlay_data(tmp_path))
+    with pytest.raises(ValueError, match="frozen"):
+        overlay.frontend_transport.milliseconds_per_tick = 1000
+
+
+@pytest.mark.unit
+def test_public_frontend_bootstrap_exposes_no_storage_or_secret_authority(tmp_path: Path) -> None:
+    overlay = ModelSOApplicationOverlay.model_validate(_overlay_data(tmp_path))
+    first = build_frontend_bootstrap(overlay)
+    second = build_frontend_bootstrap(overlay)
+
+    assert first == second
+    assert len(first.overlay_sha256) == 64
+    serialized = first.model_dump_json()
+    assert str(tmp_path) not in serialized
+    assert "event_ledger" not in serialized
+    assert "secret" not in serialized
+    assert first.frontend_transport == overlay.frontend_transport
+
+
+@pytest.mark.unit
+def test_public_frontend_bootstrap_fixture_is_python_typescript_contract_parity() -> None:
+    fixture = (
+        _CONTRACTS_DATA.parent / "frontend/src/__tests__/fixtures/bootstrap/frontend_bootstrap.json"
+    )
+    raw = json.loads(fixture.read_text(encoding="utf-8"))
+    bootstrap = ModelSOFrontendBootstrap.model_validate(raw)
+
+    assert bootstrap.model_dump(mode="json") == raw
+
+
+@pytest.mark.unit
+def test_generated_vite_bootstrap_is_exact_overlay_projection(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    frontend = dict(_require_object_dict(raw["frontend_transport"]))
+    frontend["websocket_url"] = "ws://binding.example.test:9876/closed/events"
+    raw["frontend_transport"] = frontend
+    overlay = ModelSOApplicationOverlay.model_validate(raw)
+    overlay_path = tmp_path / "application.json"
+    overlay_path.write_text(json.dumps(overlay.model_dump(mode="json")), encoding="utf-8")
+    output_path = tmp_path / ".steel-onslaught-bootstrap.generated.json"
+
+    generated = export_frontend_bootstrap(overlay_path, output_path)
+
+    assert generated == build_frontend_bootstrap(overlay)
+    assert json.loads(output_path.read_text(encoding="utf-8")) == generated.model_dump(mode="json")
+    assert output_path.read_bytes().endswith(b"\n")
+
+
+@pytest.mark.unit
+def test_frontend_bootstrap_export_has_no_endpoint_or_storage_fallback() -> None:
+    source = (_CONTRACTS_DATA.parent / "scripts/export_frontend_bootstrap.py").read_text(
+        encoding="utf-8"
+    )
+    assert "SQLite" not in source
+    assert 'add_argument("--ledger"' not in source
+    assert "8765" not in source
+    assert "load_application_overlay" in source
 
 
 @pytest.mark.unit

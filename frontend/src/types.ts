@@ -128,6 +128,7 @@ export interface SOMechRuntimeState {
   kind: "steel_onslaught.mech_runtime_state";
   mech_id: string;
   player_id: string;
+  side: "red" | "blue" | "neutral";
   loadout_id: string;
   pilot_id: string;
   chassis_id: string;
@@ -214,6 +215,7 @@ export interface LlmCompletionResolvedPayload {
   prompt_tokens: number;
   completion_tokens: number;
   response_length: number;
+  cost_usd: number | null;
 }
 
 export interface LlmCompletionFailedPayload {
@@ -475,6 +477,18 @@ function rejectUnknown(
   for (const key of Object.keys(record)) {
     if (!allowed.includes(key)) {
       fail(context, `unknown field ${JSON.stringify(key)}`);
+    }
+  }
+}
+
+function requireFields(
+  record: Record<string, unknown>,
+  required: readonly string[],
+  context: string,
+): void {
+  for (const key of required) {
+    if (!(key in record)) {
+      fail(context, `missing field ${JSON.stringify(key)}`);
     }
   }
 }
@@ -799,10 +813,11 @@ const BOILER_FIELDS = [
 function parseBoilerState(value: unknown, context: string): SOBoilerState {
   const record = asRecord(value, context);
   rejectUnknown(record, BOILER_FIELDS, context);
-  if (record["schema_version"] !== undefined && record["schema_version"] !== "0.1.0") {
+  requireFields(record, BOILER_FIELDS, context);
+  if (record["schema_version"] !== "0.1.0") {
     fail(context, 'field "schema_version" must be "0.1.0"');
   }
-  if (record["kind"] !== undefined && record["kind"] !== "steel_onslaught.boiler_state") {
+  if (record["kind"] !== "steel_onslaught.boiler_state") {
     fail(context, 'field "kind" must be "steel_onslaught.boiler_state"');
   }
   const parsed: SOBoilerState = {
@@ -849,6 +864,7 @@ const MECH_FIELDS = [
   "kind",
   "mech_id",
   "player_id",
+  "side",
   "loadout_id",
   "pilot_id",
   "chassis_id",
@@ -889,13 +905,21 @@ function parseChassisClass(value: unknown, context: string): "light" | "medium" 
   fail(context, `chassis_class must be light|medium|heavy, got ${JSON.stringify(value)}`);
 }
 
+function parseSide(value: unknown, context: string): "red" | "blue" | "neutral" {
+  if (value === "red" || value === "blue" || value === "neutral") {
+    return value;
+  }
+  fail(context, `side must be red|blue|neutral, got ${JSON.stringify(value)}`);
+}
+
 function parseMechState(value: unknown, context: string): SOMechRuntimeState {
   const record = asRecord(value, context);
   rejectUnknown(record, MECH_FIELDS, context);
-  if (record["schema_version"] !== undefined && record["schema_version"] !== "0.1.0") {
+  requireFields(record, MECH_FIELDS, context);
+  if (record["schema_version"] !== "0.1.0") {
     fail(context, 'field "schema_version" must be "0.1.0"');
   }
-  if (record["kind"] !== undefined && record["kind"] !== "steel_onslaught.mech_runtime_state") {
+  if (record["kind"] !== "steel_onslaught.mech_runtime_state") {
     fail(context, 'field "kind" must be "steel_onslaught.mech_runtime_state"');
   }
   const parsed: SOMechRuntimeState = {
@@ -903,12 +927,13 @@ function parseMechState(value: unknown, context: string): SOMechRuntimeState {
     kind: "steel_onslaught.mech_runtime_state",
     mech_id: str(record, "mech_id", context),
     player_id: str(record, "player_id", context),
+    side: parseSide(record["side"], `${context}.side`),
     loadout_id: str(record, "loadout_id", context),
     pilot_id: str(record, "pilot_id", context),
     chassis_id: str(record, "chassis_id", context),
     chassis_class: parseChassisClass(record["chassis_class"], context),
-    sensor_ids: record["sensor_ids"] === undefined ? [] : strArray(record, "sensor_ids", context),
-    gizmo_ids: record["gizmo_ids"] === undefined ? [] : strArray(record, "gizmo_ids", context),
+    sensor_ids: strArray(record, "sensor_ids", context),
+    gizmo_ids: strArray(record, "gizmo_ids", context),
     base_speed: positiveInt(record, "base_speed", context),
     position: parsePosition(record["position"], `${context}.position`),
     facing: boundedInt(record, "facing", context, 0, 360, true),
@@ -917,53 +942,27 @@ function parseMechState(value: unknown, context: string): SOMechRuntimeState {
     hp_max: positiveInt(record, "hp_max", context),
     armor_value: nonNegativeInt(record, "armor_value", context),
     armor_max: nonNegativeInt(record, "armor_max", context),
-    alive: record["alive"] === undefined ? true : bool(record, "alive", context),
-    pilot_alive: record["pilot_alive"] === undefined ? true : bool(record, "pilot_alive", context),
+    alive: bool(record, "alive", context),
+    pilot_alive: bool(record, "pilot_alive", context),
     current_mode: parseModeId(record["current_mode"], `${context}.current_mode`),
-    mode_lock_until:
-      record["mode_lock_until"] === undefined
-        ? 0
-        : nonNegativeInt(record, "mode_lock_until", context),
-    transition_ticks_remaining:
-      record["transition_ticks_remaining"] === undefined
-        ? 0
-        : nonNegativeInt(record, "transition_ticks_remaining", context),
+    mode_lock_until: nonNegativeInt(record, "mode_lock_until", context),
+    transition_ticks_remaining: nonNegativeInt(record, "transition_ticks_remaining", context),
     transition_to_mode: optionalNullableMode(record, "transition_to_mode", context) ?? null,
-    sensor_dropout_ticks_remaining:
-      record["sensor_dropout_ticks_remaining"] === undefined
-        ? 0
-        : nonNegativeInt(record, "sensor_dropout_ticks_remaining", context),
-    mode_switch_disabled_until:
-      record["mode_switch_disabled_until"] === undefined
-        ? 0
-        : nonNegativeInt(record, "mode_switch_disabled_until", context),
-    weapon_cooldowns:
-      record["weapon_cooldowns"] === undefined
-        ? {}
-        : numRecord(record, "weapon_cooldowns", context),
-    evasion: record["evasion"] === undefined ? 0 : boundedNum(record, "evasion", context, 0, 1),
-    accuracy_penalty_next_fire:
-      record["accuracy_penalty_next_fire"] === undefined
-        ? 0
-        : boundedNum(record, "accuracy_penalty_next_fire", context, 0, 1),
-    jamming_intensity:
-      record["jamming_intensity"] === undefined
-        ? 0
-        : boundedNum(record, "jamming_intensity", context, 0, 1),
-    under_sensor_lock:
-      record["under_sensor_lock"] === undefined
-        ? false
-        : bool(record, "under_sensor_lock", context),
+    sensor_dropout_ticks_remaining: nonNegativeInt(
+      record,
+      "sensor_dropout_ticks_remaining",
+      context,
+    ),
+    mode_switch_disabled_until: nonNegativeInt(record, "mode_switch_disabled_until", context),
+    weapon_cooldowns: numRecord(record, "weapon_cooldowns", context),
+    evasion: boundedNum(record, "evasion", context, 0, 1),
+    accuracy_penalty_next_fire: boundedNum(record, "accuracy_penalty_next_fire", context, 0, 1),
+    jamming_intensity: boundedNum(record, "jamming_intensity", context, 0, 1),
+    under_sensor_lock: bool(record, "under_sensor_lock", context),
     boiler: parseBoilerState(record["boiler"], `${context}.boiler`),
-    redline_consecutive_ticks:
-      record["redline_consecutive_ticks"] === undefined
-        ? 0
-        : nonNegativeInt(record, "redline_consecutive_ticks", context),
-    overloaded: record["overloaded"] === undefined ? false : bool(record, "overloaded", context),
-    overloaded_consecutive_ticks:
-      record["overloaded_consecutive_ticks"] === undefined
-        ? 0
-        : nonNegativeInt(record, "overloaded_consecutive_ticks", context),
+    redline_consecutive_ticks: nonNegativeInt(record, "redline_consecutive_ticks", context),
+    overloaded: bool(record, "overloaded", context),
+    overloaded_consecutive_ticks: nonNegativeInt(record, "overloaded_consecutive_ticks", context),
   };
   if (parsed.hp > parsed.hp_max) {
     fail(context, "hp must not exceed hp_max");
@@ -1091,9 +1090,13 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         "prompt_tokens",
         "completion_tokens",
         "response_length",
+        "cost_usd",
       ],
       context,
     );
+    if (!("cost_usd" in record)) {
+      fail(context, "nullable LLM resolved cost field is required");
+    }
     return {
       provider_id: str(record, "provider_id", context),
       model: str(record, "model", context),
@@ -1101,6 +1104,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       prompt_tokens: nonNegativeInt(record, "prompt_tokens", context),
       completion_tokens: nonNegativeInt(record, "completion_tokens", context),
       response_length: nonNegativeInt(record, "response_length", context),
+      cost_usd: optionalNullableNonNegativeNum(record, "cost_usd", context) ?? null,
     };
   },
   llm_completion_failed: (value, context) => {
@@ -1560,14 +1564,49 @@ export function parseEnvelope(raw: unknown): SOEventEnvelope {
     schema_version: str(record, "schema_version", context),
     event_id: eventId,
     match_id: matchId,
-    tick: num(record, "tick", context),
-    sequence_in_tick: num(record, "sequence_in_tick", context),
+    tick: nonNegativeInt(record, "tick", context),
+    sequence_in_tick: nonNegativeInt(record, "sequence_in_tick", context),
     producer_node: str(record, "producer_node", context),
     subject: parseSubject(record["subject"], `${context}.subject`),
     envelope: onexEnvelope,
   };
 
   return buildEnvelope(base, eventTypeRaw, record["payload"]);
+}
+
+/**
+ * Parse immutable pre-Phase-B replay evidence through the sole sanctioned
+ * compatibility projection.  Schema 0.1.0 recordings predate explicit mech
+ * sides and resolved-cost evidence, so only those two absent fields are
+ * projected.  Current live frames continue through strict {@link parseEnvelope}
+ * and must carry both fields explicitly.
+ */
+export function parseHistoricalReplayEnvelope(raw: unknown): SOEventEnvelope {
+  const context = "historical replay envelope";
+  const record = asRecord(raw, context);
+  if (record["schema_version"] !== "0.1.0") {
+    fail(context, 'compatibility projection requires schema_version "0.1.0"');
+  }
+
+  let projected: Record<string, unknown> = record;
+  if (record["event_type"] === "match_started") {
+    const payload = asRecord(record["payload"], `${context}.payload`);
+    const rawMechs = payload["mechs"];
+    if (!Array.isArray(rawMechs)) {
+      fail(`${context}.payload.mechs`, "must be an array");
+    }
+    const mechs = rawMechs.map((value, index) => {
+      const mech = asRecord(value, `${context}.payload.mechs[${index}]`);
+      return "side" in mech ? mech : { ...mech, side: "neutral" };
+    });
+    projected = { ...record, payload: { ...payload, mechs } };
+  } else if (record["event_type"] === "llm_completion_resolved") {
+    const payload = asRecord(record["payload"], `${context}.payload`);
+    if (!("cost_usd" in payload)) {
+      projected = { ...record, payload: { ...payload, cost_usd: null } };
+    }
+  }
+  return parseEnvelope(projected);
 }
 
 /** Parse a raw WebSocket text frame into a typed SOEventEnvelope. */

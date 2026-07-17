@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "kind": "steel_onslaught.frontend_bootstrap",
+  "overlay_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "frontend_transport": {
+    "kind": "websocket",
+    "contract": "steel_onslaught.frontend_transport.v1",
+    "websocket_url": "ws://127.0.0.1:8765/events",
+    "event_schema": "canonical_event_v1",
+    "milliseconds_per_tick": 250
+  }
+}

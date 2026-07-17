@@ -202,3 +202,109 @@ copy-JSON button. `Esc` closes. Generalize `DecisionInspector` into this
 - [ ] Visual: dark boiler-deck aesthetic per this spec — stencil display
       font, Martian Mono data, amber phosphor + side colors, notched
       panels, grain overlay. No purple gradients, no default fonts.
+
+---
+
+# Rev 2 — ARENA-centered layout + mech spec panels + sprite asset pack
+
+> **Operator feedback (2026-07-02, after seeing v1 live):** "mech view should
+> be center and events list on the right. we should see specs for each mech
+> including damage, heat, etc. have an agent make some real sprites for the
+> different mechs. think of any other assets that might be needed."
+> Aesthetic system (palette, fonts, notched panels, grain, motion rules)
+> is UNCHANGED — this revision re-composes the deck and adds an asset pack.
+
+## Layout v2
+
+```
+┌ header: wordmark ▮ match id ▮ tick odometer ▮ transport ──────────────┐
+│ RED spec panel │                                      │               │
+│  (stacked)     │        A R E N A  (center,           │  EVENT RIVER  │
+│────────────────│         dominant, ~50%)              │  (right col,  │
+│ BLUE spec panel│   sprites · trails · tracers         │   ~320-380px) │
+│  (stacked)     │                                      │               │
+├ ticker: filter chips + counts ─────────────────────────────────────────┤
+```
+
+- **ARENA (center, the new centerpiece):** the 40×40 plotting grid scaled
+  up (fills available center space, square, `aspect-ratio: 1`). Evolves
+  `TacticalBoard` into `ArenaView` — its 13 pinned tests are UPDATED (not
+  frozen) to the new component contract. Renders: chassis sprites (below),
+  facing rotation, movement trails (last 8 cells, fading), weapon tracer
+  lines styled per weapon class on `weapon_fired`→`hit_resolved`, impact
+  flashes, armor-absorb shimmer, wreck sprite + steam burst on
+  destruction, subtle range rings around the selected mech.
+- **EVENT RIVER moves to the right column** (~320–380px). Everything from
+  v1 is preserved: tick separators, causation gutter (narrower, 32px),
+  expanded decision rows, LLM evidence pairing, hover-ancestry, inspector
+  drawer (now slides over the river from the right edge), autoscroll +
+  `LIVE ▼`. Row density tightens (smaller type, same hierarchy).
+- **MECH SPEC PANELS (left rail, RED stacked above BLUE):** the full
+  readout, folded from envelopes (extend `lib/gauges.ts`; fields exist on
+  the `MATCH_STARTED` mech payload + subsequent events):
+  - identity: chassis sprite thumbnail, `display_name`, chassis class
+    chip (LIGHT/MEDIUM/HEAVY), pilot line — persona + provider/model for
+    LLM pilots, archetype for heuristic.
+  - vitals: HP `current/max` bar; ARMOR pool bar (degrading pool value);
+    HEAT bar with redline marker (+ `redline_consecutive_ticks` warning
+    count when >0); boiler PRESSURE dial (v1 dial, kept); OVERLOADED
+    lamp.
+  - mode: current mode chip + transition countdown when switching.
+  - weapons: one row per equipped weapon — class glyph, id, cooldown
+    state (READY lamp / `N ticks` countdown from `weapon_cooldowns`).
+  - tallies: damage dealt / damage taken (fold from `damage_applied`),
+    shots fired, decisions made.
+  - status lamp: NOMINAL / PILOT KILLED / DESTROYED (wreck tint).
+
+## Sprite + asset pack (`frontend/src/assets/`)
+
+All assets are **inline React SVG components** — no image files, no asset
+pipeline, crisp at any scale, themable via `currentColor`/CSS vars (side
+color flows in from the parent). Style: **top-down blueprint-meets-tin-toy**
+— riveted plate silhouettes, visible boiler stack, steam vents; 2px
+consistent stroke; reads clearly at 24px (arena) and 48px (spec panel).
+
+**Mech sprites — one per chassis class** (from `contracts_data/chassis/`):
+- `SpriteScout` (`chassis.light.scout_mk1`): slim bipedal frame, small
+  boiler, antenna array — fast silhouette.
+- `SpriteHunter` (`chassis.medium.hunter_mk1`): balanced quad-shoulder
+  frame, mid boiler, twin vents.
+- `SpriteIronclad` (`chassis.heavy.ironclad_mk1`): broad riveted slab,
+  oversized boiler stack, heavy plating.
+Each sprite exposes props: `facing` (rotation), `state`:
+`nominal | damaged | critical | destroyed` (damaged = scorch accents;
+critical = boiler glow pulse in `--danger`; destroyed = broken wreck
+variant), `venting` (steam puffs), `firing` (muzzle flash overlay), and
+`size`. Side color via CSS custom prop.
+
+**Weapon tracer styles** (per `weapon_class`, drawn in the arena):
+- light (machine_gun, shrapnel_thrower): dashed rapid stipple burst
+- medium (steam_cannon, heat_lance): solid bolt / heat-shimmer beam
+- heavy (harpoon_gun): thick line with barbed head
+- siege (artillery_mortar): arced lob path with impact ring
+
+**Glyph set** (12–16px mono-line icons, one component each): mode glyphs
+(recon eye / assault crosshair / evasion chevrons), weapon-class glyphs,
+event-type glyphs for river rows (fire, hit, damage, armor, heat, vent,
+mode, decision, llm, lifecycle, death), status lamps (nominal dot, skull,
+wreck), READY/cooldown lamp.
+
+**Deck furniture:** favicon (notched gear-boiler mark, SVG → data URI in
+index.html), header wordmark lockup, `AWAITING TRANSMISSION` boot/empty
+state (scanline sweep, stencil type), VICTORY banner stamp (v1, kept),
+range-ring + grid-sector texture for the arena floor.
+
+**Explicitly out of scope:** audio, raster/pixel art, GIF/video capture.
+
+## Acceptance additions (Rev 2)
+
+- [ ] Arena centered and dominant; river right; spec panels left — at
+      1280×800 and 1920×1080 without horizontal page scroll.
+- [ ] All three chassis sprites render in all states + facings (fixture
+      test per sprite; snapshot or presence-of-testid per state).
+- [ ] Spec panels show live: hp, armor, heat+redline, pressure, mode,
+      per-weapon cooldowns, damage dealt/taken — verified by fixture
+      replay tests.
+- [ ] Tracers styled per weapon class; trails fade; wreck on destroy.
+- [ ] v1 acceptance still holds (river features, a11y, reduced-motion,
+      no new runtime deps, 104+ tests green, build + Biome clean).

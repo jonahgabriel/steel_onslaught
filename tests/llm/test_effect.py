@@ -88,6 +88,25 @@ def test_strict_acceptance_emits_requested_then_resolved() -> None:
     result = consume_llm_completion(client=client, request=_request(), consumer=lambda r: r.model)
     assert result == "served-model"
     _assert_chain(events, SOEventType.LLM_COMPLETION_RESOLVED)
+    assert events[-1].payload["cost_usd"] is None
+
+
+@pytest.mark.unit
+def test_successful_provider_cost_is_preserved_on_resolved_terminal() -> None:
+    class _PricedClient:
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            return LlmResponse(
+                text='{"accepted":true}',
+                usage=LlmUsage(prompt_tokens=7, completion_tokens=3, cost_usd=0.0125),
+                model="priced-model",
+                finish_reason="stop",
+            )
+
+    client, events = _observed(_PricedClient())
+    consume_llm_completion(client=client, request=_request(), consumer=lambda response: None)
+
+    _assert_chain(events, SOEventType.LLM_COMPLETION_RESOLVED)
+    assert events[-1].payload["cost_usd"] == 0.0125
 
 
 @pytest.mark.unit

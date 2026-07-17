@@ -14,13 +14,52 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseEnvelope, SO_EVENT_TYPES } from "../types";
+import { parseEnvelope, parseHistoricalReplayEnvelope, SO_EVENT_TYPES } from "../types";
 
 const FIXTURES_DIR = fileURLToPath(new URL("./fixtures", import.meta.url));
 
 const fixtureFiles = readdirSync(FIXTURES_DIR)
   .filter((name) => name.endsWith(".json"))
   .sort();
+
+const CURRENT_LIVE_MECH_FIELDS = [
+  "schema_version",
+  "kind",
+  "mech_id",
+  "player_id",
+  "side",
+  "loadout_id",
+  "pilot_id",
+  "chassis_id",
+  "chassis_class",
+  "sensor_ids",
+  "gizmo_ids",
+  "base_speed",
+  "position",
+  "facing",
+  "speed",
+  "hp",
+  "hp_max",
+  "armor_value",
+  "armor_max",
+  "alive",
+  "pilot_alive",
+  "current_mode",
+  "mode_lock_until",
+  "transition_ticks_remaining",
+  "transition_to_mode",
+  "sensor_dropout_ticks_remaining",
+  "mode_switch_disabled_until",
+  "weapon_cooldowns",
+  "evasion",
+  "accuracy_penalty_next_fire",
+  "jamming_intensity",
+  "under_sensor_lock",
+  "boiler",
+  "redline_consecutive_ticks",
+  "overloaded",
+  "overloaded_consecutive_ticks",
+] as const;
 
 type MutableObject = Record<string, unknown>;
 
@@ -92,6 +131,32 @@ describe("types parity against Python-emitted fixtures", () => {
     };
     expect(() => parseEnvelope({ ...record, envelope })).toThrow(/must equal match_id/);
   });
+
+  it("accepts finite nonnegative integer envelope ordering fields", () => {
+    const raw = loadFixture("match_tick");
+    const parsed = parseEnvelope({ ...raw, tick: 42, sequence_in_tick: 7 });
+    expect(parsed.tick).toBe(42);
+    expect(parsed.sequence_in_tick).toBe(7);
+  });
+
+  for (const field of ["tick", "sequence_in_tick"] as const) {
+    it(`rejects missing envelope ${field}`, () => {
+      const raw = loadFixture("match_tick");
+      delete raw[field];
+      expect(() => parseEnvelope(raw)).toThrow(new RegExp(field));
+    });
+
+    it.each([
+      ["negative", -1],
+      ["fractional", 0.5],
+      ["NaN", Number.NaN],
+      ["positive infinity", Number.POSITIVE_INFINITY],
+    ])(`rejects %s envelope ${field}`, (_description, value) => {
+      expect(() => parseEnvelope({ ...loadFixture("match_tick"), [field]: value })).toThrow(
+        new RegExp(field),
+      );
+    });
+  }
 
   it("rejects an unknown payload field on a closed payload", () => {
     const raw: unknown = JSON.parse(
@@ -176,6 +241,66 @@ describe("types parity against Python-emitted fixtures", () => {
         }),
       ),
     ).toThrow(/prompt_tokens/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_resolved", (payload) => {
+          delete payload["cost_usd"];
+        }),
+      ),
+    ).toThrow(/cost_usd|cost field/);
+  });
+
+  it("preserves explicit current-live RED/BLUE mech sides", () => {
+    const current = parseEnvelope(loadFixture("match_started"));
+    if (current.event_type !== "match_started") throw new Error("wrong current event type");
+    expect(current.payload.mechs.map((mech) => mech.side)).toEqual(["red", "blue"]);
+  });
+
+  it.each(CURRENT_LIVE_MECH_FIELDS)("rejects missing current-live mech field %s", (field) => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const mechs = arrayValue(payload["mechs"], "mechs");
+          delete objectValue(mechs[0], "mechs[0]")[field];
+        }),
+      ),
+    ).toThrow(new RegExp(field));
+  });
+
+  it("rejects missing current-live nested runtime fields", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const mechs = arrayValue(payload["mechs"], "mechs");
+          delete objectValue(mechs[0], "mechs[0]")["under_sensor_lock"];
+        }),
+      ),
+    ).toThrow(/under_sensor_lock/);
+  });
+
+  it("projects only sanctioned fields for versioned historical replay", () => {
+    const historicalStarted = corruptPayload("match_started", (payload) => {
+      const mechs = arrayValue(payload["mechs"], "mechs");
+      delete objectValue(mechs[0], "mechs[0]")["side"];
+    });
+    const started = parseHistoricalReplayEnvelope(historicalStarted);
+    if (started.event_type !== "match_started") throw new Error("wrong historical event type");
+    expect(started.payload.mechs[0]?.side).toBe("neutral");
+
+    const historicalResolved = corruptPayload("llm_completion_resolved", (payload) => {
+      delete payload["cost_usd"];
+    });
+    const resolved = parseHistoricalReplayEnvelope(historicalResolved);
+    if (resolved.event_type !== "llm_completion_resolved") {
+      throw new Error("wrong historical event type");
+    }
+    expect(resolved.payload.cost_usd).toBeNull();
+
+    const unexpected = corruptPayload("llm_completion_resolved", (payload) => {
+      delete payload["cost_usd"];
+      payload["unexpected"] = true;
+    });
+    expect(() => parseHistoricalReplayEnvelope(unexpected)).toThrow(/unexpected/);
   });
 
   for (const [eventType, requiredField] of [

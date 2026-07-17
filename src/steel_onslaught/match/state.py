@@ -77,6 +77,7 @@ class ModelSOMechRuntimeState(BaseModel):
     # Identity — static after spawn, copied from the loadout/contract layer.
     mech_id: str
     player_id: str
+    side: Literal["red", "blue", "neutral"] = "neutral"
     loadout_id: str
     pilot_id: str
     chassis_id: str

@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_WS_URL, EventStream, type WebSocketLike } from "../lib/event_stream";
+import { EventStream, type WebSocketLike } from "../lib/event_stream";
 import type { SOEventEnvelope } from "../types";
 
 const FIXTURES_DIR = fileURLToPath(new URL("./fixtures", import.meta.url));
@@ -39,13 +39,9 @@ class FakeSocket implements WebSocketLike {
 }
 
 describe("EventStream", () => {
-  it("defaults to the Task 31 bridge port 8765", () => {
-    expect(DEFAULT_WS_URL).toBe("ws://127.0.0.1:8765");
-  });
-
   it("delivers parsed envelopes to subscribers", () => {
     const socket = new FakeSocket();
-    const stream = new EventStream({ socket });
+    const stream = new EventStream(socket);
     const received: SOEventEnvelope[] = [];
     stream.subscribe((envelope) => received.push(envelope));
 
@@ -62,7 +58,7 @@ describe("EventStream", () => {
 
   it("unsubscribe stops delivery", () => {
     const socket = new FakeSocket();
-    const stream = new EventStream({ socket });
+    const stream = new EventStream(socket);
     const received: SOEventEnvelope[] = [];
     const unsubscribe = stream.subscribe((envelope) => received.push(envelope));
 
@@ -75,7 +71,7 @@ describe("EventStream", () => {
 
   it("supports multiple subscribers", () => {
     const socket = new FakeSocket();
-    const stream = new EventStream({ socket });
+    const stream = new EventStream(socket);
     let a = 0;
     let b = 0;
     stream.subscribe(() => {
@@ -93,13 +89,13 @@ describe("EventStream", () => {
 
   it("throws on a frame that is not a valid envelope (fail fast)", () => {
     const socket = new FakeSocket();
-    new EventStream({ socket });
+    new EventStream(socket);
     expect(() => socket.emit('{"not": "an envelope"}')).toThrow();
   });
 
   it("close() closes the underlying socket", () => {
     const socket = new FakeSocket();
-    const stream = new EventStream({ socket });
+    const stream = new EventStream(socket);
     stream.close();
     expect(socket.closed).toBe(true);
   });

@@ -69,3 +69,22 @@ def test_adapter_read_after_uses_canonical_tick_order(
         ledger.append(event)
 
     assert [event.tick for event in ledger.read_after(events[0].match_id, 0)] == [1, 2]
+
+
+@pytest.mark.unit
+def test_ledger_contract_subscribes_to_all_30_canonical_event_topics() -> None:
+    contract = (
+        Path(__file__).resolve().parents[2] / "src/steel_onslaught/ledger/contract.yaml"
+    ).read_text(encoding="utf-8")
+    topics = {
+        line.strip().removeprefix("- ")
+        for line in contract.splitlines()
+        if line.strip().startswith("- onex.evt.steel-onslaught.")
+    }
+    expected = {
+        f"onex.evt.steel-onslaught.{event_type.value.replace('_', '-')}.v1"
+        for event_type in SOEventType
+    }
+
+    assert len(SOEventType) == 30
+    assert topics == expected

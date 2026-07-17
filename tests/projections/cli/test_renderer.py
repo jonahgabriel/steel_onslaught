@@ -457,42 +457,7 @@ def test_renderer_does_not_modify_match_state() -> None:
             bus=bus,
         )
         bus.subscribe(lifecycle.handle)
-        mech = {
-            "mech_id": "mech.red.01",
-            "player_id": "player.red",
-            "loadout_id": "loadout.example.aggressive_light",
-            "pilot_id": "pilot.example.aggressive_v1",
-            "chassis_id": "chassis.light.scout_mk1",
-            "chassis_class": "light",
-            "base_speed": 4,
-            "position": {"x": 0, "y": 0},
-            "facing": 0,
-            "speed": 4,
-            "hp": 100,
-            "hp_max": 100,
-            "armor_value": 10,
-            "armor_max": 10,
-            "current_mode": "recon",
-            "boiler": {
-                "match_id": MATCH_ID,
-                "mech_id": "mech.red.01",
-                "tick": 0,
-                "pressure_current": 25,
-                "pressure_maximum": 50,
-                "regeneration_per_tick": 8,
-                "heat_current": 0,
-                "heat_redline_threshold": 65,
-                "heat_rupture_threshold": 80,
-                "heat_vent_rate": 6,
-                "status_redline": False,
-                "status_rupture_warning": False,
-                "status_disabled": False,
-                "status_ruptured": False,
-                "modifier_heat_weapon_pressure": 1.0,
-                "modifier_venting_penalty": 0.0,
-                "modifier_mode_switch_heat_delta": 0,
-            },
-        }
+        mech = _match_started_payload()["mechs"][0]
         bus.publish(
             _env(
                 SOEventType.MATCH_STARTED,

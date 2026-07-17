@@ -5,7 +5,7 @@
 # events. append-only enforcement is duplicated at the database layer (triggers
 # in 0001_events.sql). Canonical replay ordering is (tick, sequence_in_tick, event_id).
 name: match_ledger_effect
-contract_version: {major: 1, minor: 0, patch: 0}
+contract_version: {major: 1, minor: 1, patch: 0}
 node_type: effect
 node_version: {major: 1, minor: 0, patch: 0}
 
@@ -32,11 +32,29 @@ event_bus:
   subscribe_topics:
     - onex.evt.steel-onslaught.match-started.v1
     - onex.evt.steel-onslaught.match-tick.v1
+    - onex.evt.steel-onslaught.mech-spawned.v1
+    - onex.evt.steel-onslaught.sensor-observation.v1
+    - onex.evt.steel-onslaught.pilot-decision-made.v1
+    - onex.evt.steel-onslaught.llm-completion-requested.v1
+    - onex.evt.steel-onslaught.llm-completion-resolved.v1
+    - onex.evt.steel-onslaught.llm-completion-failed.v1
+    - onex.evt.steel-onslaught.move-intent.v1
+    - onex.evt.steel-onslaught.weapon-fire-intent.v1
+    - onex.evt.steel-onslaught.mode-switch-intent.v1
+    - onex.evt.steel-onslaught.vent-intent.v1
     - onex.evt.steel-onslaught.movement-resolved.v1
+    - onex.evt.steel-onslaught.boiler-updated.v1
+    - onex.evt.steel-onslaught.heat-redline-entered.v1
+    - onex.evt.steel-onslaught.heat-redline-exited.v1
+    - onex.evt.steel-onslaught.boiler-overloaded.v1
+    - onex.evt.steel-onslaught.boiler-ruptured.v1
     - onex.evt.steel-onslaught.weapon-fired.v1
     - onex.evt.steel-onslaught.mode-transition-started.v1
+    - onex.evt.steel-onslaught.mode-transition-completed.v1
+    - onex.evt.steel-onslaught.hit-resolved.v1
     - onex.evt.steel-onslaught.damage-applied.v1
     - onex.evt.steel-onslaught.armor-absorbed.v1
+    - onex.evt.steel-onslaught.pilot-injured.v1
     - onex.evt.steel-onslaught.mech-destroyed.v1
     - onex.evt.steel-onslaught.pilot-killed.v1
     - onex.evt.steel-onslaught.victory-declared.v1

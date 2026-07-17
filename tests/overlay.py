@@ -31,6 +31,13 @@ def complete_test_overlay(raw: dict[str, object], root: Path) -> dict[str, objec
             "personas_dir": str(_REPO_ROOT / "contracts_data/pilots/personas"),
             "secret_resolver": {"kind": "none"},
         },
+        "frontend_transport": {
+            "kind": "websocket",
+            "contract": "steel_onslaught.frontend_transport.v1",
+            "websocket_url": "ws://127.0.0.1:8765/events",
+            "event_schema": "canonical_event_v1",
+            "milliseconds_per_tick": 500,
+        },
     }
 
 
