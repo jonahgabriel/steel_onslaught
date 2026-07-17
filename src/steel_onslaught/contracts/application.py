@@ -76,6 +76,32 @@ class ModelSOSystemIdentityBinding(_ClosedBinding):
     kind: Literal["system"]
 
 
+class ModelSOFrontendTransportBinding(_ClosedBinding):
+    """Public receive-only browser transport selected by the operator."""
+
+    kind: Literal["websocket"]
+    contract: Literal["steel_onslaught.frontend_transport.v1"]
+    websocket_url: StrictStr = Field(min_length=1)
+    event_schema: Literal["canonical_event_v1"]
+    milliseconds_per_tick: StrictInt = Field(gt=0, le=60_000)
+
+    @field_validator("websocket_url")
+    @classmethod
+    def _complete_websocket_endpoint(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
+            raise ValueError("websocket_url must be a complete ws(s) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("websocket_url must not contain user information")
+        if parsed.query or parsed.fragment:
+            raise ValueError("websocket_url must not contain a query or fragment")
+        if parsed.path in {"", "/"}:
+            raise ValueError("websocket_url must declare an explicit stream path")
+        if parsed.port is None:
+            raise ValueError("websocket_url must declare an explicit port")
+        return value
+
+
 class ModelSOSecretRef(_ClosedBinding):
     """Opaque reference resolved by an injected capability, never secret material."""
 
@@ -185,6 +211,7 @@ EvaluationStorageBinding = Annotated[
 ]
 ClockBinding = Annotated[ModelSOSystemClockBinding, Field(discriminator="kind")]
 IdentityBinding = Annotated[ModelSOSystemIdentityBinding, Field(discriminator="kind")]
+FrontendTransportBinding = Annotated[ModelSOFrontendTransportBinding, Field(discriminator="kind")]
 
 
 class ModelSOApplicationOverlay(_ClosedBinding):
@@ -200,12 +227,24 @@ class ModelSOApplicationOverlay(_ClosedBinding):
     llm: ModelSOLlmBindings
     clock: ClockBinding
     identity: IdentityBinding
+    frontend_transport: FrontendTransportBinding
+
+
+class ModelSOFrontendBootstrap(_ClosedBinding):
+    """Strict public projection of one overlay for browser composition."""
+
+    schema_version: Literal["1"]
+    kind: Literal["steel_onslaught.frontend_bootstrap"]
+    overlay_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    frontend_transport: ModelSOFrontendTransportBinding
 
 
 __all__ = [
     "ModelSOApplicationOverlay",
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
+    "ModelSOFrontendBootstrap",
+    "ModelSOFrontendTransportBinding",
     "ModelSOInProcessBusBinding",
     "ModelSOInjectedSecretResolverBinding",
     "ModelSOLlmBindings",

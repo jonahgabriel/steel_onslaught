@@ -8,10 +8,27 @@
  * affect the arena, spec panels, river and odometer together. The UI never
  * sends anything back — it is a pure projection.
  */
+import type { FrontendApplication } from "./lib/application";
 import { useTransport } from "./lib/useTransport";
 import PressureDeck from "./views/PressureDeck";
 
-export default function App(): React.JSX.Element {
-  const { subscribe, snapshot, controls } = useTransport();
-  return <PressureDeck subscribe={subscribe} transport={snapshot} controls={controls} />;
+export default function App({
+  application,
+}: {
+  application: FrontendApplication;
+}): React.JSX.Element {
+  const { subscribe, snapshot, controls } = useTransport({
+    transport: application.transport,
+    makeStream: application.makeStream,
+    scheduler: application.scheduler,
+    clock: application.clock,
+  });
+  return (
+    <PressureDeck
+      subscribe={subscribe}
+      transport={snapshot}
+      controls={controls}
+      scheduler={application.scheduler}
+    />
+  );
 }

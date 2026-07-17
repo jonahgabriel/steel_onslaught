@@ -25,7 +25,7 @@ event stream is a pure function of ``(seed, loadouts, max_ticks, geometry)``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -196,6 +196,7 @@ class MatchRunner:
             self._loadout_a,
             mech_id=f"mech.{self._side_a}.01",
             player_id=f"player.{self._side_a}",
+            side="red",
             position=self._spawn_a,
             facing=self._facing_a,
         )
@@ -203,6 +204,7 @@ class MatchRunner:
             self._loadout_b,
             mech_id=f"mech.{self._side_b}.01",
             player_id=f"player.{self._side_b}",
+            side="blue",
             position=self._spawn_b,
             facing=self._facing_b,
         )
@@ -552,6 +554,7 @@ class MatchRunner:
         *,
         mech_id: str,
         player_id: str,
+        side: Literal["red", "blue"],
         position: ModelSOPosition,
         facing: int,
     ) -> ModelSOMechRuntimeState:
@@ -582,6 +585,7 @@ class MatchRunner:
         return ModelSOMechRuntimeState(
             mech_id=mech_id,
             player_id=player_id,
+            side=side,
             loadout_id=loadout.id,
             pilot_id=loadout.pilot_id,
             chassis_id=chassis.id,

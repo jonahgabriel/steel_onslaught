@@ -6,9 +6,9 @@
  * fed *synthetic* one-envelope fixtures. This test instead replays the actual
  * demo ledger's full 315-envelope stream (exported byte-for-byte by
  * `scripts/export_ledger_json.py` from the same `read_all` + `model_dump_json`
- * path the live WebSocket bridge uses) through the REAL `parseEnvelope` and the
- * REAL PressureDeck / ArenaView reducers, then asserts what the two bugs got
- * wrong:
+ * path the live WebSocket bridge uses) through the versioned historical replay
+ * projection and the REAL PressureDeck / ArenaView reducers, then asserts what
+ * the two bugs got wrong:
  *
  *   BUG A — the arena rendered zero mechs. Assert N mechs in arena state with
  *           in-bounds coordinates after match_started, AND that the mounted
@@ -20,23 +20,25 @@
  *           scroll event (scrollTop not moving upward) never un-pins.
  */
 import "./setup-dom";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EnvelopeHandler } from "../lib/event_stream";
 import { MatchTransport, type ReleaseSink } from "../lib/transport";
-import { parseEnvelope, type SOEventEnvelope } from "../types";
+import { parseHistoricalReplayEnvelope, type SOEventEnvelope } from "../types";
 import { ARENA_INITIAL_STATE, type ArenaState, arenaReduce, GRID_CELLS } from "../views/ArenaView";
 import EventRiver from "../views/EventRiver";
 import PressureDeck from "../views/PressureDeck";
 
 const FIXTURE = join(process.cwd(), "src/__tests__/fixtures/golden_match/envelopes.json");
+const FIXTURE_SHA256 = "3edaaeebbf3cab37f5b0344e1759d3b19ac8086336da8b2b4cc95e9293bb5757";
 
-/** The recorded stream, parsed through the same `parseEnvelope` the app uses. */
+/** The immutable recorded stream, parsed only through its versioned compatibility path. */
 function loadGoldenStream(): SOEventEnvelope[] {
   const raw = JSON.parse(readFileSync(FIXTURE, "utf-8")) as unknown[];
-  return raw.map((row) => parseEnvelope(row));
+  return raw.map((row) => parseHistoricalReplayEnvelope(row));
 }
 
 afterEach(() => {
@@ -106,8 +108,15 @@ describe("golden replay — arena state (BUG A)", () => {
   const stream = loadGoldenStream();
 
   it("the fixture is the real recorded match, not a synthetic stub", () => {
+    expect(createHash("sha256").update(readFileSync(FIXTURE)).digest("hex")).toBe(FIXTURE_SHA256);
     expect(stream.length).toBeGreaterThan(100);
     expect(stream.filter((e) => e.event_type === "match_started")).toHaveLength(1);
+  });
+
+  it("projects pre-side replay mechs as explicitly neutral without rewriting evidence", () => {
+    const started = stream.find((event) => event.event_type === "match_started");
+    if (started?.event_type !== "match_started") throw new Error("no match_started");
+    expect(started.payload.mechs.map((mech) => mech.side)).toEqual(["neutral", "neutral"]);
   });
 
   it("folds match_started into N in-bounds mechs in arena state", () => {
@@ -156,7 +165,28 @@ describe("golden replay — arena DOM through PressureDeck (BUG A)", () => {
       return () => handlers.delete(handler);
     };
 
-    render(<PressureDeck subscribe={subscribe} />);
+    const transport = new MatchTransport({ msPerTick: 500 });
+    render(
+      <PressureDeck
+        subscribe={subscribe}
+        transport={transport.snapshot()}
+        scheduler={{
+          request: (callback) => requestAnimationFrame(callback),
+          cancel: (handle) => cancelAnimationFrame(handle),
+        }}
+        controls={{
+          togglePlay: () => transport.togglePlay(),
+          play: () => transport.play(),
+          pause: () => transport.pause(),
+          setSpeed: (speed) => transport.setSpeed(speed),
+          stepForward: () => transport.stepForward(),
+          stepBackward: () => transport.stepBackward(),
+          restart: () => transport.restart(),
+          goLive: () => transport.goLive(),
+          selectMatch: (matchId) => transport.selectMatch(matchId),
+        }}
+      />,
+    );
 
     // Fan the whole recorded stream out exactly as App.tsx does (parsed
     // envelopes → every registered handler, incl. ArenaView's own reducer).
@@ -170,7 +200,9 @@ describe("golden replay — arena DOM through PressureDeck (BUG A)", () => {
     const started = stream.find((e) => e.event_type === "match_started");
     if (started?.event_type !== "match_started") throw new Error("no match_started");
     for (const mech of started.payload.mechs) {
-      expect(screen.getByTestId(`arena-mech-${mech.mech_id}`)).toBeInTheDocument();
+      const rendered = screen.getByTestId(`arena-mech-${mech.mech_id}`);
+      expect(rendered).toBeInTheDocument();
+      expect(rendered).toHaveAttribute("data-side", "neutral");
     }
     // The awaiting-transmission placeholder must be gone once mechs exist.
     expect(screen.queryByTestId("arena-mech-mech.a.01")).toBeInTheDocument();

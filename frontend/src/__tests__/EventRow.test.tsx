@@ -91,6 +91,15 @@ describe("EventRow — LLM evidence", () => {
     expect(usage.textContent).toContain("48");
   });
 
+  it("preserves the distinction between unknown and zero resolved cost", () => {
+    row(makeLlmResolved({ costUsd: null }));
+    expect(screen.getByTestId("llm-usage")).toHaveTextContent("cost unknown");
+    cleanup();
+
+    row(makeLlmResolved({ costUsd: 0 }));
+    expect(screen.getByTestId("llm-usage")).toHaveTextContent("$0.0000");
+  });
+
   it("renders sanitized failure evidence with optional cost", () => {
     const env = makeLlmFailed({ costUsd: 0.0004 });
     row(env);

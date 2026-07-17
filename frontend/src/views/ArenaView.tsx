@@ -33,7 +33,7 @@ const SHIMMER_TTL_MS = 520;
 
 interface ArenaMech {
   mechId: string;
-  playerId: string;
+  side: SOMechRuntimeState["side"];
   chassisClass: "light" | "medium" | "heavy";
   position: SOPosition;
   facing: number;
@@ -48,6 +48,7 @@ interface ArenaTracer {
   id: string;
   from: SOPosition;
   to: SOPosition;
+  side: SOMechRuntimeState["side"];
   weaponClass: WeaponClass;
   expiresAt: number;
   impact: boolean;
@@ -87,7 +88,7 @@ type ArenaAction =
 function mechFromRuntime(state: SOMechRuntimeState): ArenaMech {
   return {
     mechId: state.mech_id,
-    playerId: state.player_id,
+    side: state.side,
     chassisClass: state.chassis_class,
     position: state.position,
     facing: state.facing,
@@ -157,6 +158,7 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
         id: envelope.event_id,
         from: attacker.position,
         to: target.position,
+        side: attacker.side,
         weaponClass: weaponClassOf(envelope.payload.weapon_id),
         expiresAt: now + TRACER_TTL_MS,
         impact: false,
@@ -362,7 +364,13 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
               cx={p.x + 0.5}
               cy={p.y + 0.5}
               r={0.5}
-              fill={mech.playerId === mechs[0]?.playerId ? "var(--ember)" : "var(--arc)"}
+              fill={
+                mech.side === "red"
+                  ? "var(--ember)"
+                  : mech.side === "blue"
+                    ? "var(--arc)"
+                    : "var(--steam)"
+              }
               opacity={0.16 + (i / TRAIL_MAX) * 0.5}
             />
           ));
@@ -390,7 +398,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
 
       {/* per-weapon-class tracers */}
       {state.tracers.map((t) => (
-        <TracerLayer key={t.id} tracer={t} redPlayerId={mechs[0]?.playerId} mechs={state.mechs} />
+        <TracerLayer key={t.id} tracer={t} />
       ))}
 
       {/* armor-absorb shimmers */}
@@ -407,7 +415,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
       {/* chassis sprites (+ wreck + steam burst) */}
       {mechs.map((mech) => {
         const spriteState = mechStateOf(mech.hp, mech.hpMax, mech.alive);
-        const side = mech.playerId === mechs[0]?.playerId ? "red" : "blue";
+        const side = mech.side;
         const selectedNow = state.selectedMechId === mech.mechId;
         return (
           <div
@@ -436,7 +444,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
                 facing={mech.facing}
                 venting={mech.alive && mech.ventingUntil > now}
                 firing={mech.alive && mech.firingUntil > now}
-                side={side}
+                side={side === "neutral" ? undefined : side}
                 size={40}
               />
             </button>
@@ -467,26 +475,13 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
 }
 
 /** One tracer, positioned over the arena; impact ring appears on hit_resolved. */
-function TracerLayer({
-  tracer,
-  redPlayerId,
-  mechs,
-}: {
-  tracer: ArenaTracer;
-  redPlayerId: string | undefined;
-  mechs: Record<string, ArenaMech>;
-}): React.JSX.Element {
-  // Attribute the tracer color to the firing side (the mech at `from`).
-  const firer = Object.values(mechs).find(
-    (m) => m.position.x === tracer.from.x && m.position.y === tracer.from.y,
-  );
-  const side = firer !== undefined && firer.playerId === redPlayerId ? "red" : "blue";
+function TracerLayer({ tracer }: { tracer: ArenaTracer }): React.JSX.Element {
   return (
     <Tracer
       from={tracer.from}
       to={tracer.to}
       weaponClass={tracer.weaponClass}
-      side={side}
+      side={tracer.side === "neutral" ? undefined : tracer.side}
       impact={tracer.impact}
     />
   );

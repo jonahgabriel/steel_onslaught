@@ -107,6 +107,7 @@ export function makeLlmResolved(
     model?: string;
     promptTokens?: number;
     completionTokens?: number;
+    costUsd?: number | null;
   } = {},
 ): SOEventEnvelopeOf<"llm_completion_resolved"> {
   return makeEnvelope(
@@ -118,6 +119,7 @@ export function makeLlmResolved(
       prompt_tokens: o.promptTokens ?? 120,
       completion_tokens: o.completionTokens ?? 48,
       response_length: 210,
+      cost_usd: o.costUsd === undefined ? 0 : o.costUsd,
     },
     o,
   );

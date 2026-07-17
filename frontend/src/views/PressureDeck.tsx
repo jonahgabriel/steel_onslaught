@@ -11,6 +11,7 @@
 import type React from "react";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { AwaitingTransmission, Wordmark } from "../assets";
+import type { FrameScheduler } from "../lib/application";
 import {
   ancestryOf,
   assignLanes,
@@ -35,7 +36,7 @@ import {
   summarizeEnvelope,
   windowRows,
 } from "../lib/river";
-import type { TransportSnapshot, TransportSpeed } from "../lib/transport";
+import type { TransportSnapshot } from "../lib/transport";
 import type { TransportControls } from "../lib/useTransport";
 import type { SOEventEnvelope } from "../types";
 import ArenaView from "./ArenaView";
@@ -211,39 +212,25 @@ function Odometer({ value }: { value: number }): React.JSX.Element {
 
 export interface PressureDeckProps {
   subscribe: (handler: EnvelopeHandler) => () => void;
-  /** Live transport state (header controls + match picker). Absent in isolated tests. */
-  transport?: TransportSnapshot;
-  controls?: TransportControls;
+  transport: TransportSnapshot;
+  controls: TransportControls;
+  scheduler: FrameScheduler;
 }
 
 export default function PressureDeck({
   subscribe,
   transport,
   controls,
+  scheduler,
 }: PressureDeckProps): React.JSX.Element {
   const [state, dispatch] = useReducer(reduce, INITIAL);
   const reducedMotion = useReducedMotion();
 
-  // Transport mode: pacing (pause/step/speed) is owned upstream by the engine,
-  // so the deck folds everything it receives. Without a transport (isolated
-  // render) the deck falls back to a local play/pause that gates the flush.
-  const transportMode = transport !== undefined && controls !== undefined;
-  const transportModeRef = useRef(transportMode);
-  transportModeRef.current = transportMode;
-
   const bufferRef = useRef<SOEventEnvelope[]>([]);
   const frameRef = useRef<number | null>(null);
-  const [localPlaying, setLocalPlaying] = useState(true);
-  const [localSpeed, setLocalSpeed] = useState<TransportSpeed>(1);
-  const playingRef = useRef(true);
-
-  const playing = transportMode ? transport.status !== "paused" : localPlaying;
-  const isLive = transportMode ? transport.status === "live" : true;
-  const speed = transportMode ? transport.speed : localSpeed;
 
   const flush = useCallback(() => {
     frameRef.current = null;
-    if (!transportModeRef.current && !playingRef.current) return;
     const batch = bufferRef.current;
     if (batch.length === 0) return;
     bufferRef.current = [];
@@ -251,15 +238,10 @@ export default function PressureDeck({
   }, []);
 
   const schedule = useCallback(() => {
-    if (frameRef.current === null && typeof requestAnimationFrame === "function") {
-      frameRef.current = requestAnimationFrame(flush);
+    if (frameRef.current === null) {
+      frameRef.current = scheduler.request(flush);
     }
-  }, [flush]);
-
-  useEffect(() => {
-    playingRef.current = transportMode ? true : localPlaying;
-    if (playingRef.current) schedule();
-  }, [transportMode, localPlaying, schedule]);
+  }, [flush, scheduler]);
 
   useEffect(() => {
     const unsub = subscribe((env) => {
@@ -268,12 +250,12 @@ export default function PressureDeck({
     });
     return () => {
       unsub();
-      if (frameRef.current !== null && typeof cancelAnimationFrame === "function") {
-        cancelAnimationFrame(frameRef.current);
+      if (frameRef.current !== null) {
+        scheduler.cancel(frameRef.current);
         frameRef.current = null;
       }
     };
-  }, [subscribe, schedule]);
+  }, [subscribe, schedule, scheduler]);
 
   // ---- filters, inspector, focus, hover ----
   const [active, setActive] = useState<Set<FilterGroup>>(() => new Set(FILTER_GROUPS));
@@ -416,19 +398,19 @@ export default function PressureDeck({
         </span>
         <Odometer value={state.tick} />
         <HeaderTransport
-          playing={playing}
-          live={isLive}
-          ended={transport?.ended ?? false}
-          speed={speed}
-          matches={transport?.matches ?? []}
-          activeMatchId={transport?.activeMatchId ?? null}
-          onTogglePlay={() => (transportMode ? controls?.togglePlay() : setLocalPlaying((p) => !p))}
-          onSetSpeed={(s) => (transportMode ? controls?.setSpeed(s) : setLocalSpeed(s))}
-          onStepBackward={controls?.stepBackward}
-          onStepForward={controls?.stepForward}
-          onRestart={controls?.restart}
-          onGoLive={controls?.goLive}
-          onSelectMatch={controls?.selectMatch}
+          playing={transport.status !== "paused"}
+          live={transport.status === "live"}
+          ended={transport.ended}
+          speed={transport.speed}
+          matches={transport.matches}
+          activeMatchId={transport.activeMatchId}
+          onTogglePlay={controls.togglePlay}
+          onSetSpeed={controls.setSpeed}
+          onStepBackward={controls.stepBackward}
+          onStepForward={controls.stepForward}
+          onRestart={controls.restart}
+          onGoLive={controls.goLive}
+          onSelectMatch={controls.selectMatch}
         />
       </header>
 

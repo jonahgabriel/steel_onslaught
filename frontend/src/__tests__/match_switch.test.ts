@@ -12,23 +12,37 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MatchTransport } from "../lib/transport";
-import { parseEnvelope, type SOEventEnvelope } from "../types";
+import { parseHistoricalReplayEnvelope, type SOEventEnvelope } from "../types";
 import { INITIAL, reduce } from "../views/PressureDeck";
 
 const FIXTURE = join(process.cwd(), "src/__tests__/fixtures/golden_match/envelopes.json");
 
 function loadGolden(): SOEventEnvelope[] {
   const raw = JSON.parse(readFileSync(FIXTURE, "utf-8")) as unknown[];
-  return raw.map((row) => parseEnvelope(row));
+  return raw.map((row) => parseHistoricalReplayEnvelope(row));
 }
 
 /** Re-home a recorded stream under a new match id (routing key is env.match_id). */
 function cloneUnderMatchId(stream: SOEventEnvelope[], matchId: string): SOEventEnvelope[] {
-  return stream.map((env) => ({
-    ...env,
-    match_id: matchId,
-    envelope: { ...env.envelope, entity_id: matchId },
-  }));
+  const messageIds = new Map(
+    stream.map((env, index) => [env.envelope.message_id, `clone:${matchId}:${index}`]),
+  );
+  return stream.map((env, index) => {
+    const messageId = messageIds.get(env.envelope.message_id);
+    if (messageId === undefined) throw new Error("clone message identity was not allocated");
+    const causationId = env.envelope.causation_id;
+    return {
+      ...env,
+      event_id: `CLONE${String(index).padStart(21, "0")}`,
+      match_id: matchId,
+      envelope: {
+        ...env.envelope,
+        message_id: messageId,
+        causation_id: causationId === null ? null : (messageIds.get(causationId) ?? causationId),
+        entity_id: matchId,
+      },
+    };
+  });
 }
 
 describe("transport match switch — deck fold reset (two interleaved matches)", () => {
@@ -39,7 +53,7 @@ describe("transport match switch — deck fold reset (two interleaved matches)",
     const a = golden; // match A = the real recording
     const b = cloneUnderMatchId(golden, idB); // match B = same shape, new id
 
-    const transport = new MatchTransport();
+    const transport = new MatchTransport({ msPerTick: 500 });
 
     // Drive the real deck reducer from the transport's release sink.
     let deck = INITIAL;

@@ -246,17 +246,17 @@ describe("LLM evidence discrimination + pairing", () => {
 });
 
 describe("side attribution", () => {
-  it("assigns RED/BLUE by sorted player id", () => {
+  it("assigns RED/BLUE only from explicit canonical metadata", () => {
     const sides = buildSideMap([
-      { mech_id: "mech.blue.01", player_id: "player.b" },
-      { mech_id: "mech.red.01", player_id: "player.a" },
+      { mech_id: "mech.blue.01", player_id: "player.a", side: "blue" },
+      { mech_id: "mech.red.01", player_id: "player.z", side: "red" },
     ]);
     expect(sides.byMech.get("mech.red.01")).toBe("red");
     expect(sides.byMech.get("mech.blue.01")).toBe("blue");
   });
 
   it("maps a row to its subject's side, neutral for the match subject", () => {
-    const sides = buildSideMap([{ mech_id: "mech.red.01", player_id: "player.a" }]);
+    const sides = buildSideMap([{ mech_id: "mech.red.01", player_id: "player.a", side: "red" }]);
     expect(sideOf(makeDecision({ mechId: "mech.red.01" }), sides)).toBe("red");
     expect(sideOf(makeLlmRequest({ mechId: "mech.gone" }), sides)).toBe("neutral");
   });

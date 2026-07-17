@@ -23,9 +23,6 @@
  */
 import type { SOEventEnvelope } from "../types";
 
-/** Wall-clock milliseconds a single tick occupies at ×1 speed. */
-export const BASE_MS_PER_TICK = 500;
-
 export type TransportSpeed = 1 | 2 | 4;
 export const TRANSPORT_SPEEDS: readonly TransportSpeed[] = [1, 2, 4];
 
@@ -33,7 +30,7 @@ export const TRANSPORT_SPEEDS: readonly TransportSpeed[] = [1, 2, 4];
  * - `live`    — opt-in: follow the buffer end; every ingested frame is released
  *   at once. Entered only by an explicit LIVE action.
  * - `playing` — the DEFAULT: advance the cursor one tick per
- *   `BASE_MS_PER_TICK / speed` ms as a paced replay from tick 0. If the cursor
+ *   the injected `msPerTick / speed` ms as a paced replay from tick 0. If the cursor
  *   catches the buffer head of a still-streaming match it holds there and
  *   resumes as more frames arrive; on a finished match it stops on the final
  *   tick (see {@link TransportSnapshot.ended}).
@@ -44,9 +41,9 @@ export type TransportStatus = "live" | "playing" | "paused";
 /** One picker entry — updated live as frames arrive. */
 export interface MatchSummary {
   matchId: string;
-  /** First mech id (RED side) from `match_started`; "" until seen. */
+  /** Canonical RED-side mech identities from `match_started`; "" until seen. */
   redLabel: string;
-  /** Second mech id (BLUE side) from `match_started`; "" until seen. */
+  /** Canonical BLUE-side mech identities from `match_started`; "" until seen. */
   blueLabel: string;
   /** Highest tick + 1 buffered so far (0 before any event). */
   tickCount: number;
@@ -66,7 +63,7 @@ export interface TransportSnapshot {
   bufferedCount: number;
   /** Cursor sits at (or past) the buffer end — nothing left to play. */
   atEnd: boolean;
-  /** The active match has streamed a terminal (`match_ended`/`victory_declared`). */
+  /** The active match has streamed its sole canonical terminal (`match_ended`). */
   matchComplete: boolean;
   /**
    * Paced replay has reached the final tick of a *finished* match — playback is
@@ -95,27 +92,63 @@ interface MatchBuffer {
   maxTick: number;
   redLabel: string;
   blueLabel: string;
-  /** A terminal event (`match_ended`/`victory_declared`) has been ingested. */
+  /** The sole canonical terminal event (`match_ended`) has been ingested. */
   complete: boolean;
-  /**
-   * Envelope `message_id`s already appended to this buffer. React StrictMode
-   * double-mounts the effect that opens the WebSocket, and the server re-streams
-   * ALL events per connection — so the same envelopes can ingest twice. Dedup by
-   * the ONEX message identity keeps each envelope in the buffer exactly once (no
-   * duplicate rows downstream, no doubled tick boundaries). See D1.
-   */
-  seen: Set<string>;
+  lastOrder: readonly [tick: number, sequence: number, eventId: string] | null;
+  llmRequests: Map<string, boolean>;
 }
 
 export interface MatchTransportOptions {
-  /** Wall-clock ms per tick at ×1 (default {@link BASE_MS_PER_TICK}). */
-  msPerTick?: number;
+  /** Wall-clock ms per tick at ×1 from the validated application bootstrap. */
+  msPerTick: number;
+}
+
+export class ProjectionIntegrityError extends Error {}
+
+function compareOrder(
+  left: readonly [number, number, string],
+  right: readonly [number, number, string],
+): number {
+  if (left[0] !== right[0]) return left[0] - right[0];
+  if (left[1] !== right[1]) return left[1] - right[1];
+  if (left[2] < right[2]) return -1;
+  if (left[2] > right[2]) return 1;
+  return 0;
+}
+
+function canonicalStructuralJson(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new ProjectionIntegrityError("envelope content contains a non-finite number");
+    }
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalStructuralJson(item)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const record = Object.fromEntries(Object.entries(value));
+    const keys = Object.keys(record).sort((left, right) => {
+      if (left < right) return -1;
+      if (left > right) return 1;
+      return 0;
+    });
+    return `{${keys
+      .map((key) => `${JSON.stringify(key)}:${canonicalStructuralJson(record[key])}`)
+      .join(",")}}`;
+  }
+  throw new ProjectionIntegrityError(`envelope content contains unsupported ${typeof value}`);
 }
 
 export class MatchTransport {
   private readonly msPerTick: number;
   private readonly buffers = new Map<string, MatchBuffer>();
   private readonly order: string[] = [];
+  private readonly seenMessages = new Map<string, string>();
 
   private activeMatchId: string | null = null;
   private releasedCount = 0;
@@ -141,8 +174,11 @@ export class MatchTransport {
   private cachedSnapshot: TransportSnapshot;
   private signature = "";
 
-  constructor(options: MatchTransportOptions = {}) {
-    this.msPerTick = options.msPerTick ?? BASE_MS_PER_TICK;
+  constructor(options: MatchTransportOptions) {
+    if (!Number.isInteger(options.msPerTick) || options.msPerTick <= 0) {
+      throw new ProjectionIntegrityError("msPerTick must be a positive integer");
+    }
+    this.msPerTick = options.msPerTick;
     this.cachedSnapshot = this.buildSnapshot();
     this.signature = this.snapshotSignature(this.cachedSnapshot);
   }
@@ -167,18 +203,38 @@ export class MatchTransport {
 
   // -- ingest -------------------------------------------------------------
 
-  /** Append a raw envelope into its match buffer (canonical order assumed). */
+  /** Validate and append one envelope to its isolated per-match canonical prefix. */
   ingest(env: SOEventEnvelope): void {
     const matchId = env.match_id;
+    if (env.envelope.entity_id !== matchId) {
+      throw new ProjectionIntegrityError(
+        `entity_id ${env.envelope.entity_id} does not equal match_id ${matchId}`,
+      );
+    }
+    const messageId = env.envelope.message_id;
+    const content = canonicalStructuralJson(env);
+    const priorContent = this.seenMessages.get(messageId);
+    if (priorContent !== undefined) {
+      if (priorContent === content) return;
+      throw new ProjectionIntegrityError(
+        `message_id ${messageId} was reused with different envelope content`,
+      );
+    }
     let buf = this.buffers.get(matchId);
     if (buf === undefined) {
+      if (env.event_type !== "match_started" || env.tick !== 0 || env.sequence_in_tick !== 0) {
+        throw new ProjectionIntegrityError(
+          `first event for ${matchId} must be match_started at (tick, sequence) (0, 0)`,
+        );
+      }
       buf = {
         events: [],
         maxTick: -1,
         redLabel: "",
         blueLabel: "",
         complete: false,
-        seen: new Set<string>(),
+        lastOrder: null,
+        llmRequests: new Map<string, boolean>(),
       };
       this.buffers.set(matchId, buf);
       this.order.push(matchId);
@@ -187,16 +243,59 @@ export class MatchTransport {
     }
     // Dedup a StrictMode / reconnect re-stream: the same envelope must never land
     // in the buffer twice (it would duplicate rows and corrupt tick boundaries).
-    const messageId = env.envelope.message_id;
-    if (buf.seen.has(messageId)) return;
-    buf.seen.add(messageId);
+    if (buf.complete) {
+      throw new ProjectionIntegrityError(`event ${env.event_id} arrived after match_ended`);
+    }
+    const order: readonly [number, number, string] = [env.tick, env.sequence_in_tick, env.event_id];
+    if (buf.lastOrder !== null && compareOrder(buf.lastOrder, order) >= 0) {
+      throw new ProjectionIntegrityError(
+        `event order is not strictly monotonic for ${matchId}: ${env.event_id}`,
+      );
+    }
+    if (env.event_type === "match_started" && buf.events.length > 0) {
+      throw new ProjectionIntegrityError(`match_started repeated for ${matchId}`);
+    }
+    if (env.event_type === "llm_completion_requested") {
+      buf.llmRequests.set(messageId, false);
+    }
+    if (
+      env.event_type === "llm_completion_resolved" ||
+      env.event_type === "llm_completion_failed"
+    ) {
+      const requestId = env.envelope.causation_id;
+      if (requestId === null || !buf.llmRequests.has(requestId)) {
+        throw new ProjectionIntegrityError(
+          `${env.event_type} must name its canonical request message_id as causation_id`,
+        );
+      }
+      if (buf.llmRequests.get(requestId) === true) {
+        throw new ProjectionIntegrityError(`LLM request ${requestId} has multiple terminals`);
+      }
+      buf.llmRequests.set(requestId, true);
+    }
+    if (env.event_type === "match_ended") {
+      const unresolved = [...buf.llmRequests].filter(([, resolved]) => !resolved);
+      if (unresolved.length > 0) {
+        throw new ProjectionIntegrityError(
+          `match_ended with ${unresolved.length} unresolved LLM completion request(s)`,
+        );
+      }
+    }
+    this.seenMessages.set(messageId, content);
+    buf.lastOrder = order;
     buf.events.push(env);
     if (env.tick > buf.maxTick) buf.maxTick = env.tick;
     if (env.event_type === "match_started") {
-      buf.redLabel = env.payload.mechs[0]?.mech_id ?? "";
-      buf.blueLabel = env.payload.mechs[1]?.mech_id ?? "";
+      buf.redLabel = env.payload.mechs
+        .filter((mech) => mech.side === "red")
+        .map((mech) => mech.mech_id)
+        .join("+");
+      buf.blueLabel = env.payload.mechs
+        .filter((mech) => mech.side === "blue")
+        .map((mech) => mech.mech_id)
+        .join("+");
     }
-    if (env.event_type === "match_ended" || env.event_type === "victory_declared") {
+    if (env.event_type === "match_ended") {
       buf.complete = true;
     }
     this.notifyState();

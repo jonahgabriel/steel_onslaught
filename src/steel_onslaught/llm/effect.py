@@ -226,6 +226,7 @@ class LedgerLlmCompletionObserver:
             prompt_tokens=response.usage.prompt_tokens,
             completion_tokens=response.usage.completion_tokens,
             response_length=len(response.text),
+            cost_usd=response.usage.cost_usd,
         )
         self._emit(
             self._events.caused_by(

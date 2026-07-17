@@ -16,6 +16,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest";
 import type { EnvelopeHandler, WebSocketLike } from "../lib/event_stream";
 import { EventStream } from "../lib/event_stream";
+import { parseEnvelope } from "../types";
 import ArenaView from "../views/ArenaView";
 import { makeEnvelope } from "./helpers";
 
@@ -50,7 +51,7 @@ function makeStubStream(): {
   subscribe: (handler: EnvelopeHandler) => () => void;
 } {
   const socket = new FakeSocket();
-  const stream = new EventStream({ socket });
+  const stream = new EventStream(socket);
   return { socket, subscribe: stream.subscribe.bind(stream) };
 }
 
@@ -87,6 +88,37 @@ describe("ArenaView", () => {
     });
     // machine_gun → light tracer style
     expect(screen.getByTestId("tracer-light")).toBeInTheDocument();
+  });
+
+  it("carries attacker side into a tracer when opposing mechs are co-located", async () => {
+    const started = parseEnvelope(JSON.parse(fixtureText("match_started")));
+    if (started.event_type !== "match_started") throw new Error("wrong fixture event type");
+    const red = started.payload.mechs.find((mech) => mech.side === "red");
+    const blue = started.payload.mechs.find((mech) => mech.side === "blue");
+    if (red === undefined || blue === undefined) throw new Error("fixture sides missing");
+    const sharedPosition = { x: 11, y: 13 };
+    const coLocated = {
+      ...started,
+      payload: {
+        ...started.payload,
+        // BLUE intentionally folds first: position-based lookup would color
+        // RED's tracer blue when both mechs occupy this crossing cell.
+        mechs: [
+          { ...blue, position: sharedPosition },
+          { ...red, position: sharedPosition },
+        ],
+      },
+    };
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => {
+      socket.emit(JSON.stringify(coLocated));
+      socket.emit(fixtureText("weapon_fired"));
+    });
+
+    expect(screen.getByTestId("tracer-light").style.getPropertyValue("--so-side")).toContain(
+      "--ember",
+    );
   });
 
   it("shows an impact ring after HIT_RESOLVED on the tracer", async () => {

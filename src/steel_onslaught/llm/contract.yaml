@@ -1,16 +1,19 @@
 ---
 # ONEX Node Contract — LLM completion effect node.
 name: llm_completion_effect
-contract_version: {major: 1, minor: 0, patch: 0}
+contract_version: {major: 1, minor: 1, patch: 0}
 node_type: effect
 node_version: {major: 1, minor: 0, patch: 0}
 
 description: >
   LLM completion effect node — the ONEX effect boundary for LLM calls. Wraps
   the ProtocolLlmClient seam so every request/response becomes evidence on the
-  game bus (LLM_COMPLETION_REQUESTED / LLM_COMPLETION_RESOLVED), landing in the
-  append-only ledger with causation chains. MatchStateFold ignores these events
-  (telemetry slot), so state equality and replay-validity are untouched.
+  game bus (LLM_COMPLETION_REQUESTED followed by exactly one
+  LLM_COMPLETION_RESOLVED or LLM_COMPLETION_FAILED), landing in the append-only
+  ledger with causation chains. Successful and failed terminal payloads preserve
+  nullable provider cost: unknown HTTP cost is null; stub/baseline cost is zero.
+  MatchStateFold ignores these events (telemetry slot), so state equality and
+  replay-validity are untouched.
   Network I/O lives here, never in the pure fold or the pilot's decide().
 
 handler:
@@ -31,6 +34,7 @@ event_bus:
   publish_topics:
     - onex.evt.steel-onslaught.llm-completion-requested.v1
     - onex.evt.steel-onslaught.llm-completion-resolved.v1
+    - onex.evt.steel-onslaught.llm-completion-failed.v1
 
 metadata:
   transport_type: in_process

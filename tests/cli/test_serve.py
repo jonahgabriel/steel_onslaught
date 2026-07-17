@@ -14,6 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import click
+import httpx
 import pytest
 import websockets
 from click.testing import CliRunner
@@ -23,11 +24,17 @@ from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.cli.serve import (
     DEFAULT_WS_HOST,
     DEFAULT_WS_PORT,
+    FRONTEND_EXPECTED_OVERLAY_HEADER,
     STREAM_ALL_MATCHES,
     WebSocketBridge,
+    _bootstrap_process_request,
     _collect_events,
     _stream_match,
     serve_command,
+)
+from steel_onslaught.contracts.application import (
+    ModelSOFrontendBootstrap,
+    ModelSOFrontendTransportBinding,
 )
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -36,6 +43,21 @@ from steel_onslaught.events.envelope import (
 )
 
 _RECV_TIMEOUT = 5.0
+
+
+def _frontend_bootstrap(port: int) -> ModelSOFrontendBootstrap:
+    return ModelSOFrontendBootstrap(
+        schema_version="1",
+        kind="steel_onslaught.frontend_bootstrap",
+        overlay_sha256="a" * 64,
+        frontend_transport=ModelSOFrontendTransportBinding(
+            kind="websocket",
+            contract="steel_onslaught.frontend_transport.v1",
+            websocket_url=f"ws://127.0.0.1:{port}/events",
+            event_schema="canonical_event_v1",
+            milliseconds_per_tick=500,
+        ),
+    )
 
 
 def _env(
@@ -308,6 +330,48 @@ async def test_paced_stream_over_websocket_delivers_full_match() -> None:
                 for _ in range(len(events))
             ]
     assert received == [event.model_dump_json() for event in events]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_frontend_bootstrap_http_surface_is_closed_and_stream_path_is_exact() -> None:
+    from websockets.asyncio.server import ServerConnection, serve
+
+    bootstrap = _frontend_bootstrap(8765)
+
+    async def handler(connection: ServerConnection) -> None:
+        await connection.wait_closed()
+
+    async with serve(
+        handler,
+        "127.0.0.1",
+        0,
+        process_request=_bootstrap_process_request(bootstrap),
+    ) as server:
+        port = next(iter(server.sockets)).getsockname()[1]
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"http://127.0.0.1:{port}/steel-onslaught/bootstrap.json")
+            mismatch = await client.get(
+                f"http://127.0.0.1:{port}/steel-onslaught/bootstrap.json",
+                headers={FRONTEND_EXPECTED_OVERLAY_HEADER: "b" * 64},
+            )
+            missing = await client.get(f"http://127.0.0.1:{port}/unknown")
+
+        assert response.status_code == 200
+        assert response.json() == bootstrap.model_dump(mode="json")
+        assert response.headers["etag"] == f'"{bootstrap.overlay_sha256}"'
+        assert response.headers["x-steel-onslaught-contract"] == (
+            bootstrap.frontend_transport.contract
+        )
+        assert mismatch.status_code == 409
+        assert mismatch.json() == {"error": "overlay_identity_mismatch"}
+        assert missing.status_code == 404
+
+        async with websockets.connect(f"ws://127.0.0.1:{port}/events"):
+            pass
+        with pytest.raises(websockets.exceptions.InvalidStatus, match="404"):
+            async with websockets.connect(f"ws://127.0.0.1:{port}/wrong"):
+                pass
 
 
 # ---------------------------------------------------------------------------

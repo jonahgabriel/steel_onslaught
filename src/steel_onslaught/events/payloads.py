@@ -197,6 +197,7 @@ class ModelSOLlmCompletionResolvedPayload(_ClosedPayload):
     prompt_tokens: StrictInt = Field(ge=0)
     completion_tokens: StrictInt = Field(ge=0)
     response_length: StrictInt = Field(ge=0)
+    cost_usd: StrictFloat | None = Field(ge=0.0, allow_inf_nan=False)
 
 
 class ModelSOLlmCompletionFailedPayload(_ClosedPayload):

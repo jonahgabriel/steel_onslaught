@@ -15,7 +15,7 @@
  *   - pilot persona / model         : llm_completion_requested / _resolved.
  *   - tallies                       : weapon_fired, damage_applied,
  *                                     pilot_decision_made.
- * There is no `display_name` on the wire, so it is composed from `mech_id`.
+ * There is no `display_name` on the wire, so the exact `mech_id` is displayed.
  */
 
 import type { ChassisClass, MechState } from "../assets/theme";
@@ -45,14 +45,7 @@ export interface GaugeState {
   readonly chassisClass: ChassisClass;
   readonly chassisId: string;
   readonly pilotId: string;
-  /**
-   * True when this mech is driven by an LLM pilot. Classified at MATCH_STARTED
-   * from the `pilot_id` (an LLM pilot spec id carries an `llm` segment, e.g.
-   * `pilot.llm.berserker`) so the label is honest from tick 0 — before the first
-   * `llm_completion_requested` event folds. A `pilot_decision_made` with an
-   * `llm_*` reason_code (LLM_DECISION / LLM_FALLBACK) is an equivalent, later
-   * signal and also flips this on (the stream-derived fallback the spec asks for).
-   */
+  /** True only after canonical LLM evidence identifies this pilot as LLM-backed. */
   readonly isLlm: boolean;
   /** LLM persona (from llm_completion_requested), else null (heuristic pilot). */
   readonly persona: string | null;
@@ -88,41 +81,24 @@ export interface GaugeState {
 
 export type Gauges = Readonly<Record<string, GaugeState>>;
 
-/** Compose a readable display name from a dotted mech id (`mech.a.01` → `A-01`). */
+/** Preserve the canonical mech identity exactly; presentation must not invent identity. */
 export function displayNameOf(mechId: string): string {
-  const trimmed = mechId.startsWith("mech.") ? mechId.slice("mech.".length) : mechId;
-  const parts = trimmed.split(".").filter((p) => p.length > 0);
-  return (parts.length > 0 ? parts.join("-") : mechId).toUpperCase();
-}
-
-/** An LLM pilot spec id carries an `llm` segment (`pilot.llm.berserker`). */
-function isLlmPilotId(pilotId: string): boolean {
-  return pilotId.split(".").includes("llm");
-}
-
-/** Persona encoded in an LLM pilot id: the segment after `llm` (`…llm.berserker` → `berserker`). */
-function personaFromPilotId(pilotId: string): string | null {
-  const parts = pilotId.split(".");
-  const i = parts.indexOf("llm");
-  return i >= 0 && i + 1 < parts.length ? (parts[i + 1] ?? null) : null;
+  return mechId;
 }
 
 /**
- * Honest pilot descriptor for the spec panel (D4). LLM pilots read
- * `LLM · <persona> · <provider>` (e.g. `LLM · berserker · stub`); heuristic
- * pilots read `HEURISTIC · <archetype>`. Persona + provider come from the
- * `llm_completion_*` evidence events; until the first one folds we fall back to
- * the persona encoded in the pilot_id, so an LLM pilot is never mislabelled
- * `HEURISTIC` during the opening ticks (the reported bug). Provider is omitted
- * until a resolved event supplies the model.
+ * Honest pilot descriptor for the spec panel (D4). Canonical LLM evidence
+ * yields `LLM · <persona> · <provider>` once available. Without that evidence,
+ * the descriptor remains `UNKNOWN` and preserves only the canonical pilot ID;
+ * presentation never infers a persona or pilot kind from identifier text.
  */
-export function pilotDescriptor(g: GaugeState): { kind: "LLM" | "HEURISTIC"; label: string } {
+export function pilotDescriptor(g: GaugeState): { kind: "LLM" | "UNKNOWN"; label: string } {
   const isLlm = g.isLlm || g.persona !== null || g.model !== null;
   if (isLlm) {
-    const persona = g.persona ?? personaFromPilotId(g.pilotId) ?? g.pilotId.replace(/^pilot\./, "");
+    const persona = g.persona ?? "unknown";
     return { kind: "LLM", label: g.model !== null ? `${persona} · ${g.model}` : persona };
   }
-  return { kind: "HEURISTIC", label: g.pilotId.replace(/^pilot\./, "") };
+  return { kind: "UNKNOWN", label: g.pilotId || "unknown" };
 }
 
 function fromRuntime(state: SOMechRuntimeState, sides: SideMap): GaugeState {
@@ -134,7 +110,7 @@ function fromRuntime(state: SOMechRuntimeState, sides: SideMap): GaugeState {
     chassisClass: state.chassis_class,
     chassisId: state.chassis_id,
     pilotId: state.pilot_id,
-    isLlm: isLlmPilotId(state.pilot_id),
+    isLlm: false,
     persona: null,
     model: null,
     heat: state.boiler.heat_current,

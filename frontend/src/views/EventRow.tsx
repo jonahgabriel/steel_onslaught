@@ -96,13 +96,15 @@ function LlmContent({ env }: { env: SOEventEnvelope }): React.JSX.Element | null
       <>
         <span className="pd-type">LLM ▸ FAILED</span>
         <span className="pd-usage" data-testid="llm-usage">
-          {env.payload.model} · {env.payload.reason_code}
+          {env.payload.model ?? "unknown"} · {env.payload.reason_code}
           {env.payload.cost_usd !== null ? (
             <>
               {" "}
               · <b>${env.payload.cost_usd.toFixed(4)}</b>
             </>
-          ) : null}
+          ) : (
+            <> · cost unknown</>
+          )}
         </span>
       </>
     );
@@ -114,6 +116,14 @@ function LlmContent({ env }: { env: SOEventEnvelope }): React.JSX.Element | null
       <span className="pd-usage" data-testid="llm-usage">
         {env.payload.model} · <b>{env.payload.prompt_tokens}</b>→
         <b>{env.payload.completion_tokens}</b> tok
+        {env.payload.cost_usd !== null ? (
+          <>
+            {" "}
+            · <b>${env.payload.cost_usd.toFixed(4)}</b>
+          </>
+        ) : (
+          <> · cost unknown</>
+        )}
       </span>
     </>
   );

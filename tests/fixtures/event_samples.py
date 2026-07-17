@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid5
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
@@ -80,6 +80,7 @@ def _mech_state(
     *,
     mech_id: str,
     player_id: str,
+    side: Literal["red", "blue"],
     x: int,
     y: int,
     facing: int,
@@ -106,6 +107,7 @@ def _mech_state(
     return ModelSOMechRuntimeState(
         mech_id=mech_id,
         player_id=player_id,
+        side=side,
         loadout_id="loadout.fixture.alpha",
         pilot_id="pilot.aggressive",
         chassis_id="chassis.light_scout_mk1",
@@ -128,8 +130,10 @@ def _mech_state(
 
 def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
     """One canonical payload per event type, in declaration order."""
-    mech_a = _mech_state(mech_id="mech.a.01", player_id="player.a", x=5, y=5, facing=90)
-    mech_b = _mech_state(mech_id="mech.b.01", player_id="player.b", x=35, y=35, facing=270)
+    mech_a = _mech_state(mech_id="mech.a.01", player_id="player.a", side="red", x=5, y=5, facing=90)
+    mech_b = _mech_state(
+        mech_id="mech.b.01", player_id="player.b", side="blue", x=35, y=35, facing=270
+    )
     scored = ModelSOMatchScoredPayload(
         match_id=_MATCH_ID,
         winner=ModelSOScoredWinner(player_id="player.a", mech_id="mech.a.01"),
@@ -201,6 +205,7 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
             "prompt_tokens": 64,
             "completion_tokens": 24,
             "response_length": 96,
+            "cost_usd": 0.0,
         },
         SOEventType.LLM_COMPLETION_FAILED: {
             "provider_id": "primary",

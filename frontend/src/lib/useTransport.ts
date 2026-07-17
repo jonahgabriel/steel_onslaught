@@ -10,8 +10,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { SOEventEnvelope } from "../types";
-import { type EnvelopeHandler, EventStream } from "./event_stream";
-import { MatchTransport, type TransportSnapshot, type TransportSpeed } from "./transport";
+import type { FrameScheduler, MonotonicClock } from "./application";
+import type { EnvelopeHandler, EventStream } from "./event_stream";
+import type { MatchTransport, TransportSnapshot, TransportSpeed } from "./transport";
 
 export interface TransportControls {
   togglePlay(): void;
@@ -33,14 +34,14 @@ export interface UseTransport {
 }
 
 export interface UseTransportOptions {
-  /** Injected engine (tests); a real WebSocket-fed engine is built otherwise. */
-  transport?: MatchTransport;
-  /** Injected socket for the EventStream (tests). */
-  makeStream?: () => EventStream;
+  readonly transport: MatchTransport;
+  readonly makeStream: () => EventStream;
+  readonly scheduler: FrameScheduler;
+  readonly clock: MonotonicClock;
 }
 
-export function useTransport(options: UseTransportOptions = {}): UseTransport {
-  const transport = useMemo(() => options.transport ?? new MatchTransport(), [options.transport]);
+export function useTransport(options: UseTransportOptions): UseTransport {
+  const { transport, makeStream, scheduler, clock } = options;
 
   // Downstream fold handlers (PressureDeck + ArenaView via prop drilling).
   const handlersRef = useRef<Set<EnvelopeHandler>>(new Set());
@@ -70,23 +71,22 @@ export function useTransport(options: UseTransportOptions = {}): UseTransport {
 
   // WebSocket → ingest, plus the rAF pump driving frame(timestamp).
   useEffect(() => {
-    const stream = options.makeStream ? options.makeStream() : new EventStream();
+    const stream = makeStream();
     const unsubscribe = stream.subscribe((env) => transport.ingest(env));
 
-    let raf = 0;
-    const hasRaf = typeof requestAnimationFrame === "function";
-    const loop = (timestamp: number): void => {
-      transport.frame(timestamp);
-      if (hasRaf) raf = requestAnimationFrame(loop);
+    let frameHandle: number | null = null;
+    const loop = (): void => {
+      transport.frame(clock.now());
+      frameHandle = scheduler.request(loop);
     };
-    if (hasRaf) raf = requestAnimationFrame(loop);
+    frameHandle = scheduler.request(loop);
 
     return () => {
       unsubscribe();
       stream.close();
-      if (raf !== 0 && typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf);
+      if (frameHandle !== null) scheduler.cancel(frameHandle);
     };
-  }, [transport, options.makeStream]);
+  }, [transport, makeStream, scheduler, clock]);
 
   const snapshot = useSyncExternalStore(
     useCallback((onChange) => transport.subscribeState(() => onChange()), [transport]),

@@ -26,23 +26,23 @@ export interface SideMap {
 
 const EMPTY_SIDE_MAP: SideMap = { byMech: new Map(), byPlayer: new Map() };
 
-/**
- * Assign sides deterministically: the two players are sorted by id, the first
- * becomes RED, the second BLUE.  Anything past two (or the `*` match subject)
- * is neutral.  There is no explicit side field on the wire, so first-seen
- * order is the only stable signal — sorting keeps it replay-stable.
- */
+/** Build side indexes exclusively from explicit canonical match metadata. */
 export function buildSideMap(
-  mechs: readonly { readonly mech_id: string; readonly player_id: string }[],
+  mechs: readonly {
+    readonly mech_id: string;
+    readonly player_id: string;
+    readonly side: Side;
+  }[],
 ): SideMap {
-  const players = [...new Set(mechs.map((m) => m.player_id).filter((p) => p !== "*"))].sort();
   const byPlayer = new Map<string, Side>();
-  players.forEach((p, i) => {
-    byPlayer.set(p, i === 0 ? "red" : i === 1 ? "blue" : "neutral");
-  });
   const byMech = new Map<string, Side>();
   for (const m of mechs) {
-    byMech.set(m.mech_id, byPlayer.get(m.player_id) ?? "neutral");
+    byMech.set(m.mech_id, m.side);
+    const existing = byPlayer.get(m.player_id);
+    if (existing !== undefined && existing !== m.side) {
+      throw new Error(`player ${m.player_id} declares conflicting side metadata`);
+    }
+    byPlayer.set(m.player_id, m.side);
   }
   return { byMech, byPlayer };
 }

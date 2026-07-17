@@ -16,7 +16,8 @@
     "finish_reason": "stop",
     "prompt_tokens": 64,
     "completion_tokens": 24,
-    "response_length": 96
+    "response_length": 96,
+    "cost_usd": 0.0
   },
   "envelope": {
     "message_id": "a86eb264-690c-59e5-b267-246b740b96c4",

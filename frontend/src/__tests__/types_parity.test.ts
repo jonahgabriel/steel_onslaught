@@ -14,7 +14,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseEnvelope, SO_EVENT_TYPES } from "../types";
+import { parseEnvelope, parseHistoricalReplayEnvelope, SO_EVENT_TYPES } from "../types";
 
 const FIXTURES_DIR = fileURLToPath(new URL("./fixtures", import.meta.url));
 
@@ -176,6 +176,57 @@ describe("types parity against Python-emitted fixtures", () => {
         }),
       ),
     ).toThrow(/prompt_tokens/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_resolved", (payload) => {
+          delete payload["cost_usd"];
+        }),
+      ),
+    ).toThrow(/cost_usd|cost field/);
+  });
+
+  it("rejects missing canonical mech side and nested runtime fields", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const mechs = arrayValue(payload["mechs"], "mechs");
+          delete objectValue(mechs[0], "mechs[0]")["side"];
+        }),
+      ),
+    ).toThrow(/side/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const mechs = arrayValue(payload["mechs"], "mechs");
+          delete objectValue(mechs[0], "mechs[0]")["under_sensor_lock"];
+        }),
+      ),
+    ).toThrow(/under_sensor_lock/);
+  });
+
+  it("projects only sanctioned fields for versioned historical replay", () => {
+    const historicalStarted = corruptPayload("match_started", (payload) => {
+      const mechs = arrayValue(payload["mechs"], "mechs");
+      delete objectValue(mechs[0], "mechs[0]")["side"];
+    });
+    const started = parseHistoricalReplayEnvelope(historicalStarted);
+    if (started.event_type !== "match_started") throw new Error("wrong historical event type");
+    expect(started.payload.mechs[0]?.side).toBe("neutral");
+
+    const historicalResolved = corruptPayload("llm_completion_resolved", (payload) => {
+      delete payload["cost_usd"];
+    });
+    const resolved = parseHistoricalReplayEnvelope(historicalResolved);
+    if (resolved.event_type !== "llm_completion_resolved") {
+      throw new Error("wrong historical event type");
+    }
+    expect(resolved.payload.cost_usd).toBeNull();
+
+    const unexpected = corruptPayload("llm_completion_resolved", (payload) => {
+      delete payload["cost_usd"];
+      payload["unexpected"] = true;
+    });
+    expect(() => parseHistoricalReplayEnvelope(unexpected)).toThrow(/unexpected/);
   });
 
   for (const [eventType, requiredField] of [

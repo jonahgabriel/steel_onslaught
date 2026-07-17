@@ -5,10 +5,10 @@
  * tick rate, step reveals/retracts exactly one tick, LIVE follows the buffer
  * end, and a match switch resets the fold and replays the other buffer.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MatchTransport, type ReleaseSink } from "../lib/transport";
 import type { SOEventEnvelope } from "../types";
-import { makeEnvelope } from "./helpers";
+import { makeEnvelope, makeLlmFailed, makeLlmRequest, makeLlmResolved } from "./helpers";
 
 /** One `match_tick` per tick 0..n-1 for `matchId`. */
 function tickStream(matchId: string, n: number): SOEventEnvelope[] {
@@ -50,7 +50,7 @@ function recordingSink(): {
 
 describe("MatchTransport — buffering", () => {
   it("splits an interleaved multi-match stream into per-match buffers", () => {
-    const t = new MatchTransport();
+    const t = new MatchTransport({ msPerTick: 500 });
     const a = tickStream("match.alpha", 3);
     const b = tickStream("match.bravo", 5);
     // Interleave the two matches' frames as a mux would deliver them.
@@ -189,7 +189,7 @@ describe("MatchTransport — default auto-play replay (rule 1)", () => {
 
 describe("MatchTransport — LIVE is opt-in (rule 2)", () => {
   it("goLive() jumps to the buffer end and follows new frames", () => {
-    const t = new MatchTransport();
+    const t = new MatchTransport({ msPerTick: 500 });
     const stream = tickStream("m", 3);
     for (const e of stream) t.ingest(e);
     const rec = recordingSink();
@@ -264,7 +264,7 @@ describe("MatchTransport — finished match stops with a REPLAY affordance (rule
   });
 
   it("does not flag `ended` while a live-followed match sits at its end", () => {
-    const t = new MatchTransport();
+    const t = new MatchTransport({ msPerTick: 500 });
     const stream: SOEventEnvelope[] = [
       ...tickStream("m", 2),
       makeEnvelope(
@@ -322,7 +322,7 @@ describe("MatchTransport — match switch auto-plays the new match (rule 4)", ()
   });
 
   it("auto-plays from tick 0 even when the prior mode was LIVE", () => {
-    const t = new MatchTransport();
+    const t = new MatchTransport({ msPerTick: 500 });
     for (const e of tickStream("match.alpha", 3)) t.ingest(e);
     for (const e of tickStream("match.bravo", 5)) t.ingest(e);
     const rec = recordingSink();
@@ -426,49 +426,12 @@ describe("MatchTransport — StrictMode double-connect (D1 pacing-burst race)", 
     expect(rec.released.map((e) => e.tick)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
-  it("re-anchors the clock after resting on a finished match (no owed-time burst)", () => {
-    // Guards the removal of the old `!buf.complete` re-anchor guard: even when a
-    // reconnect carries FRESH message_ids (dedup can't drop them), the wall-clock
-    // time accrued while the cursor rested on a completed match must not flood.
+  it("rejects fresh events after canonical match_ended", () => {
     const t = new MatchTransport({ msPerTick: 500 });
-    const rec = recordingSink();
-    t.setSink(rec.sink);
-
     for (const e of completeMatch("m", 6) /* 0..5 */) t.ingest(e);
-
-    // Pace to the end; the match is complete and the cursor rests on tick 5.
-    let now = 5000;
-    for (let tick = 0; tick < 6; tick += 1) {
-      t.frame(now);
-      now += 500;
-    }
-    expect(t.snapshot().cursorTick).toBe(5);
-    expect(t.snapshot().ended).toBe(true);
-
-    // Long idle rest — many frames, no new data. lastReleaseTime must track `now`.
-    for (let k = 0; k < 20; k += 1) {
-      t.frame(now);
-      now += 500;
-    }
-    const lastIdleNow = now - 500; // wall-clock of the final idle frame
-
-    // A reconnect appends a continuation with FRESH ids (not deduped).
-    t.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 6 }));
-    t.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 7 }));
-
-    // The first resume frame is sub-tick after the last idle anchor: nothing
-    // floods despite ~10s of rest (the old !complete guard dumped both owed ticks
-    // here, jumping straight to the buffer end).
-    const before = rec.released.length;
-    t.frame(lastIdleNow + 16);
-    expect(rec.released.length).toBe(before);
-    expect(t.snapshot().cursorTick).toBe(5);
-
-    // Then it resumes strictly paced, one tick per tick-duration.
-    t.frame(lastIdleNow + 500);
-    expect(t.snapshot().cursorTick).toBe(6);
-    t.frame(lastIdleNow + 1000);
-    expect(t.snapshot().cursorTick).toBe(7);
+    expect(() => t.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 6 }))).toThrow(
+      /after match_ended/,
+    );
   });
 });
 
@@ -491,5 +454,176 @@ describe("MatchTransport — restart", () => {
     expect(rec.resets).toBe(resetsBefore + 1);
     expect(t.snapshot().cursorTick).toBe(0);
     expect(t.snapshot().status).toBe("playing");
+  });
+});
+
+describe("MatchTransport — projection integrity", () => {
+  it("deduplicates an identical message but rejects reused identity with different content", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    transport.ingest(started);
+    const event = makeEnvelope("match_tick", {}, { matchId: "m", tick: 1, messageId: "same" });
+    transport.ingest(event);
+    transport.ingest(event);
+    expect(transport.snapshot().bufferedCount).toBe(2);
+    expect(() => transport.ingest({ ...event, producer_node: "node.tampered" })).toThrow(
+      /different envelope content/,
+    );
+  });
+
+  it("rejects one message identity reused across match boundaries", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    transport.ingest(
+      makeEnvelope(
+        "match_started",
+        { seed: 1, max_ticks: 1, mechs: [] },
+        { matchId: "match.alpha", messageId: "global-message" },
+      ),
+    );
+    expect(() =>
+      transport.ingest(
+        makeEnvelope(
+          "match_started",
+          { seed: 1, max_ticks: 1, mechs: [] },
+          { matchId: "match.bravo", messageId: "global-message" },
+        ),
+      ),
+    ).toThrow(/reused with different envelope content/);
+  });
+
+  it("fingerprints structural content independent of object key insertion order", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    transport.ingest(started);
+    const decision = makeEnvelope(
+      "pilot_decision_made",
+      {
+        action: "remain",
+        action_params: { alpha: 1, beta: 2 },
+        reason_code: "no_viable_action",
+        confidence: 1,
+        considered_actions: [{ action: "remain", score: 1 }],
+        rationale: null,
+      },
+      { matchId: "m", tick: 1, messageId: "canonical-content" },
+    );
+    transport.ingest(decision);
+    transport.ingest({
+      ...decision,
+      payload: { ...decision.payload, action_params: { beta: 2, alpha: 1 } },
+    });
+    expect(transport.snapshot().bufferedCount).toBe(2);
+    expect(() =>
+      transport.ingest({
+        ...decision,
+        payload: { ...decision.payload, action_params: { beta: 3, alpha: 1 } },
+      }),
+    ).toThrow(/different envelope content/);
+  });
+
+  it("orders same-position events without consulting process locale", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    transport.ingest(started);
+    const first = makeEnvelope("match_tick", {}, { matchId: "m", tick: 1, seq: 0 });
+    const second = makeEnvelope("match_tick", {}, { matchId: "m", tick: 1, seq: 0 });
+    const localeCompare = vi.spyOn(String.prototype, "localeCompare").mockImplementation(() => {
+      throw new Error("ambient locale authority used");
+    });
+    try {
+      transport.ingest(first);
+      transport.ingest(second);
+    } finally {
+      localeCompare.mockRestore();
+    }
+    transport.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 2 }));
+    expect(transport.snapshot().bufferedCount).toBe(4);
+  });
+
+  it("rejects entity mismatch, non-canonical first event, and per-match order regression", () => {
+    const entityMismatch = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    expect(() =>
+      entityMismatch.ingest({
+        ...started,
+        envelope: { ...started.envelope, entity_id: "different" },
+      }),
+    ).toThrow(/does not equal match_id/);
+
+    const missingStart = new MatchTransport({ msPerTick: 500 });
+    expect(() =>
+      missingStart.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 1 })),
+    ).toThrow(/first event/);
+
+    const outOfOrder = new MatchTransport({ msPerTick: 500 });
+    outOfOrder.ingest(started);
+    outOfOrder.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 2 }));
+    expect(() =>
+      outOfOrder.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 1 })),
+    ).toThrow(/not strictly monotonic/);
+  });
+
+  it("treats only match_ended as terminal", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    transport.ingest(started);
+    transport.ingest(
+      makeEnvelope(
+        "victory_declared",
+        { winner_player_id: "player.red", reason: "last_mech_standing" },
+        { matchId: "m", tick: 1 },
+      ),
+    );
+    expect(transport.snapshot().matchComplete).toBe(false);
+    transport.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 2 }));
+    transport.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "last_mech_standing", winner_id: "player.red" },
+        { matchId: "m", tick: 3 },
+      ),
+    );
+    expect(transport.snapshot().matchComplete).toBe(true);
+  });
+
+  it("requires exactly one causally-linked terminal per LLM request", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    transport.ingest(started);
+    const request = makeLlmRequest({ matchId: "m", tick: 1, messageId: "request-1" });
+    transport.ingest(request);
+    transport.ingest(makeLlmResolved({ matchId: "m", tick: 1, seq: 1, causationId: "request-1" }));
+    expect(() =>
+      transport.ingest(makeLlmFailed({ matchId: "m", tick: 2, causationId: "request-1" })),
+    ).toThrow(/multiple terminals/);
+
+    const orphan = new MatchTransport({ msPerTick: 500 });
+    orphan.ingest(started);
+    expect(() =>
+      orphan.ingest(makeLlmResolved({ matchId: "m", tick: 1, causationId: "missing" })),
+    ).toThrow(/canonical request message_id/);
+  });
+
+  it("rejects match_ended while an LLM request lacks terminal evidence", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    transport.ingest(started);
+    transport.ingest(makeLlmRequest({ matchId: "m", tick: 1, messageId: "pending" }));
+    expect(() =>
+      transport.ingest(
+        makeEnvelope(
+          "match_ended",
+          { reason: "aborted", winner_id: null },
+          { matchId: "m", tick: 2 },
+        ),
+      ),
+    ).toThrow(/unresolved LLM completion/);
   });
 });

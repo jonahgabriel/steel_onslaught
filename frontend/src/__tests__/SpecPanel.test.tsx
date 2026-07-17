@@ -201,21 +201,18 @@ describe("SpecPanel — synthetic state", () => {
     expect(row.textContent).toContain("2t");
   });
 
-  it("labels an LLM pilot from its pilot_id before any LLM evidence folds (D4)", () => {
-    // pilot.llm.berserker classified LLM at match_started — must NOT read
-    // "HEURISTIC · llm.berserker" during the opening ticks (the reported bug).
-    render(<SpecPanel gauges={[gauge({ pilotId: "pilot.llm.berserker", isLlm: true })]} />);
+  it("labels an LLM pilot only from canonical evidence metadata", () => {
+    render(<SpecPanel gauges={[gauge({ isLlm: true, persona: "berserker" })]} />);
     const pilot = screen.getByTestId("spec-pilot-mech.x.01");
     expect(pilot.textContent).toContain("LLM");
     expect(pilot.textContent).toContain("berserker");
-    expect(pilot.textContent).not.toContain("HEURISTIC");
+    expect(pilot.textContent).not.toContain("UNKNOWN");
   });
 
-  it("shows a heuristic pilot archetype when there is no LLM evidence", () => {
+  it("shows unknown with the exact pilot id when identity metadata is absent", () => {
     render(<SpecPanel gauges={[gauge({})]} />);
     const pilot = screen.getByTestId("spec-pilot-mech.x.01");
-    expect(pilot.textContent).toContain("HEURISTIC");
-    expect(pilot.textContent).toContain("tactician");
+    expect(pilot.textContent).toBe("UNKNOWN · pilot.tactician");
   });
 
   it("marks a destroyed mech in the status lamp + section", () => {
