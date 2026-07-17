@@ -55,6 +55,44 @@ def _aggressive_spec_dict(**overrides: Any) -> dict[str, Any]:
     return spec
 
 
+def _human_spec_dict(**overrides: Any) -> dict[str, Any]:
+    spec: dict[str, Any] = {
+        "schema_version": "0.2.0",
+        "kind": "steel_onslaught.pilot",
+        "id": "pilot.human.browser",
+        "display_name": "Browser Human",
+        "archetype": "human",
+        "lineage": {"parent": None},
+        "parameters": {"input_source": "browser_command"},
+    }
+    spec.update(overrides)
+    return spec
+
+
+@pytest.mark.unit
+def test_human_pilot_is_a_first_class_closed_typed_spec() -> None:
+    spec = ModelSOPilotSpec.model_validate(_human_spec_dict())
+
+    assert spec.archetype == "human"
+    assert spec.parameters.input_source == "browser_command"  # type: ignore[union-attr]
+    with pytest.raises(ValidationError):
+        ModelSOPilotSpec.model_validate(
+            _human_spec_dict(parameters={"input_source": "llm_completion"})
+        )
+    with pytest.raises(ValidationError):
+        ModelSOPilotSpec.model_validate(
+            _human_spec_dict(parameters={"input_source": "browser_command", "model": None})
+        )
+
+
+@pytest.mark.unit
+def test_human_capability_requires_bumped_schema_without_relabeling_legacy_specs() -> None:
+    with pytest.raises(ValidationError, match=r"expected '0\.2\.0'"):
+        ModelSOPilotSpec.model_validate(_human_spec_dict(schema_version="0.1.0"))
+    with pytest.raises(ValidationError, match=r"expected '0\.1\.0'"):
+        ModelSOPilotSpec.model_validate(_aggressive_spec_dict(schema_version="0.2.0"))
+
+
 def _defensive_params(**overrides: Any) -> dict[str, Any]:
     params: dict[str, Any] = {
         "vent_headroom_below_redline": 8,

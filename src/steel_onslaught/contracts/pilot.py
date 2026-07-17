@@ -94,11 +94,20 @@ class ModelSOLlmPilotParams(BaseModel):
     )
 
 
+class ModelSOHumanPilotParams(BaseModel):
+    """Identity-only declaration for a future injected browser-command pilot."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    input_source: Literal["browser_command"]
+
+
 _ARCHETYPE_PARAMS: dict[str, type[BaseModel]] = {
     "aggressive": ModelSOAggressivePilotParams,
     "defensive": ModelSODefensivePilotParams,
     "predictive": ModelSOPredictivePilotParams,
     "llm": ModelSOLlmPilotParams,
+    "human": ModelSOHumanPilotParams,
 }
 
 
@@ -107,18 +116,19 @@ class ModelSOPilotSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    schema_version: Literal["0.1.0"] = "0.1.0"
+    schema_version: Literal["0.1.0", "0.2.0"] = "0.1.0"
     kind: Literal["steel_onslaught.pilot"] = "steel_onslaught.pilot"
 
     id: PilotId
     display_name: str = Field(min_length=1)
-    archetype: Literal["aggressive", "defensive", "predictive", "llm"]
+    archetype: Literal["aggressive", "defensive", "predictive", "llm", "human"]
     lineage: ModelSOPilotLineage
     parameters: (
         ModelSOAggressivePilotParams
         | ModelSODefensivePilotParams
         | ModelSOPredictivePilotParams
         | ModelSOLlmPilotParams
+        | ModelSOHumanPilotParams
     )
 
     @model_validator(mode="after")
@@ -128,6 +138,16 @@ class ModelSOPilotSpec(BaseModel):
             raise ValueError(
                 f"parameters model {type(self.parameters).__name__} does not match "
                 f"archetype {self.archetype!r} (expected {expected.__name__})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _schema_version_matches_human_capability(self) -> Self:
+        expected = "0.2.0" if self.archetype == "human" else "0.1.0"
+        if self.schema_version != expected:
+            raise ValueError(
+                f"schema_version {self.schema_version!r} does not match "
+                f"archetype {self.archetype!r}; expected {expected!r}"
             )
         return self
 

@@ -13,6 +13,12 @@ from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOFrontendBootstrap,
 )
+from steel_onslaught.contracts.player_selection import (
+    ModelSOModelPlayerOptionBinding,
+    ModelSOPlayerRosterBinding,
+    ModelSOSeatLaunchPolicy,
+    validate_player_roster_against_overlay,
+)
 from steel_onslaught.match.composition import (
     build_llm_dependencies,
     load_application_overlay,
@@ -93,6 +99,18 @@ def _http_provider() -> dict[str, object]:
     }
 
 
+def _model_identity(
+    *, identity_id: str = "model_identity.primary", provider_id: str = "stub"
+) -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "kind": "steel_onslaught.model_identity",
+        "model_identity_id": identity_id,
+        "display_name": "Primary local model",
+        "provider_binding_id": provider_id,
+    }
+
+
 def _with_http_provider(tmp_path: Path) -> dict[str, object]:
     raw = _overlay_data(tmp_path)
     llm = dict(_require_object_dict(raw["llm"]))
@@ -100,6 +118,87 @@ def _with_http_provider(tmp_path: Path) -> dict[str, object]:
     llm["secret_resolver"] = {"kind": "injected"}
     raw["llm"] = llm
     return raw
+
+
+@pytest.mark.unit
+def test_model_identity_registry_resolves_only_explicit_provider_bindings(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    llm = _require_object_dict(raw["llm"])
+    llm["model_identities"] = (_model_identity(),)
+
+    overlay = ModelSOApplicationOverlay.model_validate(raw)
+
+    assert overlay.llm.model_identities[0].model_identity_id == "model_identity.primary"
+    assert overlay.llm.model_identities[0].provider_binding_id == "stub"
+
+
+@pytest.mark.unit
+def test_model_identity_registry_rejects_unknown_and_duplicate_refs(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    llm = _require_object_dict(raw["llm"])
+    llm["model_identities"] = (_model_identity(provider_id="missing"),)
+    with pytest.raises(ValueError, match="unknown provider bindings"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+    llm["model_identities"] = (_model_identity(), _model_identity())
+    with pytest.raises(ValueError, match="unique model_identity_id"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_model_identity_registry_is_required_even_when_explicitly_empty(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    llm = _require_object_dict(raw["llm"])
+    assert llm["model_identities"] == []
+    del llm["model_identities"]
+
+    with pytest.raises(ValueError, match="model_identities"):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_roster_model_option_resolves_overlay_identity_and_provider_chain(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    llm = _require_object_dict(raw["llm"])
+    llm["model_identities"] = (_model_identity(),)
+    overlay = ModelSOApplicationOverlay.model_validate(raw)
+    option = ModelSOModelPlayerOptionBinding(
+        kind="model",
+        option_id="player_option.primary",
+        display_name="Primary model",
+        model_identity_id="model_identity.primary",
+        pilot_spec_id="pilot.llm.primary",
+        persona_id="berserker",
+        input_source="llm_completion",
+    )
+    roster = ModelSOPlayerRosterBinding(
+        schema_version="1",
+        kind="steel_onslaught.player_roster",
+        roster_id="roster.primary",
+        options=(option,),
+        seats=(
+            ModelSOSeatLaunchPolicy(
+                side="red",
+                loadout_id="loadout.playable.red_light",
+                allowed_option_ids=(option.option_id,),
+            ),
+            ModelSOSeatLaunchPolicy(
+                side="blue",
+                loadout_id="loadout.playable.blue_light",
+                allowed_option_ids=(option.option_id,),
+            ),
+        ),
+    )
+
+    validate_player_roster_against_overlay(roster=roster, overlay=overlay)
+
+    unknown = roster.model_copy(
+        update={
+            "options": (option.model_copy(update={"model_identity_id": "model_identity.unknown"}),)
+        }
+    )
+    with pytest.raises(ValueError, match="unknown model identities"):
+        validate_player_roster_against_overlay(roster=unknown, overlay=overlay)
 
 
 class _NamedGraphResolver:

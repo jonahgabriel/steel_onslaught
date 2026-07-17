@@ -17,6 +17,8 @@ from pydantic import (
     model_validator,
 )
 
+from steel_onslaught.contracts.player_selection import ModelSOModelIdentityBinding
+
 
 class _ClosedBinding(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -181,14 +183,29 @@ class ModelSOLlmBindings(_ClosedBinding):
     """Complete provider, persona, and secret-capability selection."""
 
     providers: tuple[LlmProviderBinding, ...] = Field(min_length=1)
+    model_identities: tuple[ModelSOModelIdentityBinding, ...]
     personas_dir: Path
     secret_resolver: SecretResolverBinding
 
     @model_validator(mode="after")
-    def _unique_provider_ids(self) -> Self:
+    def _valid_provider_and_model_identity_ids(self) -> Self:
         provider_ids = [provider.provider_id for provider in self.providers]
         if len(provider_ids) != len(set(provider_ids)):
             raise ValueError("providers must declare unique provider_id values")
+        identity_ids = [identity.model_identity_id for identity in self.model_identities]
+        if len(identity_ids) != len(set(identity_ids)):
+            raise ValueError("model_identities must declare unique model_identity_id values")
+        unknown_providers = sorted(
+            {
+                identity.provider_binding_id
+                for identity in self.model_identities
+                if identity.provider_binding_id not in provider_ids
+            }
+        )
+        if unknown_providers:
+            raise ValueError(
+                f"model_identities reference unknown provider bindings: {unknown_providers}"
+            )
         if self.secret_resolver.kind == "none" and any(
             isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
             and provider.secret_ref is not None
@@ -249,6 +266,7 @@ __all__ = [
     "ModelSOInjectedSecretResolverBinding",
     "ModelSOLlmBindings",
     "ModelSOLlmRetryBinding",
+    "ModelSOModelIdentityBinding",
     "ModelSONoSecretResolverBinding",
     "ModelSOOpenAICompatibleProviderBinding",
     "ModelSOSQLiteEvaluationStorageBinding",

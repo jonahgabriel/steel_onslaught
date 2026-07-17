@@ -28,6 +28,7 @@ def complete_test_overlay(raw: dict[str, object], root: Path) -> dict[str, objec
                 {"kind": "stub", "provider_id": "qwen27", "model": "qwen27-test"},
                 {"kind": "stub", "provider_id": "deepseek", "model": "deepseek-test"},
             ],
+            "model_identities": [],
             "personas_dir": str(_REPO_ROOT / "contracts_data/pilots/personas"),
             "secret_resolver": {"kind": "none"},
         },
