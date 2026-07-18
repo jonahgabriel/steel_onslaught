@@ -48,6 +48,7 @@
     "seats": [
       {
         "side": "red",
+        "default_option_id": "player_option.glm_model",
         "allowed_option_ids": [
           "player_option.browser_human",
           "player_option.local_model",
@@ -58,6 +59,7 @@
       },
       {
         "side": "blue",
+        "default_option_id": "player_option.glm_model",
         "allowed_option_ids": [
           "player_option.local_model",
           "player_option.openrouter_model",

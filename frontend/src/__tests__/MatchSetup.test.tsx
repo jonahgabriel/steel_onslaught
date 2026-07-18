@@ -69,6 +69,33 @@ describe("MatchSetup safe player intent", () => {
     expect(screen.getByRole("button", { name: "START MATCH" })).toBeEnabled();
   });
 
+  it("uses explicit seat defaults instead of option names or ordering", () => {
+    const initial = bootstrap();
+    if (initial.player_roster === null) throw new Error("fixture roster must be available");
+    const configuredRoster = {
+      ...initial.player_roster,
+      seats: initial.player_roster.seats.map((seat) => ({
+        ...seat,
+        default_option_id:
+          seat.side === "red" ? "player_option.local_model" : "player_option.openrouter_model",
+      })),
+    };
+
+    render(
+      <MatchSetup
+        bootstrap={{ ...initial, player_roster: configuredRoster }}
+        capability={{ requestStart: vi.fn() }}
+      />,
+    );
+
+    expect((screen.getByLabelText("red pilot") as HTMLSelectElement).value).toBe(
+      "player_option.local_model",
+    );
+    expect((screen.getByLabelText("blue pilot") as HTMLSelectElement).value).toBe(
+      "player_option.openrouter_model",
+    );
+  });
+
   it("emits only typed non-authoritative intent when an explicit capability exists", () => {
     const requestStart = vi.fn();
     render(<MatchSetup bootstrap={bootstrap()} capability={{ requestStart }} />);

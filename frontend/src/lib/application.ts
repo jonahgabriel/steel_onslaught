@@ -43,6 +43,8 @@ export type PublicPlayerOption = PublicHumanPlayerOption | PublicModelPlayerOpti
 export interface PublicSeatLaunchPolicy {
   readonly side: PlayerSide;
   readonly allowed_option_ids: readonly string[];
+  /** Server-declared default; null means this seat intentionally has no default. */
+  readonly default_option_id: string | null;
 }
 
 export interface PlayerRosterProjection {
@@ -184,7 +186,7 @@ function playerOption(value: unknown, context: string): PublicPlayerOption {
 
 function seatPolicy(value: unknown, context: string): PublicSeatLaunchPolicy {
   const seat = object(value, context);
-  exactKeys(seat, ["side", "allowed_option_ids"], context);
+  exactKeys(seat, ["side", "allowed_option_ids", "default_option_id"], context);
   const side = seat["side"];
   if (side !== "red" && side !== "blue") fail(`${context}.side must be red or blue`);
   const allowed = list(seat["allowed_option_ids"], `${context}.allowed_option_ids`).map(
@@ -198,7 +200,19 @@ function seatPolicy(value: unknown, context: string): PublicSeatLaunchPolicy {
   if (allowed.length < 1 || new Set(allowed).size !== allowed.length) {
     fail(`${context}.allowed_option_ids must be nonempty and unique`);
   }
-  return { side, allowed_option_ids: allowed };
+  const rawDefault = seat["default_option_id"];
+  const defaultOption =
+    rawDefault === null
+      ? null
+      : identifier(
+          rawDefault,
+          /^player_option\.[a-z0-9][a-z0-9_.-]*$/,
+          `${context}.default_option_id`,
+        );
+  if (defaultOption !== null && !allowed.includes(defaultOption)) {
+    fail(`${context}.default_option_id must be one of allowed_option_ids`);
+  }
+  return { side, allowed_option_ids: allowed, default_option_id: defaultOption };
 }
 
 function playerRoster(value: unknown): PlayerRosterProjection {
