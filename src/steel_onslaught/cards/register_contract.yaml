@@ -1,0 +1,37 @@
+---
+# Inert ONEX descriptor for the pure register reducer.
+#
+# This descriptor documents the typed reducer boundary only. No application
+# registry, producer, runner, or event-envelope builder is activated here;
+# those remain later composition work.
+name: register_execution_reducer
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: reducer
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  Pure deterministic programmed-register reducer. Given explicit seat contexts
+  and an injected immutable card catalog, resolves every register for every
+  seat in priority/initiative/seat order. Short-deck AUTO_REMAIN and prior-card
+  HEAT_LOCKED outcomes remain distinct. No path lookup, default deck, I/O,
+  event publication, runner, or runtime state mutation is owned here.
+
+handler:
+  module: steel_onslaught.cards.registers
+  class: RegisterExecutionReducer
+
+handler_routing:
+  default_handler: steel_onslaught.cards.registers:RegisterExecutionReducer
+
+descriptor:
+  node_archetype: reducer
+  purity: pure
+  idempotent: true
+  timeout_ms: 200
+
+event_bus:
+  subscribe_topics: []
+  publish_topics: []
+
+metadata:
+  transport_type: in_process
