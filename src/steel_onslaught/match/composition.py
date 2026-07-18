@@ -33,6 +33,7 @@ from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProvid
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOCardCatalogBinding,
+    ModelSOCardProgrammerBinding,
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOStubLlmProviderBinding,
 )
@@ -86,6 +87,7 @@ from steel_onslaught.llm.effect import (
 )
 from steel_onslaught.llm.personas import PersonaRegistry
 from steel_onslaught.llm.pilot import LLMPilot, LlmPilotFailurePolicy
+from steel_onslaught.llm.programming import LLMProgrammingPilot
 from steel_onslaught.llm.schemas import (
     ModelSOLlmPilotSelection,
     ProtocolHttpTransport,
@@ -748,6 +750,49 @@ def _validate_llm_pilot_bindings(
         llm.persona_registry.require(spec.parameters.persona)
 
 
+def build_card_programmers(
+    bindings: tuple[ModelSOCardProgrammerBinding, ...],
+    *,
+    registry: PilotSpecRegistry,
+    llm: LlmDependencies,
+) -> Mapping[str, ProgrammingPilot]:
+    """Resolve explicit card seat bindings into fail-closed LLM programmers.
+
+    The overlay owns only stable seat/spec references.  This helper resolves
+    each reference through the already validated pilot registry and injected
+    LLM graph, then constructs the whole-round capability with the exact
+    provider client and persona selected by that spec.  A missing binding is
+    represented by an absent mapping entry; the card adapter then retains its
+    deterministic priority programmer for that seat.
+    """
+
+    programmers: dict[str, ProgrammingPilot] = {}
+    for binding in bindings:
+        if binding.side in programmers:
+            raise ValueError(f"card programmer seat {binding.side!r} is bound more than once")
+        spec = registry.get(binding.pilot_spec_id)
+        if spec is None:
+            raise PilotResolutionError(
+                f"unknown card programmer pilot_spec_id {binding.pilot_spec_id!r}"
+            )
+        if spec.archetype != "llm":
+            raise ValueError(
+                f"card programmer pilot spec {spec.id!r} must use llm archetype; "
+                f"got {spec.archetype!r}"
+            )
+        if not isinstance(spec.parameters, ModelSOLlmPilotParams):
+            raise TypeError(f"llm card programmer spec {spec.id!r} has invalid parameters")
+        client = llm.client_factory.client_for(spec.parameters.provider)
+        persona = llm.persona_registry.require(spec.parameters.persona)
+        programmers[binding.side] = LLMProgrammingPilot(
+            client=client,
+            persona=persona,
+            # Card programming never inherits decide-only/browser fallback.
+            failure_policy="raise",
+        )
+    return MappingProxyType(programmers)
+
+
 def load_loadout(path: Path) -> ModelSOLoadout:
     return ModelSOLoadout.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
@@ -948,15 +993,6 @@ def build_runtime_dependencies(
         load_card_runtime_snapshot(card_binding) if card_binding is not None else None
     )
     card_catalog = card_runtime_snapshot.card_catalog if card_runtime_snapshot is not None else None
-    if card_binding is not None and card_binding.card_mode_enabled:
-        if card_runtime_snapshot is None:
-            raise ValueError("enabled card mode requires an injected card runtime snapshot")
-        card_adapter = build_card_runner_adapter(
-            snapshot=card_runtime_snapshot,
-            programmers=card_programmers,
-        )
-    else:
-        card_adapter = None
     owns_llm = llm_dependencies is None
     llm = llm_dependencies or build_llm_dependencies(
         overlay,
@@ -1004,6 +1040,27 @@ def build_runtime_dependencies(
             llm,
             selected_pilot_spec_ids=selected_pilot_spec_ids,
         )
+        resolved_card_programmers = card_programmers
+        if card_binding is not None and card_binding.programmers:
+            if card_programmers is not None:
+                raise ValueError(
+                    "explicit overlay card programmer bindings cannot be combined with "
+                    "injected card_programmers"
+                )
+            resolved_card_programmers = build_card_programmers(
+                card_binding.programmers,
+                registry=pilot_registry,
+                llm=llm,
+            )
+        if card_binding is not None and card_binding.card_mode_enabled:
+            if card_runtime_snapshot is None:
+                raise ValueError("enabled card mode requires an injected card runtime snapshot")
+            card_adapter = build_card_runner_adapter(
+                snapshot=card_runtime_snapshot,
+                programmers=resolved_card_programmers,
+            )
+        else:
+            card_adapter = None
         try:
             arena = catalog.arenas[overlay.contracts.arena_id]
         except KeyError as exc:
@@ -1026,7 +1083,7 @@ def build_runtime_dependencies(
             card_catalog=card_catalog,
             card_runtime_snapshot=card_runtime_snapshot,
             card_adapter=card_adapter,
-            card_programmers=card_programmers,
+            card_programmers=resolved_card_programmers,
         )
     except Exception:
         if owns_llm:
@@ -1725,6 +1782,7 @@ __all__ = [
     "assemble_match_with_dependencies",
     "assemble_selected_match_live",
     "build_adaptation_dependencies",
+    "build_card_programmers",
     "build_card_runner_adapter",
     "build_duel_executor",
     "build_duel_executor_with_dependencies",
