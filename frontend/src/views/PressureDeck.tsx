@@ -385,6 +385,8 @@ export default function PressureDeck({
   }, [focusedEventId]);
 
   const gaugeList: GaugeState[] = useMemo(() => Object.values(state.gauges), [state.gauges]);
+  const redGauges = useMemo(() => gaugeList.filter((g) => g.side === "red"), [gaugeList]);
+  const rightGauges = useMemo(() => gaugeList.filter((g) => g.side !== "red"), [gaugeList]);
   const bottomKey = visible.length > 0 ? (visible[visible.length - 1]?.env.event_id ?? null) : null;
 
   return (
@@ -415,7 +417,7 @@ export default function PressureDeck({
       </header>
 
       <div className="pd-body">
-        <SpecPanel gauges={gaugeList} />
+        <SpecPanel gauges={redGauges} side="left" />
 
         <div className="pd-arena-cell" data-testid="arena-cell">
           {/* ArenaView is ALWAYS mounted so its own envelope subscription is
@@ -427,18 +429,21 @@ export default function PressureDeck({
           {gaugeList.length === 0 ? <AwaitingTransmission className="pd-arena-empty" /> : null}
         </div>
 
-        <EventRiver
-          groups={groups}
-          hiddenCount={windowed.hiddenCount}
-          sides={state.sides}
-          laneMap={laneMap}
-          highlight={highlight}
-          unresolved={pairing.unresolved}
-          focusedEventId={focusedEventId}
-          bottomKey={bottomKey}
-          onSelect={onSelect}
-          onHover={onHover}
-        />
+        <div className="pd-rightcol" data-testid="right-col">
+          <SpecPanel gauges={rightGauges} side="right" emptyPlaceholder={false} />
+          <EventRiver
+            groups={groups}
+            hiddenCount={windowed.hiddenCount}
+            sides={state.sides}
+            laneMap={laneMap}
+            highlight={highlight}
+            unresolved={pairing.unresolved}
+            focusedEventId={focusedEventId}
+            bottomKey={bottomKey}
+            onSelect={onSelect}
+            onHover={onHover}
+          />
+        </div>
 
         {selected !== null ? (
           <EnvelopeInspector

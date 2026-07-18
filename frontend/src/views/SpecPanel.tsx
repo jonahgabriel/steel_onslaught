@@ -249,16 +249,22 @@ function MechSpec({ g }: { g: GaugeState }): React.JSX.Element {
 
 export interface SpecPanelProps {
   gauges: readonly GaugeState[];
+  side?: "left" | "right";
+  emptyPlaceholder?: boolean;
 }
 
 const SIDE_ORDER: Record<Side, number> = { red: 0, blue: 1, neutral: 2 };
 
-export default function SpecPanel({ gauges }: SpecPanelProps): React.JSX.Element {
+export default function SpecPanel({
+  gauges,
+  side = "left",
+  emptyPlaceholder = true,
+}: SpecPanelProps): React.JSX.Element {
   const ordered = [...gauges].sort((a, b) => SIDE_ORDER[a.side] - SIDE_ORDER[b.side]);
   return (
-    <div className="pd-rail" data-testid="spec-rail">
+    <div className="pd-rail" data-rail-side={side} data-testid={`spec-rail-${side}`}>
       {ordered.length === 0 ? (
-        <div className="pd-earlier">awaiting match_started…</div>
+        emptyPlaceholder ? <div className="pd-earlier">awaiting match_started…</div> : null
       ) : (
         ordered.map((g) => <MechSpec key={g.mechId} g={g} />)
       )}

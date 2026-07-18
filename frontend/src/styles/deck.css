@@ -516,6 +516,18 @@ body {
   flex-direction: column;
   gap: 0.75rem;
 }
+.pd-rail[data-rail-side="right"] {
+  border-right: none;
+  flex: 0 0 auto;
+}
+.pd-rightcol {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--seam);
+}
 /* ---- mech spec panel (Rev 2 left rail) ---- */
 .pd-spec {
   padding: 0.55rem 0.6rem;
@@ -754,6 +766,11 @@ body {
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--seam);
+}
+.pd-rightcol .pd-river-wrap {
+  border-left: none;
+  border-top: 1px solid var(--seam);
+  flex: 1;
 }
 .pd-river-title {
   font-family: var(--font-stencil);
