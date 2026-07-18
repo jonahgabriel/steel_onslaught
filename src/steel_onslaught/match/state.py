@@ -200,7 +200,11 @@ class ModelSOMatchState(BaseModel):
     tick: int = Field(default=0, ge=0)
     status: SOMatchStatus = SOMatchStatus.PENDING
     seed: int = Field(ge=0, description="Per-match RNG seed recorded by MATCH_STARTED")
-    max_ticks: int = Field(gt=0, description="Hard upper bound on match length in ticks")
+    max_ticks: int | None = Field(
+        default=None,
+        gt=0,
+        description="Optional debug/test upper bound; None runs until terminal evidence",
+    )
     mech_states: dict[str, ModelSOMechRuntimeState] = Field(default_factory=dict)
     winner_id: str | None = Field(default=None, description="Winning player_id; None on draws")
     end_reason: SOMatchEndReason | None = None
@@ -219,10 +223,10 @@ class ModelSOMatchState(BaseModel):
 
     @model_validator(mode="after")
     def _tick_within_bound(self) -> ModelSOMatchState:
-        if self.tick > self.max_ticks:
+        if self.max_ticks is not None and self.tick > self.max_ticks:
             raise ValueError(
                 f"tick ({self.tick}) must not exceed max_ticks ({self.max_ticks}): "
-                "the match is guaranteed to terminate at the bound"
+                "this match declared an explicit tick cap"
             )
         return self
 

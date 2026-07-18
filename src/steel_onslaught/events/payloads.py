@@ -87,7 +87,7 @@ class ModelSOCurrentLiveMechSnapshot(ModelSOMechRuntimeState):
 
 class ModelSOMatchStartedPayload(_ClosedPayload):
     seed: StrictInt = Field(ge=0)
-    max_ticks: StrictInt = Field(gt=0)
+    max_ticks: StrictInt | None = Field(..., gt=0)
     mechs: tuple[ModelSOCurrentLiveMechSnapshot, ...] = Field(min_length=1)
     arena: ModelSOCurrentLiveArenaSnapshot = Field(...)
     launch_provenance: ModelSOMatchLaunchProvenance | None = Field(

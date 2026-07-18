@@ -82,6 +82,8 @@ export interface SOArenaSnapshot {
   spawn_a: SOPosition;
   spawn_b: SOPosition;
   obstacles: SOPosition[];
+  sudden_death_start_tick: number | null;
+  sudden_death_damage_base: number;
 }
 
 export type SOModeId = "recon" | "assault" | "evasion";
@@ -236,7 +238,8 @@ export type SODecisionSource = SOHumanDecisionSource | SOModelDecisionSource;
 
 export interface MatchStartedPayload {
   seed: number;
-  max_ticks: number;
+  /** Null means the match runs until canonical terminal evidence. */
+  max_ticks: number | null;
   mechs: SOMechRuntimeState[];
   arena: SOArenaSnapshot;
   launch_provenance?: SOMatchLaunchProvenance;
@@ -629,6 +632,15 @@ function positiveInt(record: Record<string, unknown>, key: string, context: stri
     fail(context, `field ${JSON.stringify(key)} must be > 0`);
   }
   return value;
+}
+
+function nullablePositiveInt(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): number | null {
+  if (record[key] === null) return null;
+  return positiveInt(record, key, context);
 }
 
 function boundedNum(
@@ -1159,6 +1171,8 @@ function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
     "spawn_a",
     "spawn_b",
     "obstacles",
+    "sudden_death_start_tick",
+    "sudden_death_damage_base",
   ] as const;
   rejectUnknown(record, fields, context);
   requireFields(record, fields, context);
@@ -1182,6 +1196,8 @@ function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
   const obstacles = rawObstacles.map((cell, index) =>
     parsePosition(cell, `${context}.obstacles[${index}]`),
   );
+  const suddenDeathStartTick = nullablePositiveInt(record, "sudden_death_start_tick", context);
+  const suddenDeathDamageBase = positiveInt(record, "sudden_death_damage_base", context);
   const cells = new Set(obstacles.map((cell) => `${cell.x},${cell.y}`));
   if (cells.size !== obstacles.length) {
     fail(context, 'field "obstacles" contains duplicate cells');
@@ -1209,6 +1225,8 @@ function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
     spawn_a: spawnA,
     spawn_b: spawnB,
     obstacles,
+    sudden_death_start_tick: suddenDeathStartTick,
+    sudden_death_damage_base: suddenDeathDamageBase,
   };
 }
 
@@ -1462,7 +1480,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         : undefined;
     return {
       seed: nonNegativeInt(record, "seed", context),
-      max_ticks: positiveInt(record, "max_ticks", context),
+      max_ticks: nullablePositiveInt(record, "max_ticks", context),
       mechs: parsedMechs,
       arena,
       ...(launchProvenance === undefined ? {} : { launch_provenance: launchProvenance }),
@@ -2183,23 +2201,31 @@ export function parseHistoricalReplayEnvelope(raw: unknown): SOEventEnvelope {
     });
     const first = asRecord(mechs[0], `${context}.payload.mechs[0]`);
     const second = asRecord(mechs[1], `${context}.payload.mechs[1]`);
+    const rawArena =
+      "arena" in payload
+        ? payload["arena"]
+        : {
+            schema_version: "0.1.0",
+            kind: "steel_onslaught.arena_snapshot",
+            arena_id: "historical_open_field",
+            size: 40,
+            spawn_a: first["position"],
+            spawn_b: second["position"],
+            obstacles: [],
+          };
+    const arena = asRecord(rawArena, `${context}.payload.arena`);
     projected = {
       ...record,
       payload: {
         ...payload,
         mechs,
-        arena:
-          "arena" in payload
-            ? payload["arena"]
-            : {
-                schema_version: "0.1.0",
-                kind: "steel_onslaught.arena_snapshot",
-                arena_id: "historical_open_field",
-                size: 40,
-                spawn_a: first["position"],
-                spawn_b: second["position"],
-                obstacles: [],
-              },
+        arena: {
+          ...arena,
+          sudden_death_start_tick:
+            "sudden_death_start_tick" in arena ? arena["sudden_death_start_tick"] : null,
+          sudden_death_damage_base:
+            "sudden_death_damage_base" in arena ? arena["sudden_death_damage_base"] : 8,
+        },
       },
     };
   } else if (record["event_type"] === "llm_completion_resolved") {

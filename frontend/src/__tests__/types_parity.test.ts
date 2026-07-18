@@ -69,6 +69,8 @@ const CURRENT_LIVE_ARENA_FIELDS = [
   "spawn_a",
   "spawn_b",
   "obstacles",
+  "sudden_death_start_tick",
+  "sudden_death_damage_base",
 ] as const;
 
 type MutableObject = Record<string, unknown>;
@@ -908,5 +910,36 @@ describe("types parity against Python-emitted fixtures", () => {
     if (destroyed.event_type === "mech_destroyed") {
       expect(destroyed.payload.source_mech_id).toBeNull();
     }
+  });
+
+  it("accepts an explicit null match tick cap but rejects an omitted key", () => {
+    const uncapped = parseEnvelope(
+      corruptPayload("match_started", (payload) => {
+        payload["max_ticks"] = null;
+      }),
+    );
+    expect(uncapped.event_type).toBe("match_started");
+    if (uncapped.event_type === "match_started") {
+      expect(uncapped.payload.max_ticks).toBeNull();
+    }
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          delete payload["max_ticks"];
+        }),
+      ),
+    ).toThrow(/max_ticks/);
+  });
+
+  it("projects neutral sudden-death defaults onto an old arena snapshot", () => {
+    const raw = loadFixture("match_started");
+    const payload = objectValue(raw["payload"], "match_started.payload");
+    const arena = objectValue(payload["arena"], "match_started.payload.arena");
+    delete arena["sudden_death_start_tick"];
+    delete arena["sudden_death_damage_base"];
+    const projected = parseHistoricalReplayEnvelope(raw);
+    if (projected.event_type !== "match_started") throw new Error("wrong fixture event type");
+    expect(projected.payload.arena.sudden_death_start_tick).toBeNull();
+    expect(projected.payload.arena.sudden_death_damage_base).toBe(8);
   });
 });

@@ -140,7 +140,7 @@ class MatchRunner:
         catalog: MatchContractCatalog,
         arena: ModelSOArenaSpec,
         pilots: dict[str, PilotProtocol],
-        max_ticks: int,
+        max_ticks: int | None = None,
         side_a: str = "a",
         side_b: str = "b",
         facing_a: int = _FACING_A,
@@ -167,6 +167,12 @@ class MatchRunner:
         self._facing_b = facing_b
         self._arena_size = self._arena.size
         self._obstacles = self._arena.obstacle_cells
+        self._sudden_death_start_tick = self._arena.sudden_death_start_tick
+        self._sudden_death_damage_base = self._arena.sudden_death_damage_base
+        if max_ticks is None and self._sudden_death_start_tick is None:
+            raise ValueError(
+                "uncapped matches require arena sudden-death convergence configuration"
+            )
         self._catalog = catalog
         self._pilots = dict(pilots)
         self._launch_provenance = self._validate_launch_provenance(
@@ -319,6 +325,8 @@ class MatchRunner:
                 if self.fold.state.status is not SOMatchStatus.RUNNING:
                     break  # an earlier resolution ended the match
                 self._resolve_intent(intent)
+            if self.fold.state.status is SOMatchStatus.RUNNING:
+                self._apply_sudden_death(next_tick)
 
         # Decisive endings terminate via VICTORY_DECLARED; the plan requires a
         # final MATCH_ENDED re-statement as well (the lifecycle reducer emits
@@ -333,6 +341,46 @@ class MatchRunner:
                 )
             )
         return self.fold.state
+
+    def _apply_sudden_death(self, tick: int) -> None:
+        """Apply deterministic arena pressure to an uncapped match.
+
+        This is game-design convergence, not a hidden lifecycle timer. Every
+        attrition fact is emitted through the canonical damage/destruction path
+        and is therefore folded and replayed exactly like weapon damage.
+        """
+        start = self._sudden_death_start_tick
+        if start is None or tick < start or self._max_ticks is not None:
+            return
+        damage = self._sudden_death_damage_base * (tick - start + 1)
+        for mech in sorted(self.fold.state.living_mechs(), key=lambda item: item.mech_id):
+            if self.fold.state.status is not SOMatchStatus.RUNNING:
+                break
+            current = self.fold.state.mech_states[mech.mech_id]
+            hp_after = max(0, current.hp - damage)
+            self._bus.publish(
+                self._make_subject_event(
+                    SOEventType.DAMAGE_APPLIED,
+                    tick=tick,
+                    mech=current,
+                    payload={
+                        "target_id": current.mech_id,
+                        "damage": current.hp - hp_after,
+                        "cause": "sudden_death",
+                        "hp_after": hp_after,
+                        "source_mech_id": None,
+                    },
+                )
+            )
+            if hp_after == 0:
+                self._bus.publish(
+                    self._make_subject_event(
+                        SOEventType.MECH_DESTROYED,
+                        tick=tick,
+                        mech=current,
+                        payload={"cause": "sudden_death", "source_mech_id": None},
+                    )
+                )
 
     @staticmethod
     def _validate_launch_provenance(

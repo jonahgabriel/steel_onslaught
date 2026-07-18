@@ -50,7 +50,7 @@ class CliApplicationFactory:
         red_loadout_path: Path,
         blue_loadout_path: Path,
         seed: int,
-        max_ticks: int,
+        max_ticks: int | None,
     ) -> LiveMatchStack:
         return assemble_match_live(
             overlay=overlay,
