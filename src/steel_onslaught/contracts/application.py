@@ -108,6 +108,38 @@ class ModelSOFrontendTransportBinding(_ClosedBinding):
         return value
 
 
+class ModelSOFrontendCommandGatewayBinding(_ClosedBinding):
+    """Public local-browser command ingress selected by the server root.
+
+    The binding exposes only a loopback WebSocket endpoint and the exact
+    process-local authority contract. Principal/session identities and all
+    provider capabilities remain server-held.
+    """
+
+    kind: Literal["websocket"]
+    contract: Literal["steel_onslaught.browser_command_gateway.v1"]
+    websocket_url: StrictStr = Field(min_length=1)
+    authority_scope: Literal["injected_process_session"]
+
+    @field_validator("websocket_url")
+    @classmethod
+    def _complete_loopback_websocket_endpoint(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
+            raise ValueError("websocket_url must be a complete ws(s) URL")
+        if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("websocket_url must use a loopback host")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("websocket_url must not contain user information")
+        if parsed.query or parsed.fragment:
+            raise ValueError("websocket_url must not contain a query or fragment")
+        if parsed.path in {"", "/"}:
+            raise ValueError("websocket_url must declare an explicit command path")
+        if parsed.port is None:
+            raise ValueError("websocket_url must declare an explicit port")
+        return value
+
+
 class ModelSOSecretRef(_ClosedBinding):
     """Opaque reference resolved by an injected capability, never secret material."""
 
@@ -264,6 +296,7 @@ class ModelSOFrontendBootstrap(_ClosedBinding):
     overlay_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     frontend_transport: ModelSOFrontendTransportBinding
     player_roster: ModelSOPlayerRosterProjection | None = None
+    command_gateway: ModelSOFrontendCommandGatewayBinding | None = None
 
 
 __all__ = [
@@ -271,6 +304,7 @@ __all__ = [
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOFrontendBootstrap",
+    "ModelSOFrontendCommandGatewayBinding",
     "ModelSOFrontendTransportBinding",
     "ModelSOInProcessBusBinding",
     "ModelSOInjectedSecretResolverBinding",

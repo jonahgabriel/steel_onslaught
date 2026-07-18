@@ -288,17 +288,31 @@ export interface LlmCompletionResolvedPayload {
   cost_usd: number | null;
 }
 
+export type LlmSemanticFailureCode =
+  | "malformed_json"
+  | "unknown_action"
+  | "action_unavailable"
+  | "invalid_action_parameters";
+
 export interface LlmCompletionFailedPayload {
   provider_id: string;
   reason_code: "provider_error" | "invalid_response" | "consumer_error" | "abandoned";
+  semantic_failure_code: LlmSemanticFailureCode | null;
   model: string | null;
+  finish_reason: string | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   cost_usd: number | null;
 }
 
 export interface MoveIntentPayload {
-  direction: "toward_enemy" | "defensive";
+  direction:
+    | "toward_enemy"
+    | "defensive"
+    | "flank_left"
+    | "flank_right"
+    | "toward_cover"
+    | "hold_position";
   speed: "full" | null;
 }
 
@@ -1561,7 +1575,28 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(
       record,
-      ["provider_id", "reason_code", "model", "prompt_tokens", "completion_tokens", "cost_usd"],
+      [
+        "provider_id",
+        "reason_code",
+        "semantic_failure_code",
+        "model",
+        "finish_reason",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+      ],
+      context,
+    );
+    requireFields(
+      record,
+      [
+        "semantic_failure_code",
+        "model",
+        "finish_reason",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+      ],
       context,
     );
     const reason_code = str(record, "reason_code", context);
@@ -1573,17 +1608,35 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     ) {
       fail(context, 'field "reason_code" is not a recognized LLM failure reason');
     }
+    const semantic_failure_code = nullableStr(record, "semantic_failure_code", context);
     if (
-      !("prompt_tokens" in record) ||
-      !("completion_tokens" in record) ||
-      !("cost_usd" in record)
+      semantic_failure_code !== null &&
+      semantic_failure_code !== "malformed_json" &&
+      semantic_failure_code !== "unknown_action" &&
+      semantic_failure_code !== "action_unavailable" &&
+      semantic_failure_code !== "invalid_action_parameters"
     ) {
-      fail(context, "nullable LLM failure usage fields are required");
+      fail(context, 'field "semantic_failure_code" is not a recognized semantic failure code');
+    }
+    if (reason_code === "invalid_response" && semantic_failure_code === null) {
+      fail(context, 'field "semantic_failure_code" is required for invalid_response');
+    }
+    if (reason_code !== "invalid_response" && semantic_failure_code !== null) {
+      fail(context, 'field "semantic_failure_code" is forbidden for this reason_code');
+    }
+    const finish_reason = nullableStr(record, "finish_reason", context);
+    if (
+      finish_reason !== null &&
+      (finish_reason.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(finish_reason))
+    ) {
+      fail(context, 'field "finish_reason" must be a 1-64 character safe token or null');
     }
     return {
       provider_id: str(record, "provider_id", context),
       reason_code,
+      semantic_failure_code,
       model: nullableStr(record, "model", context),
+      finish_reason,
       prompt_tokens: optionalNullableNonNegativeInt(record, "prompt_tokens", context) ?? null,
       completion_tokens:
         optionalNullableNonNegativeInt(record, "completion_tokens", context) ?? null,
@@ -1594,8 +1647,18 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(record, ["direction", "speed"], context);
     const direction = str(record, "direction", context);
-    if (direction !== "toward_enemy" && direction !== "defensive") {
-      fail(context, 'field "direction" must be "toward_enemy" or "defensive"');
+    if (
+      direction !== "toward_enemy" &&
+      direction !== "defensive" &&
+      direction !== "flank_left" &&
+      direction !== "flank_right" &&
+      direction !== "toward_cover" &&
+      direction !== "hold_position"
+    ) {
+      fail(
+        context,
+        'field "direction" must be toward_enemy, defensive, flank_left, flank_right, toward_cover, or hold_position',
+      );
     }
     const rawSpeed = record["speed"];
     if (rawSpeed !== undefined && rawSpeed !== null && rawSpeed !== "full") {

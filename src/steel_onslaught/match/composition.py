@@ -25,6 +25,7 @@ from steel_onslaught.commands.coordinator import (
     ProcessLocalMatchLaunchCoordinator,
 )
 from steel_onslaught.commands.inbox import ProcessLocalHumanDecisionInbox
+from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProviderCapability
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOOpenAICompatibleProviderBinding,
@@ -42,6 +43,7 @@ from steel_onslaught.contracts.pilot_registry import PilotResolutionError, Pilot
 from steel_onslaught.contracts.player_selection import (
     ModelSOHumanSeatAssignment,
     ModelSOMatchLaunchProvenance,
+    ModelSOModelSeatAssignment,
     ModelSOPlayerRosterBinding,
     Side,
 )
@@ -58,9 +60,11 @@ from steel_onslaught.learning.filesystem_artifacts import (
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.llm.client_http import (
+    BoundedLlmClient,
     HttpxJsonTransport,
     NoSecretResolver,
     OpenAICompatibleClient,
+    SelectedOnlyLlmClientBuilder,
     StaticLlmClientFactory,
     SystemSleeper,
 )
@@ -69,7 +73,7 @@ from steel_onslaught.llm.effect import (
     ObservedLlmClient,
 )
 from steel_onslaught.llm.personas import PersonaRegistry
-from steel_onslaught.llm.pilot import LLMPilot
+from steel_onslaught.llm.pilot import LLMPilot, LlmPilotFailurePolicy
 from steel_onslaught.llm.schemas import (
     ModelSOLlmPilotSelection,
     ProtocolHttpTransport,
@@ -206,16 +210,19 @@ class ApplicationPilotFactory:
         clients: ProtocolLlmClientFactory,
         personas: PersonaRegistry,
         observer: ProtocolLlmCompletionObserver | None = None,
+        failure_policy: LlmPilotFailurePolicy = "fallback",
     ) -> None:
         self._clients = clients
         self._personas = personas
         self._observer = observer
+        self._failure_policy = failure_policy
 
     def with_observer(self, observer: ProtocolLlmCompletionObserver) -> ProtocolPilotFactory:
         return ApplicationPilotFactory(
             clients=self._clients,
             personas=self._personas,
             observer=observer,
+            failure_policy=self._failure_policy,
         )
 
     def from_spec(self, spec: ModelSOPilotSpec) -> PilotProtocol:
@@ -253,6 +260,7 @@ class ApplicationPilotFactory:
         return LLMPilot(
             client=client,
             persona=self._personas.require(selection.persona_id),
+            failure_policy=self._failure_policy,
         )
 
 
@@ -491,8 +499,22 @@ def load_pilot_registry(directory: Path) -> PilotSpecRegistry:
 def _validate_llm_pilot_bindings(
     registry: PilotSpecRegistry,
     llm: LlmDependencies,
+    *,
+    selected_pilot_spec_ids: tuple[str, ...] | None = None,
 ) -> None:
-    for spec in registry.as_mapping().values():
+    specs = registry.as_mapping()
+    if selected_pilot_spec_ids is None:
+        selected_specs = tuple(specs.values())
+    else:
+        selected: list[ModelSOPilotSpec] = []
+        for spec_id in selected_pilot_spec_ids:
+            try:
+                selected.append(specs[spec_id])
+            except KeyError as exc:
+                raise PilotResolutionError(f"unknown exact pilot_id {spec_id!r}") from exc
+        selected_specs = tuple(selected)
+
+    for spec in selected_specs:
         if spec.archetype != "llm":
             continue
         if not isinstance(spec.parameters, ModelSOLlmPilotParams):
@@ -508,15 +530,36 @@ def load_loadout(path: Path) -> ModelSOLoadout:
 def build_llm_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
+    selected_provider_id: str | None = None,
+    pilot_failure_policy: LlmPilotFailurePolicy | None = None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
 ) -> LlmDependencies:
     """Build the immutable LLM dependency graph from the validated overlay."""
+    if selected_provider_id is None:
+        providers = overlay.llm.providers
+        resolved_failure_policy: LlmPilotFailurePolicy = "fallback"
+    else:
+        providers = (
+            SelectedOnlyLlmClientBuilder().select(
+                providers=overlay.llm.providers,
+                selected_provider_id=selected_provider_id,
+            ),
+        )
+        resolved_failure_policy = "raise"
+
+    if pilot_failure_policy is not None:
+        # The selected-provider default remains fail-closed for operator and
+        # CLI composition. Browser live sessions may opt into the explicit
+        # per-turn fallback policy so one malformed provider action cannot
+        # strand an otherwise running match without MATCH_ENDED evidence.
+        resolved_failure_policy = pilot_failure_policy
+
     binding = overlay.llm.secret_resolver
     secret_bearing = tuple(
         provider
-        for provider in overlay.llm.providers
+        for provider in providers
         if isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
         and provider.secret_ref is not None
     )
@@ -538,7 +581,7 @@ def build_llm_dependencies(
     persona_registry = PersonaRegistry.load(overlay.llm.personas_dir)
     http_providers = tuple(
         provider
-        for provider in overlay.llm.providers
+        for provider in providers
         if isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
     )
     resolved_transport: ProtocolHttpTransport | None
@@ -562,22 +605,33 @@ def build_llm_dependencies(
 
     try:
         clients: dict[str, ProtocolLlmClient] = {}
-        for provider in overlay.llm.providers:
+        for provider in providers:
             if isinstance(provider, ModelSOStubLlmProviderBinding):
                 clients[provider.provider_id] = StubLlmClient(model=provider.model)
             else:
                 assert resolved_transport is not None
                 assert resolved_sleeper is not None
-                clients[provider.provider_id] = OpenAICompatibleClient(
+                client: ProtocolLlmClient = OpenAICompatibleClient(
                     config=provider,
                     transport=resolved_transport,
                     secret_resolver=resolved_secrets,
                     sleeper=resolved_sleeper,
                 )
+                if selected_provider_id is not None:
+                    # A selected live launch is admitted once, then may need
+                    # one completion per pilot turn. Keep the completion
+                    # budget finite and explicit rather than one-shot.
+                    # The browser play horizon is 100 ticks with two pilots;
+                    # leave budget for malformed-response repair/fallback
+                    # attempts without turning a normal match into a budget
+                    # failure at the terminal horizon.
+                    client = BoundedLlmClient(client, max_completions=256)
+                clients[provider.provider_id] = client
         client_factory = StaticLlmClientFactory(clients)
         pilot_factory = ApplicationPilotFactory(
             clients=client_factory,
             personas=persona_registry,
+            failure_policy=resolved_failure_policy,
         )
         return LlmDependencies(
             client_factory=client_factory,
@@ -591,22 +645,57 @@ def build_llm_dependencies(
         raise
 
 
+def build_selected_llm_dependencies(
+    overlay: ModelSOApplicationOverlay,
+    *,
+    selected_provider_id: str,
+    secret_resolver: ProtocolSecretResolver | None = None,
+    http_transport: ProtocolHttpTransport | None = None,
+    sleeper: ProtocolSleeper | None = None,
+) -> LlmDependencies:
+    """Build exactly one explicitly selected, one-attempt live provider."""
+    return build_llm_dependencies(
+        overlay,
+        selected_provider_id=selected_provider_id,
+        secret_resolver=secret_resolver,
+        http_transport=http_transport,
+        sleeper=sleeper,
+    )
+
+
 def build_runtime_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
     llm_dependencies: LlmDependencies | None = None,
+    selected_provider_id: str | None = None,
+    selected_pilot_spec_ids: tuple[str, ...] | None = None,
+    llm_failure_policy: LlmPilotFailurePolicy | None = None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
 ) -> RuntimeDependencies:
     """Construct every selected outer adapter exactly once."""
+    if (selected_provider_id is None) != (selected_pilot_spec_ids is None):
+        raise ValueError(
+            "selected_provider_id and selected_pilot_spec_ids must be supplied together"
+        )
     if llm_dependencies is not None and any(
-        capability is not None for capability in (secret_resolver, http_transport, sleeper)
+        capability is not None
+        for capability in (
+            selected_provider_id,
+            selected_pilot_spec_ids,
+            llm_failure_policy,
+            secret_resolver,
+            http_transport,
+            sleeper,
+        )
     ):
         raise ValueError("prebuilt llm_dependencies cannot be combined with root capabilities")
     owns_llm = llm_dependencies is None
     llm = llm_dependencies or build_llm_dependencies(
         overlay,
+        selected_provider_id=selected_provider_id,
+        pilot_failure_policy=llm_failure_policy,
         secret_resolver=secret_resolver,
         http_transport=http_transport,
         sleeper=sleeper,
@@ -636,7 +725,11 @@ def build_runtime_dependencies(
             clock=clock,
         )
         pilot_registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
-        _validate_llm_pilot_bindings(pilot_registry, llm)
+        _validate_llm_pilot_bindings(
+            pilot_registry,
+            llm,
+            selected_pilot_spec_ids=selected_pilot_spec_ids,
+        )
         catalog = load_match_contract_catalog(overlay.contracts.catalog_dir)
         try:
             arena = catalog.arenas[overlay.contracts.arena_id]
@@ -661,6 +754,28 @@ def build_runtime_dependencies(
         if owns_llm:
             llm.close()
         raise
+
+
+def build_selected_runtime_dependencies(
+    overlay: ModelSOApplicationOverlay,
+    *,
+    selected_provider_id: str,
+    selected_pilot_spec_ids: tuple[str, ...],
+    failure_policy: LlmPilotFailurePolicy = "raise",
+    secret_resolver: ProtocolSecretResolver | None = None,
+    http_transport: ProtocolHttpTransport | None = None,
+    sleeper: ProtocolSleeper | None = None,
+) -> RuntimeDependencies:
+    """Construct runtime ports around exactly one selected live provider."""
+    return build_runtime_dependencies(
+        overlay,
+        selected_provider_id=selected_provider_id,
+        selected_pilot_spec_ids=selected_pilot_spec_ids,
+        llm_failure_policy=failure_policy,
+        secret_resolver=secret_resolver,
+        http_transport=http_transport,
+        sleeper=sleeper,
+    )
 
 
 def build_learning_dependencies(
@@ -1062,15 +1177,26 @@ def assemble_selected_match_live(
     identity: MatchIdentity,
     loadouts: Mapping[str, ModelSOLoadout],
     runtime_factory: Callable[[ModelSOApplicationOverlay], RuntimeDependencies],
+    live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
+    live_runtime_factory: Callable[
+        [ModelSOApplicationOverlay, str, tuple[str, ...]], RuntimeDependencies
+    ]
+    | None = None,
     seed: int,
     max_ticks: int,
 ) -> LiveMatchStack:
-    """Admit one selected human/stub match before constructing its runtime."""
+    """Admit one selected match before constructing its exact runtime lane."""
+
+    if (live_provider_capability is None) != (live_runtime_factory is None):
+        raise ValueError(
+            "live_provider_capability and live_runtime_factory must be supplied together"
+        )
 
     provenance = ProcessLocalMatchLaunchCoordinator(
         overlay=overlay,
         roster=roster,
         sessions=sessions,
+        live_provider_capability=live_provider_capability,
     ).admit_start_match(
         command,
         context=context,
@@ -1092,7 +1218,55 @@ def assemble_selected_match_live(
             )
         selected_loadouts[side] = loadout
 
-    dependencies = runtime_factory(overlay)
+    model_identities = {
+        model_identity.model_identity_id: model_identity
+        for model_identity in overlay.llm.model_identities
+    }
+    providers = {provider.provider_id: provider for provider in overlay.llm.providers}
+    selected_live_bindings: list[tuple[str, str]] = []
+    for assignment in assignments.values():
+        if not isinstance(assignment, ModelSOModelSeatAssignment):
+            continue
+        selected_loadout = selected_loadouts[assignment.side]
+        if selected_loadout.pilot_id != assignment.pilot_spec_id:
+            raise ValueError(
+                f"selected {assignment.side} model loadout pilot_id "
+                f"{selected_loadout.pilot_id!r} does not match admitted pilot_spec_id "
+                f"{assignment.pilot_spec_id!r}"
+            )
+        model_identity = model_identities[assignment.model_identity_id]
+        provider = providers[model_identity.provider_binding_id]
+        if not isinstance(provider, ModelSOStubLlmProviderBinding):
+            selected_live_bindings.append((provider.provider_id, assignment.pilot_spec_id))
+
+    # The same configured model may occupy both seats with different
+    # contract-bound personas (for example GLM sniper vs GLM opportunist).
+    # Build one provider lane and validate every selected pilot spec against
+    # it; distinct model identities/providers remain a separate capability
+    # decision and are rejected by launch admission.
+    unique_live_providers = list(
+        dict.fromkeys(provider_id for provider_id, _pilot_spec_id in selected_live_bindings)
+    )
+    if len(unique_live_providers) > 1:
+        raise ValueError("admitted launch must select one exact non-stub model identity")
+    if unique_live_providers:
+        if live_runtime_factory is None:
+            raise ValueError("admitted live provider has no live_runtime_factory")
+        selected_provider_id = unique_live_providers[0]
+        selected_pilot_spec_ids = tuple(
+            dict.fromkeys(
+                assignment.pilot_spec_id
+                for assignment in assignments.values()
+                if isinstance(assignment, ModelSOModelSeatAssignment)
+            )
+        )
+        dependencies = live_runtime_factory(
+            overlay,
+            selected_provider_id,
+            selected_pilot_spec_ids,
+        )
+    else:
+        dependencies = runtime_factory(overlay)
     try:
         inbox = ProcessLocalHumanLoopbackCoordinator(sessions=sessions)
         human_claims = {claim.side: claim for claim in context.human_seats}

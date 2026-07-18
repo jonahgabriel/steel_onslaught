@@ -13,10 +13,16 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictStr
 _JSON_INSTRUCTION = (
     "\n\nRespond with ONLY a JSON object, no prose, of shape:\n"
     '{"action": "<one of remain|move|fire_weapon|switch_mode|vent>", '
-    '"action_params": {"direction": "toward_enemy|defensive"} or '
+    '"action_params": {"direction": "toward_enemy|defensive|flank_left|'
+    'flank_right|toward_cover|hold_position"} or '
     '{"weapon_id": "..."} or {"target_mode": "assault|evasion|recon"} or {}, '
     '"confidence": 0.0-1.0, '
-    '"rationale": "<one short sentence explaining your reasoning>"}'
+    '"rationale": "<one short sentence explaining your reasoning>"}\n\n'
+    "For move, choose one direction: toward_enemy (advance), defensive "
+    "(kite/retreat), flank_left or flank_right (circle perpendicular to the "
+    "enemy axis), toward_cover (reposition toward nearby cover), or "
+    "hold_position (explicitly stay put). Do not default to a straight-line "
+    "advance when a flank or cover move is tactically useful."
 )
 
 

@@ -30,6 +30,7 @@ from steel_onslaught.commands.inbox import (
     ProcessLocalHumanDecisionInbox,
     canonical_observation_sha256,
 )
+from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProviderCapability
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.commands import (
     ModelSODisengagePlayerAction,
@@ -261,9 +262,11 @@ class ProcessLocalMatchLaunchCoordinator:
         overlay: ModelSOApplicationOverlay,
         roster: ModelSOPlayerRosterBinding,
         sessions: AuthenticatedSessionCapability,
+        live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
     ) -> None:
         self._overlay = overlay
         self._roster = roster
+        self._live_provider_capability = live_provider_capability
         self._authority = ProcessLocalCommandAuthority(
             overlay=overlay,
             roster=roster,
@@ -295,7 +298,6 @@ class ProcessLocalMatchLaunchCoordinator:
         """Authenticate, validate, enforce local providers, and bind one launch."""
 
         admission = self._authority.admit_start_match(command, context=context)
-        self._require_selected_model_providers_are_stub(command)
 
         selections = {selection.side: selection for selection in command.selections}
         candidate = ModelSOMatchLaunchProvenance(
@@ -321,13 +323,22 @@ class ProcessLocalMatchLaunchCoordinator:
                         f"command id {command.command_id} is already bound to another match launch"
                     )
                 return existing
+            self._authorize_selected_model_providers(
+                command,
+                context=context,
+                command_sha256=admission.command_sha256,
+            )
             self._records[command.command_id] = candidate
             return candidate
 
-    def _require_selected_model_providers_are_stub(
+    def _authorize_selected_model_providers(
         self,
         command: ModelSOStartMatchCommand,
+        *,
+        context: ModelSOStartMatchAuthorityContext,
+        command_sha256: Sha256Digest,
     ) -> None:
+        selected_live_bindings: list[tuple[str, str, str]] = []
         for selection in command.selections:
             option = self._options[selection.option_id]
             if not isinstance(option, ModelSOModelPlayerOptionBinding):
@@ -335,10 +346,43 @@ class ProcessLocalMatchLaunchCoordinator:
             identity = self._model_identities[option.model_identity_id]
             provider = self._providers[identity.provider_binding_id]
             if provider.kind != "stub":
-                raise NonStubModelProviderError(
-                    f"selected model option {option.option_id!r} requires a non-stub provider; "
-                    "the process-local playable gate accepts only stub providers"
+                selected_live_bindings.append(
+                    (option.option_id, identity.model_identity_id, provider.provider_id)
                 )
+
+        if not selected_live_bindings:
+            return
+        # Two seats may intentionally select the same model identity (the
+        # default browser launch is GLM-vs-GLM).  Admit the shared provider
+        # grant once; distinct live identities still require separate
+        # injected grants and remain fail-closed.
+        unique_live_bindings = list(
+            dict.fromkeys(
+                (model_identity_id, provider_id)
+                for _option_id, model_identity_id, provider_id in selected_live_bindings
+            )
+        )
+        if len(unique_live_bindings) > 1:
+            raise NonStubModelProviderError(
+                "the process-local live gate accepts one exact non-stub model identity per launch"
+            )
+        option_id, model_identity_id, provider_id = selected_live_bindings[0]
+        if self._live_provider_capability is None:
+            raise NonStubModelProviderError(
+                f"selected model option {option_id!r} requires a non-stub provider; "
+                "the process-local playable gate accepts only stub providers without "
+                "an explicit one-shot capability"
+            )
+        self._live_provider_capability.consume(
+            creator_principal_id=context.creator_principal_id,
+            creator_session_id=context.creator_session_id,
+            launch_command_id=command.command_id,
+            launch_command_sha256=command_sha256,
+            overlay_sha256=canonical_overlay_sha256(self._overlay),
+            roster_sha256=self._roster.canonical_sha256(),
+            model_identity_id=model_identity_id,
+            provider_id=provider_id,
+        )
 
     def _assignment_for(self, side: Side, option_id: str) -> SeatAssignment:
         option: PlayerOptionBinding = self._options[option_id]

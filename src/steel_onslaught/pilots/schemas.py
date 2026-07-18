@@ -104,6 +104,18 @@ class SOCompassDirection(StrEnum):
     NW = "nw"
 
 
+# One closed move-intent vocabulary shared by LLM, human-command, and event
+# contracts.  A direction must be executable by the deterministic runner.
+type SOMoveDirection = Literal[
+    "toward_enemy",
+    "defensive",
+    "flank_left",
+    "flank_right",
+    "toward_cover",
+    "hold_position",
+]
+
+
 class ModelSOPilotWeaponView(BaseModel):
     """Per-weapon readiness view exposed to the pilot."""
 

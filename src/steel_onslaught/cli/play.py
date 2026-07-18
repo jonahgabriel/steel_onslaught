@@ -1,0 +1,1265 @@
+"""Process-local browser play session composition.
+
+This module is deliberately below the transport boundary.  It composes an
+already injected selected-match stack with the browser command controller,
+using the stack's existing authenticated human inbox.  No socket, HTTP
+client, secret resolver, or provider discovery is performed here.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+from uuid import UUID
+
+import click
+import ulid
+import yaml  # type: ignore[import-untyped]
+from websockets.asyncio.server import Server, ServerConnection, broadcast, serve
+from websockets.datastructures import Headers
+from websockets.http11 import Request, Response
+
+from steel_onslaught.bus.protocol import EventBus, HandlerToken
+from steel_onslaught.cli.application import CliApplicationFactory
+from steel_onslaught.cli.serve import _bootstrap_process_request, build_frontend_bootstrap
+from steel_onslaught.commands.authority import (
+    AuthenticatedSessionCapability,
+    ModelSOAuthenticatedSession,
+    ModelSOHumanSeatAuthorityClaim,
+    ModelSOStartMatchAuthorityContext,
+    PrincipalId,
+    SessionId,
+)
+from steel_onslaught.commands.browser_gateway import (
+    BrowserCommandGateway,
+    ModelSOBrowserActionAccepted,
+    ModelSOBrowserActionRequest,
+    ModelSOBrowserRequestContext,
+    ModelSOBrowserStartAccepted,
+    ModelSOBrowserStartMatchRequest,
+)
+from steel_onslaught.commands.inbox import HumanDecisionCancelledError
+from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProviderCapability
+from steel_onslaught.contracts.application import (
+    ModelSOApplicationOverlay,
+    ModelSOFrontendBootstrap,
+    ModelSOFrontendCommandGatewayBinding,
+)
+from steel_onslaught.contracts.commands import (
+    ModelSOHumanTurnPrompt,
+    ModelSOPlayerActionCommand,
+    ModelSOStartMatchCommand,
+)
+from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.player_selection import (
+    ModelSOMatchLaunchProvenance,
+    ModelSOModelPlayerOptionBinding,
+    ModelSOPlayerRosterBinding,
+)
+from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.match.composition import (
+    LiveMatchStack,
+    RuntimeDependencies,
+    assemble_selected_match_live,
+    load_application_overlay,
+    load_loadout,
+)
+from steel_onslaught.match.runner import MatchIdentity
+from steel_onslaught.match.state import ModelSOMatchState
+
+BrowserLiveProviderCapabilityFactory = Callable[
+    [
+        ModelSOBrowserStartMatchRequest,
+        ModelSOStartMatchAuthorityContext,
+        ModelSOApplicationOverlay,
+        ModelSOPlayerRosterBinding,
+    ],
+    ProcessLocalOneShotLiveProviderCapability,
+]
+
+
+@dataclass
+class BrowserPlaySession:
+    """One selected match plus its transport-independent browser controller."""
+
+    stack: LiveMatchStack
+    gateway: BrowserCommandGateway
+    start_result: ModelSOBrowserStartAccepted
+    _closed: bool = False
+
+    @property
+    def match_id(self) -> str:
+        return self.stack.match_id
+
+    @property
+    def launch_provenance(self) -> ModelSOMatchLaunchProvenance:
+        return self.stack.launch_provenance
+
+    def submit_action(
+        self,
+        request: ModelSOBrowserActionRequest,
+        *,
+        transport: ModelSOBrowserRequestContext,
+        principal_id: PrincipalId,
+        session_id: SessionId,
+    ) -> ModelSOBrowserActionAccepted:
+        """Admit one browser action into the stack's existing human inbox."""
+
+        return self.gateway.submit_action(
+            request,
+            transport=transport,
+            principal_id=principal_id,
+            session_id=session_id,
+        )
+
+    def run(self) -> ModelSOMatchState:
+        """Run the assembled match; callers own the session lifetime."""
+
+        if self._closed:
+            raise RuntimeError("browser play session is closed")
+        return self.stack.runner.run()
+
+    def close(self) -> None:
+        """Close the stack and cancel any blocked human prompt waits."""
+
+        if self._closed:
+            return
+        self._closed = True
+        self.stack.close()
+
+    def __enter__(self) -> BrowserPlaySession:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+class _PreadmittedStartCoordinator:
+    """Expose one already admitted launch to the authenticated browser gateway."""
+
+    def __init__(
+        self,
+        *,
+        command: ModelSOStartMatchCommand,
+        context: ModelSOStartMatchAuthorityContext,
+        provenance: ModelSOMatchLaunchProvenance,
+    ) -> None:
+        self._command = command
+        self._context = context
+        self._provenance = provenance
+
+    def admit_start_match(
+        self,
+        command: ModelSOStartMatchCommand,
+        *,
+        context: ModelSOStartMatchAuthorityContext,
+        match_id: str,
+    ) -> ModelSOMatchLaunchProvenance:
+        if (
+            command != self._command
+            or context != self._context
+            or match_id != self._provenance.match_id
+        ):
+            raise ValueError("browser start does not match the admitted launch")
+        return self._provenance
+
+
+def launch_browser_play_session(
+    *,
+    overlay: ModelSOApplicationOverlay,
+    roster: ModelSOPlayerRosterBinding,
+    sessions: AuthenticatedSessionCapability,
+    request: ModelSOBrowserStartMatchRequest,
+    transport: ModelSOBrowserRequestContext,
+    principal_id: PrincipalId,
+    session_id: SessionId,
+    context: ModelSOStartMatchAuthorityContext,
+    identity: MatchIdentity,
+    loadouts: Mapping[str, ModelSOLoadout],
+    runtime_factory: Callable[[ModelSOApplicationOverlay], RuntimeDependencies],
+    live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
+    live_runtime_factory: Callable[
+        [ModelSOApplicationOverlay, str, tuple[str, ...]], RuntimeDependencies
+    ]
+    | None = None,
+    seed: int,
+    max_ticks: int,
+    allowed_origins: tuple[str, ...],
+) -> BrowserPlaySession:
+    """Compose a selected match and admit its browser start before ``run``.
+
+    ``assemble_selected_match_live`` remains the sole match root.  The
+    browser gateway is attached only after that root has bound its human pilot
+    to its own process-local inbox, so action delivery cannot create a second
+    inbox or a second source of pilot truth.  A fresh process-local start
+    coordinator performs the gateway's idempotent/authenticated start receipt;
+    it does not construct runtime dependencies or provider clients.
+    """
+
+    if identity.match_id != request.match_id:
+        raise ValueError("request.match_id must equal identity.match_id")
+
+    stack = assemble_selected_match_live(
+        overlay=overlay,
+        roster=roster,
+        sessions=sessions,
+        command=request.command,
+        context=context,
+        identity=identity,
+        loadouts=loadouts,
+        runtime_factory=runtime_factory,
+        live_provider_capability=live_provider_capability,
+        live_runtime_factory=live_runtime_factory,
+        seed=seed,
+        max_ticks=max_ticks,
+    )
+    try:
+        gateway = BrowserCommandGateway(
+            sessions=sessions,
+            roster=roster,
+            start_coordinator=_PreadmittedStartCoordinator(
+                command=request.command,
+                context=context,
+                provenance=stack.launch_provenance,
+            ),
+            human_coordinator=stack.human_inbox,
+            allowed_origins=allowed_origins,
+        )
+        start_result = gateway.start_match(
+            request,
+            transport=transport,
+            principal_id=principal_id,
+            session_id=session_id,
+        )
+        if (
+            start_result.match_id != stack.launch_provenance.match_id
+            or start_result.command_sha256 != stack.launch_provenance.launch_command_sha256
+            or start_result.overlay_sha256 != stack.launch_provenance.overlay_sha256
+            or start_result.roster_sha256 != stack.launch_provenance.roster_sha256
+        ):
+            raise RuntimeError("browser start receipt does not match assembled launch provenance")
+        return BrowserPlaySession(
+            stack=stack,
+            gateway=gateway,
+            start_result=start_result,
+        )
+    except Exception:
+        stack.close()
+        raise
+
+
+class BrowserPlayServer:
+    """Ephemeral loopback adapter for one receive stream and one command stream.
+
+    Authentication is an injected capability keyed by the browser Origin; no
+    ambient cookie, bearer token, provider, or secret resolver is consulted.
+    The event endpoint never accepts client frames.  Command frames are
+    decoded into the closed Python gateway contracts and return only the
+    gateway's closed result models.
+    """
+
+    def __init__(
+        self,
+        *,
+        bootstrap: ModelSOFrontendBootstrap,
+        gateway: BrowserCommandGateway | None,
+        bus: EventBus | None,
+        authenticate: Callable[[str], tuple[PrincipalId, SessionId] | None],
+        host: str = "127.0.0.1",
+        port: int = 0,
+        session: BrowserPlaySession | None = None,
+        session_factory: Callable[
+            [
+                ModelSOBrowserStartMatchRequest,
+                ModelSOBrowserRequestContext,
+                PrincipalId,
+                SessionId,
+            ],
+            BrowserPlaySession,
+        ]
+        | None = None,
+        match_id_factory: Callable[[], str] | None = None,
+    ) -> None:
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("browser play server must bind a loopback host")
+        self._bootstrap_template = bootstrap
+        self._gateway = gateway
+        self._bus = bus
+        self._authenticate = authenticate
+        self._host = host
+        self._port = port
+        self._session = session
+        self._session_factory = session_factory
+        self._match_id_factory = match_id_factory
+        self._server: Server | None = None
+        self._event_clients: set[ServerConnection] = set()
+        self._event_queues: dict[ServerConnection, asyncio.Queue[str | None]] = {}
+        # Browser startup and command admission are independent WebSocket
+        # handshakes. Keep the canonical prefix so a late event subscriber
+        # still receives MATCH_STARTED before any tick events.
+        self._event_history: list[ModelSOEventEnvelope] = []
+        self._event_history_ids: set[str] = set()
+        self._pending_events: dict[str, list[ModelSOEventEnvelope]] = {}
+        self._pending_ticks: dict[str, int] = {}
+        self._pending_event_ids: set[str] = set()
+        self._command_clients: set[ServerConnection] = set()
+        self._command_authorities: dict[ServerConnection, tuple[PrincipalId, SessionId]] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._token: HandlerToken | None = None
+        self._bootstrap: ModelSOFrontendBootstrap | None = None
+        self._run_task: asyncio.Task[None] | None = None
+        self._retire_task: asyncio.Task[None] | None = None
+        self._prompt_watch_tasks: set[asyncio.Task[None]] = set()
+        self._pending_prompts: dict[tuple[PrincipalId, SessionId, str], str] = {}
+        self._session_owner: tuple[PrincipalId, SessionId] | None = None
+        self._start_records: dict[UUID, tuple[tuple[PrincipalId, SessionId], str, str]] = {}
+        self._generated_match_ids: dict[UUID, str] = {}
+        self._start_lock = asyncio.Lock()
+        self._terminal_failure: str | None = None
+        self._closed = False
+
+    @property
+    def bootstrap(self) -> ModelSOFrontendBootstrap:
+        if self._bootstrap is None:
+            raise RuntimeError("browser play server has not started")
+        return self._bootstrap
+
+    @property
+    def event_url(self) -> str:
+        return self.bootstrap.frontend_transport.websocket_url
+
+    @property
+    def command_url(self) -> str:
+        gateway = self.bootstrap.command_gateway
+        if gateway is None:
+            raise RuntimeError("browser play server has no command binding")
+        return gateway.websocket_url
+
+    @property
+    def bootstrap_url(self) -> str:
+        endpoint = urlsplit(self.event_url)
+        return f"http://{endpoint.netloc}/steel-onslaught/bootstrap.json"
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @staticmethod
+    def _bound_port(server: Server) -> int:
+        sockets = list(server.sockets)
+        if not sockets:
+            raise RuntimeError("browser play server did not expose a bound socket")
+        return int(sockets[0].getsockname()[1])
+
+    async def start(self) -> None:
+        if self._server is not None:
+            raise RuntimeError("browser play server is already started")
+        self._loop = asyncio.get_running_loop()
+        self._closed = False
+        self._server = await serve(
+            self._handle_client,
+            self._host,
+            self._port,
+            process_request=self._process_request,
+        )
+        port = self._bound_port(self._server)
+        template_transport = self._bootstrap_template.frontend_transport
+        event_transport = template_transport.model_copy(
+            update={"websocket_url": f"ws://{self._host}:{port}/events"}
+        )
+        command_binding = ModelSOFrontendCommandGatewayBinding(
+            kind="websocket",
+            contract="steel_onslaught.browser_command_gateway.v1",
+            websocket_url=f"ws://{self._host}:{port}/commands",
+            authority_scope="injected_process_session",
+        )
+        self._bootstrap = self._bootstrap_template.model_copy(
+            update={
+                "frontend_transport": event_transport,
+                "command_gateway": command_binding,
+            }
+        )
+        if self._bus is not None:
+            self._token = self._bus.subscribe(self._on_event)
+        if self._session is not None:
+            self._start_run_task()
+            self._start_prompt_watchers()
+
+    async def stop(self) -> None:
+        if self._token is not None and self._bus is not None:
+            self._bus.unsubscribe(self._token)
+            self._token = None
+        if self._session is not None:
+            self._session.close()
+        tasks = (*self._prompt_watch_tasks, self._run_task, self._retire_task)
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+        for task in tasks:
+            if task is not None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    self._report_terminal_failure()
+        self._prompt_watch_tasks.clear()
+        self._run_task = None
+        self._retire_task = None
+        for connection in (*self._event_clients, *self._command_clients):
+            await connection.close(code=1001, reason="server shutdown")
+        self._event_clients.clear()
+        self._command_clients.clear()
+        self._command_authorities.clear()
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+        self._server = None
+        self._loop = None
+        self._closed = True
+
+    async def _process_request(
+        self,
+        connection: ServerConnection,
+        request: Request,
+    ) -> Response | None:
+        if self._bootstrap is None:
+            return Response(503, "Service Unavailable", Headers(), b'{"error":"not_ready"}')
+        if urlsplit(request.path).path == "/commands":
+            origin = request.headers.get("Origin")
+            host = request.headers.get("Host")
+            try:
+                if origin is None or host is None:
+                    raise ValueError("missing authenticated loopback headers")
+                ModelSOBrowserRequestContext(origin=origin, host=host)
+                if self._authenticate(origin) is None:
+                    raise ValueError("unauthenticated browser origin")
+            except ValueError:
+                body = b'{"error":"authenticated_loopback_required"}'
+                return Response(
+                    403,
+                    "Forbidden",
+                    Headers(
+                        {
+                            "Content-Type": "application/json",
+                            "Content-Length": str(len(body)),
+                        }
+                    ),
+                    body,
+                )
+        return _bootstrap_process_request(
+            self._bootstrap,
+            additional_websocket_paths=("/commands",),
+        )(connection, request)
+
+    async def _handle_client(self, connection: ServerConnection) -> None:
+        request = connection.request
+        path = urlsplit(request.path).path if request is not None else ""
+        if path == "/events":
+            await self._handle_event_client(connection)
+        elif path == "/commands":
+            await self._handle_command_client(connection)
+        else:
+            await connection.close(code=1008, reason="unsupported browser path")
+
+    async def _handle_event_client(self, connection: ServerConnection) -> None:
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        self._event_clients.add(connection)
+        self._event_queues[connection] = queue
+        sender = asyncio.create_task(self._send_event_queue(connection, queue))
+        try:
+            # Add before taking the snapshot. The event loop cannot run a
+            # queued _on_event callback between these statements, so events
+            # after the snapshot arrive through broadcast and events before
+            # it are included in this replay prefix.
+            history = tuple(
+                sorted(
+                    self._event_history,
+                    key=lambda event: (
+                        event.match_id,
+                        event.tick,
+                        event.sequence_in_tick,
+                        event.event_id,
+                    ),
+                )
+            )
+            for event in history:
+                queue.put_nowait(event.model_dump_json())
+            async for _frame in connection:
+                await connection.close(code=1008, reason="event stream is receive-only")
+                break
+        finally:
+            self._event_queues.pop(connection, None)
+            self._event_clients.discard(connection)
+            sender.cancel()
+            try:
+                await sender
+            except asyncio.CancelledError:
+                pass
+
+    @staticmethod
+    async def _send_event_queue(
+        connection: ServerConnection, queue: asyncio.Queue[str | None]
+    ) -> None:
+        """Serialize event frames per connection to preserve canonical order."""
+        while True:
+            frame = await queue.get()
+            if frame is None:
+                return
+            try:
+                await connection.send(frame)
+            except Exception:
+                return
+
+    async def _handle_command_client(self, connection: ServerConnection) -> None:
+        request = connection.request
+        origin = request.headers.get("Origin") if request is not None else None
+        host = request.headers.get("Host") if request is not None else None
+        if origin is None or host is None:
+            await connection.close(code=1008, reason="authenticated loopback origin required")
+            return
+        try:
+            transport = ModelSOBrowserRequestContext(origin=origin, host=host)
+        except ValueError:
+            await connection.close(code=1008, reason="authenticated loopback origin required")
+            return
+        authority = self._authenticate(origin)
+        if authority is None:
+            await connection.close(code=1008, reason="authenticated session required")
+            return
+        principal_id, session_id = authority
+        self._command_clients.add(connection)
+        self._command_authorities[connection] = authority
+        if self._session is not None and self._session_owner is None:
+            self._session_owner = authority
+            self._start_prompt_watchers()
+        await self._flush_pending_prompts(connection, authority)
+        try:
+            async for frame in connection:
+                if not isinstance(frame, str):
+                    await connection.close(code=1003, reason="text command frames required")
+                    break
+                response = await self._dispatch_command(
+                    frame,
+                    transport=transport,
+                    principal_id=principal_id,
+                    session_id=session_id,
+                )
+                if response is None:
+                    await connection.close(code=1000, reason="cancelled")
+                    break
+                await connection.send(response)
+                try:
+                    is_cancel = json.loads(frame).get("kind") == "steel_onslaught.browser_cancel"
+                except (TypeError, ValueError):
+                    is_cancel = False
+                if is_cancel:
+                    await connection.close(code=1000, reason="cancelled")
+                    break
+        finally:
+            self._command_clients.discard(connection)
+            self._command_authorities.pop(connection, None)
+
+    @staticmethod
+    def _closed_keys(payload: Mapping[str, Any], expected: set[str]) -> None:
+        if set(payload) != expected:
+            raise ValueError("command frame contains unknown or missing fields")
+
+    def _start_request(self, payload: Mapping[str, Any]) -> ModelSOBrowserStartMatchRequest:
+        self._closed_keys(payload, {"schema_version", "kind", "request_id", "intent"})
+        if payload["schema_version"] != "1":
+            raise ValueError("unsupported command schema")
+        request_id = UUID(str(payload["request_id"]))
+        intent = payload["intent"]
+        if not isinstance(intent, dict):
+            raise ValueError("start intent must be an object")
+        self._closed_keys(
+            intent,
+            {"expected_overlay_sha256", "roster_id", "expected_roster_sha256", "selections"},
+        )
+        selections = intent["selections"]
+        if not isinstance(selections, list) or len(selections) != 2:
+            raise ValueError("start intent requires exactly two selections")
+        command = ModelSOStartMatchCommand(
+            schema_version="1",
+            kind="steel_onslaught.start_match",
+            command_id=request_id,
+            expected_overlay_sha256=str(intent["expected_overlay_sha256"]),
+            expected_roster_sha256=str(intent["expected_roster_sha256"]),
+            selections=tuple(selections),
+        )
+        match_id = self._generated_match_ids.get(request_id)
+        if match_id is None:
+            match_id = (
+                self._match_id_factory()
+                if self._match_id_factory is not None
+                else f"match.{ulid.from_uuid(request_id).str}"
+            )
+            self._generated_match_ids[request_id] = match_id
+        return ModelSOBrowserStartMatchRequest(match_id=match_id, command=command)
+
+    @staticmethod
+    def _action_request(payload: Mapping[str, Any]) -> ModelSOBrowserActionRequest:
+        if set(payload) != {"schema_version", "kind", "request_id", "action"}:
+            raise ValueError("action frame contains unknown or missing fields")
+        if payload["schema_version"] != "1":
+            raise ValueError("unsupported command schema")
+        action = payload["action"]
+        if not isinstance(action, dict):
+            raise ValueError("action intent must be an object")
+        if set(action) != {
+            "match_id",
+            "side",
+            "turn_id",
+            "expected_tick",
+            "observation_sha256",
+            "action",
+        }:
+            raise ValueError("action intent contains unknown or missing fields")
+        command = ModelSOPlayerActionCommand(
+            schema_version="1",
+            kind="steel_onslaught.player_action",
+            command_id=UUID(str(payload["request_id"])),
+            match_id=action["match_id"],
+            turn_id=action["turn_id"],
+            expected_tick=action["expected_tick"],
+            observation_sha256=action["observation_sha256"],
+            action=action["action"],
+        )
+        return ModelSOBrowserActionRequest(side=action["side"], command=command)
+
+    async def _run_session(self) -> None:
+        if self._session is not None:
+            await asyncio.to_thread(self._session.run)
+
+    async def _admit_start(
+        self,
+        request: ModelSOBrowserStartMatchRequest,
+        *,
+        transport: ModelSOBrowserRequestContext,
+        principal_id: PrincipalId,
+        session_id: SessionId,
+    ) -> str:
+        command_id = request.command.command_id
+        fingerprint = request.model_dump_json()
+        owner = (principal_id, session_id)
+        async with self._start_lock:
+            existing = self._start_records.get(command_id)
+            if existing is not None:
+                existing_owner, existing_fingerprint, response = existing
+                if existing_owner != owner or existing_fingerprint != fingerprint:
+                    raise ValueError("start request id was reused with different content")
+                return response
+            if self._session is not None and not self._closed:
+                raise ValueError("one active browser match is already admitted")
+            # A new admission starts a new canonical event prefix. Existing
+            # clients retain their prior match in the frontend transport, but
+            # late subscribers should receive only this match's prefix.
+            self._event_history.clear()
+            self._event_history_ids.clear()
+            self._pending_events.clear()
+            self._pending_ticks.clear()
+            self._pending_event_ids.clear()
+            candidate: BrowserPlaySession | None = None
+            try:
+                if self._session_factory is not None:
+                    candidate = self._session_factory(request, transport, principal_id, session_id)
+                    self._session = candidate
+                    self._gateway = candidate.gateway
+                    self._bus = self._session.stack.bus
+                    if self._token is None:
+                        self._token = self._bus.subscribe(self._on_event)
+                    self._session_owner = owner
+                if self._gateway is None:
+                    raise ValueError("browser session has not been started")
+                result = self._gateway.start_match(
+                    request,
+                    transport=transport,
+                    principal_id=principal_id,
+                    session_id=session_id,
+                )
+                response = result.model_dump_json()
+                # Admit the command before starting the runner.  A runner can
+                # publish MATCH_STARTED synchronously in its first call; if it
+                # starts before the gateway receipt, the event can race the
+                # browser's event socket and the UI sees MATCH_TICK as the
+                # first frame, violating the canonical prefix contract.
+                if candidate is not None:
+                    self._start_run_task()
+                    self._start_prompt_watchers()
+            except Exception:
+                if candidate is not None:
+                    candidate.close()
+                    if self._run_task is not None and not self._run_task.done():
+                        self._run_task.cancel()
+                    self._run_task = None
+                    self._session = None
+                    self._gateway = None
+                raise
+            self._start_records[command_id] = (owner, fingerprint, response)
+            return response
+
+    async def _dispatch_command(
+        self,
+        frame: str,
+        *,
+        transport: ModelSOBrowserRequestContext,
+        principal_id: PrincipalId,
+        session_id: SessionId,
+    ) -> str | None:
+        try:
+            payload: Any = json.loads(frame)
+            if not isinstance(payload, dict):
+                raise ValueError("command frame must be an object")
+            kind = payload.get("kind")
+            start_request: ModelSOBrowserStartMatchRequest | None = None
+            if kind == "steel_onslaught.browser_start_intent":
+                start_request = self._start_request(payload)
+            elif kind == "steel_onslaught.browser_start_match":
+                start_request = ModelSOBrowserStartMatchRequest.model_validate(payload)
+            elif kind == "steel_onslaught.browser_player_action":
+                if set(payload) == {"schema_version", "kind", "side", "command"}:
+                    command = ModelSOPlayerActionCommand.model_validate(payload["command"])
+                    action_request = ModelSOBrowserActionRequest(
+                        side=payload["side"], command=command
+                    )
+                else:
+                    action_request = self._action_request(payload)
+                if self._gateway is None:
+                    raise ValueError("browser session has not been started")
+                action_result = self._gateway.submit_action(
+                    action_request,
+                    transport=transport,
+                    principal_id=principal_id,
+                    session_id=session_id,
+                )
+                self._clear_pending_prompts(
+                    (principal_id, session_id),
+                    turn_id=action_request.command.turn_id,
+                )
+                return action_result.model_dump_json()
+            elif kind == "steel_onslaught.browser_cancel":
+                self._closed_keys(payload, {"schema_version", "kind", "request_id"})
+                if payload["schema_version"] != "1" or not isinstance(payload["request_id"], str):
+                    raise ValueError("invalid cancel request")
+                self._clear_pending_prompts((principal_id, session_id))
+                if self._session is not None:
+                    self._session.close()
+                return json.dumps(
+                    {
+                        "schema_version": "1",
+                        "kind": "steel_onslaught.browser_cancelled",
+                        "authority_scope": "process_lifetime",
+                        "outcome": "cancelled",
+                        "request_id": payload["request_id"],
+                    },
+                    separators=(",", ":"),
+                )
+            elif kind not in {
+                "steel_onslaught.browser_start_intent",
+                "steel_onslaught.browser_start_match",
+            }:
+                raise ValueError("unsupported command kind")
+            if start_request is None:
+                raise ValueError("start request is missing")
+            return await self._admit_start(
+                start_request,
+                transport=transport,
+                principal_id=principal_id,
+                session_id=session_id,
+            )
+        except Exception:
+            return json.dumps(
+                {
+                    "schema_version": "1",
+                    "kind": "steel_onslaught.browser_command_failed",
+                    "authority_scope": "process_lifetime",
+                    "outcome": "failed",
+                    "error_code": "invalid_or_unauthorized_command",
+                },
+                separators=(",", ":"),
+            )
+
+    def _clear_pending_prompts(
+        self,
+        authority: tuple[PrincipalId, SessionId],
+        *,
+        turn_id: str | None = None,
+    ) -> None:
+        for key in tuple(self._pending_prompts):
+            principal_id, session_id, pending_turn_id = key
+            if (principal_id, session_id) == authority and (
+                turn_id is None or pending_turn_id == turn_id
+            ):
+                del self._pending_prompts[key]
+
+    def _start_run_task(self) -> None:
+        if self._run_task is not None and not self._run_task.done():
+            return
+        self._run_task = asyncio.create_task(self._run_session())
+        self._run_task.add_done_callback(self._run_task_done)
+
+    def _run_task_done(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            self._report_terminal_failure()
+        # A completed match is no longer an active admission. Retire its
+        # process-local stack so the next browser start command can create a
+        # fresh match without restarting the server.
+        if self._loop is not None:
+            self._retire_task = asyncio.create_task(self._retire_completed_session())
+
+    async def _retire_completed_session(self) -> None:
+        session = self._session
+        if session is None:
+            return
+        session.close()
+        if self._token is not None and self._bus is not None:
+            self._bus.unsubscribe(self._token)
+            self._token = None
+        self._session = None
+        self._gateway = None
+        self._bus = None
+        self._session_owner = None
+        self._pending_prompts.clear()
+        watchers = tuple(self._prompt_watch_tasks)
+        for watcher in watchers:
+            if not watcher.done():
+                watcher.cancel()
+        for watcher in watchers:
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+        self._prompt_watch_tasks.clear()
+
+    def _start_prompt_watchers(self) -> None:
+        if self._session is None or self._session_owner is None:
+            return
+        principal_id, session_id = self._session_owner
+        for assignment in self._session.launch_provenance.seat_assignments:
+            if assignment.kind != "human":
+                continue
+            existing = {task.get_name() for task in self._prompt_watch_tasks if not task.done()}
+            name = f"prompt:{principal_id}:{session_id}:{assignment.side}"
+            if name in existing:
+                continue
+            task = asyncio.create_task(
+                self._watch_prompt(
+                    principal_id=principal_id,
+                    session_id=session_id,
+                    side=assignment.side,
+                    match_id=self._session.match_id,
+                ),
+                name=name,
+            )
+            self._prompt_watch_tasks.add(task)
+
+    @staticmethod
+    def _wait_for_prompt(
+        session: BrowserPlaySession,
+        *,
+        principal_id: PrincipalId,
+        session_id: SessionId,
+        side: Any,
+        match_id: str,
+        after_tick: int,
+    ) -> ModelSOHumanTurnPrompt:
+        return session.stack.human_inbox.wait_for_prompt(
+            principal_id=principal_id,
+            session_id=session_id,
+            side=side,
+            match_id=match_id,
+            after_tick=after_tick,
+        )
+
+    async def _watch_prompt(
+        self,
+        *,
+        principal_id: PrincipalId,
+        session_id: SessionId,
+        side: Any,
+        match_id: str,
+    ) -> None:
+        after_tick = -1
+        try:
+            while True:
+                if self._session is None:
+                    return
+                prompt = await asyncio.to_thread(
+                    self._wait_for_prompt,
+                    self._session,
+                    principal_id=principal_id,
+                    session_id=session_id,
+                    side=side,
+                    match_id=match_id,
+                    after_tick=after_tick,
+                )
+                after_tick = prompt.expected_tick
+                key = (principal_id, session_id, prompt.turn_id)
+                self._pending_prompts[key] = prompt.model_dump_json()
+                for connection, authority in tuple(self._command_authorities.items()):
+                    if authority == (principal_id, session_id):
+                        await connection.send(prompt.model_dump_json())
+        except HumanDecisionCancelledError:
+            return
+        except Exception:
+            self._report_terminal_failure()
+
+    async def _flush_pending_prompts(
+        self,
+        connection: ServerConnection,
+        authority: tuple[PrincipalId, SessionId],
+    ) -> None:
+        principal_id, session_id = authority
+        for (owner_principal, owner_session, _turn_id), message in tuple(
+            self._pending_prompts.items()
+        ):
+            if (owner_principal, owner_session) == (principal_id, session_id):
+                await connection.send(message)
+
+    def _report_terminal_failure(self) -> None:
+        if self._terminal_failure is not None:
+            return
+        self._terminal_failure = "play_session_failed"
+        if self._session is not None:
+            self._session.close()
+        message = json.dumps(
+            {
+                "schema_version": "1",
+                "kind": "steel_onslaught.browser_command_failed",
+                "authority_scope": "process_lifetime",
+                "outcome": "failed",
+                "error_code": self._terminal_failure,
+            },
+            separators=(",", ":"),
+        )
+        if self._loop is None:
+            return
+        self._loop.call_soon_threadsafe(lambda: broadcast(self._command_clients, message))
+
+    def _on_event(self, event: ModelSOEventEnvelope) -> None:
+        if self._loop is None:
+            return
+        # Runner events can be emitted from a worker thread. Funnel callbacks
+        # through the event loop, then hold one tick until its next tick (or
+        # terminal) arrives so same-tick sequence numbers can be sorted before
+        # any per-connection sender puts bytes on the wire.
+        self._loop.call_soon_threadsafe(self._enqueue_event, event)
+
+    def _enqueue_event(self, event: ModelSOEventEnvelope) -> None:
+        # A completed run may still have a queued cross-thread callback when
+        # the next admission clears the prefix. Never let that stale match
+        # contaminate the new browser stream.
+        if self._session is not None and event.match_id != self._session.match_id:
+            return
+        if event.event_id in self._event_history_ids or event.event_id in self._pending_event_ids:
+            return
+        if event.event_type is SOEventType.MATCH_STARTED:
+            self._publish_ordered_events((event,))
+            self._pending_ticks[event.match_id] = event.tick
+            return
+
+        current_tick = self._pending_ticks.get(event.match_id)
+        if current_tick is None:
+            self._pending_ticks[event.match_id] = event.tick
+            current_tick = event.tick
+        if event.tick < current_tick:
+            # This is a transport-late event for an already published tick;
+            # history replay remains sorted, while live callers retain the
+            # canonical event-order integrity guard at the browser boundary.
+            self._publish_ordered_events((event,))
+            return
+        if event.tick > current_tick:
+            self._flush_pending_tick(event.match_id)
+            self._pending_ticks[event.match_id] = event.tick
+        self._pending_events.setdefault(event.match_id, []).append(event)
+        self._pending_event_ids.add(event.event_id)
+        if event.event_type is SOEventType.MATCH_ENDED:
+            self._flush_pending_tick(event.match_id)
+
+    def _flush_pending_tick(self, match_id: str) -> None:
+        events = self._pending_events.pop(match_id, [])
+        self._pending_ticks.pop(match_id, None)
+        if not events:
+            return
+        ordered = tuple(
+            sorted(
+                events,
+                key=lambda item: (item.tick, item.sequence_in_tick, item.event_id),
+            )
+        )
+        self._publish_ordered_events(ordered)
+        for event in events:
+            self._pending_event_ids.discard(event.event_id)
+
+    def _publish_ordered_events(self, events: tuple[ModelSOEventEnvelope, ...]) -> None:
+        for event in events:
+            if event.event_id in self._event_history_ids:
+                continue
+            self._event_history_ids.add(event.event_id)
+            self._event_history.append(event)
+            frame = event.model_dump_json()
+            for queue in tuple(self._event_queues.values()):
+                queue.put_nowait(frame)
+
+
+class _ConfiguredSessionCapability:
+    def __init__(self, session: ModelSOAuthenticatedSession) -> None:
+        self._session = session
+
+    def resolve(
+        self,
+        *,
+        principal_id: str,
+        session_id: str,
+    ) -> ModelSOAuthenticatedSession | None:
+        if (principal_id, session_id) != (self._session.principal_id, self._session.session_id):
+            return None
+        return self._session
+
+
+def _load_yaml_model(path: Any, model: Any) -> Any:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return model.model_validate_json(json.dumps(raw, separators=(",", ":")))
+
+
+def _selects_non_stub_provider(
+    request: ModelSOBrowserStartMatchRequest,
+    *,
+    overlay: ModelSOApplicationOverlay,
+    roster: ModelSOPlayerRosterBinding,
+) -> bool:
+    options = {option.option_id: option for option in roster.options}
+    identities = {identity.model_identity_id: identity for identity in overlay.llm.model_identities}
+    providers = {provider.provider_id: provider for provider in overlay.llm.providers}
+    return any(
+        isinstance(option := options[selection.option_id], ModelSOModelPlayerOptionBinding)
+        and providers[identities[option.model_identity_id].provider_binding_id].kind != "stub"
+        for selection in request.command.selections
+    )
+
+
+def _loopback_origin_aliases(origin: str) -> tuple[str, ...]:
+    """Return only the two safe browser origins for the local Vite deck."""
+
+    parsed = urlsplit(origin)
+    if parsed.scheme not in {"http", "https"} or parsed.port is None:
+        raise ValueError("browser origin must include an explicit HTTP(S) port")
+    if parsed.username is not None or parsed.password is not None or parsed.path not in {"", "/"}:
+        raise ValueError("browser origin must be a bare loopback origin")
+    if parsed.hostname not in {"localhost", "127.0.0.1"}:
+        raise ValueError("browser origin must be loopback")
+    hosts = ("localhost", "127.0.0.1")
+    return tuple(f"{parsed.scheme}://{host}:{parsed.port}" for host in hosts)
+
+
+def _configured_browser_server(
+    *,
+    overlay_path: Path,
+    roster_path: Path,
+    session_path: Path,
+    red_loadout_path: Path,
+    blue_loadout_path: Path,
+    seed: int,
+    max_ticks: int,
+    origin: str,
+    host: str,
+    port: int,
+    live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
+    live_provider_capability_factory: BrowserLiveProviderCapabilityFactory | None = None,
+    live_runtime_factory: Callable[
+        [ModelSOApplicationOverlay, str, tuple[str, ...]], RuntimeDependencies
+    ]
+    | None = None,
+) -> BrowserPlayServer:
+    if live_provider_capability is not None and live_provider_capability_factory is not None:
+        raise ValueError("fixed and per-start live provider capabilities cannot be combined")
+    has_live_authority = (
+        live_provider_capability is not None or live_provider_capability_factory is not None
+    )
+    if has_live_authority != (live_runtime_factory is not None):
+        raise ValueError(
+            "live provider authority and live_runtime_factory must be supplied together"
+        )
+
+    overlay = load_application_overlay(overlay_path)
+    roster = _load_yaml_model(roster_path, ModelSOPlayerRosterBinding)
+    session = _load_yaml_model(session_path, ModelSOAuthenticatedSession)
+    red_loadout = load_loadout(red_loadout_path)
+    blue_loadout = load_loadout(blue_loadout_path)
+    loadouts = {red_loadout.id: red_loadout, blue_loadout.id: blue_loadout}
+    sessions = _ConfiguredSessionCapability(session)
+    factory = CliApplicationFactory.packaged()
+    allowed_origins = _loopback_origin_aliases(origin)
+
+    def authenticate(candidate_origin: str) -> tuple[str, str] | None:
+        if candidate_origin not in allowed_origins:
+            return None
+        return session.principal_id, session.session_id
+
+    def session_factory(
+        request: ModelSOBrowserStartMatchRequest,
+        transport: ModelSOBrowserRequestContext,
+        principal_id: PrincipalId,
+        session_id: SessionId,
+    ) -> BrowserPlaySession:
+        options = {option.option_id: option for option in roster.options}
+        claims = tuple(
+            ModelSOHumanSeatAuthorityClaim(
+                side=selection.side,
+                principal_id=principal_id,
+                session_id=session_id,
+            )
+            for selection in request.command.selections
+            if options[selection.option_id].kind == "human"
+        )
+        context = ModelSOStartMatchAuthorityContext(
+            creator_principal_id=principal_id,
+            creator_session_id=session_id,
+            human_seats=claims,
+        )
+        selected_live_capability: ProcessLocalOneShotLiveProviderCapability | None = None
+        selected_live_runtime_factory = None
+        if _selects_non_stub_provider(request, overlay=overlay, roster=roster):
+            selected_live_capability = live_provider_capability
+            if live_provider_capability_factory is not None:
+                selected_live_capability = live_provider_capability_factory(
+                    request,
+                    context,
+                    overlay,
+                    roster,
+                )
+            selected_live_runtime_factory = live_runtime_factory
+
+        return launch_browser_play_session(
+            overlay=overlay,
+            roster=roster,
+            sessions=sessions,
+            request=request,
+            transport=transport,
+            principal_id=principal_id,
+            session_id=session_id,
+            context=context,
+            identity=MatchIdentity(
+                match_id=request.match_id,
+                correlation_id=request.command.command_id,
+            ),
+            loadouts=loadouts,
+            runtime_factory=factory.runtime,
+            live_provider_capability=selected_live_capability,
+            live_runtime_factory=selected_live_runtime_factory,
+            seed=seed,
+            max_ticks=max_ticks,
+            allowed_origins=allowed_origins,
+        )
+
+    return BrowserPlayServer(
+        bootstrap=build_frontend_bootstrap(overlay, roster=roster),
+        gateway=None,
+        bus=None,
+        authenticate=authenticate,
+        host=host,
+        port=port,
+        session_factory=session_factory,
+    )
+
+
+async def _serve_browser_play(server: BrowserPlayServer, *, bootstrap_output: Path | None) -> None:
+    await server.start()
+    try:
+        payload = server.bootstrap.model_dump_json(indent=2) + "\n"
+        if bootstrap_output is not None:
+            bootstrap_output.write_text(payload, encoding="utf-8")
+        click.echo(f"bootstrap_url: {server.bootstrap_url}")
+        click.echo(f"events_url: {server.event_url}")
+        click.echo(f"commands_url: {server.command_url}")
+        await asyncio.Event().wait()
+    finally:
+        await server.stop()
+
+
+@click.command(name="play")
+@click.option(
+    "--overlay",
+    "overlay_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--roster",
+    "roster_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--session",
+    "session_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--loadout-red",
+    "red_loadout_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--loadout-blue",
+    "blue_loadout_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option("--seed", type=click.IntRange(min=0), required=True)
+@click.option("--max-ticks", type=click.IntRange(min=1), default=100, show_default=True)
+@click.option("--origin", default="http://localhost:5173", show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", type=click.IntRange(min=0, max=65_535), default=0, show_default=True)
+@click.option("--bootstrap-output", type=click.Path(dir_okay=False, path_type=Path), default=None)
+def play_command(
+    overlay_path: Path,
+    roster_path: Path,
+    session_path: Path,
+    red_loadout_path: Path,
+    blue_loadout_path: Path,
+    seed: int,
+    max_ticks: int,
+    origin: str,
+    host: str,
+    port: int,
+    bootstrap_output: Path | None,
+) -> None:
+    """Run one configured, process-local browser match server."""
+
+    server = _configured_browser_server(
+        overlay_path=overlay_path,
+        roster_path=roster_path,
+        session_path=session_path,
+        red_loadout_path=red_loadout_path,
+        blue_loadout_path=blue_loadout_path,
+        seed=seed,
+        max_ticks=max_ticks,
+        origin=origin,
+        host=host,
+        port=port,
+    )
+    try:
+        asyncio.run(_serve_browser_play(server, bootstrap_output=bootstrap_output))
+    except KeyboardInterrupt:
+        click.echo("play interrupted", err=True)
+
+
+__all__ = [
+    "BrowserPlayServer",
+    "BrowserPlaySession",
+    "launch_browser_play_session",
+    "play_command",
+]

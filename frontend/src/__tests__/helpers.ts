@@ -145,7 +145,9 @@ export function makeLlmFailed(
     {
       provider_id: "stub",
       reason_code: "consumer_error",
+      semantic_failure_code: null,
       model: o.model ?? "provider.glm.flash",
+      finish_reason: "stop",
       prompt_tokens: 120,
       completion_tokens: 48,
       cost_usd: o.costUsd ?? null,

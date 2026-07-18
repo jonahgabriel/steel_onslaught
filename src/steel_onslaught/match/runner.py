@@ -107,6 +107,10 @@ def _clamp(value: int, magnitude: int) -> int:
     return max(-magnitude, min(magnitude, value))
 
 
+def _sign(value: int) -> int:
+    return (value > 0) - (value < 0)
+
+
 @dataclass(frozen=True)
 class MatchIdentity:
     """Public match/workflow identity shared by every composed participant."""
@@ -371,6 +375,8 @@ class MatchRunner:
     ) -> None:
         payload = ModelSOMoveIntentPayload.model_validate(intent.payload)
         direction = payload.direction
+        if direction == "hold_position":
+            return
         enemy = self._living_opponent(state, mech)
         if enemy is None:
             return
@@ -385,10 +391,41 @@ class MatchRunner:
             step = min(budget, max(0, distance - 1))  # never enter the enemy's cell
             dx = _clamp(enemy.position.x - from_pos.x, step)
             dy = _clamp(enemy.position.y - from_pos.y, step)
-        else:  # defensive: open distance from the enemy
+        elif direction == "defensive":  # open distance from the enemy
             step = budget
             dx = _clamp(from_pos.x - enemy.position.x, step)
             dy = _clamp(from_pos.y - enemy.position.y, step)
+        elif direction in ("flank_left", "flank_right"):
+            # Rotate the sign-clamped mech→enemy axis by 90 degrees.  This is
+            # structurally perpendicular, so a flank cannot collapse into the
+            # old toward/away beeline even when the model asks for one.
+            axis_x = _sign(enemy.position.x - from_pos.x)
+            axis_y = _sign(enemy.position.y - from_pos.y)
+            if direction == "flank_left":
+                perp_x, perp_y = axis_y, -axis_x
+            else:
+                perp_x, perp_y = -axis_y, axis_x
+            dx = perp_x * budget
+            dy = perp_y * budget
+        else:  # toward_cover
+            # Obstacles are impassable in the current arena contract.  Move
+            # toward the nearest obstacle but stop one legal cell before it;
+            # an empty arena or already-adjacent cover is a deterministic no-op.
+            cover_targets = sorted(
+                self._obstacles,
+                key=lambda cell: (
+                    max(abs(cell[0] - from_pos.x), abs(cell[1] - from_pos.y)),
+                    cell[0],
+                    cell[1],
+                ),
+            )
+            if not cover_targets:
+                return
+            cover = ModelSOPosition(x=cover_targets[0][0], y=cover_targets[0][1])
+            distance = chebyshev(from_pos, cover)
+            step = min(budget, max(0, distance - 1))
+            dx = _clamp(cover.x - from_pos.x, step)
+            dy = _clamp(cover.y - from_pos.y, step)
 
         intended = ModelSOPosition(
             x=min(max(from_pos.x + dx, 0), self._arena_size - 1),

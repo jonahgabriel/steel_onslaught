@@ -88,6 +88,15 @@ function playerRosterBinding(): Record<string, unknown> {
   };
 }
 
+function commandGatewayBinding(): Record<string, unknown> {
+  return {
+    kind: "websocket",
+    contract: "steel_onslaught.browser_command_gateway.v1",
+    websocket_url: "ws://127.0.0.1:8765/commands",
+    authority_scope: "injected_process_session",
+  };
+}
+
 function binding(): Record<string, unknown> {
   return {
     schema_version: "1",
@@ -277,7 +286,7 @@ describe("frontend application bootstrap", () => {
   });
 
   it("constructs transport and stream only from injected capabilities", () => {
-    const parsed = parseFrontendBootstrap(binding());
+    const parsed = parseFrontendBootstrap({ ...binding(), command_gateway: null });
     const opened: string[] = [];
     const application = createFrontendApplication(parsed, {
       socketFactory: {
@@ -291,8 +300,43 @@ describe("frontend application bootstrap", () => {
     });
 
     expect(application.transport.snapshot().status).toBe("playing");
+    expect(application.commandGateway.enabled).toBe(false);
     const stream = application.makeStream();
     expect(opened).toEqual(["ws://127.0.0.1:8765/events"]);
     stream.close();
+  });
+
+  it("fails closed when a non-null command binding has no injected command socket factory", () => {
+    const parsed = parseFrontendBootstrap({
+      ...binding(),
+      command_gateway: commandGatewayBinding(),
+    });
+
+    expect(() =>
+      createFrontendApplication(parsed, {
+        socketFactory: { open: () => new FakeSocket() },
+        scheduler: { request: () => 41, cancel: () => {} },
+        clock: { now: () => 123 },
+      }),
+    ).toThrow(/commandSocketFactory/);
+  });
+
+  it("accepts an explicit command socket factory for a non-null command binding", () => {
+    const parsed = parseFrontendBootstrap({
+      ...binding(),
+      command_gateway: commandGatewayBinding(),
+    });
+    const application = createFrontendApplication(parsed, {
+      socketFactory: { open: () => new FakeSocket() },
+      commandSocketFactory: {
+        open: () => {
+          throw new Error("command socket must remain lazy during construction");
+        },
+      },
+      scheduler: { request: () => 41, cancel: () => {} },
+      clock: { now: () => 123 },
+    });
+
+    expect(application.commandGateway.enabled).toBe(true);
   });
 });

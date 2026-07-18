@@ -18,6 +18,7 @@ from steel_onslaught.contracts.player_selection import (
     Side,
     TurnId,
 )
+from steel_onslaught.pilots.schemas import SOMoveDirection
 
 
 class _ClosedStrictCommand(BaseModel):
@@ -51,7 +52,7 @@ class ModelSORemainPlayerAction(_ClosedStrictCommand):
 
 class ModelSOMovePlayerAction(_ClosedStrictCommand):
     kind: Literal["move"]
-    direction: Literal["toward_enemy", "defensive"]
+    direction: SOMoveDirection
     speed: Literal["full"] | None = None
 
 

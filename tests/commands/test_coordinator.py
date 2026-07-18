@@ -25,6 +25,12 @@ from steel_onslaught.commands.coordinator import (
     NonStubModelProviderError,
     ProcessLocalMatchLaunchCoordinator,
 )
+from steel_onslaught.commands.live_provider import (
+    LiveProviderGrantBindingError,
+    LiveProviderGrantConsumedError,
+    ModelSOLiveProviderLaunchGrant,
+    ProcessLocalOneShotLiveProviderCapability,
+)
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOLlmRetryBinding,
@@ -33,6 +39,7 @@ from steel_onslaught.contracts.application import (
 from steel_onslaught.contracts.commands import (
     ModelSOStartMatchCommand,
     ModelSOStartMatchSeatSelection,
+    canonical_command_sha256,
 )
 from steel_onslaught.contracts.player_selection import (
     ModelSOHumanPlayerOptionBinding,
@@ -224,6 +231,38 @@ def _coordinator(
     )
 
 
+def _live_overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
+    base = _overlay(tmp_path)
+    identity = base.llm.model_identities[0]
+    return base.model_copy(
+        update={
+            "llm": base.llm.model_copy(
+                update={
+                    "providers": (
+                        ModelSOOpenAICompatibleProviderBinding(
+                            kind="openai_compatible",
+                            provider_id="remote",
+                            endpoint_url="https://example.invalid/v1",
+                            model="remote-model",
+                            secret_ref=None,
+                            timeout_seconds=1.0,
+                            max_tokens=16,
+                            retry=ModelSOLlmRetryBinding(
+                                max_attempts=1,
+                                initial_backoff_seconds=0.0,
+                                backoff_multiplier=1.0,
+                            ),
+                        ),
+                    ),
+                    "model_identities": (
+                        identity.model_copy(update={"provider_binding_id": "remote"}),
+                    ),
+                }
+            )
+        }
+    )
+
+
 @pytest.mark.unit
 def test_authenticated_start_returns_canonical_secret_free_launch_provenance(
     tmp_path: Path,
@@ -309,35 +348,7 @@ def test_coordinator_delegates_authentication_digest_and_seat_validation(
 
 @pytest.mark.unit
 def test_non_stub_selected_model_fails_before_launch_admission(tmp_path: Path) -> None:
-    base = _overlay(tmp_path)
-    identity = base.llm.model_identities[0]
-    overlay = base.model_copy(
-        update={
-            "llm": base.llm.model_copy(
-                update={
-                    "providers": (
-                        ModelSOOpenAICompatibleProviderBinding(
-                            kind="openai_compatible",
-                            provider_id="remote",
-                            endpoint_url="https://example.invalid/v1",
-                            model="remote-model",
-                            secret_ref=None,
-                            timeout_seconds=1.0,
-                            max_tokens=16,
-                            retry=ModelSOLlmRetryBinding(
-                                max_attempts=1,
-                                initial_backoff_seconds=0.0,
-                                backoff_multiplier=1.0,
-                            ),
-                        ),
-                    ),
-                    "model_identities": (
-                        identity.model_copy(update={"provider_binding_id": "remote"}),
-                    ),
-                }
-            )
-        }
-    )
+    overlay = _live_overlay(tmp_path)
     roster = _roster()
     coordinator = ProcessLocalMatchLaunchCoordinator(
         overlay=overlay,
@@ -353,6 +364,134 @@ def test_non_stub_selected_model_fails_before_launch_admission(tmp_path: Path) -
         )
 
     assert coordinator.launch_admission_count == 0
+
+
+@pytest.mark.unit
+def test_live_provider_grant_exact_binding_is_authenticated_and_consumed_once(
+    tmp_path: Path,
+) -> None:
+    overlay = _live_overlay(tmp_path)
+    roster = _roster()
+    command = _command(overlay, roster)
+    bindings = {
+        "creator_principal_id": "principal.local_operator",
+        "creator_session_id": "session.local_operator",
+        "launch_command_id": command.command_id,
+        "launch_command_sha256": canonical_command_sha256(command),
+        "overlay_sha256": command.expected_overlay_sha256,
+        "roster_sha256": command.expected_roster_sha256,
+        "model_identity_id": "model_identity.local_qwen",
+        "provider_id": "remote",
+    }
+    grant = ModelSOLiveProviderLaunchGrant(
+        schema_version="1",
+        kind="steel_onslaught.live_provider_launch_grant",
+        **bindings,
+    )
+    mismatches = {
+        "creator_principal_id": "principal.someone_else",
+        "creator_session_id": "session.someone_else",
+        "launch_command_id": UUID("22222222-2222-4222-8222-222222222222"),
+        "launch_command_sha256": "a" * 64,
+        "overlay_sha256": "b" * 64,
+        "roster_sha256": "c" * 64,
+        "model_identity_id": "model_identity.someone_else",
+        "provider_id": "someone_else",
+    }
+    for field, mismatch in mismatches.items():
+        capability = ProcessLocalOneShotLiveProviderCapability(grant=grant)
+        with pytest.raises(LiveProviderGrantBindingError, match=field):
+            capability.consume(**(bindings | {field: mismatch}))
+        assert capability.consumption_count == 0
+
+    unauthenticated = ProcessLocalOneShotLiveProviderCapability(grant=grant)
+    coordinator = ProcessLocalMatchLaunchCoordinator(
+        overlay=overlay,
+        roster=roster,
+        sessions=_Sessions(),
+        live_provider_capability=unauthenticated,
+    )
+    with pytest.raises(SessionAuthenticationError):
+        coordinator.admit_start_match(command, context=_context(), match_id=_MATCH_ID)
+    assert unauthenticated.consumption_count == 0
+
+    capability = ProcessLocalOneShotLiveProviderCapability(grant=grant)
+    coordinator = ProcessLocalMatchLaunchCoordinator(
+        overlay=overlay,
+        roster=roster,
+        sessions=_Sessions(_operator()),
+        live_provider_capability=capability,
+    )
+    provenance = coordinator.admit_start_match(
+        command,
+        context=_context(),
+        match_id=_MATCH_ID,
+    )
+    assert provenance.launch_command_id == command.command_id
+    assert capability.consumption_count == 1
+    with pytest.raises(LiveProviderGrantConsumedError, match="consumed"):
+        capability.consume(**bindings)
+
+
+@pytest.mark.unit
+def test_same_live_model_identity_can_fill_both_llm_seats(tmp_path: Path) -> None:
+    overlay = _live_overlay(tmp_path)
+    base = _roster()
+    model = next(
+        option for option in base.options if isinstance(option, ModelSOModelPlayerOptionBinding)
+    )
+    roster = base.model_copy(
+        update={
+            "seats": (
+                base.seats[0].model_copy(update={"allowed_option_ids": (model.option_id,)}),
+                base.seats[1].model_copy(update={"allowed_option_ids": (model.option_id,)}),
+            )
+        }
+    )
+    command = _command(overlay, roster).model_copy(
+        update={
+            "selections": (
+                ModelSOStartMatchSeatSelection(side="red", option_id=model.option_id),
+                ModelSOStartMatchSeatSelection(side="blue", option_id=model.option_id),
+            )
+        }
+    )
+    session = ModelSOAuthenticatedSession(
+        principal_id="principal.local_operator",
+        session_id="session.local_operator",
+        human_identity_id=None,
+        permissions=("match:create",),
+    )
+    grant = ModelSOLiveProviderLaunchGrant(
+        creator_principal_id=session.principal_id,
+        creator_session_id=session.session_id,
+        launch_command_id=command.command_id,
+        launch_command_sha256=canonical_command_sha256(command),
+        overlay_sha256=command.expected_overlay_sha256,
+        roster_sha256=command.expected_roster_sha256,
+        model_identity_id=model.model_identity_id,
+        provider_id="remote",
+        max_completions=64,
+    )
+    capability = ProcessLocalOneShotLiveProviderCapability(grant=grant)
+    coordinator = ProcessLocalMatchLaunchCoordinator(
+        overlay=overlay,
+        roster=roster,
+        sessions=_Sessions(session),
+        live_provider_capability=capability,
+    )
+
+    provenance = coordinator.admit_start_match(
+        command,
+        context=ModelSOStartMatchAuthorityContext(
+            creator_principal_id=session.principal_id,
+            creator_session_id=session.session_id,
+        ),
+        match_id=_MATCH_ID,
+    )
+
+    assert [assignment.kind for assignment in provenance.seat_assignments] == ["model", "model"]
+    assert capability.consumption_count == 1
 
 
 @pytest.mark.unit

@@ -7,7 +7,8 @@ module performs no environment, package-path, registry, or constructor lookup.
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from threading import Lock
 from types import MappingProxyType
 
 import httpx
@@ -15,6 +16,7 @@ import httpx
 from steel_onslaught.contracts.application import (
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOSecretRef,
+    ModelSOStubLlmProviderBinding,
 )
 from steel_onslaught.llm.schemas import (
     LlmResponse,
@@ -35,6 +37,66 @@ from steel_onslaught.llm.schemas import (
 
 class ProviderRegistryError(ValueError):
     """A requested provider is absent from the immutable injected registry."""
+
+
+class OneShotLlmClientConsumedError(RuntimeError):
+    """The one permitted live-provider completion was already consumed."""
+
+
+class BoundedLlmClientConsumedError(RuntimeError):
+    """The bounded live-provider completion budget was exhausted."""
+
+
+class OneShotLlmClient:
+    """Thread-safe client wrapper that permits exactly one delegated completion."""
+
+    def __init__(self, client: ProtocolLlmClient) -> None:
+        self._client = client
+        self._consumed = False
+        self._lock = Lock()
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        """Consume before delegation so provider failures cannot restore the allowance."""
+
+        with self._lock:
+            if self._consumed:
+                raise OneShotLlmClientConsumedError("live provider completion is already consumed")
+            self._consumed = True
+        return self._client.complete(request)
+
+
+class BoundedLlmClient:
+    """Thread-safe live client with a finite per-match completion budget.
+
+    Launch authority is still admitted exactly once, but an LLM-vs-LLM match
+    needs one provider completion per pilot turn.  This wrapper keeps that
+    budget explicit and fail-closed without changing the legacy one-shot
+    client used by callers that intentionally request a single completion.
+    """
+
+    def __init__(self, client: ProtocolLlmClient, *, max_completions: int = 64) -> None:
+        if max_completions <= 0:
+            raise ValueError("max_completions must be positive")
+        self._client = client
+        self._max_completions = max_completions
+        self._consumed = 0
+        self._lock = Lock()
+
+    @property
+    def consumption_count(self) -> int:
+        with self._lock:
+            return self._consumed
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        """Consume one turn before delegation so failures cannot restore budget."""
+
+        with self._lock:
+            if self._consumed >= self._max_completions:
+                raise BoundedLlmClientConsumedError(
+                    "live provider completion budget is already consumed"
+                )
+            self._consumed += 1
+        return self._client.complete(request)
 
 
 class NoSecretResolver:
@@ -84,7 +146,7 @@ class HttpxJsonTransport:
         except httpx.RequestError:
             raise LlmTransportError("LLM transport request failed", retryable=True) from None
         try:
-            return ModelSOOpenAIChatResponse.model_validate(response.json())
+            return ModelSOOpenAIChatResponse.model_validate_json(response.content)
         except (ValueError, TypeError):
             raise LlmTransportError(
                 "LLM provider returned an invalid response contract", retryable=False
@@ -170,6 +232,30 @@ class OpenAICompatibleClient:
         )
 
 
+class SelectedOnlyLlmClientBuilder:
+    """Purely select and validate one explicitly named live provider binding."""
+
+    def select(
+        self,
+        *,
+        providers: Sequence[ModelSOStubLlmProviderBinding | ModelSOOpenAICompatibleProviderBinding],
+        selected_provider_id: str,
+    ) -> ModelSOOpenAICompatibleProviderBinding:
+        """Return the exact one-attempt HTTP binding without constructing effects."""
+
+        selected = tuple(
+            provider for provider in providers if provider.provider_id == selected_provider_id
+        )
+        if len(selected) != 1:
+            raise ProviderRegistryError("selected live provider must resolve exactly once")
+        provider = selected[0]
+        if not isinstance(provider, ModelSOOpenAICompatibleProviderBinding):
+            raise ValueError("selected live provider must be openai_compatible")
+        if provider.retry.max_attempts != 1:
+            raise ValueError("selected live provider requires max_attempts=1")
+        return provider
+
+
 class StaticLlmClientFactory:
     """Immutable provider selection over clients constructed at the root."""
 
@@ -184,10 +270,15 @@ class StaticLlmClientFactory:
 
 
 __all__ = [
+    "BoundedLlmClient",
+    "BoundedLlmClientConsumedError",
     "HttpxJsonTransport",
     "NoSecretResolver",
+    "OneShotLlmClient",
+    "OneShotLlmClientConsumedError",
     "OpenAICompatibleClient",
     "ProviderRegistryError",
+    "SelectedOnlyLlmClientBuilder",
     "StaticLlmClientFactory",
     "SystemSleeper",
 ]

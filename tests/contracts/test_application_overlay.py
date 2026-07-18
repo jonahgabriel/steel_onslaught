@@ -623,6 +623,94 @@ def test_explicit_roster_export_is_derived_safe_and_does_not_discover_models(
 
 
 @pytest.mark.unit
+def test_replay_bootstrap_has_no_browser_command_capability(tmp_path: Path) -> None:
+    """Replay remains receive-only until an explicit gateway binding is composed."""
+
+    overlay = ModelSOApplicationOverlay.model_validate(_overlay_data(tmp_path))
+
+    bootstrap = build_frontend_bootstrap(overlay)
+
+    assert bootstrap.player_roster is None
+    assert bootstrap.command_gateway is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "websocket_url",
+    [
+        "http://127.0.0.1:8765/commands",
+        "ws://user@127.0.0.1:8765/commands",
+        "ws://127.0.0.1:8765",
+        "ws://127.0.0.1:8765/commands?token=ambient",
+        "ws://127.0.0.1:8765/commands#fragment",
+        "ws://example.test:8765/commands",
+    ],
+)
+def test_browser_command_gateway_binding_is_closed_loopback_and_secret_free(
+    websocket_url: str,
+) -> None:
+    from steel_onslaught.contracts.application import ModelSOFrontendCommandGatewayBinding
+
+    with pytest.raises(ValueError, match="websocket_url"):
+        ModelSOFrontendCommandGatewayBinding(
+            kind="websocket",
+            contract="steel_onslaught.browser_command_gateway.v1",
+            websocket_url=websocket_url,
+            authority_scope="injected_process_session",
+        )
+
+    with pytest.raises(ValueError, match="ambient_fallback"):
+        ModelSOFrontendCommandGatewayBinding.model_validate(
+            {
+                "kind": "websocket",
+                "contract": "steel_onslaught.browser_command_gateway.v1",
+                "websocket_url": "ws://127.0.0.1:8765/commands",
+                "authority_scope": "injected_process_session",
+                "ambient_fallback": True,
+            }
+        )
+
+
+@pytest.mark.unit
+def test_live_bootstrap_requires_explicit_roster_and_gateway_and_exposes_no_authority(
+    tmp_path: Path,
+) -> None:
+    from steel_onslaught.contracts.application import ModelSOFrontendCommandGatewayBinding
+
+    overlay, roster = _selector_overlay_and_roster(tmp_path)
+    gateway = ModelSOFrontendCommandGatewayBinding(
+        kind="websocket",
+        contract="steel_onslaught.browser_command_gateway.v1",
+        websocket_url="ws://127.0.0.1:8765/commands",
+        authority_scope="injected_process_session",
+    )
+
+    bootstrap = build_frontend_bootstrap(
+        overlay,
+        roster=roster,
+        command_gateway=gateway,
+    )
+
+    assert bootstrap.player_roster == roster.public_projection()
+    assert bootstrap.command_gateway == gateway
+    document = bootstrap.model_dump_json()
+    for forbidden in (
+        "principal_id",
+        "session_id",
+        "human_identity_id",
+        "provider_binding_id",
+        "endpoint_url",
+        "secret_ref",
+        "pilot_spec_id",
+        "persona_id",
+        "loadout_id",
+        "token",
+        "authorization",
+    ):
+        assert forbidden not in document.lower()
+
+
+@pytest.mark.unit
 def test_roster_export_rejects_unconfigured_model_identity(tmp_path: Path) -> None:
     overlay, roster = _selector_overlay_and_roster(tmp_path)
     model = roster.options[1]

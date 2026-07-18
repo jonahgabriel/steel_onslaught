@@ -21,6 +21,11 @@ from steel_onslaught.commands.authority import (
     canonical_overlay_sha256,
 )
 from steel_onslaught.commands.coordinator import NonStubModelProviderError
+from steel_onslaught.commands.live_provider import (
+    LiveProviderGrantBindingError,
+    ModelSOLiveProviderLaunchGrant,
+    ProcessLocalOneShotLiveProviderCapability,
+)
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.commands import (
@@ -448,6 +453,35 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
 
 
 @pytest.mark.unit
+def test_selected_runtime_forwards_explicit_browser_fallback_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Browser live composition may opt into per-turn provider fallback."""
+    captured: dict[str, object] = {}
+    sentinel = cast(RuntimeDependencies, object())
+
+    def fake_build_runtime(overlay: object, **kwargs: object) -> RuntimeDependencies:
+        captured["overlay"] = overlay
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(composition, "build_runtime_dependencies", fake_build_runtime)
+    overlay = cast(ModelSOApplicationOverlay, object())
+    result = composition.build_selected_runtime_dependencies(
+        overlay,
+        selected_provider_id="glm",
+        selected_pilot_spec_ids=("pilot.live.glm",),
+        failure_policy="fallback",
+    )
+
+    assert result is sentinel
+    assert captured["overlay"] is overlay
+    assert captured["selected_provider_id"] == "glm"
+    assert captured["selected_pilot_spec_ids"] == ("pilot.live.glm",)
+    assert captured["llm_failure_policy"] == "fallback"
+
+
+@pytest.mark.unit
 def test_selected_human_and_stub_match_admits_before_runtime_factory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
@@ -594,3 +628,115 @@ def test_selected_non_stub_provider_rejects_before_runtime_factory(
         )
 
     assert factory_calls == 0
+
+
+@pytest.mark.unit
+def test_selected_live_provider_admits_before_only_exact_live_runtime_factory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    monkeypatch.setattr(composition, "_require_valid_budgets", lambda *_: None)
+    overlay = _selection_overlay(tmp_path)
+    roster = _selection_roster("model_identity.local")
+    command = _selection_command(overlay, roster)
+    context = _selection_context()
+    identity = MatchIdentity(
+        match_id="match.01JABCDE0123456789ABCDEFGX",
+        correlation_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    red = _loadout("red")
+    blue = _loadout("blue")
+    dependencies = RuntimeDependencies(
+        bus=_Bus(),
+        ledger=_Ledger(),
+        leaderboard=cast(LeaderboardRepository, _Leaderboard()),
+        clock=_Clock(),
+        identities=_Identities(),
+        event_factory=EventFactory(clock=_Clock(), identities=_Identities()),
+        catalog=cast(MatchContractCatalog, _Catalog()),
+        arena=ModelSOArenaSpec(
+            schema_version="0.1.0",
+            kind="steel_onslaught.arena",
+            arena_id="injected_test_arena",
+            display_name="Injected test arena",
+            size=40,
+            spawn_a=ModelSOPosition(x=5, y=5),
+            spawn_b=ModelSOPosition(x=35, y=35),
+            obstacles=(),
+            rects=(),
+        ),
+        pilot_registry=cast(Any, _Registry()),
+        pilot_factory=_PilotFactory(),
+        closer=_Closer(),
+    )
+    bindings = {
+        "creator_principal_id": context.creator_principal_id,
+        "creator_session_id": context.creator_session_id,
+        "launch_command_id": command.command_id,
+        "launch_command_sha256": canonical_command_sha256(command),
+        "overlay_sha256": canonical_overlay_sha256(overlay),
+        "roster_sha256": roster.canonical_sha256(),
+        "model_identity_id": "model_identity.local",
+        "provider_id": "local",
+    }
+    normal_calls = 0
+    live_calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def forbidden_runtime_factory(candidate: ModelSOApplicationOverlay) -> RuntimeDependencies:
+        nonlocal normal_calls
+        del candidate
+        normal_calls += 1
+        raise AssertionError("live selection must not construct the default runtime")
+
+    def live_runtime_factory(
+        candidate: ModelSOApplicationOverlay,
+        provider_id: str,
+        pilot_spec_ids: tuple[str, ...],
+    ) -> RuntimeDependencies:
+        assert candidate is overlay
+        live_calls.append((provider_id, pilot_spec_ids))
+        return dependencies
+
+    mismatched = ModelSOLiveProviderLaunchGrant(**(bindings | {"launch_command_sha256": "f" * 64}))
+    with pytest.raises(LiveProviderGrantBindingError, match="launch_command_sha256"):
+        composition.assemble_selected_match_live(
+            overlay=overlay,
+            roster=roster,
+            sessions=_Sessions(),
+            command=command,
+            context=context,
+            identity=identity,
+            loadouts={red.id: red, blue.id: blue},
+            runtime_factory=forbidden_runtime_factory,
+            live_provider_capability=ProcessLocalOneShotLiveProviderCapability(grant=mismatched),
+            live_runtime_factory=live_runtime_factory,
+            seed=7,
+            max_ticks=3,
+        )
+    assert normal_calls == 0
+    assert live_calls == []
+
+    sessions = _Sessions()
+    capability = ProcessLocalOneShotLiveProviderCapability(
+        grant=ModelSOLiveProviderLaunchGrant(**bindings)
+    )
+    stack = composition.assemble_selected_match_live(
+        overlay=overlay,
+        roster=roster,
+        sessions=sessions,
+        command=command,
+        context=context,
+        identity=identity,
+        loadouts={red.id: red, blue.id: blue},
+        runtime_factory=forbidden_runtime_factory,
+        live_provider_capability=capability,
+        live_runtime_factory=live_runtime_factory,
+        seed=7,
+        max_ticks=3,
+    )
+
+    assert sessions.resolve_count > 0
+    assert capability.consumption_count == 1
+    assert normal_calls == 0
+    assert live_calls == [("local", ("pilot.fake.v1",))]
+    stack.close()

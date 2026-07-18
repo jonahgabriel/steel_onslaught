@@ -81,6 +81,25 @@ def blocked_directions(
     return tuple(blocked)
 
 
+def cover_directions(
+    position: ModelSOPosition,
+    *,
+    obstacles: frozenset[Cell],
+) -> tuple[SOCompassDirection, ...]:
+    """Return deterministic directions whose adjacent cell is cover.
+
+    Current arena contracts treat obstacle cells as impassable terrain.  The
+    move verb therefore uses this signal to choose a path *toward* cover and
+    stops at the legal cell immediately before it; it never invents a move
+    into an obstacle.
+    """
+    return tuple(
+        direction
+        for direction, (dx, dy) in DIRECTION_OFFSETS
+        if (position.x + dx, position.y + dy) in obstacles
+    )
+
+
 def greedy_sidestep(
     origin: ModelSOPosition,
     target: ModelSOPosition,
@@ -122,6 +141,7 @@ __all__ = [
     "blocked_directions",
     "bresenham_line",
     "chebyshev_line",
+    "cover_directions",
     "greedy_sidestep",
     "line_of_sight_clear",
 ]

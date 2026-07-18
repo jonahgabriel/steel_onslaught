@@ -486,6 +486,92 @@ def test_pilot_decision_event_requires_action_params() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "semantic_failure_code",
+    [
+        "malformed_json",
+        "unknown_action",
+        "action_unavailable",
+        "invalid_action_parameters",
+    ],
+)
+def test_llm_invalid_response_accepts_each_closed_semantic_failure_code(
+    semantic_failure_code: str,
+) -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["semantic_failure_code"] = semantic_failure_code
+
+    validated = _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+    assert validated.semantic_failure_code == semantic_failure_code
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("include_null_code", [False, True], ids=["missing", "null"])
+def test_llm_invalid_response_requires_semantic_failure_code(
+    include_null_code: bool,
+) -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    if include_null_code:
+        raw["semantic_failure_code"] = None
+    else:
+        del raw["semantic_failure_code"]
+
+    with pytest.raises(ValidationError, match="semantic_failure_code"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reason_code",
+    ["provider_error", "consumer_error", "abandoned"],
+)
+def test_llm_non_invalid_response_forbids_semantic_failure_code(reason_code: str) -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["reason_code"] = reason_code
+
+    with pytest.raises(ValidationError, match="semantic_failure_code"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+
+@pytest.mark.unit
+def test_llm_invalid_response_rejects_unknown_semantic_failure_code() -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["semantic_failure_code"] = "forged_semantic_code"
+
+    with pytest.raises(ValidationError, match="semantic_failure_code"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+
+@pytest.mark.unit
+def test_llm_failed_finish_reason_accepts_safe_maximum_length_token() -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["finish_reason"] = "x" * 64
+
+    validated = _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+    assert validated.finish_reason == "x" * 64
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("finish_reason", ["unsafe reason", "x" * 65])
+def test_llm_failed_finish_reason_rejects_unsafe_or_too_long_value(
+    finish_reason: str,
+) -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["finish_reason"] = finish_reason
+
+    with pytest.raises(ValidationError, match="finish_reason"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+
+@pytest.mark.unit
 def test_payload_consumers_do_not_read_unvalidated_payload_dicts() -> None:
     root = Path(__file__).resolve().parents[2] / "src" / "steel_onslaught"
     files = [

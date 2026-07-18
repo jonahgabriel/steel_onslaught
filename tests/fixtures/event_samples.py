@@ -220,7 +220,9 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
         SOEventType.LLM_COMPLETION_FAILED: {
             "provider_id": "primary",
             "reason_code": "invalid_response",
+            "semantic_failure_code": "malformed_json",
             "model": "served-model",
+            "finish_reason": "stop",
             "prompt_tokens": 64,
             "completion_tokens": 24,
             "cost_usd": None,

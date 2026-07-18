@@ -111,19 +111,74 @@ def test_successful_provider_cost_is_preserved_on_resolved_terminal() -> None:
 
 @pytest.mark.unit
 def test_semantic_rejection_emits_failed_with_usage_without_raw_content() -> None:
-    client, events = _observed(_ResponseClient())
+    raw_response = "raw-semantic-response-sentinel"
+    raw_prompt = "raw-semantic-prompt-sentinel"
+
+    class _SemanticResponseClient:
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            return LlmResponse(
+                text=raw_response,
+                usage=LlmUsage(prompt_tokens=7, completion_tokens=3, cost_usd=None),
+                model="served-model",
+                finish_reason="stop",
+            )
+
+    client, events = _observed(_SemanticResponseClient())
+    request = _request().model_copy(update={"user_prompt": raw_prompt})
 
     def reject(response: LlmResponse) -> None:
-        raise LlmSemanticError("raw response detail")
+        raise LlmSemanticError("malformed_json")
 
     with pytest.raises(LlmSemanticError):
-        consume_llm_completion(client=client, request=_request(), consumer=reject)
+        consume_llm_completion(client=client, request=request, consumer=reject)
     _assert_chain(events, SOEventType.LLM_COMPLETION_FAILED)
     payload = events[-1].payload
     assert payload["reason_code"] == "invalid_response"
+    assert payload["semantic_failure_code"] == "malformed_json"
     assert payload["model"] == "served-model"
+    assert payload["finish_reason"] == "stop"
     assert payload["prompt_tokens"] == 7
-    assert "raw response detail" not in events[-1].model_dump_json()
+    assert payload["completion_tokens"] == 3
+    serialized_evidence = "\n".join(event.model_dump_json() for event in events)
+    assert raw_response not in serialized_evidence
+    assert raw_prompt not in serialized_evidence
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "unsafe_finish_reason",
+    [
+        pytest.param("unsafe finish reason sentinel", id="whitespace"),
+        pytest.param("overlength-finish-reason-sentinel-" + "x" * 65, id="overlength"),
+    ],
+)
+def test_semantic_rejection_drops_unsafe_finish_reason(
+    unsafe_finish_reason: str,
+) -> None:
+    class _UnsafeFinishReasonClient:
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            return LlmResponse(
+                text='{"accepted":false}',
+                usage=LlmUsage(prompt_tokens=7, completion_tokens=3, cost_usd=None),
+                model="served-model",
+                finish_reason=unsafe_finish_reason,
+            )
+
+    client, events = _observed(_UnsafeFinishReasonClient())
+    original_error = LlmSemanticError("malformed_json")
+
+    def reject(response: LlmResponse) -> None:
+        raise original_error
+
+    with pytest.raises(LlmSemanticError) as captured:
+        consume_llm_completion(client=client, request=_request(), consumer=reject)
+
+    assert captured.value is original_error
+    _assert_chain(events, SOEventType.LLM_COMPLETION_FAILED)
+    assert events[-1].payload["finish_reason"] is None
+    assert SOEventType.LLM_COMPLETION_RESOLVED not in {event.event_type for event in events}
+    serialized_evidence = "\n".join(event.model_dump_json() for event in events)
+    assert unsafe_finish_reason not in serialized_evidence
 
 
 @pytest.mark.unit

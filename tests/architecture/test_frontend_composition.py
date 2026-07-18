@@ -14,6 +14,9 @@ def _source(relative: str) -> str:
 def test_main_is_the_only_browser_transport_composition_root() -> None:
     main = _source("main.tsx")
     assert main.count("new WebSocket(") == 1
+    assert main.count("const browserSocketFactory") == 1
+    assert "socketFactory: browserSocketFactory" in main
+    assert "commandSocketFactory: browserSocketFactory" in main
     assert "createFrontendApplication" in main
     assert "loadFrontendBootstrap" in main
 
@@ -60,7 +63,9 @@ def test_player_selector_has_no_command_transport_or_ambient_authority() -> None
 
     assert main.count("new WebSocket(") == 1
     assert "matchStartCapability" not in main
-    assert "capability={matchStartCapability}" in app
+    assert "matchStartCapability" not in app
+    assert "capability={application.commandGateway}" in app
+    assert "?? application.commandGateway" not in app
     assert ".send(" not in event_stream
     for source in (app, setup):
         assert ".send(" not in source

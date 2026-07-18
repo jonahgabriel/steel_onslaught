@@ -23,10 +23,13 @@ from omnibase_core.models.common.model_envelope import ModelEnvelope
 from pydantic import ValidationError
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, ModelSOEventSubject, SOEventType
 from steel_onslaught.match.composition import load_loadout
+from steel_onslaught.match.runner import MatchRunner
+from steel_onslaught.match.state import ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from tests.runtime import match_runner, pilot_from_spec
 
@@ -289,6 +292,121 @@ def test_pilot_from_spec_raises_on_unknown_archetype() -> None:
     )
     with pytest.raises(ValueError, match="unknown pilot archetype"):
         pilot_from_spec(spec)
+
+
+def _prepared_move_runner(
+    *,
+    a_pos: ModelSOPosition | None = None,
+    b_pos: ModelSOPosition | None = None,
+    obstacles: tuple[ModelSOPosition, ...] = (),
+) -> tuple[MatchRunner, ModelSOMechRuntimeState, list[ModelSOEventEnvelope]]:
+    """Build a runner with folded mech state for direct move-resolution pins."""
+    a_pos = a_pos or ModelSOPosition(x=10, y=10)
+    b_pos = b_pos or ModelSOPosition(x=20, y=10)
+    bus = InProcessEventBus()
+    collected: list[ModelSOEventEnvelope] = []
+    bus.subscribe(collected.append)
+    runtime_arena = ModelSOArenaSpec(
+        schema_version="0.1.0",
+        kind="steel_onslaught.arena",
+        arena_id="test_move_arena",
+        display_name="Move test arena",
+        size=40,
+        spawn_a=a_pos,
+        spawn_b=b_pos,
+        obstacles=obstacles,
+        rects=(),
+    )
+    runner, _runtime = match_runner(
+        bus=bus,
+        match_id=MATCH_ID,
+        seed=1,
+        loadout_a=load_loadout(LOADOUT_AGGRESSIVE),
+        loadout_b=load_loadout(LOADOUT_AGGRESSIVE),
+        max_ticks=2,
+        arena_override=runtime_arena,
+    )
+    a_payload = _mech_payload("mech.a.01", "player.a")
+    a_payload["position"] = a_pos.model_dump(mode="json")
+    b_payload = _mech_payload("mech.b.01", "player.b")
+    b_payload["position"] = b_pos.model_dump(mode="json")
+    bus.publish(
+        ModelSOEventEnvelope(
+            event_id=ulid.new().str,
+            match_id=MATCH_ID,
+            tick=0,
+            sequence_in_tick=0,
+            event_type=SOEventType.MATCH_STARTED,
+            producer_node="node.test",
+            subject=_MATCH_SUBJECT,
+            payload={
+                "seed": 1,
+                "max_ticks": 2,
+                "mechs": [a_payload, b_payload],
+                "arena": runtime_arena.to_snapshot().model_dump(mode="json"),
+            },
+            envelope=_onex_envelope(MATCH_ID),
+        )
+    )
+    return runner, runner.fold.state.mech_states["mech.a.01"], collected
+
+
+def _move_intent(direction: str) -> ModelSOEventEnvelope:
+    return ModelSOEventEnvelope(
+        event_id=ulid.new().str,
+        match_id=MATCH_ID,
+        tick=1,
+        sequence_in_tick=0,
+        event_type=SOEventType.MOVE_INTENT,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a"),
+        payload={"direction": direction},
+        envelope=_onex_envelope(MATCH_ID),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("direction", "expected_y_sign"),
+    [("flank_left", -1), ("flank_right", 1)],
+)
+def test_flank_directions_resolve_perpendicular_to_enemy_axis(
+    direction: str, expected_y_sign: int
+) -> None:
+    runner, mech, collected = _prepared_move_runner()
+    collected.clear()
+
+    runner._resolve_move(_move_intent(direction), runner.fold.state, mech)
+
+    movement = next(
+        event for event in collected if event.event_type is SOEventType.MOVEMENT_RESOLVED
+    )
+    origin = movement.payload["from"]
+    target = movement.payload["to"]
+    assert target["x"] == origin["x"]
+    assert (target["y"] - origin["y"]) * expected_y_sign > 0
+
+
+@pytest.mark.unit
+def test_toward_cover_moves_to_the_legal_cell_before_nearest_obstacle() -> None:
+    runner, mech, collected = _prepared_move_runner(obstacles=(ModelSOPosition(x=15, y=10),))
+    collected.clear()
+
+    runner._resolve_move(_move_intent("toward_cover"), runner.fold.state, mech)
+
+    movement = next(
+        event for event in collected if event.event_type is SOEventType.MOVEMENT_RESOLVED
+    )
+    assert movement.payload["to"] == {"x": 14, "y": 10}
+
+
+@pytest.mark.unit
+def test_hold_position_and_empty_cover_are_explicit_no_ops() -> None:
+    runner, mech, collected = _prepared_move_runner()
+    collected.clear()
+    runner._resolve_move(_move_intent("hold_position"), runner.fold.state, mech)
+    runner._resolve_move(_move_intent("toward_cover"), runner.fold.state, mech)
+    assert not [event for event in collected if event.event_type is SOEventType.MOVEMENT_RESOLVED]
 
 
 # ---------------------------------------------------------------------------

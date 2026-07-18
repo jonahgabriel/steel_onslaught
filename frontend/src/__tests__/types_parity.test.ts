@@ -260,6 +260,102 @@ describe("types parity against Python-emitted fixtures", () => {
     ).toThrow(/cost_usd|cost field/);
   });
 
+  it.each([
+    "malformed_json",
+    "unknown_action",
+    "action_unavailable",
+    "invalid_action_parameters",
+  ])("accepts closed LLM semantic failure code %s", (semanticFailureCode) => {
+    const parsed = parseEnvelope(
+      corruptPayload("llm_completion_failed", (payload) => {
+        payload["semantic_failure_code"] = semanticFailureCode;
+        payload["finish_reason"] = "x".repeat(64);
+      }),
+    );
+    if (parsed.event_type !== "llm_completion_failed") {
+      throw new Error("wrong LLM failure event type");
+    }
+    expect(parsed.payload.semantic_failure_code).toBe(semanticFailureCode);
+    expect(parsed.payload.finish_reason).toHaveLength(64);
+  });
+
+  it("accepts explicit null LLM failure metadata for a non-semantic failure", () => {
+    const parsed = parseEnvelope(
+      corruptPayload("llm_completion_failed", (payload) => {
+        payload["reason_code"] = "provider_error";
+        payload["semantic_failure_code"] = null;
+        payload["model"] = null;
+        payload["finish_reason"] = null;
+        payload["prompt_tokens"] = null;
+        payload["completion_tokens"] = null;
+        payload["cost_usd"] = null;
+      }),
+    );
+    if (parsed.event_type !== "llm_completion_failed") {
+      throw new Error("wrong LLM failure event type");
+    }
+    expect(parsed.payload.semantic_failure_code).toBeNull();
+    expect(parsed.payload.finish_reason).toBeNull();
+  });
+
+  it("requires a semantic failure code exactly for invalid_response", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          payload["semantic_failure_code"] = null;
+        }),
+      ),
+    ).toThrow(/semantic_failure_code/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          payload["reason_code"] = "consumer_error";
+        }),
+      ),
+    ).toThrow(/semantic_failure_code/);
+  });
+
+  it("rejects an unknown LLM semantic failure code", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          payload["semantic_failure_code"] = "forged_semantic_code";
+        }),
+      ),
+    ).toThrow(/semantic_failure_code/);
+  });
+
+  it.each([
+    "semantic_failure_code",
+    "model",
+    "finish_reason",
+    "prompt_tokens",
+    "completion_tokens",
+    "cost_usd",
+  ])("rejects missing required nullable LLM failure field %s", (field) => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          delete payload[field];
+        }),
+      ),
+    ).toThrow(new RegExp(field));
+  });
+
+  it.each([
+    ["empty", ""],
+    ["unsafe", "unsafe reason"],
+    ["too long", "x".repeat(65)],
+  ])("rejects %s LLM failure finish_reason", (_description, finishReason) => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          payload["finish_reason"] = finishReason;
+        }),
+      ),
+    ).toThrow(/finish_reason/);
+  });
+
   it("preserves explicit current-live RED/BLUE mech sides", () => {
     const current = parseEnvelope(loadFixture("match_started"));
     if (current.event_type !== "match_started") throw new Error("wrong current event type");

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from threading import Barrier, Event, Lock
 
 import httpx
 import pytest
@@ -14,7 +16,10 @@ from steel_onslaught.contracts.application import (
     ModelSOSecretRef,
 )
 from steel_onslaught.llm.client_http import (
+    BoundedLlmClient,
     HttpxJsonTransport,
+    OneShotLlmClient,
+    OneShotLlmClientConsumedError,
     OpenAICompatibleClient,
     ProviderRegistryError,
     StaticLlmClientFactory,
@@ -22,6 +27,7 @@ from steel_onslaught.llm.client_http import (
 from steel_onslaught.llm.schemas import (
     LlmResponse,
     LlmTransportError,
+    LlmUsage,
     ModelSOLlmCompletionRequest,
     ModelSOOpenAIChatMessage,
     ModelSOOpenAIChatRequest,
@@ -282,6 +288,54 @@ def test_http_statuses_are_sanitized_and_classified(status: int, retryable: bool
 
 
 @pytest.mark.unit
+def test_http_transport_parses_standard_json_choice_list_and_ignores_metadata() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "completion.fixture",
+                "object": "chat.completion",
+                "created": 1,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"action":"remain"}',
+                        },
+                        "finish_reason": "stop",
+                        "logprobs": None,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 5,
+                    "total_tokens": 8,
+                },
+                "model": "served-model",
+                "provider_metadata": {"ignored": True},
+            },
+        )
+
+    with _http_client(handler) as raw:
+        parsed = HttpxJsonTransport(raw).post_json(
+            url="https://provider.test/chat",
+            headers={},
+            request=_provider_request(),
+            timeout_seconds=1.0,
+        )
+
+    assert isinstance(parsed.choices, tuple)
+    assert len(parsed.choices) == 1
+    assert parsed.choices[0].message.content == '{"action":"remain"}'
+    assert parsed.choices[0].finish_reason == "stop"
+    assert parsed.usage.prompt_tokens == 3
+    assert parsed.usage.completion_tokens == 5
+    assert parsed.model == "served-model"
+
+
+@pytest.mark.unit
 def test_http_transport_accepts_metadata_but_rejects_missing_consumed_fields() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
@@ -316,3 +370,129 @@ def test_http_timeout_is_sanitized_and_retryable() -> None:
     assert str(raised.value) == "LLM request timed out"
     assert raised.value.retryable is True
     assert raised.value.__cause__ is None
+
+
+@pytest.mark.unit
+def test_selected_only_builder_ignores_unselected_provider_and_requires_one_attempt() -> None:
+    from steel_onslaught.llm.client_http import SelectedOnlyLlmClientBuilder
+
+    selected = _config(max_attempts=1).model_copy(
+        update={
+            "provider_id": "selected",
+            "endpoint_url": "https://selected.test/chat",
+        }
+    )
+    unselected = _config(max_attempts=3).model_copy(
+        update={
+            "provider_id": "unselected",
+            "endpoint_url": "https://unselected.test/chat",
+        }
+    )
+    builder = SelectedOnlyLlmClientBuilder()
+
+    selected_binding = builder.select(
+        providers=(unselected, selected),
+        selected_provider_id="selected",
+    )
+    assert selected_binding is selected
+    assert selected_binding.endpoint_url == "https://selected.test/chat"
+
+    with pytest.raises(ValueError, match="max_attempts=1"):
+        builder.select(
+            providers=(unselected, selected),
+            selected_provider_id="unselected",
+        )
+
+
+@pytest.mark.unit
+def test_selected_only_live_client_allows_exactly_one_completion() -> None:
+    transport = _Transport([_response(), _response()])
+    base = OpenAICompatibleClient(
+        config=_config(max_attempts=1),
+        transport=transport,
+        secret_resolver=_Resolver(),
+        sleeper=_Sleeper(),
+    )
+    client = OneShotLlmClient(base)
+
+    assert client.complete(_request()).finish_reason == "stop"
+    with pytest.raises(RuntimeError, match="already consumed"):
+        client.complete(_request())
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.unit
+def test_bounded_live_client_allows_multiple_turn_completions() -> None:
+    transport = _Transport([_response(), _response(), _response()])
+    base = OpenAICompatibleClient(
+        config=_config(max_attempts=1),
+        transport=transport,
+        secret_resolver=_Resolver(),
+        sleeper=_Sleeper(),
+    )
+    client = BoundedLlmClient(base, max_completions=2)
+
+    assert client.complete(_request()).finish_reason == "stop"
+    assert client.complete(_request()).finish_reason == "stop"
+    with pytest.raises(RuntimeError, match="budget is already consumed"):
+        client.complete(_request())
+    assert client.consumption_count == 2
+    assert len(transport.calls) == 2
+
+
+class _BlockingLlmClient:
+    def __init__(self) -> None:
+        self.entered = Event()
+        self.release = Event()
+        self._lock = Lock()
+        self.calls = 0
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        del request
+        with self._lock:
+            self.calls += 1
+        self.entered.set()
+        if not self.release.wait(timeout=2):
+            raise AssertionError("test did not release the delegated LLM call")
+        return LlmResponse(
+            text="ok",
+            usage=LlmUsage(prompt_tokens=1, completion_tokens=1, cost_usd=None),
+            model="blocking-fixture",
+            finish_reason="stop",
+        )
+
+
+@pytest.mark.unit
+def test_one_shot_client_consumes_before_concurrent_delegation() -> None:
+    base = _BlockingLlmClient()
+    client = OneShotLlmClient(base)
+    start = Barrier(3)
+
+    def invoke() -> LlmResponse:
+        start.wait(timeout=2)
+        return client.complete(_request())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(invoke)
+        second = pool.submit(invoke)
+        try:
+            start.wait(timeout=2)
+            assert base.entered.wait(timeout=2)
+            done, pending = wait(
+                {first, second},
+                timeout=2,
+                return_when=FIRST_COMPLETED,
+            )
+            assert len(done) == len(pending) == 1
+            with pytest.raises(
+                OneShotLlmClientConsumedError,
+                match="already consumed",
+            ):
+                done.pop().result(timeout=0)
+            assert base.calls == 1
+            base.release.set()
+            assert pending.pop().result(timeout=2).model == "blocking-fixture"
+        finally:
+            base.release.set()
+
+    assert base.calls == 1

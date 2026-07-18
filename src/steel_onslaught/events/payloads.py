@@ -14,6 +14,7 @@ from pydantic import (
     StrictBool,
     StrictFloat,
     StrictInt,
+    StrictStr,
     field_serializer,
     field_validator,
     model_validator,
@@ -31,10 +32,12 @@ from steel_onslaught.contracts.player_selection import (
 )
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.immutable import FrozenJSONMapping, FrozenMapping, thaw_json_mapping
+from steel_onslaught.llm.schemas import LlmSemanticFailureCode
 from steel_onslaught.match.state import ModelSOMechRuntimeState, SOMatchEndReason
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPosition,
+    SOMoveDirection,
     SOPilotAction,
     SOPilotReasonCode,
 )
@@ -309,14 +312,33 @@ class ModelSOLlmCompletionFailedPayload(_ClosedPayload):
         "consumer_error",
         "abandoned",
     ]
+    semantic_failure_code: LlmSemanticFailureCode | None
     model: str | None
+    finish_reason: StrictStr | None = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
     prompt_tokens: StrictInt | None = Field(ge=0)
     completion_tokens: StrictInt | None = Field(ge=0)
     cost_usd: StrictFloat | None = Field(ge=0.0, allow_inf_nan=False)
 
+    @model_validator(mode="after")
+    def _semantic_failure_matches_reason(self) -> ModelSOLlmCompletionFailedPayload:
+        if self.reason_code == "invalid_response":
+            if self.semantic_failure_code is None:
+                raise ValueError(
+                    "semantic_failure_code is required when reason_code is invalid_response"
+                )
+        elif self.semantic_failure_code is not None:
+            raise ValueError(
+                "semantic_failure_code is forbidden unless reason_code is invalid_response"
+            )
+        return self
+
 
 class ModelSOMoveIntentPayload(_ClosedPayload):
-    direction: Literal["toward_enemy", "defensive"]
+    direction: SOMoveDirection
     speed: Literal["full"] | None = None
 
 

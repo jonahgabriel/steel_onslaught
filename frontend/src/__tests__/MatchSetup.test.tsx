@@ -20,14 +20,14 @@ function bootstrap() {
 afterEach(cleanup);
 
 describe("MatchSetup safe player intent", () => {
-  it("starts with both seats empty and remains disabled without an injected capability", () => {
+  it("defaults both seats to GLM and remains disabled without an injected capability", () => {
     render(<MatchSetup bootstrap={bootstrap()} />);
     const red = screen.getByLabelText("red pilot") as HTMLSelectElement;
     const blue = screen.getByLabelText("blue pilot") as HTMLSelectElement;
     const start = screen.getByRole("button", { name: "START DISABLED" });
 
-    expect(red.value).toBe("");
-    expect(blue.value).toBe("");
+    expect(red.value).toBe("player_option.glm_model");
+    expect(blue.value).toBe("player_option.glm_model");
     expect(start).toBeDisabled();
 
     fireEvent.change(red, { target: { value: "player_option.browser_human" } });
@@ -56,6 +56,17 @@ describe("MatchSetup safe player intent", () => {
       expect(blueLabels.some((label) => label?.includes(identity))).toBe(true);
     }
     expect(red.textContent).not.toMatch(/endpoint_url|provider_binding_id|secret_ref|token|key/i);
+  });
+
+  it("defaults both model-capable seats to the configured GLM option", () => {
+    render(<MatchSetup bootstrap={bootstrap()} capability={{ requestStart: vi.fn() }} />);
+    expect((screen.getByLabelText("red pilot") as HTMLSelectElement).value).toBe(
+      "player_option.glm_model",
+    );
+    expect((screen.getByLabelText("blue pilot") as HTMLSelectElement).value).toBe(
+      "player_option.glm_model",
+    );
+    expect(screen.getByRole("button", { name: "START MATCH" })).toBeEnabled();
   });
 
   it("emits only typed non-authoritative intent when an explicit capability exists", () => {

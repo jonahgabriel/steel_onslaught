@@ -1,3 +1,4 @@
+import { BrowserCommandGateway, type CommandSocketFactory } from "./command_gateway";
 import { EventStream, type WebSocketLike } from "./event_stream";
 import { MatchTransport } from "./transport";
 
@@ -5,6 +6,7 @@ export const FRONTEND_BOOTSTRAP_PATH = "/steel-onslaught/bootstrap.json";
 export const FRONTEND_TRANSPORT_CONTRACT = "steel_onslaught.frontend_transport.v1";
 export const FRONTEND_EXPECTED_OVERLAY_HEADER = "X-Steel-Onslaught-Expected-Overlay";
 export const GENERATED_FRONTEND_BOOTSTRAP = ".steel-onslaught-bootstrap.generated.json";
+export const FRONTEND_COMMAND_GATEWAY_CONTRACT = "steel_onslaught.browser_command_gateway.v1";
 
 export interface FrontendTransportBinding {
   readonly kind: "websocket";
@@ -12,6 +14,13 @@ export interface FrontendTransportBinding {
   readonly websocket_url: string;
   readonly event_schema: "canonical_event_v1";
   readonly milliseconds_per_tick: number;
+}
+
+export interface FrontendCommandGatewayBinding {
+  readonly kind: "websocket";
+  readonly contract: typeof FRONTEND_COMMAND_GATEWAY_CONTRACT;
+  readonly websocket_url: string;
+  readonly authority_scope: "injected_process_session";
 }
 
 export type PlayerSide = "red" | "blue";
@@ -51,6 +60,7 @@ export interface FrontendBootstrap {
   readonly overlay_sha256: string;
   readonly frontend_transport: FrontendTransportBinding;
   readonly player_roster: PlayerRosterProjection | null;
+  readonly command_gateway: FrontendCommandGatewayBinding | null;
 }
 
 export interface BootstrapHeaders {
@@ -81,6 +91,7 @@ export interface SocketFactory {
 
 export interface FrontendCapabilities {
   readonly socketFactory: SocketFactory;
+  readonly commandSocketFactory?: CommandSocketFactory;
   readonly scheduler: FrameScheduler;
   readonly clock: MonotonicClock;
 }
@@ -91,11 +102,16 @@ export interface FrontendApplication {
   readonly makeStream: () => EventStream;
   readonly scheduler: FrameScheduler;
   readonly clock: MonotonicClock;
+  readonly commandGateway: BrowserCommandGateway;
 }
 
 function fail(message: string): never {
   throw new Error(`frontend bootstrap: ${message}`);
 }
+
+const NULL_COMMAND_SOCKET_FACTORY: CommandSocketFactory = {
+  open: () => fail("command socket factory is unavailable for a null command gateway"),
+};
 
 function object(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -267,11 +283,49 @@ function parseWebSocketUrl(value: unknown): string {
   return value;
 }
 
+function parseCommandGatewayUrl(value: unknown): string {
+  const url = parseWebSocketUrl(value);
+  const parsed = new URL(url);
+  if (!["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname)) {
+    fail("command_gateway.websocket_url must use a loopback host");
+  }
+  return url;
+}
+
+function commandGateway(value: unknown): FrontendCommandGatewayBinding {
+  const gateway = object(value, "command_gateway");
+  exactKeys(gateway, ["kind", "contract", "websocket_url", "authority_scope"], "command_gateway");
+  if (gateway["kind"] !== "websocket") fail('command_gateway.kind must be "websocket"');
+  if (gateway["contract"] !== FRONTEND_COMMAND_GATEWAY_CONTRACT) {
+    fail("command_gateway.contract mismatch");
+  }
+  if (gateway["authority_scope"] !== "injected_process_session") {
+    fail("command_gateway.authority_scope mismatch");
+  }
+  return {
+    kind: "websocket",
+    contract: FRONTEND_COMMAND_GATEWAY_CONTRACT,
+    websocket_url: parseCommandGatewayUrl(gateway["websocket_url"]),
+    authority_scope: "injected_process_session",
+  };
+}
+
 export function parseFrontendBootstrap(value: unknown): FrontendBootstrap {
   const root = object(value, "root");
+  // Older replay-only bootstrap documents predate the optional command root;
+  // absence is equivalent to an explicit null capability. Unknown fields still
+  // fail through the closed-key check below.
+  if (!("command_gateway" in root)) root["command_gateway"] = null;
   exactKeys(
     root,
-    ["schema_version", "kind", "overlay_sha256", "frontend_transport", "player_roster"],
+    [
+      "schema_version",
+      "kind",
+      "overlay_sha256",
+      "frontend_transport",
+      "player_roster",
+      "command_gateway",
+    ],
     "root",
   );
   if (root["schema_version"] !== "1") fail('schema_version must be "1"');
@@ -317,6 +371,8 @@ export function parseFrontendBootstrap(value: unknown): FrontendBootstrap {
       milliseconds_per_tick: millisecondsPerTick,
     },
     player_roster: root["player_roster"] === null ? null : playerRoster(root["player_roster"]),
+    command_gateway:
+      root["command_gateway"] === null ? null : commandGateway(root["command_gateway"]),
   };
 }
 
@@ -349,6 +405,9 @@ export function createFrontendApplication(
   bootstrap: FrontendBootstrap,
   capabilities: FrontendCapabilities,
 ): FrontendApplication {
+  if (bootstrap.command_gateway !== null && capabilities.commandSocketFactory === undefined) {
+    fail("commandSocketFactory is required for a non-null command gateway");
+  }
   const transport = new MatchTransport({
     msPerTick: bootstrap.frontend_transport.milliseconds_per_tick,
   });
@@ -359,5 +418,9 @@ export function createFrontendApplication(
       new EventStream(capabilities.socketFactory.open(bootstrap.frontend_transport.websocket_url)),
     scheduler: capabilities.scheduler,
     clock: capabilities.clock,
+    commandGateway: new BrowserCommandGateway({
+      binding: bootstrap.command_gateway,
+      socketFactory: capabilities.commandSocketFactory ?? NULL_COMMAND_SOCKET_FACTORY,
+    }),
   };
 }
