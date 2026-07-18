@@ -159,16 +159,16 @@ def test_observation_is_frozen_and_resolves_cards_from_shared_snapshot() -> None
     ("kwargs", "error"),
     [
         ({"snapshot": _snapshot(selected_deck_id=None)}, "explicitly selected deck"),
-            (
-                {
-                    "hand": (
-                        "card.test.missing",
-                        "card.test.advance",
-                        "card.test.vent",
-                    )
-                },
-                "not available",
-            ),
+        (
+            {
+                "hand": (
+                    "card.test.missing",
+                    "card.test.advance",
+                    "card.test.vent",
+                )
+            },
+            "not available",
+        ),
         ({"free_indices": (1, 0)}, "ascending"),
         ({"free_indices": (0, 0)}, "unique"),
         ({"free_indices": (3,)}, "below deck register_count"),
