@@ -67,8 +67,8 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-18, `origin/main` 905524e).** The Rev 5
-> history below is retained as historical evidence. The following three
+> **Current reconciliation (2026-07-18, `origin/main` 23bbe5c).** The Rev 5
+> history below is retained as historical evidence. The following four
 > follow-up PRs are now landed and are the current implementation baseline:
 >
 > - [PR #39](https://github.com/jonahgabriel/steel_onslaught/pull/39),
@@ -88,10 +88,12 @@
 >   lineage records deterministically, while the experiment CLI injects the
 >   selected artifacts and carries the resulting context manifest hash into
 >   experiment rows and usage sidecars.
->
-> The frontend default projection follow-up is still in progress (PR pending);
-> it is intentionally not claimed as landed here and is outside this
-> backend/docs reconciliation.
+> - [PR #42](https://github.com/jonahgabriel/steel_onslaught/pull/42),
+>   commit `23bbe5c`, completes the frontend roster/default projection. The
+>   public roster parser accepts explicit defaults and legacy projections that
+>   omit them, while `MatchSetup` honors only the server-declared default and
+>   performs no GLM/name inference. The legacy path remains empty/disabled
+>   until an allowed option is explicitly selected.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
