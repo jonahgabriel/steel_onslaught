@@ -58,6 +58,8 @@ class _ParsedObservation:
     redline: bool
     pressure_current: int
     hp_percent: float
+    hp_delta_since_last_decision: float
+    consecutive_hp_loss_ticks: int
     weapons: tuple[_WeaponView, ...]
 
 
@@ -80,6 +82,10 @@ _BOILER_RE = re.compile(
     r"heat (?P<heat>\d+)/(?P<rupture>\d+)  redline: (?P<redline>True|False)$",
     re.MULTILINE,
 )
+_COMBAT_MEMORY_HEADER = "--- COMBAT MEMORY (your own remembered state) ---"
+_PREVIOUS_HP_RE = re.compile(r"^previous_hp_percent: (?:unknown|\d+(?:\.\d+)?%)$", re.MULTILINE)
+_HP_DELTA_RE = re.compile(r"^hp_delta_since_last_decision: -?\d+(?:\.\d+)?$", re.MULTILINE)
+_HP_LOSS_STREAK_RE = re.compile(r"^consecutive_hp_loss_ticks: \d+$", re.MULTILINE)
 _WEAPON_RE = re.compile(
     r"^  - (?P<wid>[^:\s]+): damage=\d+ range=(?P<range>\d+(?:\.\d+)?) "
     r"pressure_cost=(?P<pc>\d+) heat_generated=\d+ "
@@ -109,6 +115,11 @@ def _parse_observation(user_prompt: str) -> _ParsedObservation:
     _require_single(_POSITION_RE, user_prompt, "position line")
     terrain_match = _require_single(_TERRAIN_RE, user_prompt, "terrain line")
     boiler_match = _require_single(_BOILER_RE, user_prompt, "boiler line")
+    if user_prompt.splitlines().count(_COMBAT_MEMORY_HEADER) != 1:
+        raise ValueError("stub prompt requires exactly one combat memory section")
+    _require_single(_PREVIOUS_HP_RE, user_prompt, "previous hp line")
+    hp_delta_match = _require_single(_HP_DELTA_RE, user_prompt, "hp delta line")
+    hp_loss_streak_match = _require_single(_HP_LOSS_STREAK_RE, user_prompt, "hp loss streak line")
 
     if user_prompt.splitlines().count("weapons:") != 1:
         raise ValueError("stub prompt requires exactly one weapons section")
@@ -169,6 +180,8 @@ def _parse_observation(user_prompt: str) -> _ParsedObservation:
         redline=boiler_match.group("redline") == "True",
         pressure_current=int(boiler_match.group("pressure")),
         hp_percent=float(hp_match.group("hp")),
+        hp_delta_since_last_decision=float(hp_delta_match.group(0).split(":", 1)[1].strip()),
+        consecutive_hp_loss_ticks=int(hp_loss_streak_match.group(0).split(":", 1)[1].strip()),
         weapons=tuple(weapons),
     )
 
@@ -206,6 +219,15 @@ def _heat_pressing(obs: _ParsedObservation) -> bool:
     if obs.heat_rupture <= 0:
         raise ValueError("stub prompt heat rupture threshold must be positive")
     return obs.heat_current >= _PROACTIVE_VENT_HEAT_FRACTION * obs.heat_rupture
+
+
+def _taking_bad_trade(obs: _ParsedObservation) -> bool:
+    """True when recent own-HP trend says face-tanking is losing value."""
+    return (
+        obs.consecutive_hp_loss_ticks >= 2
+        and obs.hp_delta_since_last_decision < 0
+        and obs.hp_percent <= 75.0
+    )
 
 
 def _decision(
@@ -284,6 +306,16 @@ def _sniper_decision(user_prompt: str) -> str:
             confidence=0.6,
             rationale="Bleed heat now so the next shot stays safe.",
         )
+    if _taking_bad_trade(obs):
+        return _decision(
+            "move",
+            confidence=0.75,
+            rationale=(
+                "Repeated hits are winning the trade for them — break the firing line "
+                "and kite back before taking another shot."
+            ),
+            params={"direction": "defensive"},
+        )
     max_range = _max_weapon_range(obs)
     if max_range is None:
         return _decision(
@@ -349,6 +381,15 @@ def _opportunist_decision(user_prompt: str) -> str:
             "move",
             confidence=0.7,
             rationale="The attrition trade is lost — disengage and reset.",
+            params={"direction": "defensive"},
+        )
+    if _taking_bad_trade(obs):
+        return _decision(
+            "move",
+            confidence=0.75,
+            rationale=(
+                "Recent damage says the trade is bad — disengage and look for a better angle."
+            ),
             params={"direction": "defensive"},
         )
     if obs.heat_rupture <= 0:

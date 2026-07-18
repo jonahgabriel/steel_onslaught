@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -14,6 +15,7 @@ from steel_onslaught.llm.pilot import LLMPilot
 from steel_onslaught.llm.schemas import LlmResponse, LlmUsage, ModelSOLlmCompletionRequest
 from steel_onslaught.llm.stub import StubLlmClient
 from steel_onslaught.pilots.schemas import (
+    ModelSOPilotDecision,
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
     ModelSOPosition,
@@ -117,6 +119,14 @@ def _observation(
     )
 
 
+def _decide_sequence(
+    persona_id: str, observations: list[dict[str, Any]]
+) -> list[ModelSOPilotDecision]:
+    """Run one persistent persona over sequential observations."""
+    pilot = LLMPilot(client=StubLlmClient(model="stub"), persona=_persona(persona_id))
+    return [pilot.decide(_observation(**kwargs)) for kwargs in observations]
+
+
 # ---------------------------------------------------------------------------
 # Stub-driven decisions
 # ---------------------------------------------------------------------------
@@ -155,9 +165,11 @@ def test_rationale_carried_in_decision() -> None:
 class _RecordingClient:
     def __init__(self) -> None:
         self.request: ModelSOLlmCompletionRequest | None = None
+        self.requests: list[ModelSOLlmCompletionRequest] = []
 
     def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
         self.request = request
+        self.requests.append(request)
         return LlmResponse(
             text=json.dumps(
                 {
@@ -219,6 +231,28 @@ def test_prompt_lists_only_currently_available_actions() -> None:
     assert "choose only an available action" in client.request.user_prompt
     assert "ready_weapon_ids: []" in client.request.user_prompt
     assert "fire_weapon also requires an enemy sensor reading" in client.request.user_prompt
+
+
+@pytest.mark.unit
+def test_prompt_carries_stateful_own_hp_trade_memory() -> None:
+    client = _RecordingClient()
+    pilot = LLMPilot(client=client, persona=_persona("sniper"))
+
+    pilot.decide(_observation(hp_percent=90.0))
+    pilot.decide(_observation(hp_percent=80.0))
+    pilot.decide(_observation(hp_percent=85.0))
+
+    assert len(client.requests) == 3
+    first, second, recovered = (request.user_prompt for request in client.requests)
+    assert "previous_hp_percent: unknown" in first
+    assert "hp_delta_since_last_decision: 0.0" in first
+    assert "consecutive_hp_loss_ticks: 0" in first
+    assert "previous_hp_percent: 90.0%" in second
+    assert "hp_delta_since_last_decision: -10.0" in second
+    assert "consecutive_hp_loss_ticks: 1" in second
+    assert "previous_hp_percent: 80.0%" in recovered
+    assert "hp_delta_since_last_decision: 5.0" in recovered
+    assert "consecutive_hp_loss_ticks: 0" in recovered
 
 
 def _capture_current_request(
@@ -425,6 +459,23 @@ def test_stub_rejects_malformed_current_prompt(
 
 
 @pytest.mark.unit
+def test_stub_requires_combat_memory_context() -> None:
+    request = _capture_current_request()
+    malformed = request.model_copy(
+        update={
+            "user_prompt": request.user_prompt.replace(
+                "--- COMBAT MEMORY (your own remembered state) ---",
+                "--- COMBAT MEMORY (missing) ---",
+                1,
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="combat memory"):
+        StubLlmClient(model="stub").complete(malformed)
+
+
+@pytest.mark.unit
 def test_stub_rejects_unknown_persona() -> None:
     request = _capture_current_request()
     unknown = request.model_copy(update={"persona": "unknown-persona"})
@@ -520,6 +571,42 @@ def test_sniper_holds_standoff_and_requires_los(
     assert decision.action is SOPilotAction.MOVE
     assert decision.action_params == {"direction": direction}
     assert decision.reason_code is SOPilotReasonCode.LLM_DECISION
+
+
+@pytest.mark.unit
+def test_sniper_kites_after_repeated_hp_loss() -> None:
+    """A persistent sniper breaks a losing trade before reaching critical HP."""
+    decisions = _decide_sequence(
+        "sniper",
+        [
+            {"hp_percent": 90.0, "has_line_of_sight_to_enemy": True},
+            {"hp_percent": 80.0, "has_line_of_sight_to_enemy": True},
+            {"hp_percent": 70.0, "has_line_of_sight_to_enemy": True},
+        ],
+    )
+
+    assert decisions[0].action is SOPilotAction.FIRE_WEAPON
+    assert decisions[1].action is SOPilotAction.FIRE_WEAPON
+    assert decisions[2].action is SOPilotAction.MOVE
+    assert decisions[2].action_params == {"direction": "defensive"}
+
+
+@pytest.mark.unit
+def test_opportunist_disengages_after_repeated_hp_loss() -> None:
+    """An opportunist resets a bad trade before the low-HP emergency branch."""
+    decisions = _decide_sequence(
+        "opportunist",
+        [
+            {"hp_percent": 95.0, "has_line_of_sight_to_enemy": True},
+            {"hp_percent": 82.0, "has_line_of_sight_to_enemy": True},
+            {"hp_percent": 70.0, "has_line_of_sight_to_enemy": True},
+        ],
+    )
+
+    assert decisions[0].action is SOPilotAction.FIRE_WEAPON
+    assert decisions[1].action is SOPilotAction.FIRE_WEAPON
+    assert decisions[2].action is SOPilotAction.MOVE
+    assert decisions[2].action_params == {"direction": "defensive"}
 
 
 @pytest.mark.unit
