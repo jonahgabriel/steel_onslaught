@@ -52,6 +52,7 @@ from steel_onslaught.match import composition
 from steel_onslaught.match.composition import RuntimeDependencies
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import MatchIdentity
+from steel_onslaught.match.runtime import ConditionProgressGate
 from steel_onslaught.pilots.human import HumanPilot
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
 from steel_onslaught.projections.leaderboard.protocol import (
@@ -447,6 +448,7 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
         correlation_id=identities.new_correlation_id(),
     )
 
+    progress_gate = ConditionProgressGate()
     stack = composition.assemble_match_with_dependencies(
         dependencies=dependencies,
         red=_loadout("red"),
@@ -454,12 +456,16 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
         seed=7,
         max_ticks=3,
         identity=identity,
+        progress_gate=progress_gate,
+        runtime_owner_id="runtime_owner.test",
     )
 
     assert stack.identity is identity
     assert stack.runner.identity is identity
     assert stack.ledger is ledger
     assert stack.bus is bus
+    assert stack.runtime.match_id == stack.match_id
+    assert stack.runtime.progress_gate is progress_gate
     assert len(bus.handlers) == 7
 
 

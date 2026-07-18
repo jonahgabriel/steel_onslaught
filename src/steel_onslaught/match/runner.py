@@ -55,9 +55,15 @@ from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.geometry import chebyshev_line, greedy_sidestep, line_of_sight_clear
 from steel_onslaught.match.initiative import order_by_initiative
 from steel_onslaught.match.rng import MatchRng
+from steel_onslaught.match.runtime import (
+    OpenProgressGate,
+    ProgressGate,
+    ProgressGateStoppedError,
+)
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
+    SOMatchEndReason,
     SOMatchStatus,
 )
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
@@ -140,6 +146,7 @@ class MatchRunner:
         facing_a: int = _FACING_A,
         facing_b: int = _FACING_B,
         launch_provenance: ModelSOMatchLaunchProvenance | None = None,
+        progress_gate: ProgressGate | None = None,
     ) -> None:
         self._identity = identity
         self._match_id = identity.match_id
@@ -170,6 +177,10 @@ class MatchRunner:
             side_a=side_a,
             side_b=side_b,
         )
+        # The gate is consulted only between complete tick transactions.  A
+        # no-op default preserves deterministic offline callers while the
+        # lifecycle composition root can inject a pause/resume gate.
+        self._progress_gate = progress_gate or OpenProgressGate()
 
         # Canonical state fold — the same fold the replay engine uses.
         # Subscribed at construction time so callers can order later
@@ -241,6 +252,24 @@ class MatchRunner:
 
         while self.fold.state.status is SOMatchStatus.RUNNING:
             next_tick = self.fold.state.tick + 1
+            try:
+                self._progress_gate.checkpoint(match_id=self._match_id, next_tick=next_tick)
+            except ProgressGateStoppedError:
+                # A lifecycle STOP closes the gate between complete ticks.
+                # Convert that boundary signal into canonical terminal
+                # evidence so the ledger can durably precede runtime ENDED.
+                if self.fold.state.status is SOMatchStatus.RUNNING:
+                    self._bus.publish(
+                        self._make_match_event(
+                            SOEventType.MATCH_ENDED,
+                            tick=self.fold.state.tick,
+                            payload={
+                                "reason": SOMatchEndReason.ABORTED.value,
+                                "winner_id": None,
+                            },
+                        )
+                    )
+                break
             self._sensor_buffer.clear()
             self._intent_buffer.clear()
 
