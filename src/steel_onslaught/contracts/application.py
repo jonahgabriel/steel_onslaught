@@ -10,6 +10,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictFloat,
     StrictInt,
     StrictStr,
@@ -17,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from steel_onslaught.contracts.deck import DeckId
 from steel_onslaught.contracts.player_selection import (
     ModelSOModelIdentityBinding,
     ModelSOPlayerRosterProjection,
@@ -74,6 +76,19 @@ class ModelSOCardCatalogBinding(_ClosedBinding):
     kind: Literal["filesystem_yaml"]
     cards_dir: Path
     decks_dir: Path
+    # A binding can describe content without activating card gameplay.  If a
+    # caller opts into card mode, it must name the deck explicitly; no loader
+    # may infer the first or a package-default deck.
+    card_mode_enabled: StrictBool = False
+    deck_id: DeckId | None = None
+
+    @model_validator(mode="after")
+    def _card_mode_requires_explicit_deck(self) -> Self:
+        if self.card_mode_enabled and self.deck_id is None:
+            raise ValueError("card_mode_enabled requires an explicit deck_id")
+        if not self.card_mode_enabled and self.deck_id is not None:
+            raise ValueError("deck_id requires card_mode_enabled")
+        return self
 
 
 class ModelSOContractBindings(_ClosedBinding):

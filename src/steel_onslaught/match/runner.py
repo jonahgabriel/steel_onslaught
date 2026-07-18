@@ -34,6 +34,7 @@ from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
+from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
@@ -146,6 +147,7 @@ class MatchRunner:
         facing_a: int = _FACING_A,
         facing_b: int = _FACING_B,
         launch_provenance: ModelSOMatchLaunchProvenance | None = None,
+        card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
         progress_gate: ProgressGate | None = None,
     ) -> None:
         self._identity = identity
@@ -174,6 +176,7 @@ class MatchRunner:
                 "uncapped matches require arena sudden-death convergence configuration"
             )
         self._catalog = catalog
+        self._card_runtime_snapshot = card_runtime_snapshot
         self._pilots = dict(pilots)
         self._launch_provenance = self._validate_launch_provenance(
             launch_provenance,
@@ -248,6 +251,13 @@ class MatchRunner:
         }
         if self._launch_provenance is not None:
             started_payload["launch_provenance"] = self._launch_provenance.model_dump(mode="json")
+        card_provenance = (
+            self._card_runtime_snapshot.provenance
+            if self._card_runtime_snapshot is not None
+            else None
+        )
+        if card_provenance is not None:
+            started_payload["card_runtime_provenance"] = card_provenance.model_dump(mode="json")
         self._bus.publish(
             self._make_match_event(
                 SOEventType.MATCH_STARTED,

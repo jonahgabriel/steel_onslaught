@@ -35,9 +35,14 @@ from steel_onslaught.contracts.application import (
 )
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
-from steel_onslaught.contracts.card import ModelSOCard, ModelSOCardCatalog
+from steel_onslaught.contracts.card import CardCatalogError, ModelSOCard, ModelSOCardCatalog
+from steel_onslaught.contracts.card_runtime import (
+    ModelSOCardRuntimeSnapshot,
+    canonical_card_runtime_sha256,
+)
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.commands import ModelSOStartMatchCommand
+from steel_onslaught.contracts.deck import ModelSODeck
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeTransition
@@ -293,6 +298,17 @@ class RuntimeDependencies:
     # composition and replay seam; no default package-path discovery is
     # permitted.
     card_catalog: ModelSOCardCatalog | None = None
+    # Passive validated card+deck content; register gameplay is a later slice.
+    card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        snapshot = self.card_runtime_snapshot
+        if snapshot is None:
+            return
+        if self.card_catalog is None:
+            object.__setattr__(self, "card_catalog", snapshot.card_catalog)
+        elif self.card_catalog is not snapshot.card_catalog:
+            raise ValueError("card_catalog and card_runtime_snapshot must share identity")
 
     def close(self) -> None:
         self.closer.close()
@@ -374,6 +390,7 @@ class LiveMatchStack:
     runtime: MatchRuntime
     closer: ProtocolResourceCloser
     card_catalog: ModelSOCardCatalog | None = None
+    card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None
     _launch_provenance: ModelSOMatchLaunchProvenance | None = None
     _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
 
@@ -481,16 +498,13 @@ def _load_specs[ModelT: BaseModel](directory: Path, model: type[ModelT]) -> dict
 def load_card_catalog(binding: ModelSOCardCatalogBinding) -> ModelSOCardCatalog:
     """Load one explicit card YAML root into an immutable catalog snapshot.
 
-    The overlay owns the path; this loader owns only validation of the files
-    selected by that path.  Deck roots remain inert until the explicit deck
-    composition slice exists, so no default deck or implicit package lookup
-    can affect a match.  ``ModelSOCard``'s closed schema rejects unknown
-    fields (including undeclared deck references), while the catalog rejects
-    duplicate ids and empty roots fail closed.
+    This backward-compatible card-only helper validates the explicit cards
+    root.  Call :func:`load_card_runtime_snapshot` when deck content is part of
+    the selected composition; no default deck is inferred here.
 
-    This snapshot is process-shared only. The current overlay provenance hash
-    covers the resolved roots, not YAML bytes; a content digest and persisted
-    match-started provenance remain a later evidence slice.
+    The returned value is process-shared immutable content. Its canonical
+    digest is persisted in MATCH_STARTED provenance whenever card mode names
+    an explicit deck; overlay path hashing alone is not content provenance.
     """
     cards_dir = binding.cards_dir
     if not cards_dir.is_absolute():
@@ -512,6 +526,74 @@ def load_card_catalog(binding: ModelSOCardCatalogBinding) -> ModelSOCardCatalog:
         cards.append(card)
     cards.sort(key=lambda card: str(card.id))
     return ModelSOCardCatalog(cards=tuple(cards))
+
+
+def load_deck_catalog(
+    decks_dir: Path,
+    *,
+    card_catalog: ModelSOCardCatalog,
+) -> tuple[ModelSODeck, ...]:
+    """Load and validate every explicit deck YAML against one card snapshot."""
+
+    if not decks_dir.is_absolute():
+        raise ValueError(f"card catalog decks_dir must be absolute: {decks_dir}")
+    if not decks_dir.is_dir():
+        raise FileNotFoundError(f"required card deck directory does not exist: {decks_dir}")
+    paths = sorted(decks_dir.glob("*.yaml"))
+    if not paths:
+        raise ValueError(f"required card deck directory contains no YAML specs: {decks_dir}")
+
+    decks: list[ModelSODeck] = []
+    seen_ids: set[str] = set()
+    for path in paths:
+        deck = ModelSODeck.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        deck_id = str(deck.id)
+        if deck_id in seen_ids:
+            raise ValueError(f"duplicate deck id {deck_id!r} under {decks_dir}")
+        seen_ids.add(deck_id)
+        for entry in deck.cards:
+            try:
+                card_catalog.require(entry.card_id)
+            except CardCatalogError as exc:
+                raise ValueError(
+                    f"deck {deck_id!r} references unknown card {entry.card_id!r}"
+                ) from exc
+        decks.append(deck)
+    decks.sort(key=lambda deck: str(deck.id))
+    return tuple(decks)
+
+
+def load_card_runtime_snapshot(
+    binding: ModelSOCardCatalogBinding,
+    *,
+    deck_id: str | None = None,
+) -> ModelSOCardRuntimeSnapshot:
+    """Load one immutable card+deck snapshot from an explicit overlay binding.
+
+    ``deck_id`` is optional only while the snapshot is passive configuration.
+    A binding that enables card mode must carry an explicit deck id; neither
+    this loader nor the snapshot ever selects the first/sorted deck.
+    """
+
+    card_catalog = load_card_catalog(binding)
+    decks = load_deck_catalog(binding.decks_dir, card_catalog=card_catalog)
+    selected_deck_id = binding.deck_id if deck_id is None else deck_id
+    if binding.deck_id is not None and deck_id is not None and binding.deck_id != deck_id:
+        raise ValueError(
+            f"conflicting explicit deck ids: binding={binding.deck_id!r}, argument={deck_id!r}"
+        )
+    if binding.card_mode_enabled and selected_deck_id is None:
+        raise ValueError("card mode requires an explicit deck_id")
+    if selected_deck_id is not None and selected_deck_id not in {deck.id for deck in decks}:
+        raise ValueError(f"unknown selected deck_id {selected_deck_id!r}")
+    return ModelSOCardRuntimeSnapshot(
+        schema_version="0.1.0",
+        kind="steel_onslaught.card_runtime_snapshot",
+        card_catalog=card_catalog,
+        decks=decks,
+        selected_deck_id=selected_deck_id,
+        content_sha256=canonical_card_runtime_sha256(card_catalog, decks),
+    )
 
 
 def build_register_execution_reducer(
@@ -781,11 +863,12 @@ def build_runtime_dependencies(
     # A malformed optional card root must not allocate LLM, ledger, or
     # leaderboard resources and then fail during composition.
     catalog = load_match_contract_catalog(overlay.contracts.catalog_dir)
-    card_catalog = (
-        load_card_catalog(overlay.contracts.card_catalog)
+    card_runtime_snapshot = (
+        load_card_runtime_snapshot(overlay.contracts.card_catalog)
         if overlay.contracts.card_catalog is not None
         else None
     )
+    card_catalog = card_runtime_snapshot.card_catalog if card_runtime_snapshot is not None else None
     owns_llm = llm_dependencies is None
     llm = llm_dependencies or build_llm_dependencies(
         overlay,
@@ -852,6 +935,7 @@ def build_runtime_dependencies(
             closer=llm.closer if owns_llm else NoopResourceCloser(),
             learning_artifacts=learning_artifacts,
             card_catalog=card_catalog,
+            card_runtime_snapshot=card_runtime_snapshot,
         )
     except Exception:
         if owns_llm:
@@ -1239,6 +1323,7 @@ def assemble_match_with_dependencies(
         side_a=side_a,
         side_b=side_b,
         launch_provenance=launch_provenance,
+        card_runtime_snapshot=dependencies.card_runtime_snapshot,
         progress_gate=resolved_progress_gate,
     )
     scoring = ReducerScoring(
@@ -1253,6 +1338,7 @@ def assemble_match_with_dependencies(
             catalog=dependencies.catalog,
             event_factory=dependencies.event_factory,
             card_catalog=dependencies.card_catalog,
+            card_runtime_snapshot=dependencies.card_runtime_snapshot,
         ),
     )
     dependencies.bus.subscribe(scoring.handle)
@@ -1302,6 +1388,7 @@ def assemble_match_with_dependencies(
         runtime=runtime,
         closer=dependencies.closer,
         card_catalog=dependencies.card_catalog,
+        card_runtime_snapshot=dependencies.card_runtime_snapshot,
     )
 
 
@@ -1539,6 +1626,8 @@ __all__ = [
     "build_runtime_dependencies",
     "load_application_overlay",
     "load_card_catalog",
+    "load_card_runtime_snapshot",
+    "load_deck_catalog",
     "load_loadout",
     "load_match_contract_catalog",
     "load_pilot_registry",

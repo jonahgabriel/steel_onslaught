@@ -10,6 +10,7 @@ from uuid import UUID
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
+from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.factory import EventFactory
@@ -97,6 +98,7 @@ def match_runner(
     spawn_b: ModelSOPosition | None = None,
     arena_override: ModelSOArenaSpec | None = None,
     pilots_override: Mapping[str, PilotProtocol] | None = None,
+    card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
 ) -> tuple[MatchRunner, TestRuntime]:
     runtime = runtime_dependencies()
     if arena_override is not None and (spawn_a is not None or spawn_b is not None):
@@ -153,6 +155,7 @@ def match_runner(
         max_ticks=max_ticks,
         side_a=side_a,
         side_b=side_b,
+        card_runtime_snapshot=card_runtime_snapshot,
     )
     return runner, runtime
 

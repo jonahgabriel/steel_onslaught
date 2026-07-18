@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    StringConstraints,
+    model_validator,
+)
 
 from steel_onslaught.contracts.card import CardId
 
 _DECK_ID_PATTERN = r"^deck\.[a-z0-9_]+(?:\.[a-z0-9_]+)*$"
+type DeckId = Annotated[StrictStr, StringConstraints(pattern=_DECK_ID_PATTERN)]
 
 
 class _ClosedDeckModel(BaseModel):
@@ -27,7 +36,7 @@ class ModelSODeck(_ClosedDeckModel):
 
     schema_version: Literal["0.1.0"] = Field(...)
     kind: Literal["steel_onslaught.deck"] = Field(...)
-    id: StrictStr = Field(pattern=_DECK_ID_PATTERN)
+    id: DeckId
     display_name: StrictStr = Field(min_length=1)
     hand_size: StrictInt = Field(ge=1)
     register_count: StrictInt = Field(ge=1)
@@ -65,4 +74,4 @@ class ModelSODeck(_ClosedDeckModel):
         return sum(entry.count for entry in self.cards)
 
 
-__all__ = ["ModelSODeck", "ModelSODeckEntry"]
+__all__ = ["DeckId", "ModelSODeck", "ModelSODeckEntry"]
