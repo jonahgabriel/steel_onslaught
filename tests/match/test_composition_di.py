@@ -28,6 +28,7 @@ from steel_onslaught.commands.live_provider import (
 )
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
+from steel_onslaught.contracts.card import ModelSOCard, ModelSOCardCatalog
 from steel_onslaught.contracts.commands import (
     ModelSOStartMatchCommand,
     ModelSOStartMatchSeatSelection,
@@ -442,6 +443,20 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
         pilot_registry=cast(Any, _Registry()),
         pilot_factory=_PilotFactory(),
         closer=_Closer(),
+        card_catalog=ModelSOCardCatalog(
+            cards=(
+                ModelSOCard(
+                    schema_version="0.1.0",
+                    kind="steel_onslaught.card",
+                    id="card.test.advance",
+                    display_name="Advance",
+                    category="movement",
+                    priority=100,
+                    heat_cost=0,
+                    effect={"direction": "toward_enemy", "speed": "full"},
+                ),
+            )
+        ),
     )
     identity = MatchIdentity(
         match_id=identities.new_match_id(),
@@ -466,6 +481,7 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
     assert stack.bus is bus
     assert stack.runtime.match_id == stack.match_id
     assert stack.runtime.progress_gate is progress_gate
+    assert stack.card_catalog is dependencies.card_catalog
     assert len(bus.handlers) == 7
 
 

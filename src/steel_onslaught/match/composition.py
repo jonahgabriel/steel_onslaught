@@ -28,11 +28,13 @@ from steel_onslaught.commands.inbox import ProcessLocalHumanDecisionInbox
 from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProviderCapability
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
+    ModelSOCardCatalogBinding,
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOStubLlmProviderBinding,
 )
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
+from steel_onslaught.contracts.card import ModelSOCard, ModelSOCardCatalog
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.commands import ModelSOStartMatchCommand
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
@@ -285,6 +287,11 @@ class RuntimeDependencies:
     closer: ProtocolResourceCloser
     learning_artifacts: LearningArtifactStore | None = None
     progress_gate: RuntimeProgressGate | None = None
+    # Optional until the card/register runtime slice is activated.  When
+    # configured, this is one immutable snapshot shared by the live
+    # composition and replay seam; no default package-path discovery is
+    # permitted.
+    card_catalog: ModelSOCardCatalog | None = None
 
     def close(self) -> None:
         self.closer.close()
@@ -361,6 +368,7 @@ class LiveMatchStack:
     catalog: MatchContractCatalog
     runtime: MatchRuntime
     closer: ProtocolResourceCloser
+    card_catalog: ModelSOCardCatalog | None = None
     _launch_provenance: ModelSOMatchLaunchProvenance | None = None
     _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
 
@@ -463,6 +471,42 @@ def _load_specs[ModelT: BaseModel](directory: Path, model: type[ModelT]) -> dict
     if not specs:
         raise ValueError(f"required contract directory contains no YAML specs: {directory}")
     return specs
+
+
+def load_card_catalog(binding: ModelSOCardCatalogBinding) -> ModelSOCardCatalog:
+    """Load one explicit card YAML root into an immutable catalog snapshot.
+
+    The overlay owns the path; this loader owns only validation of the files
+    selected by that path.  Deck roots remain inert until the explicit deck
+    composition slice exists, so no default deck or implicit package lookup
+    can affect a match.  ``ModelSOCard``'s closed schema rejects unknown
+    fields (including undeclared deck references), while the catalog rejects
+    duplicate ids and empty roots fail closed.
+
+    This snapshot is process-shared only. The current overlay provenance hash
+    covers the resolved roots, not YAML bytes; a content digest and persisted
+    match-started provenance remain a later evidence slice.
+    """
+    cards_dir = binding.cards_dir
+    if not cards_dir.is_absolute():
+        raise ValueError(f"card catalog cards_dir must be absolute: {cards_dir}")
+    if not cards_dir.is_dir():
+        raise FileNotFoundError(f"required card catalog directory does not exist: {cards_dir}")
+    paths = sorted(cards_dir.glob("*.yaml"))
+    if not paths:
+        raise ValueError(f"required card catalog directory contains no YAML specs: {cards_dir}")
+
+    cards: list[ModelSOCard] = []
+    seen_ids: set[str] = set()
+    for path in paths:
+        card = ModelSOCard.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        card_id = str(card.id)
+        if card_id in seen_ids:
+            raise ValueError(f"duplicate card id {card_id!r} under {cards_dir}")
+        seen_ids.add(card_id)
+        cards.append(card)
+    cards.sort(key=lambda card: str(card.id))
+    return ModelSOCardCatalog(cards=tuple(cards))
 
 
 def _load_arena_specs(directory: Path) -> dict[str, ModelSOArenaSpec]:
@@ -709,6 +753,16 @@ def build_runtime_dependencies(
         )
     ):
         raise ValueError("prebuilt llm_dependencies cannot be combined with root capabilities")
+
+    # Validate all static contract inputs before opening any runtime adapters.
+    # A malformed optional card root must not allocate LLM, ledger, or
+    # leaderboard resources and then fail during composition.
+    catalog = load_match_contract_catalog(overlay.contracts.catalog_dir)
+    card_catalog = (
+        load_card_catalog(overlay.contracts.card_catalog)
+        if overlay.contracts.card_catalog is not None
+        else None
+    )
     owns_llm = llm_dependencies is None
     llm = llm_dependencies or build_llm_dependencies(
         overlay,
@@ -755,7 +809,6 @@ def build_runtime_dependencies(
             llm,
             selected_pilot_spec_ids=selected_pilot_spec_ids,
         )
-        catalog = load_match_contract_catalog(overlay.contracts.catalog_dir)
         try:
             arena = catalog.arenas[overlay.contracts.arena_id]
         except KeyError as exc:
@@ -775,6 +828,7 @@ def build_runtime_dependencies(
             pilot_factory=llm.pilot_factory,
             closer=llm.closer if owns_llm else NoopResourceCloser(),
             learning_artifacts=learning_artifacts,
+            card_catalog=card_catalog,
         )
     except Exception:
         if owns_llm:
@@ -1175,6 +1229,7 @@ def assemble_match_with_dependencies(
             runner.fold.state,
             catalog=dependencies.catalog,
             event_factory=dependencies.event_factory,
+            card_catalog=dependencies.card_catalog,
         ),
     )
     dependencies.bus.subscribe(scoring.handle)
@@ -1223,6 +1278,7 @@ def assemble_match_with_dependencies(
         catalog=dependencies.catalog,
         runtime=runtime,
         closer=dependencies.closer,
+        card_catalog=dependencies.card_catalog,
     )
 
 
@@ -1457,6 +1513,7 @@ __all__ = [
     "build_pilot_duel_executor_with_dependencies",
     "build_runtime_dependencies",
     "load_application_overlay",
+    "load_card_catalog",
     "load_loadout",
     "load_match_contract_catalog",
     "load_pilot_registry",

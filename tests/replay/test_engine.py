@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.arena import ModelSOArenaSpec, neutral_historical_arena_snapshot
+from steel_onslaught.contracts.card import ModelSOCard, ModelSOCardCatalog
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.player_selection import (
     ModelSOHumanDecisionSource,
@@ -169,6 +170,37 @@ def test_replay_uses_injected_catalog_without_lookup() -> None:
     )
 
     assert replay._catalog is runtime.catalog
+
+
+@pytest.mark.integration
+def test_replay_retains_the_same_immutable_card_snapshot_as_composition() -> None:
+    event = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    runtime = runtime_dependencies()
+    cards = ModelSOCardCatalog(
+        cards=(
+            ModelSOCard(
+                schema_version="0.1.0",
+                kind="steel_onslaught.card",
+                id="card.test.advance",
+                display_name="Advance",
+                category="movement",
+                priority=100,
+                heat_cost=0,
+                effect={"direction": "toward_enemy", "speed": "full"},
+            ),
+        )
+    )
+
+    replay = ReplayEngine(
+        _MemoryLedger([event]),
+        event.match_id,
+        catalog=runtime.catalog,
+        event_factory=runtime.event_factory,
+        card_catalog=cards,
+    )
+
+    assert replay._card_catalog is cards
+    assert cards.cards[0].priority == 100
 
 
 @pytest.mark.unit

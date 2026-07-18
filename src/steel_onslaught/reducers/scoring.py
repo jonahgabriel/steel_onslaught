@@ -47,6 +47,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from uuid import UUID
 
+from steel_onslaught.contracts.card import ModelSOCardCatalog
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -150,6 +151,7 @@ def verify_replay_validity(
     *,
     catalog: MatchContractCatalog,
     event_factory: EventFactory,
+    card_catalog: ModelSOCardCatalog | None = None,
 ) -> bool:
     """Return True when the replay engine reproduces *live_state* exactly.
 
@@ -161,6 +163,7 @@ def verify_replay_validity(
         match_id,
         catalog=catalog,
         event_factory=event_factory,
+        card_catalog=card_catalog,
     )
     return engine.reconstruct_at_tick(live_state.tick) == live_state
 
