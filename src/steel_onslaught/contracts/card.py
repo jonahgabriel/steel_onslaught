@@ -87,9 +87,41 @@ class ModelSOCard(_ClosedCardModel):
         return self
 
 
+class CardCatalogError(ValueError):
+    """A card id could not be resolved from an explicit injected catalog."""
+
+
+class ModelSOCardCatalog(_ClosedCardModel):
+    """Immutable card definitions supplied explicitly by the composition root.
+
+    This is a value object for pure consumers such as the register reducer. It
+    deliberately has no path, loader, default, environment, or filesystem
+    authority; an application overlay may resolve content roots, but a caller
+    must construct and inject this validated catalog explicitly.
+    """
+
+    cards: tuple[ModelSOCard, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _card_ids_are_unique(self) -> Self:
+        ids = tuple(card.id for card in self.cards)
+        if len(ids) != len(set(ids)):
+            raise ValueError("card catalog card ids must be unique")
+        return self
+
+    def require(self, card_id: CardId) -> ModelSOCard:
+        """Resolve one card from this explicit catalog or fail closed."""
+        for card in self.cards:
+            if card.id == card_id:
+                return card
+        raise CardCatalogError(f"unknown card id {card_id!r}")
+
+
 __all__ = [
+    "CardCatalogError",
     "CardId",
     "ModelSOCard",
+    "ModelSOCardCatalog",
     "ModelSOCardEffect",
     "SOCardCategory",
     "SOCardDirection",
