@@ -19,9 +19,11 @@ from pydantic import (
 )
 
 from steel_onslaught.contracts.deck import DeckId
+from steel_onslaught.contracts.pilot import PilotId
 from steel_onslaught.contracts.player_selection import (
     ModelSOModelIdentityBinding,
     ModelSOPlayerRosterProjection,
+    Side,
 )
 
 
@@ -70,6 +72,13 @@ class ModelSOSQLiteEvaluationStorageBinding(_ClosedBinding):
     leaderboard_schema: Literal["leaderboard_v1"]
 
 
+class ModelSOCardProgrammerBinding(_ClosedBinding):
+    """Explicit seat-to-pilot-spec binding for card-mode programming."""
+
+    side: Side
+    pilot_spec_id: PilotId
+
+
 class ModelSOCardCatalogBinding(_ClosedBinding):
     """Explicit card/deck content roots selected by an application overlay."""
 
@@ -81,6 +90,11 @@ class ModelSOCardCatalogBinding(_ClosedBinding):
     # may infer the first or a package-default deck.
     card_mode_enabled: StrictBool = False
     deck_id: DeckId | None = None
+    # Optional whole-round programmer bindings.  These are contract references
+    # only; composition resolves the exact pilot spec, provider client, and
+    # persona after all roots are validated.  An absent binding intentionally
+    # preserves the deterministic priority programmer.
+    programmers: tuple[ModelSOCardProgrammerBinding, ...] = ()
 
     @model_validator(mode="after")
     def _card_mode_requires_explicit_deck(self) -> Self:
@@ -88,6 +102,11 @@ class ModelSOCardCatalogBinding(_ClosedBinding):
             raise ValueError("card_mode_enabled requires an explicit deck_id")
         if not self.card_mode_enabled and self.deck_id is not None:
             raise ValueError("deck_id requires card_mode_enabled")
+        if not self.card_mode_enabled and self.programmers:
+            raise ValueError("card programmer bindings require card_mode_enabled")
+        sides = tuple(programmer.side for programmer in self.programmers)
+        if len(sides) != len(set(sides)):
+            raise ValueError("card programmer bindings must declare each seat at most once")
         return self
 
 
@@ -334,6 +353,7 @@ class ModelSOFrontendBootstrap(_ClosedBinding):
 __all__ = [
     "ModelSOApplicationOverlay",
     "ModelSOCardCatalogBinding",
+    "ModelSOCardProgrammerBinding",
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOFrontendBootstrap",
