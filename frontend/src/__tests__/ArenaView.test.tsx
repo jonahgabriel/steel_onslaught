@@ -344,6 +344,36 @@ describe("ArenaView", () => {
     expect(banner.textContent).toContain("player.a");
   });
 
+  it("shows a draw banner when match_ended has no winner", async () => {
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => {
+      socket.emit(fixtureText("match_started"));
+      socket.emit(
+        JSON.stringify(makeEnvelope("match_ended", { reason: "draw_max_ticks", winner_id: null })),
+      );
+    });
+    expect(screen.getByTestId("arena-draw")).toBeInTheDocument();
+    expect(screen.getByTestId("draw-banner")).toHaveAttribute("data-reason", "draw_max_ticks");
+    expect(screen.queryByTestId("arena-victory")).not.toBeInTheDocument();
+  });
+
+  it("keeps a decisive victory banner when its terminal envelope carries a winner", async () => {
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => {
+      socket.emit(fixtureText("match_started"));
+      socket.emit(fixtureText("victory_declared"));
+      socket.emit(
+        JSON.stringify(
+          makeEnvelope("match_ended", { reason: "last_mech_standing", winner_id: "player.a" }),
+        ),
+      );
+    });
+    expect(screen.getByTestId("arena-victory")).toBeInTheDocument();
+    expect(screen.queryByTestId("arena-draw")).not.toBeInTheDocument();
+  });
+
   it("does not issue any fetch or POST (pure projection)", async () => {
     const fetchCalls: string[] = [];
     const originalFetch = globalThis.fetch;

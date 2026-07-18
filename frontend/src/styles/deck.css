@@ -482,6 +482,10 @@ body {
   text-shadow: 0 0 24px currentColor;
   animation: pd-stamp 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
+.pd-arena-draw {
+  color: var(--ash);
+  text-shadow: 0 0 18px currentColor;
+}
 @keyframes pd-shimmer {
   from {
     opacity: 0.85;

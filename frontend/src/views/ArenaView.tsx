@@ -82,6 +82,8 @@ export interface ArenaState {
   tracers: ArenaTracer[];
   shimmers: Shimmer[];
   victoryWinnerId: string | null;
+  /** End reason for a terminal match with no winner (draw). */
+  drawReason: string | null;
   selectedMechId: string | null;
   revision: number;
 }
@@ -94,6 +96,7 @@ export const ARENA_INITIAL_STATE: ArenaState = {
   tracers: [],
   shimmers: [],
   victoryWinnerId: null,
+  drawReason: null,
   selectedMechId: null,
   revision: 0,
 };
@@ -265,6 +268,20 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
         tracers: [],
         shimmers: [],
       };
+
+    case "match_ended":
+      // Decisive endings are already represented by victory_declared. The
+      // terminal envelope is still authoritative for a no-winner draw.
+      if (envelope.payload.winner_id === null) {
+        return {
+          ...state,
+          drawReason: envelope.payload.reason,
+          trails: {},
+          tracers: [],
+          shimmers: [],
+        };
+      }
+      return { ...state, trails: {}, tracers: [], shimmers: [] };
 
     default:
       return state;
@@ -756,6 +773,14 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
               `arena-victory` band keeps its own testid + styling. */}
           <span data-testid="victory-banner" data-winner={state.victoryWinnerId}>
             VICTORY · {state.victoryWinnerId}
+          </span>
+        </div>
+      ) : null}
+
+      {state.victoryWinnerId === null && state.drawReason !== null ? (
+        <div className="pd-arena-victory pd-arena-draw" data-testid="arena-draw">
+          <span data-testid="draw-banner" data-reason={state.drawReason}>
+            DRAW · {state.drawReason}
           </span>
         </div>
       ) : null}
