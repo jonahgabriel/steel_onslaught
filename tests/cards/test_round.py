@@ -13,6 +13,7 @@ from steel_onslaught.cards.round import (
     CardRoundValidationError,
     ModelSOCardRoundSequence,
     build_discarded,
+    validate_card_round,
 )
 from steel_onslaught.contracts.card import (
     ModelSOCard,
@@ -251,3 +252,13 @@ def test_sequence_model_rejects_noncanonical_order_and_unknown_fields() -> None:
     )
     with pytest.raises(ValidationError, match="unique"):
         ModelSOCardRoundSequence.model_validate(duplicate_raw)
+
+    unknown_deck = sequence.model_copy(
+        update={
+            "hand_dealt": (
+                sequence.hand_dealt[0].model_copy(update={"deck_id": "deck.test.missing"}),
+            )
+        }
+    )
+    with pytest.raises(CardRoundValidationError, match="unknown card-round deck"):
+        validate_card_round(unknown_deck, runtime.snapshot, runtime.reducer)

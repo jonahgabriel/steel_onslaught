@@ -337,8 +337,11 @@ def validate_card_round(
     # that do not require hidden state here; callers using ``CardRoundRuntime``
     # get the stronger multiset/state proof from the deal objects it retains.
     for payload in sequence.hand_dealt:
-        snapshot.require_deck(payload.deck_id)
-        if payload.hand_size != snapshot.require_deck(payload.deck_id).hand_size:
+        try:
+            deck = snapshot.require_deck(payload.deck_id)
+        except KeyError as exc:
+            raise CardRoundValidationError(f"unknown card-round deck {payload.deck_id!r}") from exc
+        if payload.hand_size != deck.hand_size:
             raise CardRoundValidationError(
                 f"HAND_DEALT hand_size for seat {payload.seat!r} does not match its deck"
             )
@@ -351,7 +354,11 @@ def validate_card_round(
             raise CardRoundValidationError(
                 f"context plan for seat {context.seat!r} differs from PLAN_COMMITTED value"
             )
-        if context.register_count != snapshot.require_deck(hand.deck_id).register_count:
+        try:
+            deck = snapshot.require_deck(hand.deck_id)
+        except KeyError as exc:
+            raise CardRoundValidationError(f"unknown card-round deck {hand.deck_id!r}") from exc
+        if context.register_count != deck.register_count:
             raise CardRoundValidationError(
                 f"context register_count for seat {context.seat!r} does not match deck"
             )
