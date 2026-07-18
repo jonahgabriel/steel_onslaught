@@ -54,6 +54,8 @@ interface ArenaMech {
 
 interface ArenaTracer {
   id: string;
+  /** Subject identity is authoritative; positions may be co-located. */
+  attackerPlayerId: string;
   from: SOPosition;
   to: SOPosition;
   weaponClass: WeaponClass;
@@ -187,6 +189,7 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
       if (attacker === undefined || target === undefined) return state;
       const tracer: ArenaTracer = {
         id: envelope.event_id,
+        attackerPlayerId: attacker.playerId,
         from: attacker.position,
         to: target.position,
         weaponClass: weaponClassOf(envelope.payload.weapon_id),
@@ -682,7 +685,6 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
           tracer={t}
           gridCells={cells}
           redPlayerId={mechs[0]?.playerId}
-          mechs={state.mechs}
         />
       ))}
 
@@ -793,18 +795,14 @@ function TracerLayer({
   tracer,
   gridCells,
   redPlayerId,
-  mechs,
 }: {
   tracer: ArenaTracer;
   gridCells: number;
   redPlayerId: string | undefined;
-  mechs: Record<string, ArenaMech>;
 }): React.JSX.Element {
-  // Attribute the tracer color to the firing side (the mech at `from`).
-  const firer = Object.values(mechs).find(
-    (m) => m.position.x === tracer.from.x && m.position.y === tracer.from.y,
-  );
-  const side = firer !== undefined && firer.playerId === redPlayerId ? "red" : "blue";
+  // Attribute tracer color to the firing subject, not its position: two mechs
+  // can legally share a cell, making a position lookup ambiguous.
+  const side = tracer.attackerPlayerId === redPlayerId ? "red" : "blue";
   return (
     <Tracer
       from={tracer.from}
