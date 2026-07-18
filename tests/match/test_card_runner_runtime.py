@@ -42,6 +42,9 @@ class _ReplayLedger:
     def __init__(self, events: list[ModelSOEventEnvelope]) -> None:
         self._events = events
 
+    def append(self, event: ModelSOEventEnvelope) -> None:
+        self._events.append(event)
+
     def read_all(self, match_id: str) -> Iterator[ModelSOEventEnvelope]:
         return (event for event in self._events if event.match_id == match_id)
 
