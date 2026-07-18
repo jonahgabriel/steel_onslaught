@@ -42,6 +42,7 @@ const TRAIL_TTL_MS = 2400;
 interface ArenaMech {
   mechId: string;
   playerId: string;
+  side: SOMechRuntimeState["side"];
   chassisClass: "light" | "medium" | "heavy";
   position: SOPosition;
   facing: number;
@@ -56,6 +57,7 @@ interface ArenaTracer {
   id: string;
   /** Subject identity is authoritative; positions may be co-located. */
   attackerPlayerId: string;
+  attackerSide: SOMechRuntimeState["side"];
   from: SOPosition;
   to: SOPosition;
   weaponClass: WeaponClass;
@@ -112,6 +114,7 @@ function mechFromRuntime(state: SOMechRuntimeState): ArenaMech {
   return {
     mechId: state.mech_id,
     playerId: state.player_id,
+    side: state.side,
     chassisClass: state.chassis_class,
     position: state.position,
     facing: state.facing,
@@ -190,6 +193,7 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
       const tracer: ArenaTracer = {
         id: envelope.event_id,
         attackerPlayerId: attacker.playerId,
+        attackerSide: attacker.side,
         from: attacker.position,
         to: target.position,
         weaponClass: weaponClassOf(envelope.payload.weapon_id),
@@ -633,7 +637,13 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
               cx={point.position.x + 0.5}
               cy={point.position.y + 0.5}
               r={0.5}
-              fill={mech.playerId === mechs[0]?.playerId ? "var(--ember)" : "var(--arc)"}
+              fill={
+                mech.side === "red"
+                  ? "var(--ember)"
+                  : mech.side === "blue"
+                    ? "var(--arc)"
+                    : "var(--steam)"
+              }
               opacity={0.16 + (i / TRAIL_MAX) * 0.5}
             />
           ));
@@ -651,7 +661,13 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
             width={0.72}
             height={0.72}
             fill="none"
-            stroke={mech.playerId === mechs[0]?.playerId ? "var(--ember)" : "var(--arc)"}
+            stroke={
+              mech.side === "red"
+                ? "var(--ember)"
+                : mech.side === "blue"
+                  ? "var(--arc)"
+                  : "var(--steam)"
+            }
             strokeWidth={1.2}
             opacity={mech.alive ? 0.9 : 0.4}
             vectorEffect="non-scaling-stroke"
@@ -684,7 +700,6 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
           key={t.id}
           tracer={t}
           gridCells={cells}
-          redPlayerId={mechs[0]?.playerId}
         />
       ))}
 
@@ -702,7 +717,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
       {/* chassis sprites (+ wreck + steam burst) */}
       {mechs.map((mech) => {
         const spriteState = mechStateOf(mech.hp, mech.hpMax, mech.alive);
-        const side = mech.playerId === mechs[0]?.playerId ? "red" : "blue";
+        const side = mech.side;
         const selectedNow = state.selectedMechId === mech.mechId;
         const placement = placements[mech.mechId] ?? {
           left: ((mech.position.x + 0.5) / cells) * 100,
@@ -745,7 +760,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
                 facing={mech.facing}
                 venting={mech.alive && mech.ventingUntil > now}
                 firing={mech.alive && mech.firingUntil > now}
-                side={side}
+                side={side === "neutral" ? undefined : side}
                 size={40}
               />
             </button>
@@ -794,15 +809,13 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
 function TracerLayer({
   tracer,
   gridCells,
-  redPlayerId,
 }: {
   tracer: ArenaTracer;
   gridCells: number;
-  redPlayerId: string | undefined;
 }): React.JSX.Element {
   // Attribute tracer color to the firing subject, not its position: two mechs
   // can legally share a cell, making a position lookup ambiguous.
-  const side = tracer.attackerPlayerId === redPlayerId ? "red" : "blue";
+  const side = tracer.attackerSide === "neutral" ? undefined : tracer.attackerSide;
   return (
     <Tracer
       from={tracer.from}
