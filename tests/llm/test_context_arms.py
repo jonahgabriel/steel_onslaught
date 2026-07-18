@@ -15,9 +15,7 @@ from steel_onslaught.llm.context_arms import (
     assemble_arm_context,
 )
 
-_BOUNDS: BoundsDict = {
-    "aggression": ModelSONumericBound(minimum=0.0, maximum=1.0, step=0.1)
-}
+_BOUNDS: BoundsDict = {"aggression": ModelSONumericBound(minimum=0.0, maximum=1.0, step=0.1)}
 
 
 class _CommonKwargs(TypedDict):
