@@ -41,7 +41,11 @@ from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
 from steel_onslaught.contracts.player_selection import ModelSOMatchLaunchProvenance, Side
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
-from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload
+from steel_onslaught.events.card_payloads import (
+    ModelSOCardsDiscardedPayload,
+    ModelSOPlanCommittedPayload,
+    ModelSORegisterResolvedPayload,
+)
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -54,8 +58,15 @@ from steel_onslaught.events.payloads import (
     ModelSOSensorObservationPayload,
     ModelSOWeaponFireIntentPayload,
 )
-from steel_onslaught.match.card_adapter import CardRunnerAdapter, ModelSOCardSeatRequest
-from steel_onslaught.match.card_event_specs import build_card_round_event_specs
+from steel_onslaught.match.card_adapter import (
+    CardRunnerAdapter,
+    ModelSOCardRoundEmission,
+    ModelSOCardSeatRequest,
+)
+from steel_onslaught.match.card_event_specs import (
+    ModelSOCardRoundEventSpec,
+    build_card_round_event_specs,
+)
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.geometry import chebyshev_line, greedy_sidestep, line_of_sight_clear
 from steel_onslaught.match.initiative import initiative_score, order_by_initiative
@@ -130,6 +141,22 @@ class MatchIdentity:
     correlation_id: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class _ActiveCardRound:
+    """Latched card lifecycle values shared by paced register ticks.
+
+    The adapter still computes a complete immutable round once.  The runner
+    retains that value and its causal event specifications until the final
+    register is published, so no subsequent tick can deal, program, or
+    recalculate heat locks for the active round.
+    """
+
+    emission: ModelSOCardRoundEmission
+    specs: tuple[ModelSOCardRoundEventSpec, ...]
+    next_register_index: int
+    last_lifecycle_message_id: UUID | None = None
+
+
 class MatchRunner:
     """Synchronous tick-loop driver for one two-mech match."""
 
@@ -153,6 +180,7 @@ class MatchRunner:
         launch_provenance: ModelSOMatchLaunchProvenance | None = None,
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
         card_adapter: CardRunnerAdapter | None = None,
+        card_cadence: Literal["atomic", "paced"] = "atomic",
         progress_gate: ProgressGate | None = None,
     ) -> None:
         self._identity = identity
@@ -198,9 +226,13 @@ class MatchRunner:
             )
         self._card_runtime_snapshot = card_runtime_snapshot or adapter_snapshot
         self._card_adapter = card_adapter
+        if card_cadence not in {"atomic", "paced"}:
+            raise ValueError("card_cadence must be 'atomic' or 'paced'")
+        self._card_cadence = card_cadence
         self._card_round_index = 0
         self._card_deck_state: ModelSODeckState | None = None
         self._card_previous_plans: dict[str, ModelSOPlanCommittedPayload] = {}
+        self._card_active_round: _ActiveCardRound | None = None
         self._pilots = dict(pilots)
         self._launch_provenance = self._validate_launch_provenance(
             launch_provenance,
@@ -309,6 +341,11 @@ class MatchRunner:
                             },
                         )
                     )
+                if self._card_cadence == "paced":
+                    self._cancel_active_card_round(
+                        tick=self.fold.state.tick,
+                        reason="aborted",
+                    )
                 break
             self._sensor_buffer.clear()
             self._intent_buffer.clear()
@@ -316,6 +353,10 @@ class MatchRunner:
             tick_event = self._make_match_event(SOEventType.MATCH_TICK, tick=next_tick, payload={})
             self._bus.publish(tick_event)
             if self.fold.state.status is not SOMatchStatus.RUNNING:
+                if self._card_cadence == "paced":
+                    self._cancel_active_card_round(tick=next_tick, reason="max_ticks")
+                else:
+                    self._card_active_round = None
                 break  # terminal tick (max_ticks bound or failure-cascade kill)
 
             ReducerSensors(
@@ -365,6 +406,8 @@ class MatchRunner:
                     self._resolve_intent(intent)
             if self.fold.state.status is SOMatchStatus.RUNNING:
                 self._apply_sudden_death(next_tick)
+            elif self._card_cadence == "paced":
+                self._cancel_active_card_round(tick=next_tick, reason="decisive_death")
 
         # Decisive endings terminate via VICTORY_DECLARED; the plan requires a
         # final MATCH_ENDED re-statement as well (the lifecycle reducer emits
@@ -391,6 +434,9 @@ class MatchRunner:
 
         adapter = self._card_adapter
         if adapter is None or not adapter.registers_enabled:
+            return
+        if self._card_cadence == "paced":
+            self._run_paced_card_round(tick, tick_event)
             return
         living = tuple(sorted(self.fold.state.living_mechs(), key=lambda mech: mech.mech_id))
         seats: list[ModelSOCardSeatRequest] = []
@@ -474,6 +520,216 @@ class MatchRunner:
         self._card_deck_state = emission.deck_state
         self._card_previous_plans = {plan.seat: plan for plan in emission.sequence.plan_committed}
         self._card_round_index += 1
+
+    def _run_paced_card_round(self, tick: int, tick_event: ModelSOEventEnvelope) -> None:
+        """Advance one latched card round by exactly one register.
+
+        The first paced tick deals and commits plans, then resolves register
+        zero.  Later ticks reuse the exact same causal specifications and only
+        resolve their latched register.  The deck, previous-plan map, and
+        round index are committed after the final register; a terminal match
+        cancels the active round without committing a partial deck state.
+        """
+
+        adapter = self._card_adapter
+        if adapter is None or not adapter.registers_enabled:
+            return
+        active = self._card_active_round
+        first_tick = active is None
+        if first_tick:
+            living = tuple(sorted(self.fold.state.living_mechs(), key=lambda mech: mech.mech_id))
+            seats: list[ModelSOCardSeatRequest] = []
+            subject_by_seat: dict[str, ModelSOEventSubject] = {}
+            for mech in living:
+                seat = self._seat_for_mech(mech.mech_id)
+                previous = self._card_previous_plans.get(seat)
+                lock_depth = 0
+                if previous is not None:
+                    lock_depth = int(mech.boiler.status_redline) + int(mech.overloaded)
+                observation = build_pilot_observation(
+                    mech,
+                    self.fold.state,
+                    list(self._sensor_buffer),
+                    self._catalog.weapons,
+                    obstacles=self._obstacles,
+                    arena_size=self._arena_size,
+                )
+                seats.append(
+                    ModelSOCardSeatRequest(
+                        seat=seat,
+                        dealer_scope=ModelSODealerScope(
+                            match_id=self._match_id,
+                            match_seed=self._seed,
+                            tick=tick,
+                            seat=seat,
+                        ),
+                        pilot_observation=observation,
+                        initiative=initiative_score(mech),
+                        lock_depth=lock_depth,
+                        previous_plan=previous,
+                        weapon_ids=tuple(mech.weapon_cooldowns),
+                    )
+                )
+                subject_by_seat[seat] = ModelSOEventSubject(
+                    mech_id=mech.mech_id,
+                    player_id=mech.player_id,
+                )
+
+            emission = adapter.produce(
+                seats=tuple(seats),
+                round_index=self._card_round_index,
+                tick=tick,
+                causation_id=str(tick_event.envelope.message_id),
+                starting_deck_state=self._card_deck_state,
+            )
+            if emission.suppressed_reason is not None:
+                return
+            message_ids = tuple(
+                self._events.identities.new_message_id()
+                for _ in range(
+                    len(emission.values)
+                    + sum(action.event_type is not None for action in emission.actions)
+                )
+            )
+            specs = build_card_round_event_specs(
+                emission,
+                root_causation_id=tick_event.envelope.message_id,
+                seat_subjects=subject_by_seat,
+                message_ids=message_ids,
+            )
+            active = _ActiveCardRound(emission=emission, specs=specs, next_register_index=0)
+            self._card_active_round = active
+
+        assert active is not None
+        sequence = active.emission.sequence
+        if sequence is None or active.emission.deck_state is None:
+            raise RuntimeError("enabled paced card emission must carry sequence and deck state")
+        register_count = (
+            self._card_runtime_snapshot.selected_deck.register_count
+            if (self._card_runtime_snapshot is not None)
+            else 0
+        )
+        if register_count <= 0:
+            raise RuntimeError("enabled paced card emission requires a positive register count")
+        register_index = active.next_register_index
+        final_register = register_index == register_count - 1
+
+        def include(spec: ModelSOCardRoundEventSpec) -> bool:
+            if spec.stage in {"HAND_DEALT", "PLAN_COMMITTED"}:
+                return first_tick
+            if spec.stage == "CARDS_DISCARDED":
+                return final_register
+            if spec.stage == "REGISTER_RESOLVED":
+                register_payload = ModelSORegisterResolvedPayload.model_validate(spec.payload)
+                return register_payload.register_index == register_index
+            if spec.stage == "INTENT":
+                return spec.register_index == register_index
+            return False
+
+        selected_specs = tuple(spec for spec in active.specs if include(spec))
+        if not any(spec.stage == "REGISTER_RESOLVED" for spec in selected_specs):
+            raise RuntimeError(f"paced card emission has no register {register_index} rows")
+        # Publish every lifecycle row for the current register before any
+        # intent can kill a seat.  This retains the dead seat's canonical
+        # REGISTER_RESOLVED row while its later intent is voided by
+        # ``_resolve_intent``.  Discards remain last, after intents.
+        specs = (
+            tuple(spec for spec in selected_specs if spec.stage in {"HAND_DEALT", "PLAN_COMMITTED"})
+            + tuple(spec for spec in selected_specs if spec.stage == "REGISTER_RESOLVED")
+            + tuple(spec for spec in selected_specs if spec.stage == "INTENT")
+            + tuple(spec for spec in selected_specs if spec.stage == "CARDS_DISCARDED")
+        )
+        for spec in specs:
+            event = self._events.make_with_message_id(
+                message_id=spec.message_id,
+                match_id=self._match_id,
+                tick=tick,
+                sequence_in_tick=0,
+                event_type=spec.event_type,
+                producer_node=_PRODUCER_NODE,
+                subject=spec.subject,
+                payload=spec.model_dump(mode="json")["payload"],
+                correlation_id=self._correlation_id,
+                causation_id=spec.causation_id,
+            )
+            self._bus.publish(event)
+            if spec.stage != "INTENT":
+                active = _ActiveCardRound(
+                    emission=active.emission,
+                    specs=active.specs,
+                    next_register_index=active.next_register_index,
+                    last_lifecycle_message_id=spec.message_id,
+                )
+                self._card_active_round = active
+            if spec.stage == "INTENT" and self.fold.state.status is SOMatchStatus.RUNNING:
+                self._resolve_intent(event)
+            if self.fold.state.status is not SOMatchStatus.RUNNING:
+                # A decisive hit closes the active round at the exact event
+                # boundary.  No partial deck/plan commit is allowed.
+                self._cancel_active_card_round(tick=tick, reason="decisive_death")
+                return
+
+        if final_register:
+            self._card_deck_state = active.emission.deck_state
+            self._card_previous_plans = {plan.seat: plan for plan in sequence.plan_committed}
+            self._card_round_index += 1
+            self._card_active_round = None
+        else:
+            self._card_active_round = _ActiveCardRound(
+                emission=active.emission,
+                specs=active.specs,
+                next_register_index=register_index + 1,
+                last_lifecycle_message_id=active.last_lifecycle_message_id,
+            )
+
+    def _cancel_active_card_round(self, *, tick: int, reason: str) -> None:
+        """Close a paced round without committing its partial deck state.
+
+        ``CARDS_DISCARDED`` is the existing terminal card vocabulary.  A
+        ``cancelled:<reason>`` reason makes the closure explicit while
+        preserving the closed payload contract; replay can therefore accept
+        a complete terminal lifecycle batch without mistaking it for a deck
+        commit.
+        """
+
+        active = self._card_active_round
+        if active is None:
+            return
+        if self.fold.state.status is SOMatchStatus.ENDED and not self._match_ended_events:
+            self._bus.publish(
+                self._make_match_event(
+                    SOEventType.MATCH_ENDED,
+                    tick=self.fold.state.tick,
+                    payload={
+                        "reason": self.fold.state.end_reason.value
+                        if self.fold.state.end_reason is not None
+                        else SOMatchEndReason.ABORTED.value,
+                        "winner_id": self.fold.state.winner_id,
+                    },
+                )
+            )
+        discard_specs = tuple(spec for spec in active.specs if spec.stage == "CARDS_DISCARDED")
+        parent_message_id = active.last_lifecycle_message_id
+        for spec in discard_specs:
+            payload = ModelSOCardsDiscardedPayload.model_validate(spec.payload).model_copy(
+                update={"reason": f"cancelled:{reason}"}
+            )
+            causation_id = parent_message_id or spec.parent.root_causation_id
+            event = self._events.make_with_message_id(
+                message_id=spec.message_id,
+                match_id=self._match_id,
+                tick=tick,
+                sequence_in_tick=0,
+                event_type=spec.event_type,
+                producer_node=_PRODUCER_NODE,
+                subject=spec.subject,
+                payload=payload.model_dump(mode="json"),
+                correlation_id=self._correlation_id,
+                causation_id=causation_id,
+            )
+            self._bus.publish(event)
+            parent_message_id = spec.message_id
+        self._card_active_round = None
 
     def _seat_for_mech(self, mech_id: str) -> str:
         """Return the canonical card seat for a runner-owned mech id."""

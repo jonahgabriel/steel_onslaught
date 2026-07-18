@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 import pytest
@@ -88,7 +89,13 @@ def _snapshot() -> ModelSOCardRuntimeSnapshot:
     )
 
 
-def _run(*, card_enabled: bool, max_ticks: int = 2) -> list[ModelSOEventEnvelope]:
+def _run(
+    *,
+    card_enabled: bool,
+    max_ticks: int = 2,
+    card_cadence: Literal["atomic", "paced"] = "atomic",
+    force_decisive: bool = False,
+) -> list[ModelSOEventEnvelope]:
     runtime = runtime_dependencies()
     identities = SequentialIdentities()
     factory = EventFactory(clock=FixedClock(), identities=identities)
@@ -132,7 +139,31 @@ def _run(*, card_enabled: bool, max_ticks: int = 2) -> list[ModelSOEventEnvelope
         max_ticks=max_ticks,
         card_runtime_snapshot=snapshot,
         card_adapter=adapter,
+        card_cadence=card_cadence,
     )
+    if force_decisive:
+        original_resolve = runner._resolve_intent
+        forced = False
+
+        def resolve_and_force(intent: ModelSOEventEnvelope) -> None:
+            nonlocal forced
+            original_resolve(intent)
+            if forced or runner.fold.state.status is not SOMatchStatus.RUNNING:
+                return
+            victim = next(iter(runner.fold.state.living_mechs()), None)
+            if victim is None:
+                return
+            bus.publish(
+                runner._make_subject_event(
+                    SOEventType.MECH_DESTROYED,
+                    tick=runner.fold.state.tick,
+                    mech=victim,
+                    payload={"cause": "test_decisive", "source_mech_id": None},
+                )
+            )
+            forced = True
+
+        runner._resolve_intent = resolve_and_force  # type: ignore[method-assign]
     assert runner.run().status is SOMatchStatus.ENDED
     return events
 
@@ -268,6 +299,118 @@ def test_replay_engine_validates_complete_card_stream_once_and_preserves_state()
     )
     assert len(validated.validated_card_rounds) == 2
     assert validated.reconstruct_at_tick(3) == default.reconstruct_at_tick(3)
+
+
+def test_paced_card_round_latches_one_register_per_tick_and_replays_by_root() -> None:
+    events = _run(card_enabled=True, max_ticks=5, card_cadence="paced")
+    lifecycle_types = {
+        SOEventType.HAND_DEALT,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.REGISTER_RESOLVED,
+        SOEventType.CARDS_DISCARDED,
+    }
+    lifecycle = [event for event in events if event.event_type in lifecycle_types]
+    hands = [event for event in lifecycle if event.event_type is SOEventType.HAND_DEALT]
+    discards = [event for event in lifecycle if event.event_type is SOEventType.CARDS_DISCARDED]
+    registers = [event for event in lifecycle if event.event_type is SOEventType.REGISTER_RESOLVED]
+    assert len(hands) == len(discards) == 4
+    assert {event.tick for event in hands} == {1, 3}
+    assert {event.tick for event in discards} == {2, 4}
+    assert {event.tick for event in registers} == {1, 2, 3, 4}
+    assert all(
+        len({event.payload["register_index"] for event in registers if event.tick == tick}) == 1
+        for tick in (1, 2, 3, 4)
+    )
+
+    runtime = runtime_dependencies()
+    replay = ReplayEngine(
+        _ReplayLedger(events),
+        "match.test.card-runner",
+        catalog=runtime.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=_snapshot(),
+        validate_card_events=True,
+    )
+    assert len(replay.validated_card_rounds) == 2
+    assert {event.tick for event in replay.validated_card_rounds[0].events} == {1, 2}
+    assert {event.tick for event in replay.validated_card_rounds[1].events} == {3, 4}
+
+
+def test_paced_card_round_cancels_with_terminal_discard_on_max_tick_boundary() -> None:
+    events = _run(card_enabled=True, max_ticks=2, card_cadence="paced")
+    lifecycle_types = {
+        SOEventType.HAND_DEALT,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.REGISTER_RESOLVED,
+        SOEventType.CARDS_DISCARDED,
+    }
+    lifecycle = [event for event in events if event.event_type in lifecycle_types]
+    assert lifecycle
+    assert {event.event_type for event in lifecycle} == {
+        SOEventType.HAND_DEALT,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.REGISTER_RESOLVED,
+        SOEventType.CARDS_DISCARDED,
+    }
+    assert {
+        event.payload["register_index"]
+        for event in lifecycle
+        if event.event_type is SOEventType.REGISTER_RESOLVED
+    } == {0}
+    discards = [event for event in lifecycle if event.event_type is SOEventType.CARDS_DISCARDED]
+    assert {event.payload["reason"] for event in discards} == {"cancelled:max_ticks"}
+
+    runtime = runtime_dependencies()
+    replay = ReplayEngine(
+        _ReplayLedger(events),
+        "match.test.card-runner",
+        catalog=runtime.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=_snapshot(),
+        validate_card_events=True,
+    )
+    assert len(replay.validated_card_rounds) == 1
+    assert replay.validated_card_rounds[0].cancelled is True
+
+
+def test_paced_card_round_cancels_after_decisive_death_with_causal_discard() -> None:
+    events = _run(
+        card_enabled=True,
+        max_ticks=5,
+        card_cadence="paced",
+        force_decisive=True,
+    )
+    lifecycle_types = {
+        SOEventType.HAND_DEALT,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.REGISTER_RESOLVED,
+        SOEventType.CARDS_DISCARDED,
+    }
+    lifecycle = [event for event in events if event.event_type in lifecycle_types]
+    discards = [event for event in lifecycle if event.event_type is SOEventType.CARDS_DISCARDED]
+    assert discards
+    assert {event.payload["reason"] for event in discards} == {"cancelled:decisive_death"}
+    ended_index = next(
+        index for index, event in enumerate(events) if event.event_type is SOEventType.MATCH_ENDED
+    )
+    assert all(events.index(discard) > ended_index for discard in discards)
+
+    seen_messages: set[UUID] = set()
+    for index, event in enumerate(lifecycle):
+        if index > 0:
+            assert event.envelope.causation_id in seen_messages
+        seen_messages.add(event.envelope.message_id)
+
+    runtime = runtime_dependencies()
+    replay = ReplayEngine(
+        _ReplayLedger(events),
+        "match.test.card-runner",
+        catalog=runtime.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=_snapshot(),
+        validate_card_events=True,
+    )
+    assert replay.validated_card_rounds[0].cancelled is True
 
 
 @pytest.mark.parametrize("tamper", ["payload", "order", "provenance"])
