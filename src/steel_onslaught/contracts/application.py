@@ -68,10 +68,27 @@ class ModelSOSQLiteEvaluationStorageBinding(_ClosedBinding):
     leaderboard_schema: Literal["leaderboard_v1"]
 
 
+class ModelSOCardCatalogBinding(_ClosedBinding):
+    """Explicit card/deck content roots selected by an application overlay."""
+
+    kind: Literal["filesystem_yaml"]
+    cards_dir: Path
+    decks_dir: Path
+
+
 class ModelSOContractBindings(_ClosedBinding):
+    """Filesystem contract roots owned by the application overlay.
+
+    ``card_catalog`` is intentionally an opt-in binding while card runtime
+    activation remains a later slice.  When present, both roots are resolved
+    relative to the overlay and injected as configuration; no implicit
+    package-path or default-deck lookup is permitted.
+    """
+
     catalog_dir: Path
     pilot_registry_dir: Path
     arena_id: StrictStr = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    card_catalog: ModelSOCardCatalogBinding | None = None
 
 
 class ModelSOSystemClockBinding(_ClosedBinding):
@@ -301,6 +318,7 @@ class ModelSOFrontendBootstrap(_ClosedBinding):
 
 __all__ = [
     "ModelSOApplicationOverlay",
+    "ModelSOCardCatalogBinding",
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOFrontendBootstrap",

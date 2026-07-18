@@ -39,6 +39,14 @@ from steel_onslaught.contracts.runtime import (
     SORuntimeMode,
     SORuntimeStatus,
 )
+from steel_onslaught.events.card_payloads import (
+    ModelSOCardsDiscardedPayload,
+    ModelSOHandDealtPayload,
+    ModelSOPlanCommittedPayload,
+    ModelSOPlanRegister,
+    ModelSORegisterResolvedPayload,
+    SORegisterOutcome,
+)
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -132,6 +140,58 @@ def _mech_state(
         weapon_cooldowns={"module.weapon.machine_gun": 0},
         boiler=boiler,
     )
+
+
+def _card_event_payloads() -> dict[SOEventType, dict[str, Any]]:
+    """Build card-event fixtures from the strict Python payload models.
+
+    The card system is intentionally unbound in this slice: these samples use
+    explicit contract ids and do not load a default deck or publish events.
+    """
+
+    cards = (
+        "card.movement.advance",
+        "card.attack.fire_primary",
+        "card.vent.emergency_vent",
+    )
+    hand_dealt = ModelSOHandDealtPayload(
+        seat="a",
+        deck_id="deck.fixture.standard",
+        card_ids=cards,
+        hand_size=len(cards),
+        deck_remaining=21,
+        reshuffled=False,
+    )
+    plan_committed = ModelSOPlanCommittedPayload(
+        seat="a",
+        registers=tuple(
+            ModelSOPlanRegister(register_index=index, card_id=card_id)
+            for index, card_id in enumerate(cards)
+        ),
+        rationale="Advance, fire, then vent.",
+        confidence=0.8,
+    )
+    register_resolved = ModelSORegisterResolvedPayload(
+        seat="a",
+        register_index=0,
+        card_id=cards[0],
+        action="move",
+        outcome=SORegisterOutcome.RESOLVED,
+        priority=400,
+        priority_rank=0,
+        fill_reason=None,
+    )
+    cards_discarded = ModelSOCardsDiscardedPayload(
+        seat="a",
+        card_ids=(cards[0],),
+        reason="played",
+    )
+    return {
+        SOEventType.HAND_DEALT: hand_dealt.model_dump(mode="json"),
+        SOEventType.PLAN_COMMITTED: plan_committed.model_dump(mode="json"),
+        SOEventType.REGISTER_RESOLVED: register_resolved.model_dump(mode="json"),
+        SOEventType.CARDS_DISCARDED: cards_discarded.model_dump(mode="json"),
+    }
 
 
 def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
@@ -329,6 +389,7 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
         },
         SOEventType.MATCH_ENDED: {"reason": "last_mech_standing", "winner_id": "player.a"},
         SOEventType.MATCH_SCORED: scored.model_dump(mode="json"),
+        **_card_event_payloads(),
     }
 
 

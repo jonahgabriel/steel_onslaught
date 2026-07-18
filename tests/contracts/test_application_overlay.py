@@ -870,3 +870,30 @@ def test_secret_bearing_provider_requires_injected_resolver_and_bounded_ref(tmp_
     llm["providers"] = [provider]
     with pytest.raises(ValueError, match="secret_ref"):
         ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
+def test_card_catalog_is_an_explicit_typed_overlay_binding(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    contracts = _require_object_dict(raw["contracts"])
+    contracts["card_catalog"] = {
+        "kind": "filesystem_yaml",
+        "cards_dir": "card_contracts",
+        "decks_dir": "deck_contracts",
+    }
+    overlay_path = tmp_path / "overlay.yaml"
+    overlay_path.write_text(
+        yaml.safe_dump(json.loads(json.dumps(raw, default=str))),
+        encoding="utf-8",
+    )
+
+    overlay = load_application_overlay(overlay_path)
+    assert overlay.contracts.card_catalog is not None
+    assert overlay.contracts.card_catalog.cards_dir == tmp_path / "card_contracts"
+    assert overlay.contracts.card_catalog.decks_dir == tmp_path / "deck_contracts"
+
+    bad = dict(_require_object_dict(contracts["card_catalog"]))
+    bad["default_deck_id"] = "deck.standard"
+    contracts["card_catalog"] = bad
+    with pytest.raises(ValueError, match="default_deck_id"):
+        ModelSOApplicationOverlay.model_validate(raw)

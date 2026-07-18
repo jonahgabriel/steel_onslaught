@@ -36,6 +36,10 @@ event_bus:
     - onex.evt.steel-onslaught.mech-spawned.v1
     - onex.evt.steel-onslaught.sensor-observation.v1
     - onex.evt.steel-onslaught.pilot-decision-made.v1
+    - onex.evt.steel-onslaught.hand-dealt.v1
+    - onex.evt.steel-onslaught.plan-committed.v1
+    - onex.evt.steel-onslaught.register-resolved.v1
+    - onex.evt.steel-onslaught.cards-discarded.v1
     - onex.evt.steel-onslaught.llm-completion-requested.v1
     - onex.evt.steel-onslaught.llm-completion-resolved.v1
     - onex.evt.steel-onslaught.llm-completion-failed.v1

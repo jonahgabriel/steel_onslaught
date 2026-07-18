@@ -1,0 +1,39 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01PANCMMTTED00000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "plan_committed",
+  "payload": {
+    "seat": "a",
+    "registers": [
+      {
+        "register_index": 0,
+        "card_id": "card.movement.advance"
+      },
+      {
+        "register_index": 1,
+        "card_id": "card.attack.fire_primary"
+      },
+      {
+        "register_index": 2,
+        "card_id": "card.vent.emergency_vent"
+      }
+    ],
+    "rationale": "Advance, fire, then vent.",
+    "confidence": 0.8
+  },
+  "envelope": {
+    "message_id": "569d9ec4-2007-5f75-bc7b-da1f1f917cf4",
+    "correlation_id": "216a8b7b-6339-56ff-86ef-1af3393f4562",
+    "causation_id": null,
+    "emitted_at": "2026-04-30T00:00:00Z",
+    "entity_id": "match.fixture.0001"
+  }
+}
