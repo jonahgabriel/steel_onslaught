@@ -26,7 +26,7 @@ from steel_onslaught.cli import learn as learn_module
 from steel_onslaught.cli.main import main
 from steel_onslaught.contracts.lineage import ParamDict
 from steel_onslaught.contracts.loadout import ModelSOLoadout
-from steel_onslaught.learning.artifacts import LearningArtifactStore
+from steel_onslaught.learning.artifacts import LearningArtifactStore, LearningContextArtifacts
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.llm.context_arms import ContextArm
 from steel_onslaught.llm.experiment import ModelSOTunerUsage
@@ -163,6 +163,7 @@ def _experiment_args(tmp_path: Path, **overrides: str) -> list[str]:
         "--k": "2",
         "--max-ticks": "40",
         "--llm-provider": "stub",
+        "--design-doc": str(Path("docs/plans/2026-04-30-steel-onslaught-design.md").resolve()),
     }
     options.update(overrides)
     args = ["learn-experiment"]
@@ -197,6 +198,14 @@ class TestNegativeControlRefusal:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(learn_module, "DuelEvaluator", _ForcedCandidateEvaluator)
+        monkeypatch.setattr(
+            "steel_onslaught.learning.filesystem_artifacts.YamlFilesystemLearningArtifactStore.read_context_artifacts",
+            lambda _store, *, archetype, limit=5: LearningContextArtifacts(
+                replay_traces=(f"trace:{archetype}",),
+                decision_diffs=(f"diff:{archetype}",),
+                exemplars=(f"exemplar:{archetype}",),
+            ),
+        )
         exit_code, _ = _invoke(
             [
                 *_experiment_args(tmp_path),
@@ -215,6 +224,14 @@ class TestFullMatrixRun:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(learn_module, "DuelEvaluator", _ForcedCandidateEvaluator)
+        monkeypatch.setattr(
+            "steel_onslaught.learning.filesystem_artifacts.YamlFilesystemLearningArtifactStore.read_context_artifacts",
+            lambda _store, *, archetype, limit=5: LearningContextArtifacts(
+                replay_traces=(f"trace:{archetype}",),
+                decision_diffs=(f"diff:{archetype}",),
+                exemplars=(f"exemplar:{archetype}",),
+            ),
+        )
         exit_code, output = _invoke(_experiment_args(tmp_path))
         assert exit_code == 0, output
 
@@ -241,6 +258,16 @@ class TestFullMatrixRun:
             assert len(row["context_manifest_hash"]) == 64
             assert len(row["factor_subset_hash"]) == 64
             assert row["prompt_template_version"] == "so-tuner-v1"
+        llm_manifest_by_arm = {
+            arm: {
+                row["context_manifest_hash"] for row in rows if row["context_factor_subset"] == arm
+            }
+            for arm in (context.value for context in ContextArm)
+        }
+        assert all(len(hashes) == 1 for hashes in llm_manifest_by_arm.values())
+        assert len({next(iter(hashes)) for hashes in llm_manifest_by_arm.values()}) == len(
+            llm_manifest_by_arm
+        )
 
         # --- usage sidecar written next to a lineage record, valid + complete ---
         sidecars = list((tmp_path / "lineage").rglob("*.usage.yaml"))
@@ -249,6 +276,8 @@ class TestFullMatrixRun:
         assert loaded.recorded_at.tzinfo is not None
         assert loaded.run_id
         assert loaded.model_id
+        matching_row = next(row for row in rows if row["run_id"] == loaded.run_id)
+        assert loaded.context_manifest_hash == matching_row["context_manifest_hash"]
 
         # --- comparison table lists all arms + headline columns ---
         assert "baseline" in output
@@ -260,6 +289,14 @@ class TestFullMatrixRun:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(learn_module, "DuelEvaluator", _ForcedCandidateEvaluator)
+        monkeypatch.setattr(
+            "steel_onslaught.learning.filesystem_artifacts.YamlFilesystemLearningArtifactStore.read_context_artifacts",
+            lambda _store, *, archetype, limit=5: LearningContextArtifacts(
+                replay_traces=(f"trace:{archetype}",),
+                decision_diffs=(f"diff:{archetype}",),
+                exemplars=(f"exemplar:{archetype}",),
+            ),
+        )
         run_a = tmp_path / "a"
         run_b = tmp_path / "b"
         code_a, _ = _invoke(_experiment_args(run_a, **{"--experiment-seed": "999"}))
