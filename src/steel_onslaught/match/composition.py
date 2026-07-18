@@ -57,6 +57,7 @@ from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
     YamlFilesystemLearningArtifactStore,
 )
+from steel_onslaught.learning.post_match import project_match_learning_evidence
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.llm.client_http import (
@@ -277,6 +278,7 @@ class RuntimeDependencies:
     pilot_registry: PilotSpecRegistry
     pilot_factory: ProtocolPilotFactory
     closer: ProtocolResourceCloser
+    learning_artifacts: LearningArtifactStore | None = None
 
     def close(self) -> None:
         self.closer.close()
@@ -724,6 +726,13 @@ def build_runtime_dependencies(
             ),
             clock=clock,
         )
+        learning_artifacts: LearningArtifactStore = YamlFilesystemLearningArtifactStore(
+            ModelSOFilesystemLearningArtifactsConfig(
+                evaluation_root=overlay.learning_artifacts.evaluation_root,
+                lineage_root=overlay.learning_artifacts.lineage_root,
+                experiment_root=overlay.learning_artifacts.experiment_root,
+            )
+        )
         pilot_registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
         _validate_llm_pilot_bindings(
             pilot_registry,
@@ -749,6 +758,7 @@ def build_runtime_dependencies(
             pilot_registry=pilot_registry,
             pilot_factory=llm.pilot_factory,
             closer=llm.closer if owns_llm else NoopResourceCloser(),
+            learning_artifacts=learning_artifacts,
         )
     except Exception:
         if owns_llm:
@@ -1154,6 +1164,23 @@ def assemble_match_with_dependencies(
         dependencies.leaderboard.on_match_scored(payload)
 
     dependencies.bus.subscribe(_on_match_scored, event_types=[SOEventType.MATCH_SCORED])
+
+    learning_artifacts = dependencies.learning_artifacts
+    if learning_artifacts is not None:
+
+        def _on_match_learning_evidence(_event: ModelSOEventEnvelope) -> None:
+            # MATCH_SCORED is published only after the ledger subscriber has
+            # durably appended the terminal event.  Re-project the complete
+            # canonical stream so no UI/pilot-local state enters evidence.
+            evidence = project_match_learning_evidence(
+                dependencies.ledger.read_all(identity.match_id)
+            )
+            learning_artifacts.write_after_match_evidence(evidence)
+
+        dependencies.bus.subscribe(
+            _on_match_learning_evidence,
+            event_types=[SOEventType.MATCH_SCORED],
+        )
     return LiveMatchStack(
         identity=identity,
         bus=dependencies.bus,

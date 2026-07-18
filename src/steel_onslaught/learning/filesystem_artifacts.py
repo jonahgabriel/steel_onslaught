@@ -17,6 +17,7 @@ from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope
 from steel_onslaught.learning.artifacts import EvaluationWorkspace, MaterializedLoadout
+from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
 from steel_onslaught.learning.lineage_store import write_lineage_record
 from steel_onslaught.llm.experiment import (
     ModelSOExperimentRow,
@@ -82,6 +83,21 @@ class YamlFilesystemLearningArtifactStore:
         claim = self._config.experiment_root / "claims" / kind / f"{self._digest(identity)}.sha256"
         claim.parent.mkdir(parents=True, exist_ok=True)
         self._write_exclusive_or_verify(claim, f"{content_digest}\n".encode("ascii"))
+
+    def write_after_match_evidence(self, evidence: ModelSOAfterMatchLearningEvidence) -> Path:
+        """Persist one canonical terminal-match projection atomically.
+
+        The terminal event id is a first-write-wins identity claim.  Replaying
+        the same stream is idempotent; a changed projection for an existing
+        terminal event fails closed instead of silently replacing evidence.
+        """
+        content = self._model_yaml(evidence)
+        digest = self._digest(content)
+        path = self._config.evaluation_root / "matches" / f"{evidence.match_id}.{digest}.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_exclusive_or_verify(path, content)
+        self._claim_identity("matches", evidence.scored_event_id.encode("utf-8"), digest)
+        return path
 
     def materialize_loadout(
         self,
