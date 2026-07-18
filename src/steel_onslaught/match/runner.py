@@ -695,6 +695,19 @@ class MatchRunner:
         active = self._card_active_round
         if active is None:
             return
+        if self.fold.state.status is SOMatchStatus.ENDED and not self._match_ended_events:
+            self._bus.publish(
+                self._make_match_event(
+                    SOEventType.MATCH_ENDED,
+                    tick=self.fold.state.tick,
+                    payload={
+                        "reason": self.fold.state.end_reason.value
+                        if self.fold.state.end_reason is not None
+                        else SOMatchEndReason.ABORTED.value,
+                        "winner_id": self.fold.state.winner_id,
+                    },
+                )
+            )
         discard_specs = tuple(spec for spec in active.specs if spec.stage == "CARDS_DISCARDED")
         parent_message_id = active.last_lifecycle_message_id
         for spec in discard_specs:
