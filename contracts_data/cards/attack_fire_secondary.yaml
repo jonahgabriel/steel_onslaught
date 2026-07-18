@@ -1,0 +1,9 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.attack.fire_secondary"
+display_name: "Fire Secondary"
+category: "attack"
+priority: 550
+heat_cost: 0
+effect:
+  weapon_slot: 1
