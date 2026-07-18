@@ -131,9 +131,7 @@ def _make_boiler(mech_id: str) -> ModelSOBoilerState:
 
 
 def _make_mech(mech_id: str, player_id: str, *, loadout_id: str) -> ModelSOMechRuntimeState:
-    position = (
-        ModelSOPosition(x=0, y=0) if mech_id == _MECH_A else ModelSOPosition(x=1, y=1)
-    )
+    position = ModelSOPosition(x=0, y=0) if mech_id == _MECH_A else ModelSOPosition(x=1, y=1)
     return ModelSOMechRuntimeState(
         mech_id=mech_id,
         player_id=player_id,

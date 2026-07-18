@@ -100,11 +100,7 @@ def _boiler(mech_id: str) -> ModelSOBoilerState:
 
 
 def _mech(mech_id: str, player_id: str, *, alive: bool = True) -> ModelSOMechRuntimeState:
-    position = (
-        ModelSOPosition(x=0, y=0)
-        if player_id == "player.red"
-        else ModelSOPosition(x=1, y=1)
-    )
+    position = ModelSOPosition(x=0, y=0) if player_id == "player.red" else ModelSOPosition(x=1, y=1)
     return ModelSOMechRuntimeState(
         mech_id=mech_id,
         player_id=player_id,
