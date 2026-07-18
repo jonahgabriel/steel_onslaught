@@ -42,6 +42,7 @@ from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayloa
 from steel_onslaught.contracts.player_selection import ModelSOMatchLaunchProvenance, Side
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.card_payloads import (
+    ModelSOCardsDiscardedPayload,
     ModelSOPlanCommittedPayload,
     ModelSORegisterResolvedPayload,
 )
@@ -153,6 +154,7 @@ class _ActiveCardRound:
     emission: ModelSOCardRoundEmission
     specs: tuple[ModelSOCardRoundEventSpec, ...]
     next_register_index: int
+    last_lifecycle_message_id: UUID | None = None
 
 
 class MatchRunner:
@@ -339,6 +341,11 @@ class MatchRunner:
                             },
                         )
                     )
+                if self._card_cadence == "paced":
+                    self._cancel_active_card_round(
+                        tick=self.fold.state.tick,
+                        reason="aborted",
+                    )
                 break
             self._sensor_buffer.clear()
             self._intent_buffer.clear()
@@ -346,7 +353,10 @@ class MatchRunner:
             tick_event = self._make_match_event(SOEventType.MATCH_TICK, tick=next_tick, payload={})
             self._bus.publish(tick_event)
             if self.fold.state.status is not SOMatchStatus.RUNNING:
-                self._card_active_round = None
+                if self._card_cadence == "paced":
+                    self._cancel_active_card_round(tick=next_tick, reason="max_ticks")
+                else:
+                    self._card_active_round = None
                 break  # terminal tick (max_ticks bound or failure-cascade kill)
 
             ReducerSensors(
@@ -396,6 +406,8 @@ class MatchRunner:
                     self._resolve_intent(intent)
             if self.fold.state.status is SOMatchStatus.RUNNING:
                 self._apply_sudden_death(next_tick)
+            elif self._card_cadence == "paced":
+                self._cancel_active_card_round(tick=next_tick, reason="decisive_death")
 
         # Decisive endings terminate via VICTORY_DECLARED; the plan requires a
         # final MATCH_ENDED re-statement as well (the lifecycle reducer emits
@@ -614,9 +626,19 @@ class MatchRunner:
                 return spec.register_index == register_index
             return False
 
-        specs = tuple(spec for spec in active.specs if include(spec))
-        if not any(spec.stage == "REGISTER_RESOLVED" for spec in specs):
+        selected_specs = tuple(spec for spec in active.specs if include(spec))
+        if not any(spec.stage == "REGISTER_RESOLVED" for spec in selected_specs):
             raise RuntimeError(f"paced card emission has no register {register_index} rows")
+        # Publish every lifecycle row for the current register before any
+        # intent can kill a seat.  This retains the dead seat's canonical
+        # REGISTER_RESOLVED row while its later intent is voided by
+        # ``_resolve_intent``.  Discards remain last, after intents.
+        specs = (
+            tuple(spec for spec in selected_specs if spec.stage in {"HAND_DEALT", "PLAN_COMMITTED"})
+            + tuple(spec for spec in selected_specs if spec.stage == "REGISTER_RESOLVED")
+            + tuple(spec for spec in selected_specs if spec.stage == "INTENT")
+            + tuple(spec for spec in selected_specs if spec.stage == "CARDS_DISCARDED")
+        )
         for spec in specs:
             event = self._events.make_with_message_id(
                 message_id=spec.message_id,
@@ -631,12 +653,20 @@ class MatchRunner:
                 causation_id=spec.causation_id,
             )
             self._bus.publish(event)
+            if spec.stage != "INTENT":
+                active = _ActiveCardRound(
+                    emission=active.emission,
+                    specs=active.specs,
+                    next_register_index=active.next_register_index,
+                    last_lifecycle_message_id=spec.message_id,
+                )
+                self._card_active_round = active
             if spec.stage == "INTENT" and self.fold.state.status is SOMatchStatus.RUNNING:
                 self._resolve_intent(event)
             if self.fold.state.status is not SOMatchStatus.RUNNING:
                 # A decisive hit closes the active round at the exact event
                 # boundary.  No partial deck/plan commit is allowed.
-                self._card_active_round = None
+                self._cancel_active_card_round(tick=tick, reason="decisive_death")
                 return
 
         if final_register:
@@ -649,7 +679,44 @@ class MatchRunner:
                 emission=active.emission,
                 specs=active.specs,
                 next_register_index=register_index + 1,
+                last_lifecycle_message_id=active.last_lifecycle_message_id,
             )
+
+    def _cancel_active_card_round(self, *, tick: int, reason: str) -> None:
+        """Close a paced round without committing its partial deck state.
+
+        ``CARDS_DISCARDED`` is the existing terminal card vocabulary.  A
+        ``cancelled:<reason>`` reason makes the closure explicit while
+        preserving the closed payload contract; replay can therefore accept
+        a complete terminal lifecycle batch without mistaking it for a deck
+        commit.
+        """
+
+        active = self._card_active_round
+        if active is None:
+            return
+        discard_specs = tuple(spec for spec in active.specs if spec.stage == "CARDS_DISCARDED")
+        parent_message_id = active.last_lifecycle_message_id
+        for spec in discard_specs:
+            payload = ModelSOCardsDiscardedPayload.model_validate(spec.payload).model_copy(
+                update={"reason": f"cancelled:{reason}"}
+            )
+            causation_id = parent_message_id or spec.parent.root_causation_id
+            event = self._events.make_with_message_id(
+                message_id=spec.message_id,
+                match_id=self._match_id,
+                tick=tick,
+                sequence_in_tick=0,
+                event_type=spec.event_type,
+                producer_node=_PRODUCER_NODE,
+                subject=spec.subject,
+                payload=payload.model_dump(mode="json"),
+                correlation_id=self._correlation_id,
+                causation_id=causation_id,
+            )
+            self._bus.publish(event)
+            parent_message_id = spec.message_id
+        self._card_active_round = None
 
     def _seat_for_mech(self, mech_id: str) -> str:
         """Return the canonical card seat for a runner-owned mech id."""

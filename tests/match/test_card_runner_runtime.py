@@ -311,7 +311,7 @@ def test_paced_card_round_latches_one_register_per_tick_and_replays_by_root() ->
     assert {event.tick for event in replay.validated_card_rounds[1].events} == {3, 4}
 
 
-def test_paced_card_round_cancels_without_discard_on_max_tick_boundary() -> None:
+def test_paced_card_round_cancels_with_terminal_discard_on_max_tick_boundary() -> None:
     events = _run(card_enabled=True, max_ticks=2, card_cadence="paced")
     lifecycle_types = {
         SOEventType.HAND_DEALT,
@@ -325,12 +325,27 @@ def test_paced_card_round_cancels_without_discard_on_max_tick_boundary() -> None
         SOEventType.HAND_DEALT,
         SOEventType.PLAN_COMMITTED,
         SOEventType.REGISTER_RESOLVED,
+        SOEventType.CARDS_DISCARDED,
     }
     assert {
         event.payload["register_index"]
         for event in lifecycle
         if event.event_type is SOEventType.REGISTER_RESOLVED
     } == {0}
+    discards = [event for event in lifecycle if event.event_type is SOEventType.CARDS_DISCARDED]
+    assert {event.payload["reason"] for event in discards} == {"cancelled:max_ticks"}
+
+    runtime = runtime_dependencies()
+    replay = ReplayEngine(
+        _ReplayLedger(events),
+        "match.test.card-runner",
+        catalog=runtime.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=_snapshot(),
+        validate_card_events=True,
+    )
+    assert len(replay.validated_card_rounds) == 1
+    assert replay.validated_card_rounds[0].cancelled is True
 
 
 @pytest.mark.parametrize("tamper", ["payload", "order", "provenance"])

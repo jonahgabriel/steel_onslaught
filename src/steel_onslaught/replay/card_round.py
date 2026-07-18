@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from steel_onslaught.cards.actions import action_for_card
 from steel_onslaught.contracts.card import CardCatalogError
@@ -95,6 +95,7 @@ class ModelSOCardRoundReplay(_ClosedReplayModel):
     plan_committed: tuple[ModelSOPlanCommittedPayload, ...] = Field(min_length=1)
     register_resolved: tuple[ModelSORegisterResolvedPayload, ...] = Field(min_length=1)
     cards_discarded: tuple[ModelSOCardsDiscardedPayload, ...] = Field(min_length=1)
+    cancelled: StrictBool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +319,13 @@ def validate_card_round_events(
         expected_match_id=expected_match_id,
         expected_provenance=expected_provenance,
     )
+    cancelled_reasons = {
+        discarded.reason.startswith("cancelled:") for discarded in parsed.cards_discarded
+    }
+    if len(cancelled_reasons) > 1:
+        raise CardRoundReplayError(
+            "CARDS_DISCARDED reasons must not mix cancelled and committed rows"
+        )
     return ModelSOCardRoundReplay(
         match_id=match_id,
         correlation_id=correlation_id,
@@ -327,6 +335,7 @@ def validate_card_round_events(
         plan_committed=parsed.plan_committed,
         register_resolved=parsed.register_resolved,
         cards_discarded=parsed.cards_discarded,
+        cancelled=next(iter(cancelled_reasons), False),
     )
 
 
