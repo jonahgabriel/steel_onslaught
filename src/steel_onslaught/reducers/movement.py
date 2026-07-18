@@ -166,11 +166,7 @@ class ReducerMovement:
             )
         obstacles = self._arena.obstacle_cells
         blocked_cell = next(
-            (
-                cell
-                for cell in chebyshev_line(from_pos, to_pos)
-                if cell in obstacles
-            ),
+            (cell for cell in chebyshev_line(from_pos, to_pos) if cell in obstacles),
             None,
         )
         if blocked_cell is not None:

@@ -119,7 +119,7 @@ def _overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
             "llm": {
                 "providers": [
                     {"kind": "stub", "provider_id": provider_id, "model": "fixture"}
-                    for provider_id in ("stub", "qwen35", "qwen27", "deepseek")
+                    for provider_id in ("stub", "qwen35", "qwen27", "deepseek", "glm-5.2")
                 ],
                 "model_identities": [
                     {
@@ -210,7 +210,7 @@ def test_authenticated_human_vs_stub_loop_is_replayable_and_terminal(
 
     overlay = _overlay(tmp_path)
     provider_registry = {provider.provider_id: provider for provider in overlay.llm.providers}
-    assert set(provider_registry) == {"stub", "qwen35", "qwen27", "deepseek"}
+    assert set(provider_registry) == {"stub", "qwen35", "qwen27", "deepseek", "glm-5.2"}
     assert all(
         isinstance(provider, ModelSOStubLlmProviderBinding)
         for provider in provider_registry.values()
