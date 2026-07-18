@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-18, `origin/main` e73c7c3).** The Rev 5
+> **Current reconciliation (2026-07-18, `origin/main` 3d63d2c).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -109,7 +109,19 @@
 >   unknown, non-LLM, missing-client, and missing-persona bindings fail closed.
 >   This slice does not change runner cadence, replay, event schemas, provider
 >   endpoints, UI, deployment, or OCC. A telemetry observer remains a separate
->   deferred slice, as does paced one-register-per-tick card cadence.
+>   deferred slice.
+> - [PR #46](https://github.com/jonahgabriel/steel_onslaught/pull/46),
+>   commit `3d63d2c`, ships explicit paced card cadence. With
+>   `card_cadence="paced"`, the runner latches one complete card-round
+>   emission and its causal specifications, then publishes exactly one register
+>   per tick. Hand/plan rows are emitted on the first tick, the deck/previous
+>   plans/round index commit only after the final register, and terminal
+>   boundaries close a partial round with
+>   `CARDS_DISCARDED(reason="cancelled:<reason>")` without committing partial
+>   deck state. Replay groups lifecycle rows by the stable external causation
+>   root across ticks and exposes a `cancelled` flag; the existing atomic cadence
+>   remains the default. This slice does not change provider endpoints, UI,
+>   deployment, or OCC.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
@@ -193,37 +205,39 @@ genuine strategic rationale stored in the ledger.
   — **UI-workflow-owned** (not part of this backend integration gate;
   `frontend/` changes are staged/committed by that workflow separately).
 
-## Next — paced card cadence and telemetry observer (deferred)
+## Next — Gate 1 browser loop; telemetry observer remains deferred
 
-The current card runtime intentionally emits one complete hand/plan/register
-sequence per tick. One-register-per-tick pacing is deferred to a separate
-runtime/replay slice; it is not implied by PR #39's whole-round programmer.
-That slice must preserve these invariants:
+Paced card cadence is now shipped as an explicit runtime mode rather than a
+plan item. The atomic cadence remains the default for callers that do not opt
+into `card_cadence="paced"`. The shipped paced mode preserves these
+invariants:
 
 - latch the active round's seats, hand, deck state, plan, previous plan, and
   heat-lock context; do not deal or re-plan again between register ticks;
 - emit `CARDS_DISCARDED` only after the final register, then commit the deck,
   previous-plan, and round-index state for the next round;
-- group card lifecycle events by one stable causation root across ticks (the
-  current validator groups by `(tick, root)` and requires all four phases on
-  one tick), while retaining phase order, unique seat/register rows, and
-  canonical `(tick, sequence_in_tick, event_id)` ordering;
+- group card lifecycle events by one stable causation root across ticks while
+  retaining phase order, unique seat/register rows, and canonical
+  `(tick, sequence_in_tick, event_id)` ordering;
 - close or explicitly cancel an active round at decisive death or a
-  `max_ticks` terminal boundary, and retain lifecycle rows for seats that die
-  mid-round even though their later intents are void.
+  `max_ticks` terminal boundary, retain lifecycle rows for seats that die
+  mid-round, and void later intents without inventing a second hand or plan;
+- distinguish committed discards from cancellation evidence in replay, so an
+  incomplete round cannot be mistaken for a deck commit.
 
-The telemetry observer is also deferred and remains independent of both PR #45
-composition and the paced-cadence runtime work. Its eventual contract must
-consume the canonical event stream without becoming an alternate source of
-match truth or changing replay semantics.
+The next remaining product gate is **Gate 1: a browser-started live loop**.
+Prove one admitted `MatchSetup`/`BrowserPlayServer` launch receives the
+authoritative event stream through the browser transport, advances through a
+long enough real selected-model match (including the LLM-vs-LLM default lane),
+and reaches a terminal projection with a Playwright/browser proof. This is a
+live-loop/UI integration gate, not permission to broaden the dashboard, change
+provider endpoints, or mutate deployment/runtime infrastructure.
 
-The risks are material: longer matches need a larger tick budget, and boiler
-regen, cooldowns, sensors, mode transitions, and initiative can change between
-registers. A safe interim demo is the existing atomic cadence with an explicit
-larger `max_ticks`/presentation pacing knob. Configuring `round_length=1`
-preserves the current wire validator but deals and discards a new hand every
-tick and removes meaningful suffix heat-lock behavior, so it is a demo-only
-fallback rather than the target semantics.
+The telemetry observer remains deferred and independent of both the PR #45
+composition seam and the shipped paced-cadence runtime. Its eventual contract
+must consume the canonical event stream without becoming an alternate source of
+match truth or changing replay semantics; it should follow the Gate 1 browser
+proof rather than precede it.
 
 ## Core principle (verified, unchanged from Rev 1)
 
