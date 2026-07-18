@@ -162,7 +162,7 @@ describe("frontend application bootstrap", () => {
     expect(parseFrontendBootstrap({ ...binding(), player_roster: null }).player_roster).toBeNull();
   });
 
-  it("requires each seat to carry a server-declared default option", () => {
+  it("accepts legacy seats without defaults but never infers one", () => {
     const roster = playerRosterBinding();
     const seats = roster["seats"];
     if (!Array.isArray(seats)) throw new Error("test roster seats must be an array");
@@ -171,12 +171,11 @@ describe("frontend application bootstrap", () => {
       throw new Error("test roster seat must be an object");
     }
     const { default_option_id: _default, ...legacySeat } = first as Record<string, unknown>;
-    expect(() =>
-      parseFrontendBootstrap({
-        ...binding(),
-        player_roster: { ...roster, seats: [legacySeat, seats[1]] },
-      }),
-    ).toThrow(/missing field/);
+    const legacy = parseFrontendBootstrap({
+      ...binding(),
+      player_roster: { ...roster, seats: [legacySeat, seats[1]] },
+    });
+    expect(legacy.player_roster?.seats[0]?.default_option_id).toBeNull();
 
     expect(() =>
       parseFrontendBootstrap({

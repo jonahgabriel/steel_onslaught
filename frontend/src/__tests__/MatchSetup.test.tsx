@@ -96,6 +96,20 @@ describe("MatchSetup safe player intent", () => {
     );
   });
 
+  it("leaves legacy projections without defaults empty and start-disabled", () => {
+    const raw = JSON.parse(readFileSync(BOOTSTRAP_FIXTURE, "utf-8")) as {
+      player_roster: { seats: Array<Record<string, unknown>> };
+    };
+    for (const seat of raw.player_roster.seats) delete seat["default_option_id"];
+    const legacy = parseFrontendBootstrap(raw);
+
+    render(<MatchSetup bootstrap={legacy} capability={{ requestStart: vi.fn() }} />);
+
+    expect((screen.getByLabelText("red pilot") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("blue pilot") as HTMLSelectElement).value).toBe("");
+    expect(screen.getByRole("button", { name: "START MATCH" })).toBeDisabled();
+  });
+
   it("emits only typed non-authoritative intent when an explicit capability exists", () => {
     const requestStart = vi.fn();
     render(<MatchSetup bootstrap={bootstrap()} capability={{ requestStart }} />);

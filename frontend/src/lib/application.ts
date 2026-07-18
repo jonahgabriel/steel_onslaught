@@ -186,7 +186,12 @@ function playerOption(value: unknown, context: string): PublicPlayerOption {
 
 function seatPolicy(value: unknown, context: string): PublicSeatLaunchPolicy {
   const seat = object(value, context);
-  exactKeys(seat, ["side", "allowed_option_ids", "default_option_id"], context);
+  // `default_option_id` was added after the original public projection. Keep
+  // old projections parseable, but normalize the omitted field to null so
+  // MatchSetup remains empty/disabled rather than inferring a model.
+  const seatForExactKeys = { ...seat };
+  delete seatForExactKeys["default_option_id"];
+  exactKeys(seatForExactKeys, ["side", "allowed_option_ids"], context);
   const side = seat["side"];
   if (side !== "red" && side !== "blue") fail(`${context}.side must be red or blue`);
   const allowed = list(seat["allowed_option_ids"], `${context}.allowed_option_ids`).map(
@@ -200,7 +205,7 @@ function seatPolicy(value: unknown, context: string): PublicSeatLaunchPolicy {
   if (allowed.length < 1 || new Set(allowed).size !== allowed.length) {
     fail(`${context}.allowed_option_ids must be nonempty and unique`);
   }
-  const rawDefault = seat["default_option_id"];
+  const rawDefault = seat["default_option_id"] ?? null;
   const defaultOption =
     rawDefault === null
       ? null
