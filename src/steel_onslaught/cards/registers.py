@@ -208,6 +208,11 @@ class RegisterExecutionReducer:
     def __init__(self, cards: ModelSOCardCatalog) -> None:
         self._cards = cards
 
+    @property
+    def card_catalog(self) -> ModelSOCardCatalog:
+        """Return the immutable catalog snapshot bound at construction."""
+        return self._cards
+
     def resolve_round(
         self,
         contexts: tuple[ModelSOSeatResolutionContext, ...],

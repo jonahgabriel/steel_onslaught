@@ -195,7 +195,6 @@ def test_replay_retains_the_same_immutable_card_snapshot_as_composition() -> Non
             ),
         )
     )
-
     replay = ReplayEngine(
         _MemoryLedger([event]),
         event.match_id,
@@ -204,7 +203,7 @@ def test_replay_retains_the_same_immutable_card_snapshot_as_composition() -> Non
         card_catalog=cards,
     )
 
-    assert replay._card_catalog is cards
+    assert replay.card_catalog is cards
     assert cards.cards[0].priority == 100
 
 

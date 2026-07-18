@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, TypedDict, cast
 from uuid import UUID
@@ -488,6 +489,70 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
     assert stack.runtime.progress_gate is progress_gate
     assert stack.card_catalog is dependencies.card_catalog
     assert len(bus.handlers) == 7
+
+
+@pytest.mark.unit
+def test_register_factory_binds_snapshot_without_loader_or_bus_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        composition,
+        "load_card_catalog",
+        lambda *_args: pytest.fail("register DI must not load card files"),
+    )
+
+    class _ForbiddenBus:
+        def subscribe(self, *_args: object, **_kwargs: object) -> int:
+            raise AssertionError("register DI must not subscribe to the bus")
+
+        def publish(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("register DI must not publish events")
+
+    class _ForbiddenLedger:
+        def read_all(self, *_args: object, **_kwargs: object) -> Iterator[Any]:
+            raise AssertionError("register DI must not read the ledger")
+
+    # Reuse the actual dependency fixture shape from the neighboring assembly
+    # test; only the card snapshot and forbidden outer ports matter here.
+    dependencies = RuntimeDependencies(
+        bus=cast(Any, _ForbiddenBus()),
+        ledger=cast(Any, _ForbiddenLedger()),
+        leaderboard=cast(Any, object()),
+        clock=cast(Any, object()),
+        identities=cast(Any, object()),
+        event_factory=cast(Any, object()),
+        catalog=cast(Any, object()),
+        arena=cast(Any, object()),
+        pilot_registry=cast(Any, object()),
+        pilot_factory=cast(Any, object()),
+        closer=cast(Any, object()),
+        card_catalog=ModelSOCardCatalog(
+            cards=(
+                ModelSOCard(
+                    schema_version="0.1.0",
+                    kind="steel_onslaught.card",
+                    id="card.test.advance",
+                    display_name="Advance",
+                    category=SOCardCategory.MOVEMENT,
+                    priority=100,
+                    heat_cost=0,
+                    effect=ModelSOCardEffect(direction="toward_enemy", speed="full"),
+                ),
+            )
+        ),
+    )
+
+    reducer = composition.build_register_execution_reducer(dependencies)
+    second = composition.build_register_execution_reducer(dependencies)
+    assert reducer.card_catalog is dependencies.card_catalog
+    assert second is not reducer
+    assert second.card_catalog is reducer.card_catalog
+
+    missing = replace(dependencies, card_catalog=None)
+    with pytest.raises(composition.MissingCardCatalogError):
+        composition.build_register_execution_reducer(missing)
+    with pytest.raises(TypeError, match="requires RuntimeDependencies"):
+        composition.build_register_execution_reducer(cast(Any, object()))
 
 
 @pytest.mark.unit

@@ -142,6 +142,11 @@ class ReplayEngine:
             seen[e.tick] = None
         return list(seen)
 
+    @property
+    def card_catalog(self) -> ModelSOCardCatalog | None:
+        """Return the immutable composition snapshot retained for later card replay."""
+        return self._card_catalog
+
     def events_at_tick(self, tick: int) -> list[ModelSOEventEnvelope]:
         """Return all events for *tick* in canonical order
         ``(sequence_in_tick ASC, event_id ASC)``.
