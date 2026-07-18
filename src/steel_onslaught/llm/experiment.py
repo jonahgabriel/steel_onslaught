@@ -131,6 +131,9 @@ class ModelSOTunerUsage(BaseModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     cost_usd: float | None = Field(ge=0.0)
+    # Optional for backwards-compatible hand-authored sidecars; the CLI always
+    # supplies this content-addressed provenance for new tuner runs.
+    context_manifest_hash: str | None = Field(default=None, min_length=64, max_length=64)
     recorded_at: datetime  # timezone-aware required; injected by the CLI clock
 
     @field_validator("recorded_at")

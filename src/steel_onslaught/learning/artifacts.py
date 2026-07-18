@@ -32,6 +32,20 @@ class MaterializedLoadout:
     path: Path
 
 
+@dataclass(frozen=True)
+class LearningContextArtifacts:
+    """Durable evidence selected for one LLM tuner context arm.
+
+    The artifact store owns how these values are read (SQLite/YAML today,
+    another adapter later).  Values are already canonical, deterministic text
+    fragments when they cross this port; the tuner never reads a file itself.
+    """
+
+    replay_traces: tuple[str, ...] = ()
+    decision_diffs: tuple[str, ...] = ()
+    exemplars: tuple[str, ...] = ()
+
+
 class LearningArtifactStore(Protocol):
     def write_after_match_evidence(self, evidence: ModelSOAfterMatchLearningEvidence) -> Path: ...
 
@@ -66,9 +80,17 @@ class LearningArtifactStore(Protocol):
 
     def write_llm_event(self, event: ModelSOEventEnvelope) -> Path: ...
 
+    def read_context_artifacts(
+        self,
+        *,
+        archetype: str,
+        limit: int = 5,
+    ) -> LearningContextArtifacts: ...
+
 
 __all__ = [
     "EvaluationWorkspace",
     "LearningArtifactStore",
+    "LearningContextArtifacts",
     "MaterializedLoadout",
 ]

@@ -2,20 +2,40 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+from steel_onslaught.contracts.lineage import (
+    ModelSOLineageEvidence,
+    ModelSOLineageGenerator,
+    ModelSOLineagePerformance,
+    ModelSOLineagePromotion,
+    ModelSOLineageRecord,
+    ParamDict,
+    SOPromotionStatus,
+    meta_hash,
+    spec_hash,
+)
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
-from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.events.envelope import (
+    ModelSOEventEnvelope,
+    ModelSOEventSubject,
+    SOEventType,
+    make_event,
+)
+from steel_onslaught.learning.artifacts import LearningContextArtifacts
 from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
     YamlFilesystemLearningArtifactStore,
 )
+from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.llm.experiment import (
     ModelSOArmMetrics,
     ModelSOExperimentRow,
@@ -253,6 +273,133 @@ def test_resolved_llm_cost_survives_artifact_materialization_exactly(tmp_path: P
 
     assert persisted == event
     assert persisted.payload["cost_usd"] == 0.0
+
+
+@pytest.mark.unit
+def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    workspace = store.prepare_evaluation(1)
+    match_id = "match.learn.seed_1.cand_red"
+    sqlite_path = tmp_path / "evaluations" / workspace.key / "seed_1_cand_red.sqlite3"
+    ledger = SQLiteLedger(
+        ModelSOSQLiteLedgerConfig(
+            path=sqlite_path,
+            journal_mode="WAL",
+            check_same_thread=False,
+            transaction_mode="autocommit",
+            event_schema="canonical_event_v1",
+        )
+    )
+    samples = build_sample_envelopes()
+    correlation_id = UUID("44444444-4444-4444-8444-444444444444")
+    parent_decision = make_event(
+        event_id=samples[SOEventType.PILOT_DECISION_MADE].event_id[:-1] + "1",
+        message_id=UUID("44444444-4444-4444-8444-444444444441"),
+        emitted_at=datetime(2026, 7, 18, tzinfo=UTC),
+        match_id=match_id,
+        correlation_id=correlation_id,
+        tick=1,
+        sequence_in_tick=0,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="mech.blue.01", player_id="player.blue"),
+        event_type=SOEventType.PILOT_DECISION_MADE,
+        payload=samples[SOEventType.PILOT_DECISION_MADE].payload,
+    )
+    winning_payload = dict(samples[SOEventType.PILOT_DECISION_MADE].payload)
+    winning_payload["action"] = "move"
+    winning_decision = make_event(
+        event_id=samples[SOEventType.PILOT_DECISION_MADE].event_id[:-1] + "2",
+        message_id=UUID("44444444-4444-4444-8444-444444444442"),
+        emitted_at=datetime(2026, 7, 18, tzinfo=UTC),
+        match_id=match_id,
+        correlation_id=correlation_id,
+        tick=1,
+        sequence_in_tick=1,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="mech.red.01", player_id="player.red"),
+        event_type=SOEventType.PILOT_DECISION_MADE,
+        payload=winning_payload,
+    )
+    score = dict(samples[SOEventType.MATCH_SCORED].payload)
+    score["match_id"] = match_id
+    score["winner"] = {"player_id": "player.blue", "mech_id": "mech.blue.01"}
+    score["winner_player_id"] = "player.blue"
+    score["loser_player_id"] = "player.red"
+    score["scores"] = {
+        "player.blue": score["scores"]["player.a"],
+        "player.red": score["scores"]["player.b"],
+    }
+    score["winner_score"] = score["scores"]["player.blue"]["final_score"]
+    score["loser_score"] = score["scores"]["player.red"]["final_score"]
+    scored = make_event(
+        event_id=samples[SOEventType.MATCH_SCORED].event_id,
+        message_id=UUID("44444444-4444-4444-8444-444444444443"),
+        emitted_at=datetime(2026, 7, 18, tzinfo=UTC),
+        match_id=match_id,
+        correlation_id=correlation_id,
+        tick=2,
+        sequence_in_tick=0,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="mech.blue.01", player_id="player.blue"),
+        event_type=SOEventType.MATCH_SCORED,
+        payload=score,
+    )
+    for event in (parent_decision, winning_decision, scored):
+        ledger.append(event)
+    ledger._conn.close()  # test-only cleanup for the adapter's explicit connection
+
+    params: ParamDict = {
+        "vent_at_heat_margin": 5,
+        "idle_vent_heat_threshold": 90,
+        "mode_switch_pressure_floor": 12,
+        "mode_switch_heat_ceiling": 80,
+        "weapon_preference": "highest_damage",
+    }
+    record_hash = spec_hash("aggressive", params)
+    record = ModelSOLineageRecord(
+        archetype="aggressive",
+        parameters=params,
+        spec_hash=record_hash,
+        parent_hash=spec_hash("aggressive", {**params, "vent_at_heat_margin": 4}),
+        meta_hash=meta_hash([record_hash]),
+        evidence=ModelSOLineageEvidence(search_seeds=(1,), holdout_seeds=(2,)),
+        performance=ModelSOLineagePerformance(
+            candidate_win_rate=1.0,
+            win_rate_delta=0.5,
+            overload_rate_delta=0.0,
+            draw_rate=0.0,
+            p_value=0.01,
+            decisive_n=10,
+        ),
+        generator=ModelSOLineageGenerator(
+            generator_id="search.grid", selection_reason="test", cohort=None
+        ),
+        promotion=ModelSOLineagePromotion(status=SOPromotionStatus.PROMOTED),
+    )
+    store.write_lineage(record, recorded_at=datetime(2026, 7, 18, tzinfo=UTC))
+
+    artifacts = store.read_context_artifacts(archetype="aggressive")
+    assert len(artifacts.replay_traces) == 2
+    assert len(artifacts.decision_diffs) == 1
+    assert len(artifacts.exemplars) == 1
+    assert match_id in artifacts.replay_traces[0]
+    assert "parent" in artifacts.decision_diffs[0]
+    assert record_hash in artifacts.exemplars[0]
+
+
+@pytest.mark.unit
+def test_context_reader_ignores_unrelated_sqlite_files(tmp_path: Path) -> None:
+    unrelated = tmp_path / "evaluations" / "unrelated.sqlite3"
+    unrelated.parent.mkdir(parents=True)
+    with sqlite3.connect(unrelated) as connection:
+        connection.execute("CREATE TABLE unrelated (value TEXT)")
+
+    assert (
+        _store(tmp_path).read_context_artifacts(archetype="aggressive")
+        == LearningContextArtifacts()
+    )
 
 
 @pytest.mark.unit
