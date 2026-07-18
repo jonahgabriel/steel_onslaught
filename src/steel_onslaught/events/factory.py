@@ -85,6 +85,44 @@ class EventFactory:
             emitted_at=self._clock.now(),
         )
 
+    def make_with_message_id(
+        self,
+        *,
+        message_id: UUID,
+        match_id: str,
+        tick: int,
+        sequence_in_tick: int,
+        event_type: SOEventType,
+        producer_node: str,
+        subject: ModelSOEventSubject,
+        payload: dict[str, Any],
+        correlation_id: UUID,
+        causation_id: UUID | None = None,
+    ) -> ModelSOEventEnvelope:
+        """Build an event with a caller-allocated canonical message UUID.
+
+        Pure event-spec adapters allocate a complete causal UUID chain before
+        publication.  This effect-boundary helper preserves those IDs while
+        keeping event ULIDs and timestamps owned by the injected factory.
+        """
+
+        if not isinstance(message_id, UUID):
+            raise TypeError("message_id must be a UUID")
+        return make_event(
+            match_id=match_id,
+            tick=tick,
+            sequence_in_tick=sequence_in_tick,
+            event_type=event_type,
+            producer_node=producer_node,
+            subject=subject,
+            payload=payload,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+            event_id=self._identities.new_event_id(),
+            message_id=message_id,
+            emitted_at=self._clock.now(),
+        )
+
     def caused_by(
         self,
         parent: ModelSOEventEnvelope,

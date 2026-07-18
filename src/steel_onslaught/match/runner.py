@@ -31,6 +31,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.cards.dealer import ModelSODealerScope, ModelSODeckState
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
@@ -40,6 +41,7 @@ from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
 from steel_onslaught.contracts.player_selection import ModelSOMatchLaunchProvenance, Side
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
+from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -52,9 +54,11 @@ from steel_onslaught.events.payloads import (
     ModelSOSensorObservationPayload,
     ModelSOWeaponFireIntentPayload,
 )
+from steel_onslaught.match.card_adapter import CardRunnerAdapter, ModelSOCardSeatRequest
+from steel_onslaught.match.card_event_specs import build_card_round_event_specs
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.geometry import chebyshev_line, greedy_sidestep, line_of_sight_clear
-from steel_onslaught.match.initiative import order_by_initiative
+from steel_onslaught.match.initiative import initiative_score, order_by_initiative
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.runtime import (
     OpenProgressGate,
@@ -78,7 +82,7 @@ from steel_onslaught.reducers.mode import (
     validate_mode_switch,
 )
 from steel_onslaught.reducers.movement import chebyshev, effective_speed, mode_effective_speed
-from steel_onslaught.reducers.pilot_tick import ReducerPilotTick
+from steel_onslaught.reducers.pilot_tick import ReducerPilotTick, build_pilot_observation
 from steel_onslaught.reducers.sensors import ReducerSensors
 from steel_onslaught.reducers.weapons import (
     interpolate_accuracy,
@@ -148,6 +152,7 @@ class MatchRunner:
         facing_b: int = _FACING_B,
         launch_provenance: ModelSOMatchLaunchProvenance | None = None,
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
+        card_adapter: CardRunnerAdapter | None = None,
         progress_gate: ProgressGate | None = None,
     ) -> None:
         self._identity = identity
@@ -176,7 +181,26 @@ class MatchRunner:
                 "uncapped matches require arena sudden-death convergence configuration"
             )
         self._catalog = catalog
-        self._card_runtime_snapshot = card_runtime_snapshot
+        if card_adapter is not None and not isinstance(card_adapter, CardRunnerAdapter):
+            raise TypeError("card_adapter must be CardRunnerAdapter when supplied")
+        adapter_snapshot = (
+            None
+            if card_adapter is None or not card_adapter.registers_enabled
+            else card_adapter.snapshot
+        )
+        if (
+            card_runtime_snapshot is not None
+            and adapter_snapshot is not None
+            and card_runtime_snapshot is not adapter_snapshot
+        ):
+            raise ValueError(
+                "card_runtime_snapshot and card_adapter must share the exact snapshot object"
+            )
+        self._card_runtime_snapshot = card_runtime_snapshot or adapter_snapshot
+        self._card_adapter = card_adapter
+        self._card_round_index = 0
+        self._card_deck_state: ModelSODeckState | None = None
+        self._card_previous_plans: dict[str, ModelSOPlanCommittedPayload] = {}
         self._pilots = dict(pilots)
         self._launch_provenance = self._validate_launch_provenance(
             launch_provenance,
@@ -303,18 +327,21 @@ class MatchRunner:
                 event_factory=self._events,
             ).apply(tick_event)
 
-            ReducerPilotTick(
-                self._match_id,
-                self.fold.state,
-                self._pilots,
-                sensor_events=list(self._sensor_buffer),
-                emit=self._bus.publish,
-                weapon_specs=self._catalog.weapons,
-                correlation_id=self._correlation_id,
-                event_factory=self._events,
-                obstacles=self._obstacles,
-                arena_size=self._arena_size,
-            ).apply(tick_event)
+            if self._card_adapter is not None and self._card_adapter.registers_enabled:
+                self._run_card_round(next_tick, tick_event)
+            else:
+                ReducerPilotTick(
+                    self._match_id,
+                    self.fold.state,
+                    self._pilots,
+                    sensor_events=list(self._sensor_buffer),
+                    emit=self._bus.publish,
+                    weapon_specs=self._catalog.weapons,
+                    correlation_id=self._correlation_id,
+                    event_factory=self._events,
+                    obstacles=self._obstacles,
+                    arena_size=self._arena_size,
+                ).apply(tick_event)
 
             # Resolve intents in initiative order. Initiative is a real combat
             # mechanic (match/initiative.py): lighter chassis and well-managed
@@ -324,17 +351,18 @@ class MatchRunner:
             # the side-swap symmetry the learning loop relies on. Ties break
             # by a seeded RNG sub-seed so equal-initiative mechs don't get a
             # fixed ordering across the match.
-            ordered_mechs = order_by_initiative(
-                list(self.fold.state.living_mechs()), rng=self._rng, tick=next_tick
-            )
-            initiative_order = {mech.mech_id: i for i, mech in enumerate(ordered_mechs)}
-            intents = sorted(
-                self._intent_buffer, key=lambda e: initiative_order.get(e.subject.mech_id, 0)
-            )
-            for intent in intents:
-                if self.fold.state.status is not SOMatchStatus.RUNNING:
-                    break  # an earlier resolution ended the match
-                self._resolve_intent(intent)
+            if self._card_adapter is None or not self._card_adapter.registers_enabled:
+                ordered_mechs = order_by_initiative(
+                    list(self.fold.state.living_mechs()), rng=self._rng, tick=next_tick
+                )
+                initiative_order = {mech.mech_id: i for i, mech in enumerate(ordered_mechs)}
+                intents = sorted(
+                    self._intent_buffer, key=lambda e: initiative_order.get(e.subject.mech_id, 0)
+                )
+                for intent in intents:
+                    if self.fold.state.status is not SOMatchStatus.RUNNING:
+                        break  # an earlier resolution ended the match
+                    self._resolve_intent(intent)
             if self.fold.state.status is SOMatchStatus.RUNNING:
                 self._apply_sudden_death(next_tick)
 
@@ -351,6 +379,113 @@ class MatchRunner:
                 )
             )
         return self.fold.state
+
+    def _run_card_round(self, tick: int, tick_event: ModelSOEventEnvelope) -> None:
+        """Publish one explicit card round and resolve its typed intents.
+
+        The adapter owns pure dealing/programming.  This method is the narrow
+        effect boundary: it allocates UUIDs through ``EventFactory``,
+        publishes the validated specs, and only commits ephemeral deck/plan
+        state after the complete round has been emitted.
+        """
+
+        adapter = self._card_adapter
+        if adapter is None or not adapter.registers_enabled:
+            return
+        living = tuple(sorted(self.fold.state.living_mechs(), key=lambda mech: mech.mech_id))
+        seats: list[ModelSOCardSeatRequest] = []
+        subject_by_seat: dict[str, ModelSOEventSubject] = {}
+        for mech in living:
+            seat = self._seat_for_mech(mech.mech_id)
+            previous = self._card_previous_plans.get(seat)
+            lock_depth = 0
+            if previous is not None:
+                lock_depth = int(mech.boiler.status_redline) + int(mech.overloaded)
+            observation = build_pilot_observation(
+                mech,
+                self.fold.state,
+                list(self._sensor_buffer),
+                self._catalog.weapons,
+                obstacles=self._obstacles,
+                arena_size=self._arena_size,
+            )
+            seats.append(
+                ModelSOCardSeatRequest(
+                    seat=seat,
+                    dealer_scope=ModelSODealerScope(
+                        match_id=self._match_id,
+                        match_seed=self._seed,
+                        tick=tick,
+                        seat=seat,
+                    ),
+                    pilot_observation=observation,
+                    initiative=initiative_score(mech),
+                    lock_depth=lock_depth,
+                    previous_plan=previous,
+                    weapon_ids=tuple(mech.weapon_cooldowns),
+                )
+            )
+            subject_by_seat[seat] = ModelSOEventSubject(
+                mech_id=mech.mech_id,
+                player_id=mech.player_id,
+            )
+
+        emission = adapter.produce(
+            seats=tuple(seats),
+            round_index=self._card_round_index,
+            tick=tick,
+            causation_id=str(tick_event.envelope.message_id),
+            starting_deck_state=self._card_deck_state,
+        )
+        if emission.suppressed_reason is not None:
+            return
+        message_ids = tuple(
+            self._events.identities.new_message_id()
+            for _ in range(
+                len(emission.values)
+                + sum(action.event_type is not None for action in emission.actions)
+            )
+        )
+        specs = build_card_round_event_specs(
+            emission,
+            root_causation_id=tick_event.envelope.message_id,
+            seat_subjects=subject_by_seat,
+            message_ids=message_ids,
+        )
+        for spec in specs:
+            event = self._events.make_with_message_id(
+                message_id=spec.message_id,
+                match_id=self._match_id,
+                tick=tick,
+                sequence_in_tick=0,
+                event_type=spec.event_type,
+                producer_node=_PRODUCER_NODE,
+                subject=spec.subject,
+                payload=spec.model_dump(mode="json")["payload"],
+                correlation_id=self._correlation_id,
+                causation_id=spec.causation_id,
+            )
+            self._bus.publish(event)
+            if spec.stage == "INTENT" and self.fold.state.status is SOMatchStatus.RUNNING:
+                self._resolve_intent(event)
+
+        if emission.sequence is None or emission.deck_state is None:
+            raise RuntimeError("enabled card emission must carry sequence and deck state")
+        self._card_deck_state = emission.deck_state
+        self._card_previous_plans = {plan.seat: plan for plan in emission.sequence.plan_committed}
+        self._card_round_index += 1
+
+    def _seat_for_mech(self, mech_id: str) -> str:
+        """Return the canonical card seat for a runner-owned mech id."""
+
+        expected = {
+            f"mech.{self._side_a}.01": self._side_a,
+            f"mech.{self._side_b}.01": self._side_b,
+        }
+        try:
+            return expected[mech_id]
+        except KeyError as exc:
+            raise ValueError(f"card runtime has no canonical seat for mech {mech_id!r}") from exc
 
     def _apply_sudden_death(self, tick: int) -> None:
         """Apply deterministic arena pressure to an uncapped match.

@@ -168,6 +168,32 @@ def _build_observation(
     )
 
 
+def build_pilot_observation(
+    mech: ModelSOMechRuntimeState,
+    state: ModelSOMatchState,
+    sensor_events: list[ModelSOEventEnvelope],
+    weapon_specs: Mapping[str, ModelSOWeaponSpec],
+    *,
+    obstacles: frozenset[tuple[int, int]],
+    arena_size: int,
+) -> ModelSOPilotObservation:
+    """Build one canonical pilot observation for an injected runtime seam.
+
+    The ordinary pilot reducer and the opt-in card programmer must observe the
+    same immutable state.  Keep this wrapper public rather than making the
+    card runner reach into the reducer's private implementation.
+    """
+
+    return _build_observation(
+        mech,
+        state,
+        sensor_events,
+        weapon_specs,
+        obstacles=obstacles,
+        arena_size=arena_size,
+    )
+
+
 def _decision_payload(decision: ModelSOPilotDecision) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "action": decision.action.value,
@@ -295,7 +321,7 @@ class ReducerPilotTick:
         mech: ModelSOMechRuntimeState,
         state: ModelSOMatchState,
     ) -> None:
-        observation = _build_observation(
+        observation = build_pilot_observation(
             mech,
             state,
             self._sensor_events,

@@ -221,6 +221,7 @@ class CardRoundEventSpecBuilder:
             raise CardRoundEventSpecError("message_ids must be unique and distinct from root UUID")
         specs: list[ModelSOCardRoundEventSpec] = []
         register_specs: dict[tuple[str, int], int] = {}
+        previous_lifecycle_message_id: UUID | None = None
 
         for value in values:
             event_type = _LIFECYCLE_EVENT_TYPES.get(value.stage)
@@ -228,20 +229,29 @@ class CardRoundEventSpecBuilder:
                 raise CardRoundEventSpecError(f"unsupported card event stage {value.stage!r}")
             subject = self._subject_for(value.seat)
             sequence_index = len(specs)
+            causation_id = (
+                self.root_causation_id
+                if previous_lifecycle_message_id is None
+                else previous_lifecycle_message_id
+            )
             specs.append(
                 ModelSOCardRoundEventSpec(
                     sequence_index=sequence_index,
                     message_id=ids[sequence_index],
-                    causation_id=self._causation_for(sequence_index, ids),
+                    causation_id=causation_id,
                     stage=value.stage,
                     event_type=event_type,
                     seat=value.seat,
                     subject=subject,
                     payload=value.payload,
-                    parent=self._parent_for(sequence_index, ids),
+                    parent=ModelSOCardRoundParentLink(
+                        root_causation_id=self.root_causation_id,
+                        parent_message_id=previous_lifecycle_message_id,
+                    ),
                     source_ordinal=value.ordinal,
                 )
             )
+            previous_lifecycle_message_id = ids[sequence_index]
             if value.stage == "REGISTER_RESOLVED":
                 register = value.payload
                 if not isinstance(register, ModelSORegisterResolvedPayload):
@@ -354,19 +364,6 @@ class CardRoundEventSpecBuilder:
                 action=projection.action,
             )
         )
-
-    def _parent_for(
-        self,
-        sequence_index: int,
-        message_ids: Sequence[UUID],
-    ) -> ModelSOCardRoundParentLink:
-        return ModelSOCardRoundParentLink(
-            root_causation_id=self.root_causation_id,
-            parent_message_id=(message_ids[sequence_index - 1] if sequence_index else None),
-        )
-
-    def _causation_for(self, sequence_index: int, message_ids: Sequence[UUID]) -> UUID:
-        return self.root_causation_id if sequence_index == 0 else message_ids[sequence_index - 1]
 
     def _subject_for(self, seat: str) -> ModelSOEventSubject:
         try:
