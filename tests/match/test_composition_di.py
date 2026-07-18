@@ -575,6 +575,9 @@ def test_passive_card_snapshot_does_not_activate_card_mode() -> None:
     assert dependencies.card_runtime_snapshot is snapshot
     assert dependencies.card_adapter is None
 
+    with pytest.raises(ValueError, match="paced card cadence requires enabled card mode"):
+        replace(dependencies, card_cadence="paced")
+
 
 @pytest.mark.unit
 def test_active_card_adapter_is_passed_through_match_composition(
@@ -611,6 +614,7 @@ def test_active_card_adapter_is_passed_through_match_composition(
         card_catalog=snapshot.card_catalog,
         card_runtime_snapshot=snapshot,
         card_adapter=adapter,
+        card_cadence="paced",
     )
     stack = composition.assemble_match_with_dependencies(
         dependencies=dependencies,
@@ -626,6 +630,7 @@ def test_active_card_adapter_is_passed_through_match_composition(
 
     assert stack.card_adapter is adapter
     assert stack.runner._card_adapter is adapter
+    assert stack.runner._card_cadence == "paced"
 
 
 @pytest.mark.unit

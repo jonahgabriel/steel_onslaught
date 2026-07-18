@@ -90,6 +90,9 @@ class ModelSOCardCatalogBinding(_ClosedBinding):
     # may infer the first or a package-default deck.
     card_mode_enabled: StrictBool = False
     deck_id: DeckId | None = None
+    # Card rounds are atomic by default.  ``paced`` is an explicit opt-in
+    # because it changes the lifecycle timeline (one register per tick).
+    card_cadence: Literal["atomic", "paced"] = "atomic"
     # Optional whole-round programmer bindings.  These are contract references
     # only; composition resolves the exact pilot spec, provider client, and
     # persona after all roots are validated.  An absent binding intentionally
@@ -104,6 +107,8 @@ class ModelSOCardCatalogBinding(_ClosedBinding):
             raise ValueError("deck_id requires card_mode_enabled")
         if not self.card_mode_enabled and self.programmers:
             raise ValueError("card programmer bindings require card_mode_enabled")
+        if not self.card_mode_enabled and self.card_cadence != "atomic":
+            raise ValueError("paced card cadence requires card_mode_enabled")
         sides = tuple(programmer.side for programmer in self.programmers)
         if len(sides) != len(set(sides)):
             raise ValueError("card programmer bindings must declare each seat at most once")

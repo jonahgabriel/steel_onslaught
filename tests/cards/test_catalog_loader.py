@@ -223,3 +223,24 @@ def test_card_mode_requires_explicit_deck_id_and_no_implicit_selection(tmp_path:
     assert snapshot.provenance is None
     with pytest.raises(ValueError, match="unknown selected deck_id"):
         load_card_runtime_snapshot(binding, deck_id="deck.test.missing")
+
+
+@pytest.mark.unit
+def test_paced_card_cadence_is_explicitly_card_mode_only() -> None:
+    with pytest.raises(ValidationError, match="paced card cadence"):
+        ModelSOCardCatalogBinding(
+            kind="filesystem_yaml",
+            cards_dir=Path("cards"),
+            decks_dir=Path("decks"),
+            card_cadence="paced",
+        )
+
+    enabled = ModelSOCardCatalogBinding(
+        kind="filesystem_yaml",
+        cards_dir=Path("cards"),
+        decks_dir=Path("decks"),
+        card_mode_enabled=True,
+        deck_id="deck.test.standard",
+        card_cadence="paced",
+    )
+    assert enabled.card_cadence == "paced"
