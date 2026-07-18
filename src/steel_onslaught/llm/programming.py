@@ -1,0 +1,268 @@
+"""LLM-backed whole-round card programming.
+
+The ordinary :class:`~steel_onslaught.llm.pilot.LLMPilot` chooses one action
+for one tick.  Card mode needs a different capability: a pilot must assign an
+ordered set of cards to the free registers in one round.  This module keeps
+that capability behind the existing ``ProgrammingPilot`` protocol and the
+same ``ProtocolLlmClient``/``consume_llm_completion`` evidence seam used by
+per-tick LLM decisions.
+
+The provider output is never trusted as a plan.  It is parsed as a closed
+Pydantic model, converted to the canonical plan payload, and passed through
+``program_for_seat`` before being accepted.  The default failure policy is
+``raise``: a failed or semantically invalid completion cannot silently turn
+into a different LLM or decide-only pilot.  An explicit ``fallback`` policy
+may opt into the deterministic priority planner for callers that choose that
+tradeoff deliberately.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Literal
+from uuid import UUID
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+)
+
+from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, ModelSOPlanRegister
+from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
+from steel_onslaught.llm.personas import Persona
+from steel_onslaught.llm.schemas import (
+    LlmResponse,
+    ModelSOLlmCompletionRequest,
+    ModelSOLlmEvidenceContext,
+    ProtocolLlmClient,
+)
+from steel_onslaught.pilots.programming import (
+    ModelSOProgrammingObservation,
+    ProgrammingPilotError,
+    program_for_seat,
+)
+
+_LOG = logging.getLogger(__name__)
+
+type LlmProgrammingFailurePolicy = Literal["raise", "fallback"]
+
+
+class _ClosedProgrammingResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+
+class _ModelSOLlmProgrammingRegister(_ClosedProgrammingResponse):
+    register_index: StrictInt = Field(ge=0)
+    card_id: StrictStr = Field(min_length=1)
+
+
+class _ModelSOLlmProgrammingResponse(_ClosedProgrammingResponse):
+    """The only response shape accepted from a whole-round completion."""
+
+    registers: tuple[_ModelSOLlmProgrammingRegister, ...]
+    confidence: StrictFloat = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    rationale: StrictStr = Field(min_length=1)
+
+
+class _ValueProgrammer:
+    """Tiny adapter used to run a parsed value through ``program_for_seat``."""
+
+    def __init__(self, plan: ModelSOPlanCommittedPayload) -> None:
+        self._plan = plan
+
+    def program(self, _observation: ModelSOProgrammingObservation) -> ModelSOPlanCommittedPayload:
+        return self._plan
+
+
+_PROGRAMMING_INSTRUCTIONS = """
+This is whole-round card programming, not a per-tick action decision. Ignore
+any per-tick action JSON shape from the persona prompt above. Return ONLY one
+JSON object with this exact shape:
+{"registers":[{"register_index":0,"card_id":"card.example.id"}],
+"confidence":0.0,"rationale":"one short sentence"}
+
+Use every free register exactly once, in ascending register_index order. Use
+each physical card at most once and only card ids from the dealt hand. Never
+assign a card to a locked register. Do not add fields, prose, markdown, or
+comments.
+""".strip()
+
+
+def _card_definition(card: object) -> dict[str, object]:
+    """Return the small, canonical definition surface exposed to the model."""
+
+    # ``card`` is a validated ModelSOCard from the immutable snapshot. Keeping
+    # this helper typed as object prevents accidental coupling to provider
+    # payloads while model_dump remains the canonical contract serialization.
+    model_dump = getattr(card, "model_dump", None)
+    if not callable(model_dump):
+        raise TypeError("card definition must expose model_dump")
+    dumped = model_dump(mode="json")
+    if not isinstance(dumped, dict):
+        raise TypeError("card definition model_dump must be a mapping")
+    return {
+        "id": dumped["id"],
+        "category": dumped["category"],
+        "priority": dumped["priority"],
+        "heat_cost": dumped["heat_cost"],
+        "effect": dumped["effect"],
+    }
+
+
+def _serialize_programming_observation(observation: ModelSOProgrammingObservation) -> str:
+    """Build a compact, deterministic prompt from one typed observation."""
+
+    deck = observation.deck
+    free_indices = tuple(observation.free_indices)
+    locked_indices = tuple(
+        index for index in range(deck.register_count) if index not in free_indices
+    )
+    pilot = observation.pilot_observation
+    prompt_value = {
+        "protocol": "steel_onslaught.whole_round_programming.v1",
+        "match": {
+            "match_id": pilot.match_id,
+            "mech_id": pilot.mech_id,
+            "player_id": pilot.player_id,
+            "seat": observation.seat,
+            "tick": pilot.tick,
+            "match_elapsed_ticks": pilot.match_elapsed_ticks,
+        },
+        "registers": {
+            "register_count": deck.register_count,
+            "locked_indices": locked_indices,
+            "free_indices": free_indices,
+        },
+        "deck": {
+            "deck_id": deck.id,
+            "display_name": deck.display_name,
+            "hand_size": deck.hand_size,
+            "cards": [
+                {
+                    "card_id": entry.card_id,
+                    "count": entry.count,
+                    "definition": _card_definition(
+                        observation.card_runtime_snapshot.card_catalog.require(entry.card_id)
+                    ),
+                }
+                for entry in deck.cards
+            ],
+        },
+        "hand": [
+            {
+                "card_id": card.id,
+                "definition": _card_definition(card),
+            }
+            for card in observation.hand_cards
+        ],
+        # This is the already-authorized pilot view: own state plus noisy,
+        # possibly stale opponent sensor readings. No fold or hidden state is
+        # added by this serializer. Keep the two views named explicitly so a
+        # provider cannot confuse sensor evidence with authoritative state.
+        "own_observation": {
+            "boiler": pilot.boiler.model_dump(mode="json"),
+            "weapons": [weapon.model_dump(mode="json") for weapon in pilot.weapons],
+            "current_mode": pilot.current_mode,
+            "mode_lock_expired": pilot.mode_lock_expired,
+            "position": pilot.position.model_dump(mode="json"),
+            "hp_percent": pilot.hp_percent,
+            "under_sensor_lock": pilot.under_sensor_lock,
+            "has_line_of_sight_to_enemy": pilot.has_line_of_sight_to_enemy,
+            "blocked_directions": pilot.blocked_directions,
+        },
+        "opponent_observations": [
+            reading.model_dump(mode="json") for reading in pilot.enemy_observations
+        ],
+    }
+    return json.dumps(prompt_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+class LLMProgrammingPilot:
+    """A whole-round ``ProgrammingPilot`` backed by an injected LLM client."""
+
+    def __init__(
+        self,
+        *,
+        client: ProtocolLlmClient,
+        persona: Persona,
+        failure_policy: LlmProgrammingFailurePolicy = "raise",
+        correlation_id: UUID | None = None,
+    ) -> None:
+        if failure_policy not in ("raise", "fallback"):
+            raise ValueError(f"unknown LLM programming failure policy: {failure_policy!r}")
+        self._client = client
+        self._persona = persona
+        self._failure_policy = failure_policy
+        self._correlation_id = correlation_id
+
+    def program(self, observation: ModelSOProgrammingObservation) -> ModelSOPlanCommittedPayload:
+        """Request, parse, and strictly validate one complete register plan."""
+
+        request = ModelSOLlmCompletionRequest(
+            system_prompt=f"{self._persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}",
+            user_prompt=_serialize_programming_observation(observation),
+            persona=self._persona.persona_id,
+            temperature=self._persona.temperature,
+            json_mode=True,
+            evidence_context=ModelSOLlmEvidenceContext(
+                match_id=observation.pilot_observation.match_id,
+                mech_id=observation.pilot_observation.mech_id,
+                player_id=observation.pilot_observation.player_id,
+                tick=observation.pilot_observation.tick,
+                correlation_id=self._correlation_id,
+            ),
+        )
+        try:
+            return consume_llm_completion(
+                client=self._client,
+                request=request,
+                consumer=lambda response: self._parse_response(response, observation),
+            )
+        except Exception as exc:
+            _LOG.warning("LLM programming call failed (%s)", type(exc).__name__)
+            if self._failure_policy == "fallback":
+                # This fallback is explicit and deterministic. It never calls
+                # a decide-only pilot or another provider.
+                return program_for_seat(None, observation)
+            raise
+
+    def _parse_response(
+        self,
+        response: LlmResponse,
+        observation: ModelSOProgrammingObservation,
+    ) -> ModelSOPlanCommittedPayload:
+        try:
+            parsed = _ModelSOLlmProgrammingResponse.model_validate_json(response.text)
+        except (ValidationError, ValueError, TypeError):
+            raise LlmSemanticError("malformed_json") from None
+
+        try:
+            plan = ModelSOPlanCommittedPayload(
+                seat=observation.seat,
+                registers=tuple(
+                    ModelSOPlanRegister(
+                        register_index=register.register_index,
+                        card_id=register.card_id,
+                    )
+                    for register in parsed.registers
+                ),
+                rationale=parsed.rationale,
+                confidence=parsed.confidence,
+            )
+            # Run the candidate through the canonical boundary here so an
+            # observed completion is resolved only after hand/register checks.
+            return program_for_seat(_ValueProgrammer(plan), observation)
+        except (ProgrammingPilotError, TypeError, ValueError):
+            raise LlmSemanticError("invalid_action_parameters") from None
+
+
+__all__ = [
+    "LLMProgrammingPilot",
+    "LlmProgrammingFailurePolicy",
+]
