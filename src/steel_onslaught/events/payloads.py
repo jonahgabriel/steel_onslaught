@@ -21,6 +21,7 @@ from pydantic import (
 )
 
 from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
+from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeProvenance
 from steel_onslaught.contracts.mode import (
     ModeId,
     ModelSOModeSwitchIntentPayload,
@@ -100,6 +101,10 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    card_runtime_provenance: ModelSOCardRuntimeProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("launch_provenance", mode="before")
     @classmethod
@@ -113,6 +118,13 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
             if isinstance(assignments, list):
                 normalized["seat_assignments"] = tuple(assignments)
             return normalized
+        return value
+
+    @field_validator("card_runtime_provenance", mode="before")
+    @classmethod
+    def _normalize_frozen_card_runtime_provenance(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            return thaw_json_mapping(value)
         return value
 
     @field_validator("mechs", mode="before")

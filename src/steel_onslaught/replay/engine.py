@@ -29,8 +29,10 @@ from __future__ import annotations
 
 from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.card import ModelSOCardCatalog
+from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.events.payloads import ModelSOMatchStartedPayload
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.state import ModelSOMatchState
@@ -62,6 +64,7 @@ class ReplayEngine:
         catalog: MatchContractCatalog,
         event_factory: EventFactory,
         card_catalog: ModelSOCardCatalog | None = None,
+        card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
         historical_arena_migration: ModelSOCurrentLiveArenaSnapshot | None = None,
     ) -> None:
         self._ledger = ledger
@@ -69,7 +72,17 @@ class ReplayEngine:
         self._catalog = catalog
         # Keep the composition snapshot available to replay without activating
         # card-event folding; register gameplay is a later slice.
-        self._card_catalog = card_catalog
+        self._card_catalog = (
+            card_catalog
+            if card_catalog is not None
+            else card_runtime_snapshot.card_catalog
+            if card_runtime_snapshot is not None
+            else None
+        )
+        self._card_runtime_snapshot = card_runtime_snapshot
+        if card_runtime_snapshot is not None and card_catalog is not None:
+            if card_runtime_snapshot.card_catalog is not card_catalog:
+                raise ValueError("card_catalog and card_runtime_snapshot must share identity")
         self._event_factory = event_factory
         self._historical_arena_migration = historical_arena_migration
         # Cache the full canonical event list once.
@@ -147,6 +160,12 @@ class ReplayEngine:
         """Return the immutable composition snapshot retained for later card replay."""
         return self._card_catalog
 
+    @property
+    def card_runtime_snapshot(self) -> ModelSOCardRuntimeSnapshot | None:
+        """Return the immutable composition snapshot retained for replay."""
+
+        return self._card_runtime_snapshot
+
     def events_at_tick(self, tick: int) -> list[ModelSOEventEnvelope]:
         """Return all events for *tick* in canonical order
         ``(sequence_in_tick ASC, event_id ASC)``.
@@ -186,5 +205,26 @@ class ReplayEngine:
                     event,
                     arena=self._historical_arena_migration,
                 )
+            self._validate_card_runtime_provenance(event)
             fold.apply(event)
         return fold.state
+
+    def _validate_card_runtime_provenance(self, event: ModelSOEventEnvelope) -> None:
+        """Check optional start provenance against the injected snapshot."""
+
+        if event.event_type is not SOEventType.MATCH_STARTED:
+            return
+        payload = ModelSOMatchStartedPayload.model_validate(event.payload)
+        recorded = payload.card_runtime_provenance
+        snapshot = self._card_runtime_snapshot
+        if snapshot is None and recorded is None:
+            return
+        if snapshot is None:
+            raise ValueError(
+                "MATCH_STARTED carries card runtime provenance but replay has no snapshot"
+            )
+        expected = snapshot.provenance
+        if expected is None and recorded is None:
+            return
+        if expected is None or recorded is None or recorded != expected:
+            raise ValueError("card runtime provenance does not match the replay snapshot")
