@@ -186,7 +186,6 @@ def _validate_structure(
     previous_order: tuple[int, int, str] | None = None
     previous_phase = 0
     previous_messages: set[UUID] = set()
-    round_tick = parsed.events[0].tick
     for index, event in enumerate(parsed.events):
         if expected_match_id is not None and event.match_id != expected_match_id:
             raise CardRoundReplayError("card-round event match_id differs from expected match")
@@ -194,8 +193,6 @@ def _validate_structure(
             match_id = event.match_id
         elif event.match_id != match_id:
             raise CardRoundReplayError("card-round events must share one match_id")
-        if event.tick != round_tick:
-            raise CardRoundReplayError("all four card-round phases must share one tick")
         if correlation_id is None:
             correlation_id = event.correlation_id
         elif event.correlation_id != correlation_id:
@@ -400,7 +397,7 @@ def validate_card_event_stream(
 
     Card lifecycle events can be interleaved with card-produced intents and
     ordinary combat events.  This helper extracts lifecycle events, groups them
-    by ``(tick, external causation root)``, and validates each complete batch
+    by the stable external causation root, and validates each complete batch
     only after the full ledger list is available.  In particular, it never
     feeds a HAND_DEALT or PLAN_COMMITTED prefix into :func:`parse_card_round_events`.
 
@@ -428,20 +425,19 @@ def validate_card_event_stream(
             raise CardRoundReplayError("card lifecycle message ids must be unique")
         by_message[message_id] = event
 
-    grouped: dict[tuple[int, UUID | None], list[ModelSOEventEnvelope]] = {}
-    group_order: list[tuple[int, UUID | None]] = []
+    grouped: dict[UUID | None, list[ModelSOEventEnvelope]] = {}
+    group_order: list[UUID | None] = []
     for event in card_events:
         root = _card_round_root(event, card_events_by_message=by_message)
-        key = (event.tick, root)
-        if key not in grouped:
-            grouped[key] = []
-            group_order.append(key)
-        grouped[key].append(event)
+        if root not in grouped:
+            grouped[root] = []
+            group_order.append(root)
+        grouped[root].append(event)
 
     replays: list[ModelSOCardRoundReplay] = []
-    for key in group_order:
-        batch = grouped[key]
-        if key[1] is None:
+    for root in group_order:
+        batch = grouped[root]
+        if root is None:
             raise CardRoundReplayError("card round root causation must not be null")
         replay = validate_card_round_events(
             batch,

@@ -88,7 +88,12 @@ def _snapshot() -> ModelSOCardRuntimeSnapshot:
     )
 
 
-def _run(*, card_enabled: bool, max_ticks: int = 2) -> list[ModelSOEventEnvelope]:
+def _run(
+    *,
+    card_enabled: bool,
+    max_ticks: int = 2,
+    card_cadence: str = "atomic",
+) -> list[ModelSOEventEnvelope]:
     runtime = runtime_dependencies()
     identities = SequentialIdentities()
     factory = EventFactory(clock=FixedClock(), identities=identities)
@@ -132,6 +137,7 @@ def _run(*, card_enabled: bool, max_ticks: int = 2) -> list[ModelSOEventEnvelope
         max_ticks=max_ticks,
         card_runtime_snapshot=snapshot,
         card_adapter=adapter,
+        card_cadence=card_cadence,
     )
     assert runner.run().status is SOMatchStatus.ENDED
     return events
@@ -268,6 +274,63 @@ def test_replay_engine_validates_complete_card_stream_once_and_preserves_state()
     )
     assert len(validated.validated_card_rounds) == 2
     assert validated.reconstruct_at_tick(3) == default.reconstruct_at_tick(3)
+
+
+def test_paced_card_round_latches_one_register_per_tick_and_replays_by_root() -> None:
+    events = _run(card_enabled=True, max_ticks=5, card_cadence="paced")
+    lifecycle_types = {
+        SOEventType.HAND_DEALT,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.REGISTER_RESOLVED,
+        SOEventType.CARDS_DISCARDED,
+    }
+    lifecycle = [event for event in events if event.event_type in lifecycle_types]
+    hands = [event for event in lifecycle if event.event_type is SOEventType.HAND_DEALT]
+    discards = [event for event in lifecycle if event.event_type is SOEventType.CARDS_DISCARDED]
+    registers = [event for event in lifecycle if event.event_type is SOEventType.REGISTER_RESOLVED]
+    assert len(hands) == len(discards) == 4
+    assert {event.tick for event in hands} == {1, 3}
+    assert {event.tick for event in discards} == {2, 4}
+    assert {event.tick for event in registers} == {1, 2, 3, 4}
+    assert all(
+        len({event.payload["register_index"] for event in registers if event.tick == tick}) == 1
+        for tick in (1, 2, 3, 4)
+    )
+
+    runtime = runtime_dependencies()
+    replay = ReplayEngine(
+        _ReplayLedger(events),
+        "match.test.card-runner",
+        catalog=runtime.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=_snapshot(),
+        validate_card_events=True,
+    )
+    assert len(replay.validated_card_rounds) == 2
+    assert {event.tick for event in replay.validated_card_rounds[0].events} == {1, 2}
+    assert {event.tick for event in replay.validated_card_rounds[1].events} == {3, 4}
+
+
+def test_paced_card_round_cancels_without_discard_on_max_tick_boundary() -> None:
+    events = _run(card_enabled=True, max_ticks=2, card_cadence="paced")
+    lifecycle_types = {
+        SOEventType.HAND_DEALT,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.REGISTER_RESOLVED,
+        SOEventType.CARDS_DISCARDED,
+    }
+    lifecycle = [event for event in events if event.event_type in lifecycle_types]
+    assert lifecycle
+    assert {event.event_type for event in lifecycle} == {
+        SOEventType.HAND_DEALT,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.REGISTER_RESOLVED,
+    }
+    assert {
+        event.payload["register_index"]
+        for event in lifecycle
+        if event.event_type is SOEventType.REGISTER_RESOLVED
+    } == {0}
 
 
 @pytest.mark.parametrize("tamper", ["payload", "order", "provenance"])
