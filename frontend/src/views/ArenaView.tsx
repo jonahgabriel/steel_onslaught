@@ -36,6 +36,8 @@ const TRACER_TTL_MS = 700;
 const FIRING_TTL_MS = 420;
 const VENT_TTL_MS = 900;
 const SHIMMER_TTL_MS = 520;
+/** Movement breadcrumbs are transient visual overlays, not durable state. */
+const TRAIL_TTL_MS = 2400;
 
 interface ArenaMech {
   mechId: string;
@@ -65,13 +67,18 @@ interface Shimmer {
   expiresAt: number;
 }
 
+interface TrailPoint {
+  position: SOPosition;
+  expiresAt: number;
+}
+
 export interface ArenaState {
   mechs: Record<string, ArenaMech>;
   /** Static obstacle cells carried by the authoritative arena snapshot. */
   obstacles: SOPosition[];
   /** Grid dimension from the arena contract (`arena.size`). */
   gridCells: number;
-  trails: Record<string, SOPosition[]>;
+  trails: Record<string, TrailPoint[]>;
   tracers: ArenaTracer[];
   shimmers: Shimmer[];
   victoryWinnerId: string | null;
@@ -132,7 +139,12 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
     const now = Date.now();
     const tracers = state.tracers.filter((t) => t.expiresAt > now);
     const shimmers = state.shimmers.filter((s) => s.expiresAt > now);
-    return { ...state, tracers, shimmers, revision: state.revision + 1 };
+    const trails: Record<string, TrailPoint[]> = {};
+    for (const [mechId, points] of Object.entries(state.trails)) {
+      const live = points.filter((point) => point.expiresAt > now);
+      if (live.length > 0) trails[mechId] = live;
+    }
+    return { ...state, tracers, shimmers, trails, revision: state.revision + 1 };
   }
 
   const { envelope } = action;
@@ -152,7 +164,10 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
       if (mech === undefined) return state;
       const { to } = envelope.payload;
       const prevTrail = state.trails[mech.mechId] ?? [];
-      const trail = [...prevTrail, mech.position].slice(-TRAIL_MAX);
+      const trail = [
+        ...prevTrail,
+        { position: mech.position, expiresAt: now + TRAIL_TTL_MS },
+      ].slice(-TRAIL_MAX);
       return {
         ...state,
         mechs: {
@@ -243,7 +258,13 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
     }
 
     case "victory_declared":
-      return { ...state, victoryWinnerId: envelope.payload.winner_player_id };
+      return {
+        ...state,
+        victoryWinnerId: envelope.payload.winner_player_id,
+        trails: {},
+        tracers: [],
+        shimmers: [],
+      };
 
     default:
       return state;
@@ -465,6 +486,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
   const animating =
     state.tracers.length > 0 ||
     state.shimmers.length > 0 ||
+    Object.values(state.trails).some((points) => points.length > 0) ||
     Object.values(state.mechs).some((m) => m.firingUntil > now || m.ventingUntil > now);
 
   useEffect(() => {
@@ -583,13 +605,13 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
         {/* movement trails — most recent brightest */}
         {mechs.map((mech) => {
           const trail = state.trails[mech.mechId] ?? [];
-          return trail.map((p, i) => (
+          return trail.map((point, i) => (
             <circle
               // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length fading trail, positional
               key={`${mech.mechId}-trail-${i}`}
               data-testid={`arena-trail-${mech.mechId}`}
-              cx={p.x + 0.5}
-              cy={p.y + 0.5}
+              cx={point.position.x + 0.5}
+              cy={point.position.y + 0.5}
               r={0.5}
               fill={mech.playerId === mechs[0]?.playerId ? "var(--ember)" : "var(--arc)"}
               opacity={0.16 + (i / TRAIL_MAX) * 0.5}

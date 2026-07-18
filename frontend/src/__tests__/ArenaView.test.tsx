@@ -13,7 +13,7 @@ import "./setup-dom";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnvelopeHandler, WebSocketLike } from "../lib/event_stream";
 import { EventStream } from "../lib/event_stream";
 import { parseEnvelope } from "../types";
@@ -251,6 +251,43 @@ describe("ArenaView", () => {
       socket.emit(fixtureText("movement_resolved"));
     });
     expect(screen.getAllByTestId("arena-trail-mech.a.01").length).toBeGreaterThan(0);
+  });
+
+  it("expires movement trails after their visual TTL", async () => {
+    vi.useFakeTimers();
+    try {
+      const { socket, subscribe } = makeStubStream();
+      render(<ArenaView subscribe={subscribe} />);
+      await act(async () => {
+        socket.emit(fixtureText("match_started"));
+        socket.emit(fixtureText("movement_resolved"));
+      });
+      expect(screen.getAllByTestId("arena-trail-mech.a.01")).not.toHaveLength(0);
+      await act(async () => {
+        vi.advanceTimersByTime(3_000);
+      });
+      expect(screen.queryByTestId("arena-trail-mech.a.01")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears transient arena overlays when victory is declared", async () => {
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => {
+      socket.emit(fixtureText("match_started"));
+      socket.emit(fixtureText("movement_resolved"));
+      socket.emit(fixtureText("weapon_fired"));
+    });
+    expect(screen.getByTestId("arena-trail-mech.a.01")).toBeInTheDocument();
+    expect(screen.getByTestId("tracer-light")).toBeInTheDocument();
+    await act(async () => {
+      socket.emit(fixtureText("victory_declared"));
+    });
+    expect(screen.queryByTestId("arena-trail-mech.a.01")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tracer-light")).not.toBeInTheDocument();
+    expect(screen.getByTestId("arena-victory")).toBeInTheDocument();
   });
 
   it("shows range rings only around the selected mech", async () => {
