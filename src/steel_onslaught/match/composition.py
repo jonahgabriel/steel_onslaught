@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Self, cast
 from uuid import UUID, uuid4
 
@@ -16,7 +17,9 @@ from pydantic import BaseModel
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.cards.dealer import DealerCompute
 from steel_onslaught.cards.registers import RegisterExecutionReducer
+from steel_onslaught.cards.round import CardRoundRuntime
 from steel_onslaught.commands.authority import (
     AuthenticatedSessionCapability,
     ModelSOStartMatchAuthorityContext,
@@ -96,6 +99,7 @@ from steel_onslaught.llm.schemas import (
 )
 from steel_onslaught.llm.stub import StubLlmClient
 from steel_onslaught.llm.tuner import LlmTunerGenerator, ProtocolTunerGenerator
+from steel_onslaught.match.card_adapter import CardRunnerAdapter
 from steel_onslaught.match.duel import (
     DuelExecutor,
     DuelResult,
@@ -124,6 +128,7 @@ from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.defensive import DefensivePilot
 from steel_onslaught.pilots.human import HumanPilot
 from steel_onslaught.pilots.predictive import PredictivePilot
+from steel_onslaught.pilots.programming import ProgrammingPilot
 from steel_onslaught.pilots.schemas import PilotProtocol
 from steel_onslaught.projections.leaderboard.handler import (
     LeaderboardHandler,
@@ -300,6 +305,14 @@ class RuntimeDependencies:
     card_catalog: ModelSOCardCatalog | None = None
     # Passive validated card+deck content; register gameplay is a later slice.
     card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None
+    # Fully composed card mode adapter.  This is present only when the
+    # overlay explicitly enables card mode; a passive snapshot never activates
+    # register gameplay by itself.
+    card_adapter: CardRunnerAdapter | None = None
+    # Optional whole-round programmers are an explicit capability.  When
+    # absent the card adapter uses its deterministic priority programmer;
+    # ordinary decide-only pilots are never used as a fallback.
+    card_programmers: Mapping[str, ProgrammingPilot] | None = None
 
     def __post_init__(self) -> None:
         snapshot = self.card_runtime_snapshot
@@ -309,6 +322,18 @@ class RuntimeDependencies:
             object.__setattr__(self, "card_catalog", snapshot.card_catalog)
         elif self.card_catalog is not snapshot.card_catalog:
             raise ValueError("card_catalog and card_runtime_snapshot must share identity")
+        adapter = self.card_adapter
+        if adapter is not None and not isinstance(adapter, CardRunnerAdapter):
+            raise TypeError("card_adapter must be CardRunnerAdapter when supplied")
+        if adapter is not None and adapter.registers_enabled:
+            if snapshot is None:
+                raise ValueError("enabled card_adapter requires an injected card_runtime_snapshot")
+            if adapter.snapshot is not snapshot:
+                raise ValueError("card_adapter and card_runtime_snapshot must share identity")
+        if self.card_programmers is not None:
+            object.__setattr__(
+                self, "card_programmers", MappingProxyType(dict(self.card_programmers))
+            )
 
     def close(self) -> None:
         self.closer.close()
@@ -391,6 +416,7 @@ class LiveMatchStack:
     closer: ProtocolResourceCloser
     card_catalog: ModelSOCardCatalog | None = None
     card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None
+    card_adapter: CardRunnerAdapter | None = None
     _launch_provenance: ModelSOMatchLaunchProvenance | None = None
     _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
 
@@ -612,6 +638,38 @@ def build_register_execution_reducer(
     if not isinstance(catalog, ModelSOCardCatalog):
         raise MissingCardCatalogError("register execution requires an injected card catalog")
     return RegisterExecutionReducer(catalog)
+
+
+def build_card_runner_adapter(
+    *,
+    snapshot: ModelSOCardRuntimeSnapshot,
+    programmers: Mapping[str, ProgrammingPilot] | None = None,
+) -> CardRunnerAdapter:
+    """Compose the explicit card runtime graph for an enabled overlay.
+
+    The selected deck is taken only from the immutable snapshot.  No package
+    data, first-deck ordering, or decide-only pilot is consulted.  A caller
+    that has not explicitly selected a deck therefore fails closed in the
+    ``CardRoundRuntime`` constructor.
+    """
+
+    if not isinstance(snapshot, ModelSOCardRuntimeSnapshot):
+        raise TypeError("card runtime requires ModelSOCardRuntimeSnapshot")
+    dealer = DealerCompute()
+    reducer = RegisterExecutionReducer(snapshot.card_catalog)
+    runtime = CardRoundRuntime(
+        card_runtime_snapshot=snapshot,
+        dealer=dealer,
+        reducer=reducer,
+        round_length=snapshot.selected_deck.register_count,
+    )
+    return CardRunnerAdapter(
+        registers_enabled=True,
+        card_round_runtime=runtime,
+        dealer=dealer,
+        reducer=reducer,
+        programmers=programmers,
+    )
 
 
 def _load_arena_specs(directory: Path) -> dict[str, ModelSOArenaSpec]:
@@ -836,6 +894,7 @@ def build_runtime_dependencies(
     llm_dependencies: LlmDependencies | None = None,
     selected_provider_id: str | None = None,
     selected_pilot_spec_ids: tuple[str, ...] | None = None,
+    card_programmers: Mapping[str, ProgrammingPilot] | None = None,
     llm_failure_policy: LlmPilotFailurePolicy | None = None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
@@ -863,12 +922,20 @@ def build_runtime_dependencies(
     # A malformed optional card root must not allocate LLM, ledger, or
     # leaderboard resources and then fail during composition.
     catalog = load_match_contract_catalog(overlay.contracts.catalog_dir)
+    card_binding = overlay.contracts.card_catalog
     card_runtime_snapshot = (
-        load_card_runtime_snapshot(overlay.contracts.card_catalog)
-        if overlay.contracts.card_catalog is not None
-        else None
+        load_card_runtime_snapshot(card_binding) if card_binding is not None else None
     )
     card_catalog = card_runtime_snapshot.card_catalog if card_runtime_snapshot is not None else None
+    if card_binding is not None and card_binding.card_mode_enabled:
+        if card_runtime_snapshot is None:
+            raise ValueError("enabled card mode requires an injected card runtime snapshot")
+        card_adapter = build_card_runner_adapter(
+            snapshot=card_runtime_snapshot,
+            programmers=card_programmers,
+        )
+    else:
+        card_adapter = None
     owns_llm = llm_dependencies is None
     llm = llm_dependencies or build_llm_dependencies(
         overlay,
@@ -936,6 +1003,8 @@ def build_runtime_dependencies(
             learning_artifacts=learning_artifacts,
             card_catalog=card_catalog,
             card_runtime_snapshot=card_runtime_snapshot,
+            card_adapter=card_adapter,
+            card_programmers=card_programmers,
         )
     except Exception:
         if owns_llm:
@@ -948,6 +1017,7 @@ def build_selected_runtime_dependencies(
     *,
     selected_provider_id: str,
     selected_pilot_spec_ids: tuple[str, ...],
+    card_programmers: Mapping[str, ProgrammingPilot] | None = None,
     failure_policy: LlmPilotFailurePolicy = "raise",
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
@@ -958,6 +1028,7 @@ def build_selected_runtime_dependencies(
         overlay,
         selected_provider_id=selected_provider_id,
         selected_pilot_spec_ids=selected_pilot_spec_ids,
+        card_programmers=card_programmers,
         llm_failure_policy=failure_policy,
         secret_resolver=secret_resolver,
         http_transport=http_transport,
@@ -1324,6 +1395,7 @@ def assemble_match_with_dependencies(
         side_b=side_b,
         launch_provenance=launch_provenance,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
+        card_adapter=dependencies.card_adapter,
         progress_gate=resolved_progress_gate,
     )
     scoring = ReducerScoring(
@@ -1339,6 +1411,10 @@ def assemble_match_with_dependencies(
             event_factory=dependencies.event_factory,
             card_catalog=dependencies.card_catalog,
             card_runtime_snapshot=dependencies.card_runtime_snapshot,
+            validate_card_events=(
+                dependencies.card_adapter is not None
+                and dependencies.card_adapter.registers_enabled
+            ),
         ),
     )
     dependencies.bus.subscribe(scoring.handle)
@@ -1389,6 +1465,7 @@ def assemble_match_with_dependencies(
         closer=dependencies.closer,
         card_catalog=dependencies.card_catalog,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
+        card_adapter=dependencies.card_adapter,
     )
 
 
@@ -1616,6 +1693,7 @@ __all__ = [
     "assemble_match_with_dependencies",
     "assemble_selected_match_live",
     "build_adaptation_dependencies",
+    "build_card_runner_adapter",
     "build_duel_executor",
     "build_duel_executor_with_dependencies",
     "build_evaluation_storage_allocator",

@@ -35,11 +35,16 @@ from steel_onslaught.contracts.card import (
     ModelSOCardEffect,
     SOCardCategory,
 )
+from steel_onslaught.contracts.card_runtime import (
+    ModelSOCardRuntimeSnapshot,
+    canonical_card_runtime_sha256,
+)
 from steel_onslaught.contracts.commands import (
     ModelSOStartMatchCommand,
     ModelSOStartMatchSeatSelection,
     canonical_command_sha256,
 )
+from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
 from steel_onslaught.contracts.player_selection import (
@@ -56,7 +61,8 @@ from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
 from steel_onslaught.llm.schemas import ModelSOLlmPilotSelection, ProtocolLlmCompletionObserver
 from steel_onslaught.match import composition
-from steel_onslaught.match.composition import RuntimeDependencies
+from steel_onslaught.match.card_adapter import CardRunnerAdapter
+from steel_onslaught.match.composition import RuntimeDependencies, build_card_runner_adapter
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import MatchIdentity
 from steel_onslaught.match.runtime import ConditionProgressGate
@@ -66,6 +72,7 @@ from steel_onslaught.projections.leaderboard.protocol import (
     LeaderboardRepository,
     ModelSOLeaderboardEntry,
 )
+from steel_onslaught.reducers import scoring as scoring_module
 
 
 class _Bus:
@@ -238,6 +245,40 @@ def _loadout(name: str) -> ModelSOLoadout:
                 "expected_signature": 0,
             },
         }
+    )
+
+
+def _card_runtime_snapshot(*, selected: bool) -> ModelSOCardRuntimeSnapshot:
+    cards = ModelSOCardCatalog(
+        cards=(
+            ModelSOCard(
+                schema_version="0.1.0",
+                kind="steel_onslaught.card",
+                id="card.test.advance",
+                display_name="Advance",
+                category=SOCardCategory.MOVEMENT,
+                priority=100,
+                heat_cost=0,
+                effect=ModelSOCardEffect(direction="toward_enemy", speed="full"),
+            ),
+        )
+    )
+    deck = ModelSODeck(
+        schema_version="0.1.0",
+        kind="steel_onslaught.deck",
+        id="deck.test.composition",
+        display_name="Composition deck",
+        hand_size=1,
+        register_count=1,
+        cards=(ModelSODeckEntry(card_id="card.test.advance", count=1),),
+    )
+    return ModelSOCardRuntimeSnapshot(
+        schema_version="0.1.0",
+        kind="steel_onslaught.card_runtime_snapshot",
+        card_catalog=cards,
+        decks=(deck,),
+        selected_deck_id=deck.id if selected else None,
+        content_sha256=canonical_card_runtime_sha256(cards, (deck,)),
     )
 
 
@@ -489,6 +530,132 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
     assert stack.runtime.progress_gate is progress_gate
     assert stack.card_catalog is dependencies.card_catalog
     assert len(bus.handlers) == 7
+
+
+@pytest.mark.unit
+def test_card_runner_adapter_binds_selected_snapshot_and_round_length() -> None:
+    snapshot = _card_runtime_snapshot(selected=True)
+    adapter = build_card_runner_adapter(snapshot=snapshot)
+
+    assert isinstance(adapter, CardRunnerAdapter)
+    assert adapter.registers_enabled is True
+    assert adapter.snapshot is snapshot
+    assert adapter.card_round_runtime is not None
+    assert adapter.card_round_runtime.snapshot is snapshot
+    assert adapter.card_round_runtime.round_length == snapshot.selected_deck.register_count
+    assert adapter.dealer is adapter.card_round_runtime.dealer
+    assert adapter.reducer is adapter.card_round_runtime.reducer
+
+
+@pytest.mark.unit
+def test_card_runner_adapter_fails_closed_without_selected_deck() -> None:
+    with pytest.raises(ValueError, match="no explicitly selected deck_id"):
+        build_card_runner_adapter(snapshot=_card_runtime_snapshot(selected=False))
+
+
+@pytest.mark.unit
+def test_passive_card_snapshot_does_not_activate_card_mode() -> None:
+    snapshot = _card_runtime_snapshot(selected=False)
+    dependencies = RuntimeDependencies(
+        bus=cast(Any, object()),
+        ledger=cast(Any, object()),
+        leaderboard=cast(Any, object()),
+        clock=cast(Any, object()),
+        identities=cast(Any, object()),
+        event_factory=cast(Any, object()),
+        catalog=cast(Any, object()),
+        arena=cast(Any, object()),
+        pilot_registry=cast(Any, object()),
+        pilot_factory=cast(Any, object()),
+        closer=cast(Any, object()),
+        card_catalog=snapshot.card_catalog,
+        card_runtime_snapshot=snapshot,
+    )
+
+    assert dependencies.card_runtime_snapshot is snapshot
+    assert dependencies.card_adapter is None
+
+
+@pytest.mark.unit
+def test_active_card_adapter_is_passed_through_match_composition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(composition, "_require_valid_budgets", lambda *_: None)
+    snapshot = _card_runtime_snapshot(selected=True)
+    adapter = build_card_runner_adapter(snapshot=snapshot)
+    bus = _Bus()
+    clock = _Clock()
+    identities = _Identities()
+    dependencies = RuntimeDependencies(
+        bus=bus,
+        ledger=_Ledger(),
+        leaderboard=cast(LeaderboardRepository, _Leaderboard()),
+        clock=clock,
+        identities=identities,
+        event_factory=EventFactory(clock=clock, identities=identities),
+        catalog=cast(MatchContractCatalog, _Catalog()),
+        arena=ModelSOArenaSpec(
+            schema_version="0.1.0",
+            kind="steel_onslaught.arena",
+            arena_id="injected_test_arena",
+            display_name="Injected test arena",
+            size=40,
+            spawn_a=ModelSOPosition(x=5, y=5),
+            spawn_b=ModelSOPosition(x=35, y=35),
+            obstacles=(),
+            rects=(),
+        ),
+        pilot_registry=cast(Any, _Registry()),
+        pilot_factory=_PilotFactory(),
+        closer=_Closer(),
+        card_catalog=snapshot.card_catalog,
+        card_runtime_snapshot=snapshot,
+        card_adapter=adapter,
+    )
+    stack = composition.assemble_match_with_dependencies(
+        dependencies=dependencies,
+        red=_loadout("red"),
+        blue=_loadout("blue"),
+        seed=7,
+        max_ticks=3,
+        identity=MatchIdentity(
+            match_id=identities.new_match_id(),
+            correlation_id=identities.new_correlation_id(),
+        ),
+    )
+
+    assert stack.card_adapter is adapter
+    assert stack.runner._card_adapter is adapter
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("validate_card_events", [False, True])
+def test_verify_replay_validity_forwards_card_validation_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    validate_card_events: bool,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Replay:
+        def __init__(self, *_args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def reconstruct_at_tick(self, _tick: int) -> object:
+            return live_state
+
+    monkeypatch.setattr(scoring_module, "ReplayEngine", _Replay)
+    live_state = cast(Any, type("LiveState", (), {"tick": 3})())
+    result = scoring_module.verify_replay_validity(
+        cast(Any, object()),
+        "match.test",
+        live_state,
+        catalog=cast(Any, object()),
+        event_factory=cast(Any, object()),
+        validate_card_events=validate_card_events,
+    )
+
+    assert result is True
+    assert captured["validate_card_events"] is validate_card_events
 
 
 @pytest.mark.unit

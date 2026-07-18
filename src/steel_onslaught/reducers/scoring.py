@@ -154,6 +154,7 @@ def verify_replay_validity(
     event_factory: EventFactory,
     card_catalog: ModelSOCardCatalog | None = None,
     card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
+    validate_card_events: bool = False,
 ) -> bool:
     """Return True when the replay engine reproduces *live_state* exactly.
 
@@ -167,6 +168,7 @@ def verify_replay_validity(
         event_factory=event_factory,
         card_catalog=card_catalog,
         card_runtime_snapshot=card_runtime_snapshot,
+        validate_card_events=validate_card_events,
     )
     return engine.reconstruct_at_tick(live_state.tick) == live_state
 
