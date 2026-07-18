@@ -185,6 +185,8 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
                 spawn_a=mech_a.position,
                 spawn_b=mech_b.position,
                 obstacles=(),
+                sudden_death_start_tick=None,
+                sudden_death_damage_base=8,
             ).model_dump(mode="json"),
         },
         SOEventType.RUNTIME_STATUS_CHANGED: ModelSORuntimeStatusPayload(

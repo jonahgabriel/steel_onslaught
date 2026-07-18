@@ -162,7 +162,9 @@
         "x": 35,
         "y": 35
       },
-      "obstacles": []
+      "obstacles": [],
+      "sudden_death_start_tick": null,
+      "sudden_death_damage_base": 8
     }
   },
   "envelope": {

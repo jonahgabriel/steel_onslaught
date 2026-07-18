@@ -90,7 +90,7 @@ def match_runner(
     seed: int,
     loadout_a: ModelSOLoadout,
     loadout_b: ModelSOLoadout,
-    max_ticks: int,
+    max_ticks: int | None,
     side_a: str = "a",
     side_b: str = "b",
     spawn_a: ModelSOPosition | None = None,

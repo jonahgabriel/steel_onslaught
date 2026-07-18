@@ -28,8 +28,8 @@ Cascade ladder (deterministic order, per living mech per ``MATCH_TICK``):
    idempotently so the reducer's own loop-back emissions are no-ops.
 6. If exactly one player has surviving mechs after a change: emit
    ``VICTORY_DECLARED(winner_player_id, reason="last_mech_standing")``.  Zero
-   survivors emits nothing — the lifecycle reducer's max_ticks draw is the
-   terminal backstop.
+   survivors emits nothing — an explicit lifecycle ``max_ticks`` cap or
+   arena-authored convergence pressure is the terminal backstop.
 
 Exit rule (documented decision — the plan specifies entry thresholds only):
 dropping below the redline threshold resets the whole ladder — the redline
@@ -471,7 +471,8 @@ class ReducerFailureCascade:
 
         Emitting only on the >1 -> ==1 transition keeps re-folds and
         already-decided states from duplicating the declaration.  Zero
-        survivors emits nothing (lifecycle max_ticks draw is the backstop).
+        survivors emits nothing (an explicit cap or arena pressure is the
+        lifecycle backstop).
 
         Defense-in-depth: ``MatchStateFold._on_flag_drop`` (in ``match/fold.py``)
         declares victory on the same transition.  This cascade-level declaration

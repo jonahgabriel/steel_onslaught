@@ -1096,7 +1096,7 @@ def assemble_match_with_dependencies(
     red: ModelSOLoadout,
     blue: ModelSOLoadout,
     seed: int,
-    max_ticks: int,
+    max_ticks: int | None,
     identity: MatchIdentity,
     red_loadout_path: Path | None = None,
     blue_loadout_path: Path | None = None,
@@ -1233,7 +1233,7 @@ def assemble_selected_match_live(
     ]
     | None = None,
     seed: int,
-    max_ticks: int,
+    max_ticks: int | None,
 ) -> LiveMatchStack:
     """Admit one selected match before constructing its exact runtime lane."""
 
@@ -1364,7 +1364,7 @@ def assemble_match_live(
     red_loadout_path: Path,
     blue_loadout_path: Path,
     seed: int,
-    max_ticks: int,
+    max_ticks: int | None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
@@ -1401,7 +1401,7 @@ def run_composed_match(
     red_loadout_path: Path,
     blue_loadout_path: Path,
     seed: int,
-    max_ticks: int,
+    max_ticks: int | None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,

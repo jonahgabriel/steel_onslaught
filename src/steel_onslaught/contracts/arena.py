@@ -71,6 +71,8 @@ class ModelSOCurrentLiveArenaSnapshot(_ClosedArenaModel):
     spawn_a: ModelSOPosition = Field(...)
     spawn_b: ModelSOPosition = Field(...)
     obstacles: tuple[ModelSOPosition, ...] = Field(...)
+    sudden_death_start_tick: StrictInt | None = Field(..., gt=0)
+    sudden_death_damage_base: StrictInt = Field(..., gt=0)
 
     @property
     def obstacle_cells(self) -> frozenset[tuple[int, int]]:
@@ -103,6 +105,8 @@ class ModelSOArenaSpec(_ClosedArenaModel):
     spawn_b: ModelSOPosition = Field(...)
     obstacles: tuple[ModelSOPosition, ...] = Field(...)
     rects: tuple[ModelSOArenaRect, ...] = Field(...)
+    sudden_death_start_tick: StrictInt | None = Field(default=None, gt=0)
+    sudden_death_damage_base: StrictInt = Field(default=8, gt=0)
 
     @property
     def obstacle_cells(self) -> frozenset[tuple[int, int]]:
@@ -134,6 +138,8 @@ class ModelSOArenaSpec(_ClosedArenaModel):
             spawn_a=self.spawn_a,
             spawn_b=self.spawn_b,
             obstacles=tuple(ModelSOPosition(x=x, y=y) for x, y in sorted(self.obstacle_cells)),
+            sudden_death_start_tick=self.sudden_death_start_tick,
+            sudden_death_damage_base=self.sudden_death_damage_base,
         )
 
 
@@ -153,6 +159,8 @@ def neutral_historical_arena_snapshot(
         spawn_a=spawn_a,
         spawn_b=spawn_b,
         obstacles=(),
+        sudden_death_start_tick=None,
+        sudden_death_damage_base=8,
     )
 
 

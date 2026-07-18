@@ -69,9 +69,9 @@ state_machine:
       required_data: []
     - state_name: running
       description: "Match in progress; per-tick deltas apply."
-      required_data: [tick, max_ticks]
+      required_data: [tick]
     - state_name: ended
-      description: "Terminal; winner/end_reason recorded (or draw at max_ticks)."
+      description: "Terminal; winner/end_reason recorded (draw only for explicit max_ticks)."
       required_data: [end_reason]
   transitions:
     - from_state: pending
@@ -93,6 +93,6 @@ state_machine:
     - from_state: running
       to_state: ended
       trigger: match_ended
-      description: "Draw at max_ticks bound (lifecycle backstop)."
+      description: "Draw only when an explicit max_ticks cap is reached (lifecycle backstop)."
   terminal_states: [ended]
   persistence_enabled: false

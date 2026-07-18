@@ -273,8 +273,10 @@ export function summarizeEnvelope(env: SOEventEnvelope): string {
   if (env.event_type === "llm_completion_failed") return `LLM failed · ${env.payload.reason_code}`;
 
   switch (env.event_type) {
-    case "match_started":
-      return `seed ${env.payload.seed} · ${env.payload.mechs.length} mechs · max ${env.payload.max_ticks}t`;
+    case "match_started": {
+      const cap = env.payload.max_ticks === null ? "no cap" : `max ${env.payload.max_ticks}t`;
+      return `seed ${env.payload.seed} · ${env.payload.mechs.length} mechs · ${cap}`;
+    }
     case "match_tick":
       return `tick ${env.tick}`;
     case "mech_spawned":

@@ -56,6 +56,8 @@ def _arena(
         spawn_a=ModelSOPosition(x=0, y=0),
         spawn_b=ModelSOPosition(x=39, y=39),
         obstacles=obstacles,
+        sudden_death_start_tick=None,
+        sudden_death_damage_base=8,
     )
 
 

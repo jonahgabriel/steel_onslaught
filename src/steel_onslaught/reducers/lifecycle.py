@@ -1,8 +1,8 @@
 """Match lifecycle reducer — Task 18.
 
 Folds MATCH_STARTED / MATCH_TICK / VICTORY_DECLARED / MATCH_ENDED into
-``ModelSOMatchState`` and enforces the termination bound: the match always
-ends by ``tick == max_ticks``.
+``ModelSOMatchState``. An explicit ``max_ticks`` remains a deterministic
+test/CI backstop; ``None`` leaves terminal convergence to arena pressure.
 
 Emission vs replay
 ------------------
@@ -48,7 +48,6 @@ _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 # Placeholder values for the pre-start (PENDING) state; MATCH_STARTED records
 # the real seed and max_ticks from its payload.
 _PENDING_SEED = 0
-_DEFAULT_MAX_TICKS = 200
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +72,7 @@ class ReducerMatchLifecycle:
         self._state = ModelSOMatchState(
             match_id=match_id,
             seed=_PENDING_SEED,
-            max_ticks=_DEFAULT_MAX_TICKS,
+            max_ticks=None,
         )
 
     @property
@@ -140,7 +139,7 @@ class ReducerMatchLifecycle:
                 "tick increments are exactly +1"
             )
 
-        if expected < state.max_ticks:
+        if state.max_ticks is None or expected < state.max_ticks:
             self._state = state.model_copy(update={"tick": expected})
             return
 

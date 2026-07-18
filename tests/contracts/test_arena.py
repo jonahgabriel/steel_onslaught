@@ -69,6 +69,8 @@ def test_current_live_snapshot_is_closed_and_requires_every_field() -> None:
         "spawn_a": {"x": 5, "y": 5},
         "spawn_b": {"x": 35, "y": 35},
         "obstacles": [],
+        "sudden_death_start_tick": None,
+        "sudden_death_damage_base": 8,
     }
     snapshot = ModelSOCurrentLiveArenaSnapshot.model_validate(raw)
     assert snapshot.model_fields_set == frozenset(ModelSOCurrentLiveArenaSnapshot.model_fields)

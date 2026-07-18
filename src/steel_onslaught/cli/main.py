@@ -49,14 +49,19 @@ main.add_command(play_command)
 @click.option("--loadout-a", "loadout_a_path", type=_LOADOUT_PATH, required=True)
 @click.option("--loadout-b", "loadout_b_path", type=_LOADOUT_PATH, required=True)
 @click.option("--seed", type=click.IntRange(min=0), required=True)
-@click.option("--max-ticks", type=click.IntRange(min=1), default=200, show_default=True)
+@click.option(
+    "--max-ticks",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Optional debug/test cap. Omit for normal winner-only matches.",
+)
 @click.option("--no-color", is_flag=True, default=False, help="Disable ANSI colors.")
 def run_command(
     overlay_path: Path,
     loadout_a_path: Path,
     loadout_b_path: Path,
     seed: int,
-    max_ticks: int,
+    max_ticks: int | None,
     no_color: bool,
 ) -> None:
     """Run a live match between two loadouts."""

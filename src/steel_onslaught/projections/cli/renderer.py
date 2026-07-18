@@ -119,10 +119,12 @@ class CliTextRenderer:
             case SOEventType.MATCH_STARTED:
                 started_payload = ModelSOMatchStartedPayload.model_validate(event.payload)
                 self._learn_labels(started_payload)
-                return (
-                    f"{tick} MATCH STARTED "
-                    f"(seed {started_payload.seed}, max_ticks {started_payload.max_ticks})"
+                cap = (
+                    "no cap"
+                    if started_payload.max_ticks is None
+                    else f"max_ticks {started_payload.max_ticks}"
                 )
+                return f"{tick} MATCH STARTED (seed {started_payload.seed}, {cap})"
             case SOEventType.PILOT_DECISION_MADE:
                 decision_payload = ModelSOPilotDecisionPayload.model_validate(event.payload)
                 labels = self._labels.get(mech)

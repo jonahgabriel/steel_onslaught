@@ -205,7 +205,7 @@ def launch_browser_play_session(
     ]
     | None = None,
     seed: int,
-    max_ticks: int,
+    max_ticks: int | None,
     allowed_origins: tuple[str, ...],
 ) -> BrowserPlaySession:
     """Compose a selected match and admit its browser start before ``run``.
@@ -1244,7 +1244,7 @@ def _configured_browser_server(
     red_loadout_path: Path,
     blue_loadout_path: Path,
     seed: int,
-    max_ticks: int,
+    max_ticks: int | None,
     origin: str,
     host: str,
     port: int,
@@ -1393,7 +1393,12 @@ async def _serve_browser_play(server: BrowserPlayServer, *, bootstrap_output: Pa
     required=True,
 )
 @click.option("--seed", type=click.IntRange(min=0), required=True)
-@click.option("--max-ticks", type=click.IntRange(min=1), default=100, show_default=True)
+@click.option(
+    "--max-ticks",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Optional debug/test cap. Omit for normal winner-only matches.",
+)
 @click.option("--origin", default="http://localhost:5173", show_default=True)
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", type=click.IntRange(min=0, max=65_535), default=0, show_default=True)
@@ -1405,7 +1410,7 @@ def play_command(
     red_loadout_path: Path,
     blue_loadout_path: Path,
     seed: int,
-    max_ticks: int,
+    max_ticks: int | None,
     origin: str,
     host: str,
     port: int,
