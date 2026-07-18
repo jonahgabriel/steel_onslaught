@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.cards.registers import RegisterExecutionReducer
 from steel_onslaught.commands.authority import (
     AuthenticatedSessionCapability,
     ModelSOStartMatchAuthorityContext,
@@ -303,6 +304,10 @@ class RuntimeDependencies:
         self.close()
 
 
+class MissingCardCatalogError(ValueError):
+    """Register execution was requested without an explicit card snapshot."""
+
+
 @dataclass(frozen=True)
 class LlmDependencies:
     client_factory: ProtocolLlmClientFactory
@@ -507,6 +512,24 @@ def load_card_catalog(binding: ModelSOCardCatalogBinding) -> ModelSOCardCatalog:
         cards.append(card)
     cards.sort(key=lambda card: str(card.id))
     return ModelSOCardCatalog(cards=tuple(cards))
+
+
+def build_register_execution_reducer(
+    dependencies: RuntimeDependencies,
+) -> RegisterExecutionReducer:
+    """Bind register execution to the explicit runtime card snapshot.
+
+    This is a construction-only seam.  It does not subscribe the reducer to
+    the event bus or activate register gameplay; callers must supply the
+    already composed dependency graph.  A card-enabled caller therefore
+    cannot silently fall back to package data or a default catalog.
+    """
+    if not isinstance(dependencies, RuntimeDependencies):
+        raise TypeError("register execution requires RuntimeDependencies")
+    catalog = dependencies.card_catalog
+    if not isinstance(catalog, ModelSOCardCatalog):
+        raise MissingCardCatalogError("register execution requires an injected card catalog")
+    return RegisterExecutionReducer(catalog)
 
 
 def _load_arena_specs(directory: Path) -> dict[str, ModelSOArenaSpec]:
@@ -1500,6 +1523,7 @@ __all__ = [
     "LiveMatchStack",
     "LlmDependencies",
     "MatchRuntime",
+    "MissingCardCatalogError",
     "RuntimeDependencies",
     "assemble_match_live",
     "assemble_match_with_dependencies",
@@ -1511,6 +1535,7 @@ __all__ = [
     "build_learning_dependencies",
     "build_llm_dependencies",
     "build_pilot_duel_executor_with_dependencies",
+    "build_register_execution_reducer",
     "build_runtime_dependencies",
     "load_application_overlay",
     "load_card_catalog",
