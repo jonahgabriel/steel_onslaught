@@ -103,6 +103,7 @@ def _build_row(
     usage: LlmUsage,
     result: ModelSOLearnResult,
     run_order: int,
+    context_hash: str,
 ) -> ModelSOExperimentRow:
     promoted = _promoted(result)
     return ModelSOExperimentRow(
@@ -117,9 +118,7 @@ def _build_row(
         model_id=model_id,
         provider=provider,
         context_factor_subset=arm_value,
-        context_manifest_hash=context_manifest_hash(
-            context_factor_subset=arm_value, archetype=archetype, provider=provider
-        ),
+        context_manifest_hash=context_hash,
         failure_stage=_failure_stage(result),
         endpoint_ref=endpoint_ref,
         factor_subset_hash=factor_subset_hash(arm_value),
@@ -168,12 +167,26 @@ def _run_trial(
         provider_name = _BASELINE_PROVIDER
         endpoint_ref = _BASELINE_PROVIDER
         model_id = _BASELINE_MODEL_ID
+        context_hash = context_manifest_hash(
+            context_factor_subset=arm_value, archetype=archetype, provider=provider_name
+        )
     else:
         strategy = SOSearchStrategy.EXTERNAL
         view = PilotSpecView(parent_spec)
+        arm = ContextArm(arm_value)
+        arm_kwargs: dict[str, object] = {}
+        if arm is ContextArm.LLM_REPLAY_TRACE:
+            context_artifacts = artifacts.read_context_artifacts(archetype=archetype)
+            arm_kwargs["replay_traces"] = list(context_artifacts.replay_traces)
+        elif arm is ContextArm.LLM_DECISION_DIFF:
+            context_artifacts = artifacts.read_context_artifacts(archetype=archetype)
+            arm_kwargs["decision_diffs"] = list(context_artifacts.decision_diffs)
+        elif arm is ContextArm.LLM_EXEMPLAR:
+            context_artifacts = artifacts.read_context_artifacts(archetype=archetype)
+            arm_kwargs["exemplars"] = list(context_artifacts.exemplars)
         generation = tuner_generator.generate(
             provider_id=provider,
-            arm=ContextArm(arm_value),
+            arm=arm,
             archetype=archetype,
             parent_params=view.parameters,
             bounds=view.bounds,
@@ -186,6 +199,7 @@ def _run_trial(
                 correlation_id=UUID(correlation_id),
             ),
             design_doc_path=design_doc_path,
+            **arm_kwargs,
         )
         candidates = generation.candidates
         generator_id = generation.generator_id
@@ -193,6 +207,7 @@ def _run_trial(
         provider_name = provider
         endpoint_ref = provider
         model_id = _model_id_from_generator(generator_id)
+        context_hash = generation.context_manifest_hash
 
     result, record_path = _run_learn(
         archetype=archetype,
@@ -222,6 +237,7 @@ def _run_trial(
         usage=usage,
         result=result,
         run_order=run_order,
+        context_hash=context_hash,
     )
 
     sidecar = ModelSOTunerUsage(
@@ -233,6 +249,7 @@ def _run_trial(
         prompt_tokens=usage.prompt_tokens,
         completion_tokens=usage.completion_tokens,
         cost_usd=usage.cost_usd,
+        context_manifest_hash=context_hash,
         recorded_at=recorded_at,
     )
     artifacts.write_tuner_usage(sidecar, lineage_record=record_path)

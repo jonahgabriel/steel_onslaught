@@ -172,7 +172,12 @@ def load_lineage_records(root: Path) -> list[ModelSOPersistedLineageRecord]:
     if not root.exists():
         return []
 
+    # Tuner usage sidecars share the lineage tree but are not lineage
+    # envelopes.  They have an explicit suffix and must not be interpreted as
+    # records when a context arm reads promoted exemplars.
     for yaml_file in sorted(root.rglob("*.yaml"), key=lambda path: path.as_posix()):
+        if yaml_file.name.endswith(".usage.yaml"):
+            continue
         envelope, (archetype, sh, digest) = _load_validated_lineage_file(yaml_file, root=root)
         results.append((archetype, sh, digest, envelope))
 

@@ -56,6 +56,7 @@ class ModelSOTunerGeneration:
     candidates: tuple[tuple[ParamDict, str], ...]
     generator_id: str
     usage: LlmUsage
+    context_manifest_hash: str
 
 
 class ProtocolTunerGenerator(Protocol):
@@ -91,6 +92,13 @@ class LlmTunerGenerator:
         evidence_context: ModelSOLlmEvidenceContext,
         **arm_kwargs: Any,
     ) -> ModelSOTunerGeneration:
+        context = assemble_arm_context(
+            arm,
+            archetype=archetype,
+            parent_params=parent_params,
+            bounds=bounds,
+            **arm_kwargs,
+        )
         candidates, generator_id, usage = tune_with_usage(
             client=self._client_factory.client_for(provider_id),
             provider_id=provider_id,
@@ -106,6 +114,7 @@ class LlmTunerGenerator:
             candidates=tuple(candidates),
             generator_id=generator_id,
             usage=usage,
+            context_manifest_hash=context.context_manifest_hash,
         )
 
 

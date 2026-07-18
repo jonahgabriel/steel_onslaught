@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import sqlite3
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -15,10 +17,19 @@ from pydantic import BaseModel, ConfigDict
 from steel_onslaught.contracts.lineage import ModelSOLineageRecord
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
-from steel_onslaught.events.envelope import ModelSOEventEnvelope
-from steel_onslaught.learning.artifacts import EvaluationWorkspace, MaterializedLoadout
+from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.events.payloads import (
+    ModelSOMatchScoredPayload,
+    ModelSOPilotDecisionPayload,
+)
+from steel_onslaught.learning.artifacts import (
+    EvaluationWorkspace,
+    LearningContextArtifacts,
+    MaterializedLoadout,
+)
 from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
-from steel_onslaught.learning.lineage_store import write_lineage_record
+from steel_onslaught.learning.lineage_store import load_lineage_records, write_lineage_record
+from steel_onslaught.ledger.codec import load_persisted_event
 from steel_onslaught.llm.experiment import (
     ModelSOExperimentRow,
     ModelSOExperimentSummary,
@@ -213,6 +224,163 @@ class YamlFilesystemLearningArtifactStore:
         self._write_exclusive_or_verify(path, content)
         self._claim_identity("llm_events", event.event_id.encode("utf-8"), self._digest(content))
         return path
+
+    def read_context_artifacts(
+        self,
+        *,
+        archetype: str,
+        limit: int = 5,
+    ) -> LearningContextArtifacts:
+        """Read the canonical durable artifacts used by rich tuner arms.
+
+        Evaluation ledgers are opened read-only and every envelope is decoded
+        through the canonical persisted-event codec.  A malformed or legacy
+        row raises rather than being silently omitted.  Ordering is by stable
+        path/match/tick/sequence, never by filesystem mtime.
+        """
+        if limit < 1:
+            raise ValueError(f"context artifact limit must be positive; got {limit}")
+
+        replay_traces: list[tuple[tuple[str, str, int, int, str], str]] = []
+        decision_diffs: list[tuple[tuple[str, str, int, str], str]] = []
+        paths = sorted(self._config.evaluation_root.rglob("*.sqlite3"), key=lambda p: p.as_posix())
+        for path in paths:
+            matches = self._read_evaluation_ledgers(path)
+            for match_id, events in matches.items():
+                score_events = [
+                    event for event in events if event.event_type is SOEventType.MATCH_SCORED
+                ]
+                if len(score_events) != 1:
+                    continue
+                score = ModelSOMatchScoredPayload.model_validate(score_events[0].payload)
+                parent_side = self._parent_side(match_id)
+                if score.is_draw or score.winner_player_id != f"player.{parent_side}":
+                    continue
+                decisions = [
+                    event for event in events if event.event_type is SOEventType.PILOT_DECISION_MADE
+                ]
+                for event in decisions:
+                    fragment = self._event_fragment(event)
+                    key = (
+                        path.as_posix(),
+                        match_id,
+                        event.tick,
+                        event.sequence_in_tick,
+                        event.event_id,
+                    )
+                    replay_traces.append((key, fragment))
+                winning_side = "blue" if parent_side == "red" else "red"
+                parent_decisions = {
+                    event.tick: ModelSOPilotDecisionPayload.model_validate(event.payload)
+                    for event in decisions
+                    if event.subject.mech_id == f"mech.{parent_side}.01"
+                }
+                winning_decisions = {
+                    event.tick: ModelSOPilotDecisionPayload.model_validate(event.payload)
+                    for event in decisions
+                    if event.subject.mech_id == f"mech.{winning_side}.01"
+                }
+                for tick in sorted(set(parent_decisions) | set(winning_decisions)):
+                    parent = parent_decisions.get(tick)
+                    winner = winning_decisions.get(tick)
+                    if parent is None or winner is None or parent == winner:
+                        continue
+                    diff = json.dumps(
+                        {
+                            "match_id": match_id,
+                            "tick": tick,
+                            "parent": parent.model_dump(mode="json"),
+                            "winner": winner.model_dump(mode="json"),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    decision_diffs.append(((path.as_posix(), match_id, tick, parent_side), diff))
+
+        exemplars: list[tuple[str, str]] = []
+        for envelope in load_lineage_records(self._config.lineage_root):
+            record = envelope.record
+            if record.archetype != archetype or record.promotion.status.value != "promoted":
+                continue
+            exemplar = json.dumps(
+                record.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+            )
+            exemplars.append((record.spec_hash, exemplar))
+
+        replay_traces.sort(key=lambda item: item[0])
+        decision_diffs.sort(key=lambda item: item[0])
+        exemplars.sort(key=lambda item: item[0])
+        return LearningContextArtifacts(
+            replay_traces=tuple(fragment for _key, fragment in replay_traces[:limit]),
+            decision_diffs=tuple(fragment for _key, fragment in decision_diffs[:limit]),
+            exemplars=tuple(fragment for _key, fragment in exemplars[:limit]),
+        )
+
+    @staticmethod
+    def _parent_side(match_id: str) -> str:
+        if match_id.endswith("cand_red"):
+            return "blue"
+        if match_id.endswith("cand_blue"):
+            return "red"
+        raise ValueError(
+            f"evaluation evidence match id does not declare candidate side: {match_id!r}"
+        )
+
+    @staticmethod
+    def _event_fragment(event: ModelSOEventEnvelope) -> str:
+        return json.dumps(
+            {
+                "event_id": event.event_id,
+                "match_id": event.match_id,
+                "tick": event.tick,
+                "sequence_in_tick": event.sequence_in_tick,
+                "subject": event.subject.model_dump(mode="json"),
+                "payload": event.model_dump(mode="json")["payload"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _read_evaluation_ledgers(path: Path) -> dict[str, list[ModelSOEventEnvelope]]:
+        if not path.is_file():
+            raise ValueError(f"evaluation ledger disappeared while reading: {path}")
+        uri = f"file:{path.as_posix()}?mode=ro"
+        try:
+            conn = sqlite3.connect(uri, uri=True)
+        except sqlite3.Error as exc:
+            raise ValueError(f"cannot open evaluation ledger read-only: {path}") from exc
+        try:
+            try:
+                rows = conn.execute(
+                    "SELECT event_id, match_id, tick, sequence_in_tick, envelope_json "
+                    "FROM events ORDER BY match_id ASC, tick ASC, "
+                    "sequence_in_tick ASC, event_id ASC"
+                )
+            except sqlite3.Error as exc:
+                raise ValueError(
+                    f"evaluation ledger has no canonical events table: {path}"
+                ) from exc
+            grouped: dict[str, list[ModelSOEventEnvelope]] = {}
+            for event_id, match_id, tick, sequence_in_tick, envelope_json in rows:
+                if envelope_json is None:
+                    raise ValueError(
+                        f"evaluation ledger row {event_id!r} has no canonical envelope"
+                    )
+                event = load_persisted_event(str(envelope_json))
+                if (
+                    event.event_id != str(event_id)
+                    or event.match_id != str(match_id)
+                    or event.tick != int(tick)
+                    or event.sequence_in_tick != int(sequence_in_tick)
+                ):
+                    raise ValueError(
+                        f"evaluation ledger projection disagrees with envelope: {path}"
+                    )
+                grouped.setdefault(event.match_id, []).append(event)
+            return grouped
+        finally:
+            conn.close()
 
 
 __all__ = [
