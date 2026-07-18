@@ -39,6 +39,7 @@ import {
 import type { TransportSnapshot } from "../lib/transport";
 import type { TransportControls } from "../lib/useTransport";
 import type { SOEventEnvelope } from "../types";
+import ArenaFeedback from "./ArenaFeedback";
 import ArenaView from "./ArenaView";
 import EnvelopeInspector from "./EnvelopeInspector";
 import EventRiver from "./EventRiver";
@@ -431,6 +432,7 @@ export default function PressureDeck({
 
         <div className="pd-rightcol" data-testid="right-col">
           <SpecPanel gauges={rightGauges} side="right" emptyPlaceholder={false} />
+          <ArenaFeedback rows={state.rows} sides={state.sides} />
           <EventRiver
             groups={groups}
             hiddenCount={windowed.hiddenCount}
