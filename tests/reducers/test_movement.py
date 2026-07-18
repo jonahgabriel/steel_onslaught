@@ -19,6 +19,7 @@ from uuid import uuid4
 import pytest
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
+from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
@@ -33,7 +34,7 @@ from steel_onslaught.match.state import (
 )
 from steel_onslaught.pilots.schemas import ModelSOPosition
 from steel_onslaught.reducers.errors import ReducerError
-from steel_onslaught.reducers.movement import ReducerMovement, mode_effective_speed
+from steel_onslaught.reducers.movement import ReducerMovement, chebyshev, mode_effective_speed
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -42,6 +43,20 @@ from steel_onslaught.reducers.movement import ReducerMovement, mode_effective_sp
 MATCH_ID = "match.test.001"
 MECH_ID = "mech.red.01"
 PLAYER_ID = "player.1"
+
+
+def _arena(
+    *obstacles: ModelSOPosition,
+) -> ModelSOCurrentLiveArenaSnapshot:
+    return ModelSOCurrentLiveArenaSnapshot(
+        schema_version="0.1.0",
+        kind="steel_onslaught.arena_snapshot",
+        arena_id="movement_test",
+        size=40,
+        spawn_a=ModelSOPosition(x=0, y=0),
+        spawn_b=ModelSOPosition(x=39, y=39),
+        obstacles=obstacles,
+    )
 
 
 def _boiler(
@@ -142,7 +157,7 @@ def _envelope(
 def test_mech_spawned_sets_position_and_facing() -> None:
     """MECH_SPAWNED positions the mech at the declared spawn point."""
     match_state = _match_state()
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     event = _envelope(
         SOEventType.MECH_SPAWNED,
         {"position": {"x": 5, "y": 3}, "facing": 180},
@@ -160,7 +175,7 @@ def test_movement_4_cells_speed_2_two_ticks_succeeds() -> None:
     Effective cells per tick = base_speed * ticks_consumed = 2 * 2 = 4.
     """
     match_state = _match_state()
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     # Chebyshev distance from (0,0) to (4,3) = max(4,3) = 4
     event = _envelope(
         SOEventType.MOVEMENT_RESOLVED,
@@ -177,10 +192,44 @@ def test_movement_4_cells_speed_2_two_ticks_succeeds() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("destination", "obstacles", "error"),
+    [
+        (ModelSOPosition(x=2, y=0), (ModelSOPosition(x=1, y=0),), "obstacle_blocked"),
+        (ModelSOPosition(x=-1, y=0), (), "arena_bounds"),
+        (ModelSOPosition(x=1, y=0), (ModelSOPosition(x=1, y=0),), "obstacle_blocked"),
+    ],
+    ids=["cross-wall-path", "out-of-bounds-destination", "obstacle-endpoint"],
+)
+def test_movement_rejects_forged_arena_paths(
+    destination: ModelSOPosition,
+    obstacles: tuple[ModelSOPosition, ...],
+    error: str,
+) -> None:
+    match_state = _match_state()
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena(*obstacles))
+    distance = chebyshev(ModelSOPosition(x=0, y=0), destination)
+    event = _envelope(
+        SOEventType.MOVEMENT_RESOLVED,
+        {
+            "from": {"x": 0, "y": 0},
+            "to": {"x": destination.x, "y": destination.y},
+            "ticks_consumed": 1,
+            "pressure_consumed": distance,
+        },
+    )
+
+    with pytest.raises(ReducerError, match=error):
+        reducer.apply(event)
+
+    assert reducer.state == match_state
+
+
+@pytest.mark.unit
 def test_movement_5_cells_speed_2_raises_speed_exceeded() -> None:
     """Moving 5 cells at base_speed 2 in 2 ticks raises ReducerError("speed_exceeded")."""
     match_state = _match_state()
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     # Chebyshev distance from (0,0) to (5,0) = 5; 2 ticks * speed 2 = 4 max
     event = _envelope(
         SOEventType.MOVEMENT_RESOLVED,
@@ -200,7 +249,7 @@ def test_movement_consumes_pressure() -> None:
     """MOVEMENT_RESOLVED subtracts pressure_consumed from the mech's boiler."""
     mech = _mech(pressure=60)
     match_state = _match_state(mech)
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     # Moving 3 cells costs 3 pressure
     event = _envelope(
         SOEventType.MOVEMENT_RESOLVED,
@@ -220,7 +269,7 @@ def test_movement_consumes_pressure() -> None:
 def test_pressure_consumed_matches_chebyshev_distance() -> None:
     """pressure_consumed must equal the Chebyshev distance; mismatch raises ReducerError."""
     match_state = _match_state()
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     # Distance is 3, but payload claims 99 pressure consumed
     event = _envelope(
         SOEventType.MOVEMENT_RESOLVED,
@@ -240,7 +289,7 @@ def test_movement_insufficient_pressure_raises() -> None:
     """Moving when pressure < distance cost raises ReducerError("insufficient_pressure")."""
     mech = _mech(pressure=2)  # only 2 pressure, needs 5
     match_state = _match_state(mech)
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     event = _envelope(
         SOEventType.MOVEMENT_RESOLVED,
         {
@@ -259,7 +308,7 @@ def test_evasion_mode_adds_one_to_effective_speed() -> None:
     """In evasion mode, effective speed is base_speed + 1."""
     mech = _mech(base_speed=2, current_mode=ModeId.EVASION, pressure=60)
     match_state = _match_state(mech)
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     # evasion gives effective_speed = 3; 1 tick * 3 = 3 cells max
     # 3 cells in 1 tick should succeed
     event = _envelope(
@@ -281,7 +330,7 @@ def test_evasion_mode_3_cells_1_tick_at_base_2_would_fail_without_mode() -> None
     """At base_speed 2 without evasion, 3 cells in 1 tick raises speed_exceeded."""
     mech = _mech(base_speed=2, current_mode=ModeId.RECON, pressure=60)
     match_state = _match_state(mech)
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     event = _envelope(
         SOEventType.MOVEMENT_RESOLVED,
         {
@@ -312,7 +361,7 @@ def test_mode_effective_speed_mapping_is_exhaustive(mode: ModeId, expected_speed
 def test_reducer_rejects_wrong_match_id() -> None:
     """Events for a different match_id are rejected with match_id_mismatch."""
     match_state = _match_state()
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     event = _envelope(
         SOEventType.MOVEMENT_RESOLVED,
         {
@@ -331,7 +380,7 @@ def test_reducer_rejects_wrong_match_id() -> None:
 def test_reducer_ignores_non_movement_events() -> None:
     """Non-movement events are passed through without state change."""
     match_state = _match_state()
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     event = _envelope(
         SOEventType.BOILER_UPDATED,
         {"pressure": 50, "heat": 20},
@@ -345,7 +394,7 @@ def test_reducer_ignores_non_movement_events() -> None:
 def test_mech_spawned_rejects_invalid_facing() -> None:
     """MECH_SPAWNED with facing outside [0, 360) raises ReducerError."""
     match_state = _match_state()
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     event = _envelope(
         SOEventType.MECH_SPAWNED,
         {"position": {"x": 0, "y": 0}, "facing": 400},
@@ -359,7 +408,7 @@ def test_movement_from_position_must_match_current_position() -> None:
     """MOVEMENT_RESOLVED 'from' must match the mech's current position."""
     # mech is at (0,0), but payload says from=(9,9)
     match_state = _match_state()
-    reducer = ReducerMovement(MATCH_ID, match_state)
+    reducer = ReducerMovement(MATCH_ID, match_state, arena=_arena())
     event = _envelope(
         SOEventType.MOVEMENT_RESOLVED,
         {

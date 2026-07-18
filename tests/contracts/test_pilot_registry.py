@@ -22,6 +22,8 @@ _PINNED_LOADOUT_PILOT_IDS: dict[str, str] = {
     "example_llm_berserker_light.yaml": "pilot.llm.berserker",
     "example_llm_sniper_light.yaml": "pilot.llm.sniper",
     "example_predictive_heavy.yaml": "pilot.template.predictive",
+    "live_glm_opportunist_hunter.yaml": "pilot.glm.opportunist",
+    "live_glm_sniper_ironclad.yaml": "pilot.glm.sniper",
     "llm_qwen27_sniper.yaml": "pilot.llm.qwen27",
     "llm_qwen35_berserker.yaml": "pilot.llm.qwen35",
     "proof_blue_aggressive_hunter.yaml": "pilot.template.aggressive",

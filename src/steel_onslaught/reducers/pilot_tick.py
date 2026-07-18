@@ -50,6 +50,7 @@ from steel_onslaught.events.payloads import (
     ModelSOSensorObservationPayload,
     ModelSOWeaponFireIntentPayload,
 )
+from steel_onslaught.match.geometry import blocked_directions, line_of_sight_clear
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotDecision,
@@ -63,11 +64,37 @@ from steel_onslaught.pilots.schemas import (
 _PRODUCER_NODE = "node.reducer.pilot_tick"
 
 
+def _nearest_living_enemy(
+    mech: ModelSOMechRuntimeState,
+    state: ModelSOMatchState,
+) -> ModelSOMechRuntimeState | None:
+    enemies = [
+        other
+        for other in state.living_mechs()
+        if other.player_id != mech.player_id and other.mech_id != mech.mech_id
+    ]
+    if not enemies:
+        return None
+    return min(
+        enemies,
+        key=lambda enemy: (
+            max(
+                abs(enemy.position.x - mech.position.x),
+                abs(enemy.position.y - mech.position.y),
+            ),
+            enemy.mech_id,
+        ),
+    )
+
+
 def _build_observation(
     mech: ModelSOMechRuntimeState,
     state: ModelSOMatchState,
     sensor_events: list[ModelSOEventEnvelope],
     weapon_specs: Mapping[str, ModelSOWeaponSpec],
+    *,
+    obstacles: frozenset[tuple[int, int]],
+    arena_size: int,
 ) -> ModelSOPilotObservation:
     """Build the observation passed to a pilot for one tick."""
     # Weapon views — empty if no weapon_cooldowns recorded on the mech.
@@ -112,6 +139,7 @@ def _build_observation(
         )
     # Newest last (events are already in ledger order; sensor_events passed in
     # tick order so no additional sort needed).
+    enemy = _nearest_living_enemy(mech, state)
 
     return ModelSOPilotObservation(
         match_id=state.match_id,
@@ -126,12 +154,22 @@ def _build_observation(
         position=mech.position,
         hp_percent=mech.hp_percent,
         under_sensor_lock=mech.under_sensor_lock,
+        has_line_of_sight_to_enemy=(
+            line_of_sight_clear(mech.position, enemy.position, obstacles)
+            if enemy is not None
+            else False
+        ),
+        blocked_directions=blocked_directions(
+            mech.position,
+            size=arena_size,
+            obstacles=obstacles,
+        ),
         enemy_observations=enemy_readings,
     )
 
 
 def _decision_payload(decision: ModelSOPilotDecision) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "action": decision.action.value,
         "action_params": decision.action_params,
         "reason_code": decision.reason_code.value,
@@ -143,6 +181,9 @@ def _decision_payload(decision: ModelSOPilotDecision) -> dict[str, Any]:
         # The closed event payload contract validates it before canonical append.
         "rationale": decision.rationale,
     }
+    if decision.decision_source is not None:
+        payload["decision_source"] = decision.decision_source.model_dump(mode="json")
+    return payload
 
 
 def _intent_for(decision: ModelSOPilotDecision) -> tuple[SOEventType, dict[str, Any]] | None:
@@ -200,6 +241,8 @@ class ReducerPilotTick:
         *,
         correlation_id: UUID,
         event_factory: EventFactory,
+        obstacles: frozenset[tuple[int, int]],
+        arena_size: int,
     ) -> None:
         self._match_id = match_id
         self._correlation_id = correlation_id
@@ -209,6 +252,8 @@ class ReducerPilotTick:
         self._sensor_events = sensor_events
         self._emit = emit
         self._weapon_specs = weapon_specs
+        self._obstacles = obstacles
+        self._arena_size = arena_size
 
     @property
     def state(self) -> ModelSOMatchState:
@@ -250,7 +295,14 @@ class ReducerPilotTick:
         mech: ModelSOMechRuntimeState,
         state: ModelSOMatchState,
     ) -> None:
-        observation = _build_observation(mech, state, self._sensor_events, self._weapon_specs)
+        observation = _build_observation(
+            mech,
+            state,
+            self._sensor_events,
+            self._weapon_specs,
+            obstacles=self._obstacles,
+            arena_size=self._arena_size,
+        )
         decision = pilot.decide(observation)
 
         subject = ModelSOEventSubject(mech_id=mech.mech_id, player_id=mech.player_id)

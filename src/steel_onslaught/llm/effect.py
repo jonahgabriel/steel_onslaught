@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from types import TracebackType
 from typing import Self
 from uuid import UUID
+
+from pydantic import TypeAdapter
 
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -21,6 +24,7 @@ from steel_onslaught.events.payloads import (
 from steel_onslaught.llm.schemas import (
     LlmCompletionFailureReason,
     LlmResponse,
+    LlmSemanticFailureCode,
     ModelSOLlmCompletionRequest,
     ModelSOLlmEvidenceContext,
     ProtocolLlmAttemptClient,
@@ -29,10 +33,27 @@ from steel_onslaught.llm.schemas import (
 )
 
 _PRODUCER_NODE = "node.llm.completion_effect"
+_SEMANTIC_FAILURE_CODE_ADAPTER: TypeAdapter[LlmSemanticFailureCode] = TypeAdapter(
+    LlmSemanticFailureCode
+)
+_SAFE_FINISH_REASON_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _safe_finish_reason(response: LlmResponse | None) -> str | None:
+    if response is None:
+        return None
+    finish_reason = response.finish_reason
+    if len(finish_reason) > 64 or _SAFE_FINISH_REASON_PATTERN.fullmatch(finish_reason) is None:
+        return None
+    return finish_reason
 
 
 class LlmSemanticError(ValueError):
     """A provider response failed the consumer's strict semantic contract."""
+
+    def __init__(self, code: str) -> None:
+        self.code = _SEMANTIC_FAILURE_CODE_ADAPTER.validate_python(code, strict=True)
+        super().__init__(self.code)
 
 
 class _ObservedLlmAttempt:
@@ -91,7 +112,12 @@ class _ObservedLlmAttempt:
             requested,
         )
 
-    def fail(self, reason_code: LlmCompletionFailureReason) -> None:
+    def fail(
+        self,
+        reason_code: LlmCompletionFailureReason,
+        *,
+        semantic_failure_code: LlmSemanticFailureCode | None = None,
+    ) -> None:
         requested = self._require_pending()
         self._terminal = True
         self._observer.failed(
@@ -100,6 +126,7 @@ class _ObservedLlmAttempt:
             reason_code,
             self._response,
             requested,
+            semantic_failure_code=semantic_failure_code,
         )
 
     def _require_pending(self) -> ModelSOEventEnvelope:
@@ -154,8 +181,8 @@ def consume_llm_completion[T](
     with client.begin_attempt(request) as attempt:
         try:
             result = consumer(attempt.response)
-        except LlmSemanticError:
-            attempt.fail("invalid_response")
+        except LlmSemanticError as exc:
+            attempt.fail("invalid_response", semantic_failure_code=exc.code)
             raise
         except Exception:
             attempt.fail("consumer_error")
@@ -251,12 +278,16 @@ class LedgerLlmCompletionObserver:
         reason_code: LlmCompletionFailureReason,
         response: LlmResponse | None,
         requested: ModelSOEventEnvelope,
+        *,
+        semantic_failure_code: LlmSemanticFailureCode | None = None,
     ) -> None:
         context = self._context(request)
         payload = ModelSOLlmCompletionFailedPayload(
             provider_id=provider_id,
             reason_code=reason_code,
+            semantic_failure_code=semantic_failure_code,
             model=response.model if response is not None else None,
+            finish_reason=_safe_finish_reason(response),
             prompt_tokens=response.usage.prompt_tokens if response is not None else None,
             completion_tokens=(response.usage.completion_tokens if response is not None else None),
             cost_usd=response.usage.cost_usd if response is not None else None,

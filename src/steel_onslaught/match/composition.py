@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -16,18 +16,37 @@ from pydantic import BaseModel
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.commands.authority import (
+    AuthenticatedSessionCapability,
+    ModelSOStartMatchAuthorityContext,
+)
+from steel_onslaught.commands.coordinator import (
+    ProcessLocalHumanLoopbackCoordinator,
+    ProcessLocalMatchLaunchCoordinator,
+)
+from steel_onslaught.commands.inbox import ProcessLocalHumanDecisionInbox
+from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProviderCapability
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOStubLlmProviderBinding,
 )
+from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
+from steel_onslaught.contracts.commands import ModelSOStartMatchCommand
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeTransition
 from steel_onslaught.contracts.pilot import ModelSOLlmPilotParams, ModelSOPilotSpec
 from steel_onslaught.contracts.pilot_registry import PilotResolutionError, PilotSpecRegistry
+from steel_onslaught.contracts.player_selection import (
+    ModelSOHumanSeatAssignment,
+    ModelSOMatchLaunchProvenance,
+    ModelSOModelSeatAssignment,
+    ModelSOPlayerRosterBinding,
+    Side,
+)
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
@@ -41,9 +60,11 @@ from steel_onslaught.learning.filesystem_artifacts import (
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.llm.client_http import (
+    BoundedLlmClient,
     HttpxJsonTransport,
     NoSecretResolver,
     OpenAICompatibleClient,
+    SelectedOnlyLlmClientBuilder,
     StaticLlmClientFactory,
     SystemSleeper,
 )
@@ -52,7 +73,7 @@ from steel_onslaught.llm.effect import (
     ObservedLlmClient,
 )
 from steel_onslaught.llm.personas import PersonaRegistry
-from steel_onslaught.llm.pilot import LLMPilot
+from steel_onslaught.llm.pilot import LLMPilot, LlmPilotFailurePolicy
 from steel_onslaught.llm.schemas import (
     ModelSOLlmPilotSelection,
     ProtocolHttpTransport,
@@ -80,7 +101,6 @@ from steel_onslaught.match.evaluation_storage import (
 )
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import (
-    ARENA_SIZE_CELLS,
     MatchIdentity,
     MatchRunner,
     _require_valid_budgets,
@@ -88,8 +108,9 @@ from steel_onslaught.match.runner import (
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchEndReason, SOMatchStatus
 from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.defensive import DefensivePilot
+from steel_onslaught.pilots.human import HumanPilot
 from steel_onslaught.pilots.predictive import PredictivePilot
-from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
+from steel_onslaught.pilots.schemas import PilotProtocol
 from steel_onslaught.projections.leaderboard.handler import (
     LeaderboardHandler,
     ModelSOSQLiteLeaderboardConfig,
@@ -189,16 +210,19 @@ class ApplicationPilotFactory:
         clients: ProtocolLlmClientFactory,
         personas: PersonaRegistry,
         observer: ProtocolLlmCompletionObserver | None = None,
+        failure_policy: LlmPilotFailurePolicy = "fallback",
     ) -> None:
         self._clients = clients
         self._personas = personas
         self._observer = observer
+        self._failure_policy = failure_policy
 
     def with_observer(self, observer: ProtocolLlmCompletionObserver) -> ProtocolPilotFactory:
         return ApplicationPilotFactory(
             clients=self._clients,
             personas=self._personas,
             observer=observer,
+            failure_policy=self._failure_policy,
         )
 
     def from_spec(self, spec: ModelSOPilotSpec) -> PilotProtocol:
@@ -236,6 +260,7 @@ class ApplicationPilotFactory:
         return LLMPilot(
             client=client,
             persona=self._personas.require(selection.persona_id),
+            failure_policy=self._failure_policy,
         )
 
 
@@ -248,6 +273,7 @@ class RuntimeDependencies:
     identities: IdentityProvider
     event_factory: EventFactory
     catalog: MatchContractCatalog
+    arena: ModelSOArenaSpec
     pilot_registry: PilotSpecRegistry
     pilot_factory: ProtocolPilotFactory
     closer: ProtocolResourceCloser
@@ -326,8 +352,12 @@ class LiveMatchStack:
     event_factory: EventFactory
     catalog: MatchContractCatalog
     closer: ProtocolResourceCloser
+    _launch_provenance: ModelSOMatchLaunchProvenance | None = None
+    _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
 
     def close(self) -> None:
+        if self._human_inbox is not None:
+            self._human_inbox.shutdown()
         self.closer.close()
 
     def __enter__(self) -> Self:
@@ -339,6 +369,22 @@ class LiveMatchStack:
     @property
     def match_id(self) -> str:
         return self.identity.match_id
+
+    @property
+    def launch_provenance(self) -> ModelSOMatchLaunchProvenance:
+        """Exact selected-launch truth for an admitted loopback stack."""
+
+        if self._launch_provenance is None:
+            raise RuntimeError("legacy match stack has no selected launch provenance")
+        return self._launch_provenance
+
+    @property
+    def human_inbox(self) -> ProcessLocalHumanLoopbackCoordinator:
+        """Authenticated process-local prompt/action surface for human seats."""
+
+        if self._human_inbox is None:
+            raise RuntimeError("match stack has no process-local human seat")
+        return self._human_inbox
 
 
 def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
@@ -401,6 +447,20 @@ def _load_specs[ModelT: BaseModel](directory: Path, model: type[ModelT]) -> dict
     return specs
 
 
+def _load_arena_specs(directory: Path) -> dict[str, ModelSOArenaSpec]:
+    if not directory.is_dir():
+        raise FileNotFoundError(f"required contract directory does not exist: {directory}")
+    specs: dict[str, ModelSOArenaSpec] = {}
+    for path in sorted(directory.glob("*.yaml")):
+        spec = ModelSOArenaSpec.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        if spec.arena_id in specs:
+            raise ValueError(f"duplicate arena id {spec.arena_id!r} under {directory}")
+        specs[spec.arena_id] = spec
+    if not specs:
+        raise ValueError(f"required contract directory contains no YAML specs: {directory}")
+    return specs
+
+
 def load_match_contract_catalog(directory: Path) -> MatchContractCatalog:
     transitions: dict[tuple[ModeId, ModeId], ModelSOModeTransition] = {}
     transitions_dir = directory / "modes" / "transitions"
@@ -417,6 +477,7 @@ def load_match_contract_catalog(directory: Path) -> MatchContractCatalog:
     if not transitions:
         raise ValueError(f"required contract directory contains no YAML specs: {transitions_dir}")
     return MatchContractCatalog(
+        arenas=_load_arena_specs(directory / "arenas"),
         chassis=_load_specs(directory / "chassis", ModelSOChassisSpec),
         boilers=_load_specs(directory / "boilers", ModelSOBoilerSpec),
         sensors=_load_specs(directory / "sensors", ModelSOSensorSpec),
@@ -438,8 +499,22 @@ def load_pilot_registry(directory: Path) -> PilotSpecRegistry:
 def _validate_llm_pilot_bindings(
     registry: PilotSpecRegistry,
     llm: LlmDependencies,
+    *,
+    selected_pilot_spec_ids: tuple[str, ...] | None = None,
 ) -> None:
-    for spec in registry.as_mapping().values():
+    specs = registry.as_mapping()
+    if selected_pilot_spec_ids is None:
+        selected_specs = tuple(specs.values())
+    else:
+        selected: list[ModelSOPilotSpec] = []
+        for spec_id in selected_pilot_spec_ids:
+            try:
+                selected.append(specs[spec_id])
+            except KeyError as exc:
+                raise PilotResolutionError(f"unknown exact pilot_id {spec_id!r}") from exc
+        selected_specs = tuple(selected)
+
+    for spec in selected_specs:
         if spec.archetype != "llm":
             continue
         if not isinstance(spec.parameters, ModelSOLlmPilotParams):
@@ -455,15 +530,36 @@ def load_loadout(path: Path) -> ModelSOLoadout:
 def build_llm_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
+    selected_provider_id: str | None = None,
+    pilot_failure_policy: LlmPilotFailurePolicy | None = None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
 ) -> LlmDependencies:
     """Build the immutable LLM dependency graph from the validated overlay."""
+    if selected_provider_id is None:
+        providers = overlay.llm.providers
+        resolved_failure_policy: LlmPilotFailurePolicy = "fallback"
+    else:
+        providers = (
+            SelectedOnlyLlmClientBuilder().select(
+                providers=overlay.llm.providers,
+                selected_provider_id=selected_provider_id,
+            ),
+        )
+        resolved_failure_policy = "raise"
+
+    if pilot_failure_policy is not None:
+        # The selected-provider default remains fail-closed for operator and
+        # CLI composition. Browser live sessions may opt into the explicit
+        # per-turn fallback policy so one malformed provider action cannot
+        # strand an otherwise running match without MATCH_ENDED evidence.
+        resolved_failure_policy = pilot_failure_policy
+
     binding = overlay.llm.secret_resolver
     secret_bearing = tuple(
         provider
-        for provider in overlay.llm.providers
+        for provider in providers
         if isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
         and provider.secret_ref is not None
     )
@@ -485,7 +581,7 @@ def build_llm_dependencies(
     persona_registry = PersonaRegistry.load(overlay.llm.personas_dir)
     http_providers = tuple(
         provider
-        for provider in overlay.llm.providers
+        for provider in providers
         if isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
     )
     resolved_transport: ProtocolHttpTransport | None
@@ -509,22 +605,33 @@ def build_llm_dependencies(
 
     try:
         clients: dict[str, ProtocolLlmClient] = {}
-        for provider in overlay.llm.providers:
+        for provider in providers:
             if isinstance(provider, ModelSOStubLlmProviderBinding):
                 clients[provider.provider_id] = StubLlmClient(model=provider.model)
             else:
                 assert resolved_transport is not None
                 assert resolved_sleeper is not None
-                clients[provider.provider_id] = OpenAICompatibleClient(
+                client: ProtocolLlmClient = OpenAICompatibleClient(
                     config=provider,
                     transport=resolved_transport,
                     secret_resolver=resolved_secrets,
                     sleeper=resolved_sleeper,
                 )
+                if selected_provider_id is not None:
+                    # A selected live launch is admitted once, then may need
+                    # one completion per pilot turn. Keep the completion
+                    # budget finite and explicit rather than one-shot.
+                    # The browser play horizon is 100 ticks with two pilots;
+                    # leave budget for malformed-response repair/fallback
+                    # attempts without turning a normal match into a budget
+                    # failure at the terminal horizon.
+                    client = BoundedLlmClient(client, max_completions=256)
+                clients[provider.provider_id] = client
         client_factory = StaticLlmClientFactory(clients)
         pilot_factory = ApplicationPilotFactory(
             clients=client_factory,
             personas=persona_registry,
+            failure_policy=resolved_failure_policy,
         )
         return LlmDependencies(
             client_factory=client_factory,
@@ -538,22 +645,57 @@ def build_llm_dependencies(
         raise
 
 
+def build_selected_llm_dependencies(
+    overlay: ModelSOApplicationOverlay,
+    *,
+    selected_provider_id: str,
+    secret_resolver: ProtocolSecretResolver | None = None,
+    http_transport: ProtocolHttpTransport | None = None,
+    sleeper: ProtocolSleeper | None = None,
+) -> LlmDependencies:
+    """Build exactly one explicitly selected, one-attempt live provider."""
+    return build_llm_dependencies(
+        overlay,
+        selected_provider_id=selected_provider_id,
+        secret_resolver=secret_resolver,
+        http_transport=http_transport,
+        sleeper=sleeper,
+    )
+
+
 def build_runtime_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
     llm_dependencies: LlmDependencies | None = None,
+    selected_provider_id: str | None = None,
+    selected_pilot_spec_ids: tuple[str, ...] | None = None,
+    llm_failure_policy: LlmPilotFailurePolicy | None = None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
 ) -> RuntimeDependencies:
     """Construct every selected outer adapter exactly once."""
+    if (selected_provider_id is None) != (selected_pilot_spec_ids is None):
+        raise ValueError(
+            "selected_provider_id and selected_pilot_spec_ids must be supplied together"
+        )
     if llm_dependencies is not None and any(
-        capability is not None for capability in (secret_resolver, http_transport, sleeper)
+        capability is not None
+        for capability in (
+            selected_provider_id,
+            selected_pilot_spec_ids,
+            llm_failure_policy,
+            secret_resolver,
+            http_transport,
+            sleeper,
+        )
     ):
         raise ValueError("prebuilt llm_dependencies cannot be combined with root capabilities")
     owns_llm = llm_dependencies is None
     llm = llm_dependencies or build_llm_dependencies(
         overlay,
+        selected_provider_id=selected_provider_id,
+        pilot_failure_policy=llm_failure_policy,
         secret_resolver=secret_resolver,
         http_transport=http_transport,
         sleeper=sleeper,
@@ -583,7 +725,18 @@ def build_runtime_dependencies(
             clock=clock,
         )
         pilot_registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
-        _validate_llm_pilot_bindings(pilot_registry, llm)
+        _validate_llm_pilot_bindings(
+            pilot_registry,
+            llm,
+            selected_pilot_spec_ids=selected_pilot_spec_ids,
+        )
+        catalog = load_match_contract_catalog(overlay.contracts.catalog_dir)
+        try:
+            arena = catalog.arenas[overlay.contracts.arena_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"unknown arena_id {overlay.contracts.arena_id!r} in application overlay"
+            ) from exc
         return RuntimeDependencies(
             bus=bus,
             ledger=ledger,
@@ -591,7 +744,8 @@ def build_runtime_dependencies(
             clock=clock,
             identities=identities,
             event_factory=event_factory,
-            catalog=load_match_contract_catalog(overlay.contracts.catalog_dir),
+            catalog=catalog,
+            arena=arena,
             pilot_registry=pilot_registry,
             pilot_factory=llm.pilot_factory,
             closer=llm.closer if owns_llm else NoopResourceCloser(),
@@ -600,6 +754,28 @@ def build_runtime_dependencies(
         if owns_llm:
             llm.close()
         raise
+
+
+def build_selected_runtime_dependencies(
+    overlay: ModelSOApplicationOverlay,
+    *,
+    selected_provider_id: str,
+    selected_pilot_spec_ids: tuple[str, ...],
+    failure_policy: LlmPilotFailurePolicy = "raise",
+    secret_resolver: ProtocolSecretResolver | None = None,
+    http_transport: ProtocolHttpTransport | None = None,
+    sleeper: ProtocolSleeper | None = None,
+) -> RuntimeDependencies:
+    """Construct runtime ports around exactly one selected live provider."""
+    return build_runtime_dependencies(
+        overlay,
+        selected_provider_id=selected_provider_id,
+        selected_pilot_spec_ids=selected_pilot_spec_ids,
+        llm_failure_policy=failure_policy,
+        secret_resolver=secret_resolver,
+        http_transport=http_transport,
+        sleeper=sleeper,
+    )
 
 
 def build_learning_dependencies(
@@ -910,13 +1086,22 @@ def assemble_match_with_dependencies(
     side_a: str = "red",
     side_b: str = "blue",
     pilots_override: Mapping[str, PilotProtocol] | None = None,
+    launch_provenance: ModelSOMatchLaunchProvenance | None = None,
 ) -> LiveMatchStack:
     """Pure DI seam used by production root and hermetic tests."""
     _require_valid_budgets(red, dependencies.catalog)
     _require_valid_budgets(blue, dependencies.catalog)
     mech_a = f"mech.{side_a}.01"
     mech_b = f"mech.{side_b}.01"
-    if pilots_override is None:
+    required = {mech_a, mech_b}
+    pilots = dict(pilots_override or {})
+    unexpected = set(pilots) - required
+    if unexpected:
+        raise ValueError(
+            f"pilots_override keys must be a subset of {sorted(required)}; "
+            f"got unexpected {sorted(unexpected)}"
+        )
+    if required - set(pilots):
         bound_pilot_factory = dependencies.pilot_factory.with_observer(
             LedgerLlmCompletionObserver(
                 correlation_id=identity.correlation_id,
@@ -925,22 +1110,14 @@ def assemble_match_with_dependencies(
             )
         )
         match_dependencies = replace(dependencies, pilot_factory=bound_pilot_factory)
-        pilots = {
-            mech_a: _resolved_pilot(
+        if mech_a not in pilots:
+            pilots[mech_a] = _resolved_pilot(
                 red, loadout_path=red_loadout_path, dependencies=match_dependencies
-            ),
-            mech_b: _resolved_pilot(
-                blue, loadout_path=blue_loadout_path, dependencies=match_dependencies
-            ),
-        }
-    else:
-        required = {mech_a, mech_b}
-        if set(pilots_override) != required:
-            raise ValueError(
-                f"pilots_override keys must be exactly {sorted(required)}; "
-                f"got {sorted(pilots_override)}"
             )
-        pilots = dict(pilots_override)
+        if mech_b not in pilots:
+            pilots[mech_b] = _resolved_pilot(
+                blue, loadout_path=blue_loadout_path, dependencies=match_dependencies
+            )
     dependencies.bus.subscribe(dependencies.ledger.append)
     runner = MatchRunner(
         identity=identity,
@@ -950,13 +1127,12 @@ def assemble_match_with_dependencies(
         bus=dependencies.bus,
         event_factory=dependencies.event_factory,
         catalog=dependencies.catalog,
+        arena=dependencies.arena,
         pilots=pilots,
         max_ticks=max_ticks,
         side_a=side_a,
         side_b=side_b,
-        spawn_a=ModelSOPosition(x=5, y=5),
-        spawn_b=ModelSOPosition(x=35, y=35),
-        arena_size=ARENA_SIZE_CELLS,
+        launch_provenance=launch_provenance,
     )
     scoring = ReducerScoring(
         identity.match_id,
@@ -989,6 +1165,147 @@ def assemble_match_with_dependencies(
         catalog=dependencies.catalog,
         closer=dependencies.closer,
     )
+
+
+def assemble_selected_match_live(
+    *,
+    overlay: ModelSOApplicationOverlay,
+    roster: ModelSOPlayerRosterBinding,
+    sessions: AuthenticatedSessionCapability,
+    command: ModelSOStartMatchCommand,
+    context: ModelSOStartMatchAuthorityContext,
+    identity: MatchIdentity,
+    loadouts: Mapping[str, ModelSOLoadout],
+    runtime_factory: Callable[[ModelSOApplicationOverlay], RuntimeDependencies],
+    live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
+    live_runtime_factory: Callable[
+        [ModelSOApplicationOverlay, str, tuple[str, ...]], RuntimeDependencies
+    ]
+    | None = None,
+    seed: int,
+    max_ticks: int,
+) -> LiveMatchStack:
+    """Admit one selected match before constructing its exact runtime lane."""
+
+    if (live_provider_capability is None) != (live_runtime_factory is None):
+        raise ValueError(
+            "live_provider_capability and live_runtime_factory must be supplied together"
+        )
+
+    provenance = ProcessLocalMatchLaunchCoordinator(
+        overlay=overlay,
+        roster=roster,
+        sessions=sessions,
+        live_provider_capability=live_provider_capability,
+    ).admit_start_match(
+        command,
+        context=context,
+        match_id=identity.match_id,
+    )
+    assignments = {assignment.side: assignment for assignment in provenance.seat_assignments}
+    selected_loadouts: dict[str, ModelSOLoadout] = {}
+    sides: tuple[Side, Side] = ("red", "blue")
+    for side in sides:
+        loadout_id = assignments[side].loadout_id
+        try:
+            loadout = loadouts[loadout_id]
+        except KeyError as exc:
+            raise ValueError(f"selected {side} loadout is unavailable: {loadout_id!r}") from exc
+        if loadout.id != loadout_id:
+            raise ValueError(
+                f"selected {side} loadout mapping key {loadout_id!r} does not match "
+                f"loadout id {loadout.id!r}"
+            )
+        selected_loadouts[side] = loadout
+
+    model_identities = {
+        model_identity.model_identity_id: model_identity
+        for model_identity in overlay.llm.model_identities
+    }
+    providers = {provider.provider_id: provider for provider in overlay.llm.providers}
+    selected_live_bindings: list[tuple[str, str]] = []
+    for assignment in assignments.values():
+        if not isinstance(assignment, ModelSOModelSeatAssignment):
+            continue
+        selected_loadout = selected_loadouts[assignment.side]
+        if selected_loadout.pilot_id != assignment.pilot_spec_id:
+            raise ValueError(
+                f"selected {assignment.side} model loadout pilot_id "
+                f"{selected_loadout.pilot_id!r} does not match admitted pilot_spec_id "
+                f"{assignment.pilot_spec_id!r}"
+            )
+        model_identity = model_identities[assignment.model_identity_id]
+        provider = providers[model_identity.provider_binding_id]
+        if not isinstance(provider, ModelSOStubLlmProviderBinding):
+            selected_live_bindings.append((provider.provider_id, assignment.pilot_spec_id))
+
+    # The same configured model may occupy both seats with different
+    # contract-bound personas (for example GLM sniper vs GLM opportunist).
+    # Build one provider lane and validate every selected pilot spec against
+    # it; distinct model identities/providers remain a separate capability
+    # decision and are rejected by launch admission.
+    unique_live_providers = list(
+        dict.fromkeys(provider_id for provider_id, _pilot_spec_id in selected_live_bindings)
+    )
+    if len(unique_live_providers) > 1:
+        raise ValueError("admitted launch must select one exact non-stub model identity")
+    if unique_live_providers:
+        if live_runtime_factory is None:
+            raise ValueError("admitted live provider has no live_runtime_factory")
+        selected_provider_id = unique_live_providers[0]
+        selected_pilot_spec_ids = tuple(
+            dict.fromkeys(
+                assignment.pilot_spec_id
+                for assignment in assignments.values()
+                if isinstance(assignment, ModelSOModelSeatAssignment)
+            )
+        )
+        dependencies = live_runtime_factory(
+            overlay,
+            selected_provider_id,
+            selected_pilot_spec_ids,
+        )
+    else:
+        dependencies = runtime_factory(overlay)
+    try:
+        inbox = ProcessLocalHumanLoopbackCoordinator(sessions=sessions)
+        human_claims = {claim.side: claim for claim in context.human_seats}
+        pilots: dict[str, PilotProtocol] = {}
+        for side in sides:
+            assignment = assignments[side]
+            mech_id = f"mech.{side}.01"
+            if isinstance(assignment, ModelSOHumanSeatAssignment):
+                try:
+                    claim = human_claims[side]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"admitted human seat {side!r} has no authenticated authority claim"
+                    ) from exc
+                pilots[mech_id] = HumanPilot(
+                    inbox=cast(ProcessLocalHumanDecisionInbox, inbox),
+                    principal_id=claim.principal_id,
+                    session_id=claim.session_id,
+                    side=side,
+                )
+
+        stack = assemble_match_with_dependencies(
+            dependencies=dependencies,
+            red=selected_loadouts["red"],
+            blue=selected_loadouts["blue"],
+            seed=seed,
+            max_ticks=max_ticks,
+            identity=identity,
+            pilots_override=pilots,
+            launch_provenance=provenance,
+        )
+        return replace(
+            stack,
+            _launch_provenance=provenance,
+            _human_inbox=inbox,
+        )
+    except Exception:
+        dependencies.close()
+        raise
 
 
 def assemble_match_live(
@@ -1070,6 +1387,7 @@ __all__ = [
     "RuntimeDependencies",
     "assemble_match_live",
     "assemble_match_with_dependencies",
+    "assemble_selected_match_live",
     "build_adaptation_dependencies",
     "build_duel_executor",
     "build_duel_executor_with_dependencies",

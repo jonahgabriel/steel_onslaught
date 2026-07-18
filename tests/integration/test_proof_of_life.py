@@ -29,9 +29,11 @@ import json
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import IO
 
 import pytest
 from click.testing import CliRunner
@@ -53,59 +55,77 @@ DECISIVE_SEED = 12345
 # Draw seed — the passive loadouts draw structurally, independent of seed.
 DRAW_SEED = 99999
 
-_WS_PORT = 8765
-_VITE_PORT = 5173
 _VITE_BOOTSTRAP = _REPO_ROOT / "frontend" / ".steel-onslaught-bootstrap.generated.json"
 
 
+def _free_port() -> int:
+    """Return an available localhost port for one hermetic child server."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _write_overlay(
-    tmp_path: Path, *, ledger_path: Path, leaderboard_path: Path
+    tmp_path: Path,
+    *,
+    ledger_path: Path,
+    leaderboard_path: Path,
+    websocket_port: int = 8765,
+    milliseconds_per_tick: int = 500,
 ) -> tuple[ModelSOApplicationOverlay, Path]:
-    overlay = ModelSOApplicationOverlay.model_validate(
-        complete_test_overlay(
-            {
-                "schema_version": "1",
-                "bus": {"kind": "in_process"},
-                "event_ledger": {
-                    "kind": "sqlite",
-                    "path": ledger_path,
-                    "journal_mode": "WAL",
-                    "check_same_thread": True,
-                    "transaction_mode": "autocommit",
-                    "event_schema": "canonical_event_v1",
-                },
-                "leaderboard": {
-                    "kind": "sqlite",
-                    "path": leaderboard_path,
-                    "journal_mode": "WAL",
-                    "check_same_thread": True,
-                    "transaction_mode": "autocommit",
-                    "storage_schema": "leaderboard_v1",
-                },
-                "learning_artifacts": {
-                    "kind": "filesystem_yaml",
-                    "evaluation_root": tmp_path / "evaluations",
-                    "lineage_root": tmp_path / "lineage",
-                },
-                "evaluation_storage": {
-                    "kind": "sqlite",
-                    "root": tmp_path / "evaluations",
-                    "journal_mode": "WAL",
-                    "check_same_thread": True,
-                    "transaction_mode": "autocommit",
-                    "event_schema": "canonical_event_v1",
-                    "leaderboard_schema": "leaderboard_v1",
-                },
-                "contracts": {
-                    "catalog_dir": _REPO_ROOT / "contracts_data",
-                    "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",
-                },
-                "clock": {"kind": "system_utc"},
-                "identity": {"kind": "system"},
+    raw_overlay = complete_test_overlay(
+        {
+            "schema_version": "1",
+            "bus": {"kind": "in_process"},
+            "event_ledger": {
+                "kind": "sqlite",
+                "path": ledger_path,
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
             },
-            tmp_path,
-        )
+            "leaderboard": {
+                "kind": "sqlite",
+                "path": leaderboard_path,
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "storage_schema": "leaderboard_v1",
+            },
+            "learning_artifacts": {
+                "kind": "filesystem_yaml",
+                "evaluation_root": tmp_path / "evaluations",
+                "lineage_root": tmp_path / "lineage",
+            },
+            "evaluation_storage": {
+                "kind": "sqlite",
+                "root": tmp_path / "evaluations",
+                "journal_mode": "WAL",
+                "check_same_thread": True,
+                "transaction_mode": "autocommit",
+                "event_schema": "canonical_event_v1",
+                "leaderboard_schema": "leaderboard_v1",
+            },
+            "contracts": {
+                "catalog_dir": _REPO_ROOT / "contracts_data",
+                "pilot_registry_dir": _REPO_ROOT / "contracts_data" / "pilots",
+            },
+            "clock": {"kind": "system_utc"},
+            "identity": {"kind": "system"},
+        },
+        tmp_path,
     )
+    # complete_test_overlay supplies the canonical default; this proof lane
+    # overrides only its injected loopback endpoint and pacing.
+    raw_overlay["frontend_transport"] = {
+        "kind": "websocket",
+        "contract": "steel_onslaught.frontend_transport.v1",
+        "websocket_url": f"ws://127.0.0.1:{websocket_port}/events",
+        "event_schema": "canonical_event_v1",
+        "milliseconds_per_tick": milliseconds_per_tick,
+    }
+    overlay = ModelSOApplicationOverlay.model_validate(raw_overlay)
     overlay_path = tmp_path / "application.json"
     overlay_path.write_text(json.dumps(overlay.model_dump(mode="json")), encoding="utf-8")
     return overlay, overlay_path
@@ -121,13 +141,25 @@ def capture_cli_replay(overlay_path: Path, match_id: str) -> str:
     return result.output
 
 
-def _wait_for_port(port: int, *, timeout: float = 60.0) -> None:
-    # "localhost" so both IPv4 (websockets, 127.0.0.1) and IPv6 (Vite, ::1)
-    # listeners are detected — create_connection walks every addrinfo entry.
+def _wait_for_port(
+    port: int,
+    *,
+    timeout: float = 60.0,
+    proc: subprocess.Popen[bytes] | None = None,
+    stderr_file: IO[bytes] | None = None,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            detail = ""
+            if stderr_file is not None:
+                stderr_file.seek(0)
+                detail = stderr_file.read().decode("utf-8", "replace").strip()
+            raise RuntimeError(
+                f"server exited early (rc={proc.returncode}) before port {port} opened:\n{detail}"
+            )
         with contextlib.suppress(OSError):
-            with socket.create_connection(("localhost", port), timeout=1.0):
+            with socket.create_connection(("127.0.0.1", port), timeout=1.0):
                 return
         time.sleep(0.2)
     raise TimeoutError(f"port {port} did not start listening within {timeout}s")
@@ -135,14 +167,15 @@ def _wait_for_port(port: int, *, timeout: float = 60.0) -> None:
 
 @contextlib.contextmanager
 def _subprocess_server(args: list[str], *, cwd: Path, port: int) -> Iterator[None]:
+    stderr_file = tempfile.TemporaryFile()
     proc = subprocess.Popen(
         args,
         cwd=cwd,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_file,
     )
     try:
-        _wait_for_port(port)
+        _wait_for_port(port, proc=proc, stderr_file=stderr_file)
         yield
     finally:
         proc.terminate()
@@ -151,6 +184,7 @@ def _subprocess_server(args: list[str], *, cwd: Path, port: int) -> Iterator[Non
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=10)
+        stderr_file.close()
 
 
 @contextlib.contextmanager
@@ -173,8 +207,16 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
     # 1) Run match live with the canonical decisive-victory seed.
     ledger_path = tmp_path / "match.sqlite"
     leaderboard_path = tmp_path / "leaderboard.sqlite"
+    ws_port = _free_port()
     overlay, overlay_path = _write_overlay(
-        tmp_path, ledger_path=ledger_path, leaderboard_path=leaderboard_path
+        tmp_path,
+        ledger_path=ledger_path,
+        leaderboard_path=leaderboard_path,
+        websocket_port=ws_port,
+        # The browser proof is a terminal-state projection assertion.  Pace its
+        # dedicated overlay at 1 ms/tick so match length never races a fixed
+        # browser wait; production overlays retain the 500 ms operator pace.
+        milliseconds_per_tick=1,
     )
     stack = assemble_match_live(
         overlay=overlay,
@@ -216,6 +258,7 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
     # 5) Web UI rendered output (Playwright — projection proof, NOT byte-identity).
     from playwright.sync_api import sync_playwright
 
+    vite_port = _free_port()
     serve_cmd = [
         sys.executable,
         "-c",
@@ -226,20 +269,30 @@ def test_proof_of_life_decisive_victory(tmp_path: Path) -> None:
         "--match",
         live_state.match_id,
     ]
-    vite_cmd = ["npm", "run", "dev"]
+    vite_cmd = [
+        "npm",
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(vite_port),
+        "--strictPort",
+    ]
     with (
         _generated_vite_bootstrap(overlay_path),
-        _subprocess_server(serve_cmd, cwd=_REPO_ROOT, port=_WS_PORT),
-        _subprocess_server(vite_cmd, cwd=_REPO_ROOT / "frontend", port=_VITE_PORT),
+        _subprocess_server(serve_cmd, cwd=_REPO_ROOT, port=ws_port),
+        _subprocess_server(vite_cmd, cwd=_REPO_ROOT / "frontend", port=vite_port),
     ):
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
-            page.goto(f"http://localhost:{_VITE_PORT}/")  # dev server, started above
+            page.goto(f"http://127.0.0.1:{vite_port}/")
             victory_selector = (
                 f'[data-testid="arena-victory"][data-winner="{live_state.winner_id}"]'
             )
-            page.wait_for_selector(victory_selector, timeout=10_000)
+            page.wait_for_selector(victory_selector, timeout=30_000)
             # R10: assert the rendered arena victory state names the exact winner.
             victory = page.locator(victory_selector)
             assert victory.get_attribute("data-winner") == live_state.winner_id

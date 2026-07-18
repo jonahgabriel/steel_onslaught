@@ -17,6 +17,11 @@ from pydantic import (
     model_validator,
 )
 
+from steel_onslaught.contracts.player_selection import (
+    ModelSOModelIdentityBinding,
+    ModelSOPlayerRosterProjection,
+)
+
 
 class _ClosedBinding(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -66,6 +71,7 @@ class ModelSOSQLiteEvaluationStorageBinding(_ClosedBinding):
 class ModelSOContractBindings(_ClosedBinding):
     catalog_dir: Path
     pilot_registry_dir: Path
+    arena_id: StrictStr = Field(pattern=r"^[a-z][a-z0-9_]*$")
 
 
 class ModelSOSystemClockBinding(_ClosedBinding):
@@ -97,6 +103,38 @@ class ModelSOFrontendTransportBinding(_ClosedBinding):
             raise ValueError("websocket_url must not contain a query or fragment")
         if parsed.path in {"", "/"}:
             raise ValueError("websocket_url must declare an explicit stream path")
+        if parsed.port is None:
+            raise ValueError("websocket_url must declare an explicit port")
+        return value
+
+
+class ModelSOFrontendCommandGatewayBinding(_ClosedBinding):
+    """Public local-browser command ingress selected by the server root.
+
+    The binding exposes only a loopback WebSocket endpoint and the exact
+    process-local authority contract. Principal/session identities and all
+    provider capabilities remain server-held.
+    """
+
+    kind: Literal["websocket"]
+    contract: Literal["steel_onslaught.browser_command_gateway.v1"]
+    websocket_url: StrictStr = Field(min_length=1)
+    authority_scope: Literal["injected_process_session"]
+
+    @field_validator("websocket_url")
+    @classmethod
+    def _complete_loopback_websocket_endpoint(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
+            raise ValueError("websocket_url must be a complete ws(s) URL")
+        if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("websocket_url must use a loopback host")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("websocket_url must not contain user information")
+        if parsed.query or parsed.fragment:
+            raise ValueError("websocket_url must not contain a query or fragment")
+        if parsed.path in {"", "/"}:
+            raise ValueError("websocket_url must declare an explicit command path")
         if parsed.port is None:
             raise ValueError("websocket_url must declare an explicit port")
         return value
@@ -181,14 +219,29 @@ class ModelSOLlmBindings(_ClosedBinding):
     """Complete provider, persona, and secret-capability selection."""
 
     providers: tuple[LlmProviderBinding, ...] = Field(min_length=1)
+    model_identities: tuple[ModelSOModelIdentityBinding, ...]
     personas_dir: Path
     secret_resolver: SecretResolverBinding
 
     @model_validator(mode="after")
-    def _unique_provider_ids(self) -> Self:
+    def _valid_provider_and_model_identity_ids(self) -> Self:
         provider_ids = [provider.provider_id for provider in self.providers]
         if len(provider_ids) != len(set(provider_ids)):
             raise ValueError("providers must declare unique provider_id values")
+        identity_ids = [identity.model_identity_id for identity in self.model_identities]
+        if len(identity_ids) != len(set(identity_ids)):
+            raise ValueError("model_identities must declare unique model_identity_id values")
+        unknown_providers = sorted(
+            {
+                identity.provider_binding_id
+                for identity in self.model_identities
+                if identity.provider_binding_id not in provider_ids
+            }
+        )
+        if unknown_providers:
+            raise ValueError(
+                f"model_identities reference unknown provider bindings: {unknown_providers}"
+            )
         if self.secret_resolver.kind == "none" and any(
             isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
             and provider.secret_ref is not None
@@ -231,12 +284,19 @@ class ModelSOApplicationOverlay(_ClosedBinding):
 
 
 class ModelSOFrontendBootstrap(_ClosedBinding):
-    """Strict public projection of one overlay for browser composition."""
+    """Strict public projection for receive-only browser composition.
+
+    ``player_roster`` is explicitly null until a validated server-owned roster
+    is supplied to the export boundary.  Null is safe unavailability, never a
+    signal for the browser to infer or discover player options.
+    """
 
     schema_version: Literal["1"]
     kind: Literal["steel_onslaught.frontend_bootstrap"]
     overlay_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     frontend_transport: ModelSOFrontendTransportBinding
+    player_roster: ModelSOPlayerRosterProjection | None = None
+    command_gateway: ModelSOFrontendCommandGatewayBinding | None = None
 
 
 __all__ = [
@@ -244,11 +304,13 @@ __all__ = [
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOFrontendBootstrap",
+    "ModelSOFrontendCommandGatewayBinding",
     "ModelSOFrontendTransportBinding",
     "ModelSOInProcessBusBinding",
     "ModelSOInjectedSecretResolverBinding",
     "ModelSOLlmBindings",
     "ModelSOLlmRetryBinding",
+    "ModelSOModelIdentityBinding",
     "ModelSONoSecretResolverBinding",
     "ModelSOOpenAICompatibleProviderBinding",
     "ModelSOSQLiteEvaluationStorageBinding",

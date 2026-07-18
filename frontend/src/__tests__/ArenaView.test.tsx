@@ -13,11 +13,16 @@ import "./setup-dom";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnvelopeHandler, WebSocketLike } from "../lib/event_stream";
 import { EventStream } from "../lib/event_stream";
 import { parseEnvelope } from "../types";
-import ArenaView from "../views/ArenaView";
+import ArenaView, {
+  GRID_CELLS,
+  spriteOffsets,
+  spritePlacements,
+  spriteSizePct,
+} from "../views/ArenaView";
 import { makeEnvelope } from "./helpers";
 
 const FIXTURES_DIR = join(process.cwd(), "src/__tests__/fixtures");
@@ -77,6 +82,62 @@ describe("ArenaView", () => {
     expect(screen.getByTestId("arena-grid")).toBeInTheDocument();
   });
 
+  it("drives the grid and obstacle layer from the required arena snapshot", async () => {
+    const base = parseEnvelope(JSON.parse(fixtureText("match_started")));
+    if (base.event_type !== "match_started") throw new Error("wrong fixture event type");
+    const started = makeEnvelope("match_started", {
+      ...base.payload,
+      mechs: base.payload.mechs.map((mech, index) => ({
+        ...mech,
+        position: index === 0 ? { x: 4, y: 4 } : { x: 55, y: 55 },
+      })),
+      arena: {
+        ...base.payload.arena,
+        size: 60,
+        spawn_a: { x: 4, y: 4 },
+        spawn_b: { x: 55, y: 55 },
+        obstacles: [
+          { x: 30, y: 30 },
+          { x: 31, y: 30 },
+        ],
+      },
+    });
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => socket.emit(JSON.stringify(started)));
+    expect(screen.getByTestId("arena-grid")).toHaveAttribute("viewBox", "0 0 60 60");
+    expect(screen.getAllByTestId("arena-obstacle")).toHaveLength(2);
+    expect(screen.getByTestId("arena-mech-mech.b.01")).toBeInTheDocument();
+  });
+
+  it("de-overlaps a nearby pair while preserving true-cell anchors", async () => {
+    const base = parseEnvelope(JSON.parse(fixtureText("match_started")));
+    if (base.event_type !== "match_started") throw new Error("wrong fixture event type");
+    const started = makeEnvelope("match_started", {
+      ...base.payload,
+      mechs: base.payload.mechs.map((mech, index) => ({
+        ...mech,
+        position: { x: 10 + index, y: 10 },
+      })),
+      arena: {
+        ...base.payload.arena,
+        size: GRID_CELLS,
+        spawn_a: { x: 10, y: 10 },
+        spawn_b: { x: 11, y: 10 },
+        obstacles: [],
+      },
+    });
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => socket.emit(JSON.stringify(started)));
+    const a = screen.getByTestId("arena-mech-mech.a.01");
+    const b = screen.getByTestId("arena-mech-mech.b.01");
+    expect(a).toHaveAttribute("data-paired", "true");
+    expect(b).toHaveAttribute("data-paired", "true");
+    expect(screen.getByTestId("arena-cell-anchor-mech.a.01")).toBeInTheDocument();
+    expect(screen.getByTestId("arena-cell-anchor-mech.b.01")).toBeInTheDocument();
+  });
+
   it("draws a per-weapon-class tracer after WEAPON_FIRED", async () => {
     const { socket, subscribe } = makeStubStream();
     render(<ArenaView subscribe={subscribe} />);
@@ -97,27 +158,48 @@ describe("ArenaView", () => {
     const blue = started.payload.mechs.find((mech) => mech.side === "blue");
     if (red === undefined || blue === undefined) throw new Error("fixture sides missing");
     const sharedPosition = { x: 11, y: 13 };
-    const coLocated = {
-      ...started,
-      payload: {
-        ...started.payload,
-        // BLUE intentionally folds first: position-based lookup would color
-        // RED's tracer blue when both mechs occupy this crossing cell.
-        mechs: [
-          { ...blue, position: sharedPosition },
-          { ...red, position: sharedPosition },
-        ],
+    const moveRed = makeEnvelope(
+      "movement_resolved",
+      {
+        from: red.position,
+        to: sharedPosition,
+        ticks_consumed: 30,
+        pressure_consumed: 8,
       },
-    };
+      { matchId: started.match_id, tick: 1, mechId: red.mech_id, playerId: red.player_id },
+    );
+    const moveBlue = makeEnvelope(
+      "movement_resolved",
+      {
+        from: blue.position,
+        to: sharedPosition,
+        ticks_consumed: 30,
+        pressure_consumed: 24,
+      },
+      { matchId: started.match_id, tick: 1, mechId: blue.mech_id, playerId: blue.player_id },
+    );
+    const blueFires = makeEnvelope(
+      "weapon_fired",
+      {
+        weapon_id: "module.weapon.machine_gun",
+        target_id: red.mech_id,
+        hit_probability: 0.65,
+        pressure_cost: 4,
+        heat_generated: 6,
+      },
+      { matchId: started.match_id, tick: 1, mechId: blue.mech_id, playerId: blue.player_id },
+    );
     const { socket, subscribe } = makeStubStream();
     render(<ArenaView subscribe={subscribe} />);
     await act(async () => {
-      socket.emit(JSON.stringify(coLocated));
-      socket.emit(fixtureText("weapon_fired"));
+      socket.emit(JSON.stringify(started));
+      socket.emit(JSON.stringify(moveRed));
+      socket.emit(JSON.stringify(moveBlue));
+      socket.emit(JSON.stringify(blueFires));
     });
 
     expect(screen.getByTestId("tracer-light").style.getPropertyValue("--so-side")).toContain(
-      "--ember",
+      "--arc",
     );
   });
 
@@ -169,6 +251,43 @@ describe("ArenaView", () => {
       socket.emit(fixtureText("movement_resolved"));
     });
     expect(screen.getAllByTestId("arena-trail-mech.a.01").length).toBeGreaterThan(0);
+  });
+
+  it("expires movement trails after their visual TTL", async () => {
+    vi.useFakeTimers();
+    try {
+      const { socket, subscribe } = makeStubStream();
+      render(<ArenaView subscribe={subscribe} />);
+      await act(async () => {
+        socket.emit(fixtureText("match_started"));
+        socket.emit(fixtureText("movement_resolved"));
+      });
+      expect(screen.getAllByTestId("arena-trail-mech.a.01")).not.toHaveLength(0);
+      await act(async () => {
+        vi.advanceTimersByTime(3_000);
+      });
+      expect(screen.queryByTestId("arena-trail-mech.a.01")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears transient arena overlays when victory is declared", async () => {
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => {
+      socket.emit(fixtureText("match_started"));
+      socket.emit(fixtureText("movement_resolved"));
+      socket.emit(fixtureText("weapon_fired"));
+    });
+    expect(screen.getByTestId("arena-trail-mech.a.01")).toBeInTheDocument();
+    expect(screen.getByTestId("tracer-light")).toBeInTheDocument();
+    await act(async () => {
+      socket.emit(fixtureText("victory_declared"));
+    });
+    expect(screen.queryByTestId("arena-trail-mech.a.01")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tracer-light")).not.toBeInTheDocument();
+    expect(screen.getByTestId("arena-victory")).toBeInTheDocument();
   });
 
   it("shows range rings only around the selected mech", async () => {
@@ -225,6 +344,36 @@ describe("ArenaView", () => {
     expect(banner.textContent).toContain("player.a");
   });
 
+  it("shows a draw banner when match_ended has no winner", async () => {
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => {
+      socket.emit(fixtureText("match_started"));
+      socket.emit(
+        JSON.stringify(makeEnvelope("match_ended", { reason: "draw_max_ticks", winner_id: null })),
+      );
+    });
+    expect(screen.getByTestId("arena-draw")).toBeInTheDocument();
+    expect(screen.getByTestId("draw-banner")).toHaveAttribute("data-reason", "draw_max_ticks");
+    expect(screen.queryByTestId("arena-victory")).not.toBeInTheDocument();
+  });
+
+  it("keeps a decisive victory banner when its terminal envelope carries a winner", async () => {
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => {
+      socket.emit(fixtureText("match_started"));
+      socket.emit(fixtureText("victory_declared"));
+      socket.emit(
+        JSON.stringify(
+          makeEnvelope("match_ended", { reason: "last_mech_standing", winner_id: "player.a" }),
+        ),
+      );
+    });
+    expect(screen.getByTestId("arena-victory")).toBeInTheDocument();
+    expect(screen.queryByTestId("arena-draw")).not.toBeInTheDocument();
+  });
+
   it("does not issue any fetch or POST (pure projection)", async () => {
     const fetchCalls: string[] = [];
     const originalFetch = globalThis.fetch;
@@ -243,6 +392,40 @@ describe("ArenaView", () => {
       expect(fetchCalls).toHaveLength(0);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("arena sprite placement", () => {
+  const anchor = (mechId: string, x: number, y: number) => ({
+    mechId,
+    position: { x, y },
+  });
+
+  it("scales the unit footprint with the arena size", () => {
+    expect(spriteSizePct(40)).toBe(10);
+    expect(spriteSizePct(60)).toBeCloseTo((4 / 60) * 100, 6);
+  });
+
+  it("nudges adjacent units apart deterministically", () => {
+    const offsets = spriteOffsets([anchor("mech.a.01", 10, 10), anchor("mech.b.01", 11, 10)]);
+    expect(offsets["mech.a.01"]?.paired).toBe(true);
+    expect(offsets["mech.b.01"]?.paired).toBe(true);
+    expect(offsets["mech.a.01"]?.dx).toBeLessThan(0);
+    expect(offsets["mech.b.01"]?.dx).toBeGreaterThan(0);
+  });
+
+  it("keeps a corner pair inside the arena", () => {
+    const placements = spritePlacements(
+      [anchor("mech.a.01", 58, 58), anchor("mech.b.01", 59, 59)],
+      60,
+    );
+    const half = (spriteSizePct(60) * 0.85) / 2;
+    for (const placement of Object.values(placements)) {
+      expect(placement.left).toBeGreaterThanOrEqual(half);
+      expect(placement.left).toBeLessThanOrEqual(100 - half);
+      expect(placement.top).toBeGreaterThanOrEqual(half);
+      expect(placement.top).toBeLessThanOrEqual(100 - half);
     }
   });
 });

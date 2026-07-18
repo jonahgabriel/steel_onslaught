@@ -6,16 +6,24 @@ import ast
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
 from steel_onslaught.contracts.mode import ModelSOModeTransitionCompletedPayload
+from steel_onslaught.contracts.player_selection import (
+    ModelSOHumanDecisionSource,
+    ModelSOHumanSeatAssignment,
+    ModelSOMatchLaunchProvenance,
+    ModelSOModelSeatAssignment,
+)
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.events.payloads import (
     CURRENT_CONSUMED_PAYLOAD_MODELS,
     ModelSOCurrentLiveMechSnapshot,
+    ModelSOLlmCompletionFailedPayload,
     ModelSOMatchStartedPayload,
     ModelSOPilotDecisionPayload,
 )
@@ -228,6 +236,63 @@ def test_current_match_started_rejects_each_missing_mech_field(field_name: str) 
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "schema_version",
+        "kind",
+        "arena_id",
+        "size",
+        "spawn_a",
+        "spawn_b",
+        "obstacles",
+    ],
+)
+def test_current_match_started_rejects_each_missing_arena_field(field_name: str) -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    del raw["arena"][field_name]
+
+    with pytest.raises(ValidationError, match=field_name):
+        _validate(SOEventType.MATCH_STARTED, raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
+        ("roster-count", "exactly two mechs"),
+        ("out-of-bounds", "outside arena"),
+        ("obstacle", "occupies an arena obstacle"),
+        ("swapped-spawns", "canonical roster order"),
+    ],
+)
+def test_current_match_started_cross_validates_roster_positions_against_arena(
+    case: str,
+    error: str,
+) -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    if case == "roster-count":
+        raw["mechs"] = raw["mechs"][:1]
+    elif case == "out-of-bounds":
+        raw["mechs"][0]["position"] = {"x": raw["arena"]["size"], "y": 5}
+    elif case == "obstacle":
+        raw["arena"]["obstacles"] = [{"x": 6, "y": 5}]
+        raw["mechs"][0]["position"] = {"x": 6, "y": 5}
+    elif case == "swapped-spawns":
+        first = raw["mechs"][0]["position"]
+        second = raw["mechs"][1]["position"]
+        raw["mechs"][0]["position"] = second
+        raw["mechs"][1]["position"] = first
+    else:  # pragma: no cover - closed parametrization
+        raise AssertionError(case)
+
+    with pytest.raises(ValidationError, match=error):
+        _validate(SOEventType.MATCH_STARTED, raw)
+
+
+@pytest.mark.unit
 def test_internal_runtime_defaults_do_not_become_current_live_wire_defaults() -> None:
     sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
     legacy_state_data = sample.model_dump(mode="python")["payload"]["mechs"][0]
@@ -243,6 +308,7 @@ def test_internal_runtime_defaults_do_not_become_current_live_wire_defaults() ->
                 "seed": 12345,
                 "max_ticks": 200,
                 "mechs": (legacy_state,),
+                "arena": sample.model_dump(mode="python")["payload"]["arena"],
             }
         )
 
@@ -256,6 +322,55 @@ def test_current_match_started_preserves_explicit_red_blue_sides() -> None:
     assert [mech.side for mech in validated.mechs] == ["red", "blue"]
     expected_fields = frozenset(ModelSOCurrentLiveMechSnapshot.model_fields)
     assert all(mech.model_fields_set == expected_fields for mech in validated.mechs)
+
+
+@pytest.mark.unit
+def test_match_started_accepts_closed_selected_launch_provenance() -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    launch_provenance = ModelSOMatchLaunchProvenance(
+        schema_version="1",
+        kind="steel_onslaught.match_launch_provenance",
+        match_id="match.01JABCDE0123456789ABCDEFGX",
+        launch_command_id=UUID(int=11),
+        launch_command_sha256="1" * 64,
+        overlay_sha256="2" * 64,
+        roster_id="roster.playable.local",
+        roster_sha256="3" * 64,
+        seat_assignments=(
+            ModelSOHumanSeatAssignment(
+                kind="human",
+                side="red",
+                player_id="player.red",
+                option_id="player_option.browser_human",
+                loadout_id="loadout.playable.red_light",
+                pilot_spec_id="pilot.human.browser",
+                option_sha256="4" * 64,
+                human_identity_id="human_identity.local_browser",
+                input_source="browser_command",
+            ),
+            ModelSOModelSeatAssignment(
+                kind="model",
+                side="blue",
+                player_id="player.blue",
+                option_id="player_option.local_model",
+                loadout_id="loadout.playable.blue_heavy",
+                pilot_spec_id="pilot.model.local",
+                option_sha256="5" * 64,
+                model_identity_id="model_identity.local_model",
+                persona_id="persona.local_model",
+                input_source="llm_completion",
+            ),
+        ),
+    )
+
+    validated = ModelSOMatchStartedPayload.model_validate(
+        {**raw, "launch_provenance": launch_provenance}
+    )
+
+    assert validated.launch_provenance == launch_provenance
+    assert validated.launch_provenance.seat_assignments[0].kind == "human"
+    assert validated.launch_provenance.seat_assignments[1].kind == "model"
 
 
 @pytest.mark.unit
@@ -334,6 +449,23 @@ def test_pilot_decision_event_validation_preserves_exact_emitted_keys() -> None:
 
 
 @pytest.mark.unit
+def test_pilot_decision_event_accepts_human_command_provenance() -> None:
+    sample = build_sample_envelopes()[SOEventType.PILOT_DECISION_MADE]
+    raw = sample.model_dump(mode="json")["payload"]
+    source = ModelSOHumanDecisionSource(
+        kind="human",
+        input_source="browser_command",
+        command_id=UUID(int=12),
+        turn_id="turn.match_01jabcde.tick_000001.red",
+        observation_sha256="6" * 64,
+    )
+
+    validated = ModelSOPilotDecisionPayload.model_validate({**raw, "decision_source": source})
+
+    assert validated.decision_source == source
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("unexpected", ["schema_version", "kind"])
 def test_pilot_decision_event_rejects_domain_only_keys(unexpected: str) -> None:
     sample = build_sample_envelopes()[SOEventType.PILOT_DECISION_MADE]
@@ -352,6 +484,96 @@ def test_pilot_decision_event_requires_action_params() -> None:
 
     with pytest.raises(ValidationError):
         ModelSOPilotDecisionPayload.model_validate(raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "semantic_failure_code",
+    [
+        "malformed_json",
+        "unknown_action",
+        "action_unavailable",
+        "invalid_action_parameters",
+    ],
+)
+def test_llm_invalid_response_accepts_each_closed_semantic_failure_code(
+    semantic_failure_code: str,
+) -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["semantic_failure_code"] = semantic_failure_code
+
+    validated = cast(
+        ModelSOLlmCompletionFailedPayload, _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+    )
+
+    assert validated.semantic_failure_code == semantic_failure_code
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("include_null_code", [False, True], ids=["missing", "null"])
+def test_llm_invalid_response_requires_semantic_failure_code(
+    include_null_code: bool,
+) -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    if include_null_code:
+        raw["semantic_failure_code"] = None
+    else:
+        del raw["semantic_failure_code"]
+
+    with pytest.raises(ValidationError, match="semantic_failure_code"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "reason_code",
+    ["provider_error", "consumer_error", "abandoned"],
+)
+def test_llm_non_invalid_response_forbids_semantic_failure_code(reason_code: str) -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["reason_code"] = reason_code
+
+    with pytest.raises(ValidationError, match="semantic_failure_code"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+
+@pytest.mark.unit
+def test_llm_invalid_response_rejects_unknown_semantic_failure_code() -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["semantic_failure_code"] = "forged_semantic_code"
+
+    with pytest.raises(ValidationError, match="semantic_failure_code"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+
+@pytest.mark.unit
+def test_llm_failed_finish_reason_accepts_safe_maximum_length_token() -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["finish_reason"] = "x" * 64
+
+    validated = cast(
+        ModelSOLlmCompletionFailedPayload, _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+    )
+
+    assert validated.finish_reason == "x" * 64
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("finish_reason", ["unsafe reason", "x" * 65])
+def test_llm_failed_finish_reason_rejects_unsafe_or_too_long_value(
+    finish_reason: str,
+) -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["finish_reason"] = finish_reason
+
+    with pytest.raises(ValidationError, match="finish_reason"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
 
 
 @pytest.mark.unit

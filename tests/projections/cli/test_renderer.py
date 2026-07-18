@@ -457,11 +457,16 @@ def test_renderer_does_not_modify_match_state() -> None:
             bus=bus,
         )
         bus.subscribe(lifecycle.handle)
-        mech = _match_started_payload()["mechs"][0]
+        started_payload = _match_started_payload()
         bus.publish(
             _env(
                 SOEventType.MATCH_STARTED,
-                {"seed": 1, "max_ticks": 3, "mechs": [mech]},
+                {
+                    "seed": 1,
+                    "max_ticks": 3,
+                    "mechs": started_payload["mechs"],
+                    "arena": started_payload["arena"],
+                },
                 tick=0,
                 mech_id="*",
                 player_id="*",

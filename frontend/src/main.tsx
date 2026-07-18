@@ -9,11 +9,15 @@ if (container === null) {
   throw new Error("missing #root container in index.html");
 }
 const rootContainer: HTMLElement = container;
+const browserSocketFactory = {
+  open: (url: string) => new WebSocket(url),
+};
 
 async function bootstrapApplication(): Promise<void> {
   const bootstrap = await loadFrontendBootstrap((path) => fetch(path));
   const application = createFrontendApplication(bootstrap, {
-    socketFactory: { open: (url) => new WebSocket(url) },
+    socketFactory: browserSocketFactory,
+    commandSocketFactory: browserSocketFactory,
     scheduler: {
       request: (callback) => requestAnimationFrame(callback),
       cancel: (handle) => cancelAnimationFrame(handle),

@@ -35,6 +35,7 @@ from pydantic import (
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.contracts.player_selection import DecisionSource
 from steel_onslaught.immutable import FrozenJSONMapping
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,7 @@ class SOPilotReasonCode(StrEnum):
     PREDICTED_INTERCEPT = "predicted_intercept"
     EVADE_SENSOR_LOCK = "evade_sensor_lock"
     NO_VIABLE_ACTION = "no_viable_action"
+    HUMAN_INPUT = "human_input"
     # LLM-pilot-specific: a decision made by the LLM, or a REMAIN fallback when
     # the LLM call failed / returned an invalid action.
     LLM_DECISION = "llm_decision"
@@ -87,6 +89,31 @@ class ModelSOPosition(BaseModel):
 
     x: StrictInt
     y: StrictInt
+
+
+class SOCompassDirection(StrEnum):
+    """Eight deterministic king-move directions exposed as terrain awareness."""
+
+    N = "n"
+    NE = "ne"
+    E = "e"
+    SE = "se"
+    S = "s"
+    SW = "sw"
+    W = "w"
+    NW = "nw"
+
+
+# One closed move-intent vocabulary shared by LLM, human-command, and event
+# contracts.  A direction must be executable by the deterministic runner.
+type SOMoveDirection = Literal[
+    "toward_enemy",
+    "defensive",
+    "flank_left",
+    "flank_right",
+    "toward_cover",
+    "hold_position",
+]
 
 
 class ModelSOPilotWeaponView(BaseModel):
@@ -150,6 +177,8 @@ class ModelSOPilotObservation(BaseModel):
     position: ModelSOPosition
     hp_percent: float = Field(ge=0.0, le=100.0)
     under_sensor_lock: bool
+    has_line_of_sight_to_enemy: bool = False
+    blocked_directions: tuple[SOCompassDirection, ...] = ()
 
     # Enemy state as observed (noisy, possibly stale; newest last).
     enemy_observations: list[ModelSOSensorReading]
@@ -193,6 +222,11 @@ class ModelSOPilotDecision(BaseModel):
     rationale: str | None = Field(
         default=None,
         description="Freeform natural-language reasoning (LLM pilots); None for heuristics.",
+    )
+    decision_source: DecisionSource | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Exact human-command or model-completion provenance when available.",
     )
 
     @field_validator("confidence")

@@ -220,4 +220,16 @@ describe("SpecPanel — synthetic state", () => {
     expect(screen.getByTestId("spec-mech.x.01")).toHaveAttribute("data-status", "destroyed");
     expect(screen.getByTestId("spec-status-mech.x.01").textContent).toContain("DESTROYED");
   });
+
+  it("exposes split-rail side identity and suppresses the right empty placeholder", () => {
+    render(<SpecPanel gauges={[]} side="right" emptyPlaceholder={false} />);
+    expect(screen.getByTestId("spec-rail-right")).toHaveAttribute("data-rail-side", "right");
+    expect(screen.queryByText("awaiting match_started…")).not.toBeInTheDocument();
+  });
+
+  it("keeps the left rail placeholder while awaiting match_started", () => {
+    render(<SpecPanel gauges={[]} />);
+    expect(screen.getByTestId("spec-rail-left")).toHaveAttribute("data-rail-side", "left");
+    expect(screen.getByText("awaiting match_started…")).toBeInTheDocument();
+  });
 });

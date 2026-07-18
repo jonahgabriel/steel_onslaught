@@ -61,6 +61,16 @@ const CURRENT_LIVE_MECH_FIELDS = [
   "overloaded_consecutive_ticks",
 ] as const;
 
+const CURRENT_LIVE_ARENA_FIELDS = [
+  "schema_version",
+  "kind",
+  "arena_id",
+  "size",
+  "spawn_a",
+  "spawn_b",
+  "obstacles",
+] as const;
+
 type MutableObject = Record<string, unknown>;
 
 function loadFixture(eventType: string): MutableObject {
@@ -250,6 +260,102 @@ describe("types parity against Python-emitted fixtures", () => {
     ).toThrow(/cost_usd|cost field/);
   });
 
+  it.each([
+    "malformed_json",
+    "unknown_action",
+    "action_unavailable",
+    "invalid_action_parameters",
+  ])("accepts closed LLM semantic failure code %s", (semanticFailureCode) => {
+    const parsed = parseEnvelope(
+      corruptPayload("llm_completion_failed", (payload) => {
+        payload["semantic_failure_code"] = semanticFailureCode;
+        payload["finish_reason"] = "x".repeat(64);
+      }),
+    );
+    if (parsed.event_type !== "llm_completion_failed") {
+      throw new Error("wrong LLM failure event type");
+    }
+    expect(parsed.payload.semantic_failure_code).toBe(semanticFailureCode);
+    expect(parsed.payload.finish_reason).toHaveLength(64);
+  });
+
+  it("accepts explicit null LLM failure metadata for a non-semantic failure", () => {
+    const parsed = parseEnvelope(
+      corruptPayload("llm_completion_failed", (payload) => {
+        payload["reason_code"] = "provider_error";
+        payload["semantic_failure_code"] = null;
+        payload["model"] = null;
+        payload["finish_reason"] = null;
+        payload["prompt_tokens"] = null;
+        payload["completion_tokens"] = null;
+        payload["cost_usd"] = null;
+      }),
+    );
+    if (parsed.event_type !== "llm_completion_failed") {
+      throw new Error("wrong LLM failure event type");
+    }
+    expect(parsed.payload.semantic_failure_code).toBeNull();
+    expect(parsed.payload.finish_reason).toBeNull();
+  });
+
+  it("requires a semantic failure code exactly for invalid_response", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          payload["semantic_failure_code"] = null;
+        }),
+      ),
+    ).toThrow(/semantic_failure_code/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          payload["reason_code"] = "consumer_error";
+        }),
+      ),
+    ).toThrow(/semantic_failure_code/);
+  });
+
+  it("rejects an unknown LLM semantic failure code", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          payload["semantic_failure_code"] = "forged_semantic_code";
+        }),
+      ),
+    ).toThrow(/semantic_failure_code/);
+  });
+
+  it.each([
+    "semantic_failure_code",
+    "model",
+    "finish_reason",
+    "prompt_tokens",
+    "completion_tokens",
+    "cost_usd",
+  ])("rejects missing required nullable LLM failure field %s", (field) => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          delete payload[field];
+        }),
+      ),
+    ).toThrow(new RegExp(field));
+  });
+
+  it.each([
+    ["empty", ""],
+    ["unsafe", "unsafe reason"],
+    ["too long", "x".repeat(65)],
+  ])("rejects %s LLM failure finish_reason", (_description, finishReason) => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("llm_completion_failed", (payload) => {
+          payload["finish_reason"] = finishReason;
+        }),
+      ),
+    ).toThrow(/finish_reason/);
+  });
+
   it("preserves explicit current-live RED/BLUE mech sides", () => {
     const current = parseEnvelope(loadFixture("match_started"));
     if (current.event_type !== "match_started") throw new Error("wrong current event type");
@@ -278,14 +384,98 @@ describe("types parity against Python-emitted fixtures", () => {
     ).toThrow(/under_sensor_lock/);
   });
 
+  it.each(CURRENT_LIVE_ARENA_FIELDS)("rejects missing current-live arena field %s", (field) => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          delete objectValue(payload["arena"], "arena")[field];
+        }),
+      ),
+    ).toThrow(new RegExp(field));
+  });
+
+  it("rejects invalid current-live arena bounds and duplicate obstacles", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          objectValue(payload["arena"], "arena")["obstacles"] = [{ x: 40, y: 0 }];
+        }),
+      ),
+    ).toThrow(/inside the arena/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          objectValue(payload["arena"], "arena")["obstacles"] = [
+            { x: 4, y: 4 },
+            { x: 4, y: 4 },
+          ];
+        }),
+      ),
+    ).toThrow(/duplicate/);
+  });
+
+  it("rejects a current-live roster without exactly two canonical seats", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          arrayValue(payload["mechs"], "mechs").pop();
+        }),
+      ),
+    ).toThrow(/exactly two mechs/);
+  });
+
+  it("rejects current-live mech positions outside arena bounds", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const mech = objectValue(arrayValue(payload["mechs"], "mechs")[0], "mechs[0]");
+          mech["position"] = { x: 40, y: 5 };
+        }),
+      ),
+    ).toThrow(/position must lie inside the arena/);
+  });
+
+  it("rejects current-live mech positions on arena obstacles", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          objectValue(payload["arena"], "arena")["obstacles"] = [{ x: 6, y: 5 }];
+          const mech = objectValue(arrayValue(payload["mechs"], "mechs")[0], "mechs[0]");
+          mech["position"] = { x: 6, y: 5 };
+        }),
+      ),
+    ).toThrow(/position must not occupy an arena obstacle/);
+  });
+
+  it("binds current-live mech positions to spawn points in canonical roster order", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const mechs = arrayValue(payload["mechs"], "mechs");
+          const first = objectValue(mechs[0], "mechs[0]");
+          const second = objectValue(mechs[1], "mechs[1]");
+          const firstPosition = first["position"];
+          first["position"] = second["position"];
+          second["position"] = firstPosition;
+        }),
+      ),
+    ).toThrow(/mechs\[0\]\.position must equal arena\.spawn_a/);
+  });
+
   it("projects only sanctioned fields for versioned historical replay", () => {
     const historicalStarted = corruptPayload("match_started", (payload) => {
       const mechs = arrayValue(payload["mechs"], "mechs");
       delete objectValue(mechs[0], "mechs[0]")["side"];
+      delete payload["arena"];
     });
     const started = parseHistoricalReplayEnvelope(historicalStarted);
     if (started.event_type !== "match_started") throw new Error("wrong historical event type");
     expect(started.payload.mechs[0]?.side).toBe("neutral");
+    expect(started.payload.arena.arena_id).toBe("historical_open_field");
+    expect(started.payload.mechs.map((mech) => mech.position)).toEqual([
+      started.payload.arena.spawn_a,
+      started.payload.arena.spawn_b,
+    ]);
 
     const historicalResolved = corruptPayload("llm_completion_resolved", (payload) => {
       delete payload["cost_usd"];
@@ -520,6 +710,81 @@ describe("types parity against Python-emitted fixtures", () => {
       payload["action"] = "vent";
     });
     expect(() => parseEnvelope(raw)).toThrow(/considered_actions/);
+  });
+
+  it("accepts closed selected-launch and human-command provenance", () => {
+    const started = corruptPayload("match_started", (payload) => {
+      payload["launch_provenance"] = {
+        schema_version: "1",
+        kind: "steel_onslaught.match_launch_provenance",
+        match_id: "match.01JABCDE0123456789ABCDEFGX",
+        launch_command_id: "11111111-1111-4111-8111-111111111111",
+        launch_command_sha256: "1".repeat(64),
+        overlay_sha256: "2".repeat(64),
+        roster_id: "roster.playable.local",
+        roster_sha256: "3".repeat(64),
+        seat_assignments: [
+          {
+            kind: "human",
+            side: "red",
+            player_id: "player.red",
+            option_id: "player_option.browser_human",
+            loadout_id: "loadout.playable.red_light",
+            pilot_spec_id: "pilot.human.browser",
+            option_sha256: "4".repeat(64),
+            human_identity_id: "human_identity.local_browser",
+            input_source: "browser_command",
+          },
+          {
+            kind: "model",
+            side: "blue",
+            player_id: "player.blue",
+            option_id: "player_option.local_model",
+            loadout_id: "loadout.playable.blue_heavy",
+            pilot_spec_id: "pilot.model.local",
+            option_sha256: "5".repeat(64),
+            model_identity_id: "model_identity.local_model",
+            persona_id: "persona.local_model",
+            input_source: "llm_completion",
+          },
+        ],
+      };
+    });
+    const decision = corruptPayload("pilot_decision_made", (payload) => {
+      payload["decision_source"] = {
+        kind: "human",
+        input_source: "browser_command",
+        command_id: "22222222-2222-4222-8222-222222222222",
+        turn_id: "turn.match_01jabcde.tick_000001.red",
+        observation_sha256: "6".repeat(64),
+      };
+    });
+
+    expect(parseEnvelope(started).payload).toHaveProperty("launch_provenance");
+    expect(parseEnvelope(decision).payload).toHaveProperty("decision_source");
+  });
+
+  it("accepts the explicit human-input pilot reason", () => {
+    const decision = corruptPayload("pilot_decision_made", (payload) => {
+      payload["reason_code"] = "human_input";
+    });
+
+    expect(parseEnvelope(decision).payload).toHaveProperty("reason_code", "human_input");
+  });
+
+  it("rejects unknown or contradictory provenance fields", () => {
+    const decision = corruptPayload("pilot_decision_made", (payload) => {
+      payload["decision_source"] = {
+        kind: "human",
+        input_source: "llm_completion",
+        command_id: "22222222-2222-4222-8222-222222222222",
+        turn_id: "turn.match_01jabcde.tick_000001.red",
+        observation_sha256: "6".repeat(64),
+        unexpected: true,
+      };
+    });
+
+    expect(() => parseEnvelope(decision)).toThrow(/unexpected|browser_command/);
   });
 
   for (const [description, mutate] of [

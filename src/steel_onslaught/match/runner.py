@@ -31,11 +31,13 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from steel_onslaught.bus.protocol import EventBus
+from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
+from steel_onslaught.contracts.player_selection import ModelSOMatchLaunchProvenance, Side
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
@@ -50,6 +52,7 @@ from steel_onslaught.events.payloads import (
     ModelSOWeaponFireIntentPayload,
 )
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
+from steel_onslaught.match.geometry import chebyshev_line, greedy_sidestep, line_of_sight_clear
 from steel_onslaught.match.initiative import order_by_initiative
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.state import (
@@ -82,13 +85,6 @@ _PRODUCER_NODE = "node.match.runner"
 # Match-scoped events have no single mech/player subject.
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 
-# Arena: square grid of this many cells per side (positions 0..size-1).
-ARENA_SIZE_CELLS = 40
-
-# Default spawn geometry for the minimal two-mech duel (Task 28 tests).
-# 10 Chebyshev cells apart so short-range sensors (range 15) acquire from tick 1.
-_SPAWN_A = ModelSOPosition(x=0, y=0)
-_SPAWN_B = ModelSOPosition(x=10, y=10)
 _FACING_A = 45
 _FACING_B = 225
 
@@ -109,6 +105,10 @@ _INTENT_EVENT_TYPES = [
 
 def _clamp(value: int, magnitude: int) -> int:
     return max(-magnitude, min(magnitude, value))
+
+
+def _sign(value: int) -> int:
+    return (value > 0) - (value < 0)
 
 
 @dataclass(frozen=True)
@@ -132,15 +132,14 @@ class MatchRunner:
         bus: EventBus,
         event_factory: EventFactory,
         catalog: MatchContractCatalog,
+        arena: ModelSOArenaSpec,
         pilots: dict[str, PilotProtocol],
         max_ticks: int,
         side_a: str = "a",
         side_b: str = "b",
-        spawn_a: ModelSOPosition = _SPAWN_A,
-        spawn_b: ModelSOPosition = _SPAWN_B,
         facing_a: int = _FACING_A,
         facing_b: int = _FACING_B,
-        arena_size: int = ARENA_SIZE_CELLS,
+        launch_provenance: ModelSOMatchLaunchProvenance | None = None,
     ) -> None:
         self._identity = identity
         self._match_id = identity.match_id
@@ -154,13 +153,23 @@ class MatchRunner:
         self._max_ticks = max_ticks
         self._side_a = side_a
         self._side_b = side_b
-        self._spawn_a = spawn_a
-        self._spawn_b = spawn_b
+        self._arena = arena.to_snapshot()
+        self._spawn_a = self._arena.spawn_a
+        self._spawn_b = self._arena.spawn_b
         self._facing_a = facing_a
         self._facing_b = facing_b
-        self._arena_size = arena_size
+        self._arena_size = self._arena.size
+        self._obstacles = self._arena.obstacle_cells
         self._catalog = catalog
         self._pilots = dict(pilots)
+        self._launch_provenance = self._validate_launch_provenance(
+            launch_provenance,
+            identity=identity,
+            loadout_a=loadout_a,
+            loadout_b=loadout_b,
+            side_a=side_a,
+            side_b=side_b,
+        )
 
         # Canonical state fold — the same fold the replay engine uses.
         # Subscribed at construction time so callers can order later
@@ -214,15 +223,19 @@ class MatchRunner:
         if missing_pilots:
             raise ValueError(f"missing injected pilots for seats: {sorted(missing_pilots)}")
 
+        started_payload: dict[str, Any] = {
+            "seed": self._seed,
+            "max_ticks": self._max_ticks,
+            "mechs": [mech.model_dump(mode="json") for mech in mechs],
+            "arena": self._arena.model_dump(mode="json"),
+        }
+        if self._launch_provenance is not None:
+            started_payload["launch_provenance"] = self._launch_provenance.model_dump(mode="json")
         self._bus.publish(
             self._make_match_event(
                 SOEventType.MATCH_STARTED,
                 tick=0,
-                payload={
-                    "seed": self._seed,
-                    "max_ticks": self._max_ticks,
-                    "mechs": [mech.model_dump(mode="json") for mech in mechs],
-                },
+                payload=started_payload,
             )
         )
 
@@ -254,6 +267,8 @@ class MatchRunner:
                 weapon_specs=self._catalog.weapons,
                 correlation_id=self._correlation_id,
                 event_factory=self._events,
+                obstacles=self._obstacles,
+                arena_size=self._arena_size,
             ).apply(tick_event)
 
             # Resolve intents in initiative order. Initiative is a real combat
@@ -289,6 +304,39 @@ class MatchRunner:
                 )
             )
         return self.fold.state
+
+    @staticmethod
+    def _validate_launch_provenance(
+        provenance: ModelSOMatchLaunchProvenance | None,
+        *,
+        identity: MatchIdentity,
+        loadout_a: ModelSOLoadout,
+        loadout_b: ModelSOLoadout,
+        side_a: str,
+        side_b: str,
+    ) -> ModelSOMatchLaunchProvenance | None:
+        if provenance is None:
+            return None
+        if not isinstance(provenance, ModelSOMatchLaunchProvenance):
+            raise TypeError("launch_provenance must be ModelSOMatchLaunchProvenance")
+        if provenance.match_id != identity.match_id:
+            raise ValueError("launch provenance match_id must equal runner identity match_id")
+
+        assignments = {assignment.side: assignment for assignment in provenance.seat_assignments}
+        expected: dict[Side, tuple[str, str, str]] = {
+            "red": (f"player.{side_a}", loadout_a.id, loadout_a.pilot_id),
+            "blue": (f"player.{side_b}", loadout_b.id, loadout_b.pilot_id),
+        }
+        for side, (player_id, loadout_id, pilot_spec_id) in expected.items():
+            assignment = assignments[side]  # Model validation guarantees exact red/blue sides.
+            actual = (assignment.player_id, assignment.loadout_id, assignment.pilot_spec_id)
+            wanted = (player_id, loadout_id, pilot_spec_id)
+            if actual != wanted:
+                raise ValueError(
+                    f"launch provenance {side} assignment must match runner "
+                    "player/loadout/pilot bindings"
+                )
+        return provenance
 
     # ------------------------------------------------------------------
     # Intent resolution (live-only; canonical truth is the emitted events)
@@ -327,6 +375,8 @@ class MatchRunner:
     ) -> None:
         payload = ModelSOMoveIntentPayload.model_validate(intent.payload)
         direction = payload.direction
+        if direction == "hold_position":
+            return
         enemy = self._living_opponent(state, mech)
         if enemy is None:
             return
@@ -341,18 +391,60 @@ class MatchRunner:
             step = min(budget, max(0, distance - 1))  # never enter the enemy's cell
             dx = _clamp(enemy.position.x - from_pos.x, step)
             dy = _clamp(enemy.position.y - from_pos.y, step)
-        else:  # defensive: open distance from the enemy
+        elif direction == "defensive":  # open distance from the enemy
             step = budget
             dx = _clamp(from_pos.x - enemy.position.x, step)
             dy = _clamp(from_pos.y - enemy.position.y, step)
+        elif direction in ("flank_left", "flank_right"):
+            # Rotate the sign-clamped mech→enemy axis by 90 degrees.  This is
+            # structurally perpendicular, so a flank cannot collapse into the
+            # old toward/away beeline even when the model asks for one.
+            axis_x = _sign(enemy.position.x - from_pos.x)
+            axis_y = _sign(enemy.position.y - from_pos.y)
+            if direction == "flank_left":
+                perp_x, perp_y = axis_y, -axis_x
+            else:
+                perp_x, perp_y = -axis_y, axis_x
+            dx = perp_x * budget
+            dy = perp_y * budget
+        else:  # toward_cover
+            # Obstacles are impassable in the current arena contract.  Move
+            # toward the nearest obstacle but stop one legal cell before it;
+            # an empty arena or already-adjacent cover is a deterministic no-op.
+            cover_targets = sorted(
+                self._obstacles,
+                key=lambda cell: (
+                    max(abs(cell[0] - from_pos.x), abs(cell[1] - from_pos.y)),
+                    cell[0],
+                    cell[1],
+                ),
+            )
+            if not cover_targets:
+                return
+            cover = ModelSOPosition(x=cover_targets[0][0], y=cover_targets[0][1])
+            distance = chebyshev(from_pos, cover)
+            step = min(budget, max(0, distance - 1))
+            dx = _clamp(cover.x - from_pos.x, step)
+            dy = _clamp(cover.y - from_pos.y, step)
 
-        to_pos = ModelSOPosition(
+        intended = ModelSOPosition(
             x=min(max(from_pos.x + dx, 0), self._arena_size - 1),
             y=min(max(from_pos.y + dy, 0), self._arena_size - 1),
         )
+        to_pos = self._walk_to(from_pos, intended)
         moved = chebyshev(from_pos, to_pos)
+        if moved == 0 and self._obstacles:
+            to_pos = greedy_sidestep(
+                from_pos,
+                enemy.position,
+                obstacles=self._obstacles,
+                size=self._arena_size,
+                toward=direction == "toward_enemy",
+                forbidden=frozenset({(enemy.position.x, enemy.position.y)}),
+            )
+            moved = chebyshev(from_pos, to_pos)
         if moved == 0:
-            return  # pinned against the arena edge or already adjacent
+            return  # pinned against the arena edge, terrain, or already adjacent
 
         self._bus.publish(
             self._make_subject_event(
@@ -368,6 +460,18 @@ class MatchRunner:
                 caused_by_intent=intent,
             )
         )
+
+    def _walk_to(
+        self,
+        from_pos: ModelSOPosition,
+        intended: ModelSOPosition,
+    ) -> ModelSOPosition:
+        last = from_pos
+        for x, y in chebyshev_line(from_pos, intended):
+            if (x, y) in self._obstacles:
+                break
+            last = ModelSOPosition(x=x, y=y)
+        return last
 
     def _resolve_weapon_fire(
         self,
@@ -403,6 +507,24 @@ class MatchRunner:
             )
         except ReducerError:
             return  # rejected: PILOT_DECISION_MADE already records the attempt
+
+        if not line_of_sight_clear(mech.position, target.position, self._obstacles):
+            self._bus.publish(
+                self._make_subject_event(
+                    SOEventType.WEAPON_FIRED,
+                    tick=state.tick,
+                    mech=mech,
+                    payload={
+                        "weapon_id": weapon_id,
+                        "target_id": target.mech_id,
+                        "hit_probability": 0.0,
+                        "pressure_cost": spec.pressure_cost,
+                        "heat_generated": spec.heat_generated,
+                    },
+                    caused_by_intent=intent,
+                )
+            )
+            return
 
         curve = [(point.range, point.hit_probability) for point in spec.accuracy_curve]
         base_accuracy = interpolate_accuracy(curve, distance)

@@ -8,5 +8,64 @@
     "websocket_url": "ws://127.0.0.1:8765/events",
     "event_schema": "canonical_event_v1",
     "milliseconds_per_tick": 250
-  }
+  },
+  "player_roster": {
+    "schema_version": "1",
+    "kind": "steel_onslaught.player_roster_projection",
+    "roster_id": "roster.player_selector",
+    "roster_sha256": "574d46f93bedc390b4b071a98168e6b06d993064c3199d55e8f4de2169cbb8cf",
+    "options": [
+      {
+        "kind": "human",
+        "option_id": "player_option.browser_human",
+        "display_name": "Browser Operator"
+      },
+      {
+        "kind": "model",
+        "option_id": "player_option.local_model",
+        "display_name": "Local Model",
+        "model_identity_id": "model_identity.local"
+      },
+      {
+        "kind": "model",
+        "option_id": "player_option.openrouter_model",
+        "display_name": "OpenRouter Model",
+        "model_identity_id": "model_identity.openrouter"
+      },
+      {
+        "kind": "model",
+        "option_id": "player_option.glm_model",
+        "display_name": "GLM Model",
+        "model_identity_id": "model_identity.glm"
+      },
+      {
+        "kind": "model",
+        "option_id": "player_option.gemini_model",
+        "display_name": "Gemini Model",
+        "model_identity_id": "model_identity.gemini"
+      }
+    ],
+    "seats": [
+      {
+        "side": "red",
+        "allowed_option_ids": [
+          "player_option.browser_human",
+          "player_option.local_model",
+          "player_option.openrouter_model",
+          "player_option.glm_model",
+          "player_option.gemini_model"
+        ]
+      },
+      {
+        "side": "blue",
+        "allowed_option_ids": [
+          "player_option.local_model",
+          "player_option.openrouter_model",
+          "player_option.glm_model",
+          "player_option.gemini_model"
+        ]
+      }
+    ]
+  },
+  "command_gateway": null
 }

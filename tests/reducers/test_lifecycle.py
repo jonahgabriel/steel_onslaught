@@ -11,6 +11,7 @@ import ulid
 from omnibase_core.models.common.model_envelope import ModelEnvelope
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.contracts.arena import neutral_historical_arena_snapshot
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.envelope import (
@@ -99,6 +100,7 @@ def _boiler(mech_id: str) -> ModelSOBoilerState:
 
 
 def _mech(mech_id: str, player_id: str, *, alive: bool = True) -> ModelSOMechRuntimeState:
+    position = ModelSOPosition(x=0, y=0) if player_id == "player.red" else ModelSOPosition(x=1, y=1)
     return ModelSOMechRuntimeState(
         mech_id=mech_id,
         player_id=player_id,
@@ -107,7 +109,7 @@ def _mech(mech_id: str, player_id: str, *, alive: bool = True) -> ModelSOMechRun
         chassis_id="chassis.light.scout_mk1",
         chassis_class="light",
         base_speed=4,
-        position=ModelSOPosition(x=0, y=0),
+        position=position,
         facing=0,
         speed=4,
         hp=100,
@@ -157,6 +159,11 @@ def _started(
         "seed": seed,
         "max_ticks": max_ticks,
         "mechs": [m.model_dump(mode="json") for m in mechs],
+        "arena": neutral_historical_arena_snapshot(
+            size=40,
+            spawn_a=ModelSOPosition(x=0, y=0),
+            spawn_b=ModelSOPosition(x=1, y=1),
+        ).model_dump(mode="json"),
     }
     return _envelope(SOEventType.MATCH_STARTED, payload)
 

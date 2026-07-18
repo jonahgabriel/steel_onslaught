@@ -1,0 +1,34 @@
+schema_version: "1"
+kind: steel_onslaught.player_roster
+roster_id: roster.live_glm_varied
+options:
+  - kind: human
+    option_id: player_option.local_human
+    display_name: Local human
+    human_identity_id: human_identity.local_operator
+    pilot_spec_id: pilot.glm.sniper
+    input_source: browser_command
+  - kind: model
+    option_id: player_option.glm_sniper
+    display_name: GLM 5.2 — Sniper
+    model_identity_id: model_identity.glm
+    pilot_spec_id: pilot.glm.sniper
+    persona_id: sniper
+    input_source: llm_completion
+  - kind: model
+    option_id: player_option.glm_opportunist
+    display_name: GLM 5.2 — Opportunist
+    model_identity_id: model_identity.glm
+    pilot_spec_id: pilot.glm.opportunist
+    persona_id: opportunist
+    input_source: llm_completion
+seats:
+  - side: red
+    loadout_id: loadout.live.glm_sniper_ironclad
+    allowed_option_ids:
+      - player_option.local_human
+      - player_option.glm_sniper
+  - side: blue
+    loadout_id: loadout.live.glm_opportunist_hunter
+    allowed_option_ids:
+      - player_option.glm_opportunist

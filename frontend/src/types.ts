@@ -73,6 +73,16 @@ export interface SOPosition {
   y: number;
 }
 
+export interface SOArenaSnapshot {
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.arena_snapshot";
+  arena_id: string;
+  size: number;
+  spawn_a: SOPosition;
+  spawn_b: SOPosition;
+  obstacles: SOPosition[];
+}
+
 export type SOModeId = "recon" | "assault" | "evasion";
 export type SOPilotAction =
   | "remain"
@@ -95,6 +105,7 @@ export type SOPilotReasonCode =
   | "predicted_intercept"
   | "evade_sensor_lock"
   | "no_viable_action"
+  | "human_input"
   | "llm_decision"
   | "llm_fallback";
 export type SOMatchEndReason = "last_mech_standing" | "pilot_killed" | "draw_max_ticks" | "aborted";
@@ -162,6 +173,62 @@ export interface SOMechRuntimeState {
   overloaded_consecutive_ticks: number;
 }
 
+export interface SOHumanSeatAssignment {
+  kind: "human";
+  side: "red" | "blue";
+  player_id: string;
+  option_id: string;
+  loadout_id: string;
+  pilot_spec_id: string;
+  option_sha256: string;
+  human_identity_id: string;
+  input_source: "browser_command";
+}
+
+export interface SOModelSeatAssignment {
+  kind: "model";
+  side: "red" | "blue";
+  player_id: string;
+  option_id: string;
+  loadout_id: string;
+  pilot_spec_id: string;
+  option_sha256: string;
+  model_identity_id: string;
+  persona_id: string;
+  input_source: "llm_completion";
+}
+
+export type SOSeatAssignment = SOHumanSeatAssignment | SOModelSeatAssignment;
+
+export interface SOMatchLaunchProvenance {
+  schema_version: "1";
+  kind: "steel_onslaught.match_launch_provenance";
+  match_id: string;
+  launch_command_id: string;
+  launch_command_sha256: string;
+  overlay_sha256: string;
+  roster_id: string;
+  roster_sha256: string;
+  seat_assignments: [SOSeatAssignment, SOSeatAssignment];
+}
+
+export interface SOHumanDecisionSource {
+  kind: "human";
+  input_source: "browser_command";
+  command_id: string;
+  turn_id: string;
+  observation_sha256: string;
+}
+
+export interface SOModelDecisionSource {
+  kind: "model";
+  input_source: "llm_completion";
+  model_identity_id: string;
+  persona_id: string;
+}
+
+export type SODecisionSource = SOHumanDecisionSource | SOModelDecisionSource;
+
 // ---------------------------------------------------------------------------
 // Per-event payloads
 // ---------------------------------------------------------------------------
@@ -170,6 +237,8 @@ export interface MatchStartedPayload {
   seed: number;
   max_ticks: number;
   mechs: SOMechRuntimeState[];
+  arena: SOArenaSnapshot;
+  launch_provenance?: SOMatchLaunchProvenance;
 }
 
 export type MatchTickPayload = Record<string, never>;
@@ -199,6 +268,7 @@ export interface PilotDecisionMadePayload {
   confidence: number;
   considered_actions: ConsideredAction[];
   rationale: string | null;
+  decision_source?: SODecisionSource;
 }
 
 export interface LlmCompletionRequestedPayload {
@@ -218,17 +288,31 @@ export interface LlmCompletionResolvedPayload {
   cost_usd: number | null;
 }
 
+export type LlmSemanticFailureCode =
+  | "malformed_json"
+  | "unknown_action"
+  | "action_unavailable"
+  | "invalid_action_parameters";
+
 export interface LlmCompletionFailedPayload {
   provider_id: string;
   reason_code: "provider_error" | "invalid_response" | "consumer_error" | "abandoned";
+  semantic_failure_code: LlmSemanticFailureCode | null;
   model: string | null;
+  finish_reason: string | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   cost_usd: number | null;
 }
 
 export interface MoveIntentPayload {
-  direction: "toward_enemy" | "defensive";
+  direction:
+    | "toward_enemy"
+    | "defensive"
+    | "flank_left"
+    | "flank_right"
+    | "toward_cover"
+    | "hold_position";
   speed: "full" | null;
 }
 
@@ -686,6 +770,7 @@ function parsePilotReason(value: unknown, context: string): SOPilotReasonCode {
     value === "predicted_intercept" ||
     value === "evade_sensor_lock" ||
     value === "no_viable_action" ||
+    value === "human_input" ||
     value === "llm_decision" ||
     value === "llm_fallback"
   ) {
@@ -777,6 +862,340 @@ function parsePosition(value: unknown, context: string): SOPosition {
   const record = asRecord(value, context);
   rejectUnknown(record, ["x", "y"], context);
   return { x: integer(record, "x", context), y: integer(record, "y", context) };
+}
+
+function exactString(value: unknown, expected: string, context: string): string {
+  if (value !== expected) {
+    fail(context, `must equal ${JSON.stringify(expected)}`);
+  }
+  return value;
+}
+
+function patternString(
+  value: unknown,
+  pattern: RegExp,
+  description: string,
+  context: string,
+): string {
+  if (typeof value !== "string" || !pattern.test(value)) {
+    fail(context, `must be ${description}`);
+  }
+  return value;
+}
+
+function parseSeatAssignment(value: unknown, context: string): SOSeatAssignment {
+  const record = asRecord(value, context);
+  const kind = record["kind"];
+  const side = parseSide(record["side"], `${context}.side`);
+  if (side === "neutral") {
+    fail(context, "seat assignment side must be red or blue");
+  }
+  const common = {
+    side,
+    player_id: patternString(
+      record["player_id"],
+      /^player\.[a-z0-9][a-z0-9_.-]*$/,
+      "a player id",
+      `${context}.player_id`,
+    ),
+    option_id: patternString(
+      record["option_id"],
+      /^player_option\.[a-z0-9][a-z0-9_.-]*$/,
+      "a player option id",
+      `${context}.option_id`,
+    ),
+    loadout_id: patternString(
+      record["loadout_id"],
+      /^loadout\.[a-z0-9][a-z0-9_.-]*$/,
+      "a loadout id",
+      `${context}.loadout_id`,
+    ),
+    pilot_spec_id: patternString(
+      record["pilot_spec_id"],
+      /^pilot\.[a-z0-9][a-z0-9_.-]*$/,
+      "a pilot spec id",
+      `${context}.pilot_spec_id`,
+    ),
+    option_sha256: patternString(
+      record["option_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.option_sha256`,
+    ),
+  };
+  if (kind === "human") {
+    rejectUnknown(
+      record,
+      [
+        "kind",
+        "side",
+        "player_id",
+        "option_id",
+        "loadout_id",
+        "pilot_spec_id",
+        "option_sha256",
+        "human_identity_id",
+        "input_source",
+      ],
+      context,
+    );
+    return {
+      kind,
+      ...common,
+      human_identity_id: patternString(
+        record["human_identity_id"],
+        /^human_identity\.[a-z0-9][a-z0-9_.-]*$/,
+        "a human identity id",
+        `${context}.human_identity_id`,
+      ),
+      input_source: exactString(
+        record["input_source"],
+        "browser_command",
+        `${context}.input_source`,
+      ) as "browser_command",
+    };
+  }
+  if (kind === "model") {
+    rejectUnknown(
+      record,
+      [
+        "kind",
+        "side",
+        "player_id",
+        "option_id",
+        "loadout_id",
+        "pilot_spec_id",
+        "option_sha256",
+        "model_identity_id",
+        "persona_id",
+        "input_source",
+      ],
+      context,
+    );
+    return {
+      kind,
+      ...common,
+      model_identity_id: patternString(
+        record["model_identity_id"],
+        /^model_identity\.[a-z0-9][a-z0-9_.-]*$/,
+        "a model identity id",
+        `${context}.model_identity_id`,
+      ),
+      persona_id: patternString(
+        record["persona_id"],
+        /^[a-z][a-z0-9_.-]*$/,
+        "a persona id",
+        `${context}.persona_id`,
+      ),
+      input_source: exactString(
+        record["input_source"],
+        "llm_completion",
+        `${context}.input_source`,
+      ) as "llm_completion",
+    };
+  }
+  fail(context, `unknown seat assignment kind ${JSON.stringify(kind)}`);
+}
+
+function parseMatchLaunchProvenance(value: unknown, context: string): SOMatchLaunchProvenance {
+  const record = asRecord(value, context);
+  rejectUnknown(
+    record,
+    [
+      "schema_version",
+      "kind",
+      "match_id",
+      "launch_command_id",
+      "launch_command_sha256",
+      "overlay_sha256",
+      "roster_id",
+      "roster_sha256",
+      "seat_assignments",
+    ],
+    context,
+  );
+  const assignments = record["seat_assignments"];
+  if (!Array.isArray(assignments) || assignments.length !== 2) {
+    fail(context, "seat_assignments must contain exactly two assignments");
+  }
+  const first = parseSeatAssignment(assignments[0], `${context}.seat_assignments[0]`);
+  const second = parseSeatAssignment(assignments[1], `${context}.seat_assignments[1]`);
+  if (new Set([first.side, second.side]).size !== 2) {
+    fail(context, "seat_assignments must contain one red and one blue side");
+  }
+  if (first.player_id === second.player_id) {
+    fail(context, "seat_assignments must use distinct player ids");
+  }
+  return {
+    schema_version: exactString(record["schema_version"], "1", `${context}.schema_version`) as "1",
+    kind: exactString(
+      record["kind"],
+      "steel_onslaught.match_launch_provenance",
+      `${context}.kind`,
+    ) as "steel_onslaught.match_launch_provenance",
+    match_id: patternString(
+      record["match_id"],
+      /^match\.[0-7][0-9A-HJKMNP-TV-Z]{25}$/,
+      "a canonical match id",
+      `${context}.match_id`,
+    ),
+    launch_command_id: patternString(
+      record["launch_command_id"],
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      "a UUID",
+      `${context}.launch_command_id`,
+    ),
+    launch_command_sha256: patternString(
+      record["launch_command_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.launch_command_sha256`,
+    ),
+    overlay_sha256: patternString(
+      record["overlay_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.overlay_sha256`,
+    ),
+    roster_id: patternString(
+      record["roster_id"],
+      /^roster\.[a-z0-9][a-z0-9_.-]*$/,
+      "a roster id",
+      `${context}.roster_id`,
+    ),
+    roster_sha256: patternString(
+      record["roster_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.roster_sha256`,
+    ),
+    seat_assignments: [first, second],
+  };
+}
+
+function parseDecisionSource(value: unknown, context: string): SODecisionSource {
+  const record = asRecord(value, context);
+  const kind = record["kind"];
+  if (kind === "human") {
+    rejectUnknown(
+      record,
+      ["kind", "input_source", "command_id", "turn_id", "observation_sha256"],
+      context,
+    );
+    return {
+      kind,
+      input_source: exactString(
+        record["input_source"],
+        "browser_command",
+        `${context}.input_source`,
+      ) as "browser_command",
+      command_id: patternString(
+        record["command_id"],
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        "a UUID",
+        `${context}.command_id`,
+      ),
+      turn_id: patternString(
+        record["turn_id"],
+        /^turn\.[a-z0-9][a-z0-9_.-]*$/,
+        "a turn id",
+        `${context}.turn_id`,
+      ),
+      observation_sha256: patternString(
+        record["observation_sha256"],
+        /^[0-9a-f]{64}$/,
+        "a lowercase SHA-256 digest",
+        `${context}.observation_sha256`,
+      ),
+    };
+  }
+  if (kind === "model") {
+    rejectUnknown(record, ["kind", "input_source", "model_identity_id", "persona_id"], context);
+    return {
+      kind,
+      input_source: exactString(
+        record["input_source"],
+        "llm_completion",
+        `${context}.input_source`,
+      ) as "llm_completion",
+      model_identity_id: patternString(
+        record["model_identity_id"],
+        /^model_identity\.[a-z0-9][a-z0-9_.-]*$/,
+        "a model identity id",
+        `${context}.model_identity_id`,
+      ),
+      persona_id: patternString(
+        record["persona_id"],
+        /^[a-z][a-z0-9_.-]*$/,
+        "a persona id",
+        `${context}.persona_id`,
+      ),
+    };
+  }
+  fail(context, `unknown decision source kind ${JSON.stringify(kind)}`);
+}
+
+function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
+  const record = asRecord(value, context);
+  const fields = [
+    "schema_version",
+    "kind",
+    "arena_id",
+    "size",
+    "spawn_a",
+    "spawn_b",
+    "obstacles",
+  ] as const;
+  rejectUnknown(record, fields, context);
+  requireFields(record, fields, context);
+  if (record["schema_version"] !== "0.1.0") {
+    fail(context, 'field "schema_version" must be "0.1.0"');
+  }
+  if (record["kind"] !== "steel_onslaught.arena_snapshot") {
+    fail(context, 'field "kind" must be "steel_onslaught.arena_snapshot"');
+  }
+  const arenaId = str(record, "arena_id", context);
+  if (!/^[a-z][a-z0-9_]*$/.test(arenaId)) {
+    fail(context, 'field "arena_id" is not a valid arena slug');
+  }
+  const size = positiveInt(record, "size", context);
+  const spawnA = parsePosition(record["spawn_a"], `${context}.spawn_a`);
+  const spawnB = parsePosition(record["spawn_b"], `${context}.spawn_b`);
+  const rawObstacles = record["obstacles"];
+  if (!Array.isArray(rawObstacles)) {
+    fail(context, 'field "obstacles" must be an array');
+  }
+  const obstacles = rawObstacles.map((cell, index) =>
+    parsePosition(cell, `${context}.obstacles[${index}]`),
+  );
+  const cells = new Set(obstacles.map((cell) => `${cell.x},${cell.y}`));
+  if (cells.size !== obstacles.length) {
+    fail(context, 'field "obstacles" contains duplicate cells');
+  }
+  for (const [label, position] of [
+    ["spawn_a", spawnA],
+    ["spawn_b", spawnB],
+    ...obstacles.map((cell, index) => [`obstacles[${index}]`, cell] as const),
+  ] as const) {
+    if (position.x < 0 || position.y < 0 || position.x >= size || position.y >= size) {
+      fail(context, `${label} must lie inside the arena`);
+    }
+  }
+  if (spawnA.x === spawnB.x && spawnA.y === spawnB.y) {
+    fail(context, "spawn points must be distinct");
+  }
+  if (cells.has(`${spawnA.x},${spawnA.y}`) || cells.has(`${spawnB.x},${spawnB.y}`)) {
+    fail(context, "spawn points must not occupy obstacles");
+  }
+  return {
+    schema_version: "0.1.0",
+    kind: "steel_onslaught.arena_snapshot",
+    arena_id: arenaId,
+    size,
+    spawn_a: spawnA,
+    spawn_b: spawnB,
+    obstacles,
+  };
 }
 
 function parseSubject(value: unknown, context: string): SOEventSubject {
@@ -983,7 +1402,7 @@ type PayloadParsers = { [K in SOEventType]: (value: unknown, context: string) =>
 const PAYLOAD_PARSERS: PayloadParsers = {
   match_started: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["seed", "max_ticks", "mechs"], context);
+    rejectUnknown(record, ["seed", "max_ticks", "mechs", "arena", "launch_provenance"], context);
     const mechs = record["mechs"];
     if (!Array.isArray(mechs)) {
       fail(context, 'field "mechs" must be an array');
@@ -997,10 +1416,42 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     if (new Set(parsedMechs.map((mech) => mech.mech_id)).size !== parsedMechs.length) {
       fail(context, 'field "mechs" contains duplicate mech_id values');
     }
+    if (parsedMechs.length !== 2) {
+      fail(context, 'field "mechs" must contain exactly two mechs in canonical roster order');
+    }
+    const arena = parseArenaSnapshot(record["arena"], `${context}.arena`);
+    const obstacles = new Set(arena.obstacles.map((cell) => `${cell.x},${cell.y}`));
+    const expectedSpawns = [arena.spawn_a, arena.spawn_b] as const;
+    for (const [index, mech] of parsedMechs.entries()) {
+      const position = mech.position;
+      const cell = `${position.x},${position.y}`;
+      if (
+        position.x < 0 ||
+        position.y < 0 ||
+        position.x >= arena.size ||
+        position.y >= arena.size
+      ) {
+        fail(context, `mechs[${index}].position must lie inside the arena`);
+      }
+      if (obstacles.has(cell)) {
+        fail(context, `mechs[${index}].position must not occupy an arena obstacle`);
+      }
+      const expected = expectedSpawns[index];
+      if (expected === undefined || position.x !== expected.x || position.y !== expected.y) {
+        const spawnName = index === 0 ? "spawn_a" : "spawn_b";
+        fail(context, `mechs[${index}].position must equal arena.${spawnName}`);
+      }
+    }
+    const launchProvenance =
+      "launch_provenance" in record
+        ? parseMatchLaunchProvenance(record["launch_provenance"], `${context}.launch_provenance`)
+        : undefined;
     return {
       seed: nonNegativeInt(record, "seed", context),
       max_ticks: positiveInt(record, "max_ticks", context),
       mechs: parsedMechs,
+      arena,
+      ...(launchProvenance === undefined ? {} : { launch_provenance: launchProvenance }),
     };
   },
   match_tick: (value, context) => {
@@ -1035,7 +1486,15 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(
       record,
-      ["action", "action_params", "reason_code", "confidence", "considered_actions", "rationale"],
+      [
+        "action",
+        "action_params",
+        "reason_code",
+        "confidence",
+        "considered_actions",
+        "rationale",
+        "decision_source",
+      ],
       context,
     );
     const considered = record["considered_actions"];
@@ -1056,6 +1515,10 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       fail(context, "considered_actions must include the chosen action");
     }
     const confidence = num(record, "confidence", context);
+    const decisionSource =
+      "decision_source" in record
+        ? parseDecisionSource(record["decision_source"], `${context}.decision_source`)
+        : undefined;
     return {
       action,
       action_params: openRecord(record["action_params"], `${context}.action_params`),
@@ -1063,6 +1526,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       confidence: Math.min(1, Math.max(0, confidence)),
       considered_actions,
       rationale: nullableStr(record, "rationale", context),
+      ...(decisionSource === undefined ? {} : { decision_source: decisionSource }),
     };
   },
   llm_completion_requested: (value, context) => {
@@ -1111,7 +1575,28 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(
       record,
-      ["provider_id", "reason_code", "model", "prompt_tokens", "completion_tokens", "cost_usd"],
+      [
+        "provider_id",
+        "reason_code",
+        "semantic_failure_code",
+        "model",
+        "finish_reason",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+      ],
+      context,
+    );
+    requireFields(
+      record,
+      [
+        "semantic_failure_code",
+        "model",
+        "finish_reason",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+      ],
       context,
     );
     const reason_code = str(record, "reason_code", context);
@@ -1123,17 +1608,35 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     ) {
       fail(context, 'field "reason_code" is not a recognized LLM failure reason');
     }
+    const semantic_failure_code = nullableStr(record, "semantic_failure_code", context);
     if (
-      !("prompt_tokens" in record) ||
-      !("completion_tokens" in record) ||
-      !("cost_usd" in record)
+      semantic_failure_code !== null &&
+      semantic_failure_code !== "malformed_json" &&
+      semantic_failure_code !== "unknown_action" &&
+      semantic_failure_code !== "action_unavailable" &&
+      semantic_failure_code !== "invalid_action_parameters"
     ) {
-      fail(context, "nullable LLM failure usage fields are required");
+      fail(context, 'field "semantic_failure_code" is not a recognized semantic failure code');
+    }
+    if (reason_code === "invalid_response" && semantic_failure_code === null) {
+      fail(context, 'field "semantic_failure_code" is required for invalid_response');
+    }
+    if (reason_code !== "invalid_response" && semantic_failure_code !== null) {
+      fail(context, 'field "semantic_failure_code" is forbidden for this reason_code');
+    }
+    const finish_reason = nullableStr(record, "finish_reason", context);
+    if (
+      finish_reason !== null &&
+      (finish_reason.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(finish_reason))
+    ) {
+      fail(context, 'field "finish_reason" must be a 1-64 character safe token or null');
     }
     return {
       provider_id: str(record, "provider_id", context),
       reason_code,
+      semantic_failure_code,
       model: nullableStr(record, "model", context),
+      finish_reason,
       prompt_tokens: optionalNullableNonNegativeInt(record, "prompt_tokens", context) ?? null,
       completion_tokens:
         optionalNullableNonNegativeInt(record, "completion_tokens", context) ?? null,
@@ -1144,8 +1647,18 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(record, ["direction", "speed"], context);
     const direction = str(record, "direction", context);
-    if (direction !== "toward_enemy" && direction !== "defensive") {
-      fail(context, 'field "direction" must be "toward_enemy" or "defensive"');
+    if (
+      direction !== "toward_enemy" &&
+      direction !== "defensive" &&
+      direction !== "flank_left" &&
+      direction !== "flank_right" &&
+      direction !== "toward_cover" &&
+      direction !== "hold_position"
+    ) {
+      fail(
+        context,
+        'field "direction" must be toward_enemy, defensive, flank_left, flank_right, toward_cover, or hold_position',
+      );
     }
     const rawSpeed = record["speed"];
     if (rawSpeed !== undefined && rawSpeed !== null && rawSpeed !== "full") {
@@ -1599,7 +2112,27 @@ export function parseHistoricalReplayEnvelope(raw: unknown): SOEventEnvelope {
       const mech = asRecord(value, `${context}.payload.mechs[${index}]`);
       return "side" in mech ? mech : { ...mech, side: "neutral" };
     });
-    projected = { ...record, payload: { ...payload, mechs } };
+    const first = asRecord(mechs[0], `${context}.payload.mechs[0]`);
+    const second = asRecord(mechs[1], `${context}.payload.mechs[1]`);
+    projected = {
+      ...record,
+      payload: {
+        ...payload,
+        mechs,
+        arena:
+          "arena" in payload
+            ? payload["arena"]
+            : {
+                schema_version: "0.1.0",
+                kind: "steel_onslaught.arena_snapshot",
+                arena_id: "historical_open_field",
+                size: 40,
+                spawn_a: first["position"],
+                spawn_b: second["position"],
+                obstacles: [],
+              },
+      },
+    };
   } else if (record["event_type"] === "llm_completion_resolved") {
     const payload = asRecord(record["payload"], `${context}.payload`);
     if (!("cost_usd" in payload)) {

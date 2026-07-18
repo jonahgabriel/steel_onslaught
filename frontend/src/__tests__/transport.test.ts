@@ -8,12 +8,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { MatchTransport, type ReleaseSink } from "../lib/transport";
 import type { SOEventEnvelope } from "../types";
-import { makeEnvelope, makeLlmFailed, makeLlmRequest, makeLlmResolved } from "./helpers";
+import {
+  makeEnvelope,
+  makeLlmFailed,
+  makeLlmRequest,
+  makeLlmResolved,
+  TEST_ARENA,
+} from "./helpers";
 
 /** One `match_tick` per tick 0..n-1 for `matchId`. */
 function tickStream(matchId: string, n: number): SOEventEnvelope[] {
   const out: SOEventEnvelope[] = [
-    makeEnvelope("match_started", { seed: 1, max_ticks: n, mechs: [] }, { matchId, tick: 0 }),
+    makeEnvelope(
+      "match_started",
+      { seed: 1, max_ticks: n, mechs: [], arena: TEST_ARENA },
+      { matchId, tick: 0 },
+    ),
   ];
   for (let t = 1; t < n; t += 1) {
     out.push(makeEnvelope("match_tick", {}, { matchId, tick: t }));
@@ -216,7 +226,7 @@ describe("MatchTransport — finished match stops with a REPLAY affordance (rule
     const stream: SOEventEnvelope[] = [
       makeEnvelope(
         "match_started",
-        { seed: 1, max_ticks: 3, mechs: [] },
+        { seed: 1, max_ticks: 3, mechs: [], arena: TEST_ARENA },
         { matchId: "m", tick: 0 },
       ),
       makeEnvelope("match_tick", {}, { matchId: "m", tick: 1 }),
@@ -347,7 +357,11 @@ describe("MatchTransport — match switch auto-plays the new match (rule 4)", ()
 /** A complete match 0..(n-1); the final tick carries a `match_ended` terminal. */
 function completeMatch(matchId: string, n: number): SOEventEnvelope[] {
   const out: SOEventEnvelope[] = [
-    makeEnvelope("match_started", { seed: 1, max_ticks: n, mechs: [] }, { matchId, tick: 0 }),
+    makeEnvelope(
+      "match_started",
+      { seed: 1, max_ticks: n, mechs: [], arena: TEST_ARENA },
+      { matchId, tick: 0 },
+    ),
   ];
   for (let t = 1; t < n - 1; t += 1) {
     out.push(makeEnvelope("match_tick", {}, { matchId, tick: t }));
@@ -477,7 +491,7 @@ describe("MatchTransport — projection integrity", () => {
     transport.ingest(
       makeEnvelope(
         "match_started",
-        { seed: 1, max_ticks: 1, mechs: [] },
+        { seed: 1, max_ticks: 1, mechs: [], arena: TEST_ARENA },
         { matchId: "match.alpha", messageId: "global-message" },
       ),
     );
@@ -485,7 +499,7 @@ describe("MatchTransport — projection integrity", () => {
       transport.ingest(
         makeEnvelope(
           "match_started",
-          { seed: 1, max_ticks: 1, mechs: [] },
+          { seed: 1, max_ticks: 1, mechs: [], arena: TEST_ARENA },
           { matchId: "match.bravo", messageId: "global-message" },
         ),
       ),

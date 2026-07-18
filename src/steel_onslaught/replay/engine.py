@@ -27,11 +27,13 @@ Usage::
 
 from __future__ import annotations
 
-from steel_onslaught.events.envelope import ModelSOEventEnvelope
+from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
+from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.state import ModelSOMatchState
+from steel_onslaught.replay.migrations import migrate_historical_match_started_arena
 
 
 class ReplayEngine:
@@ -55,11 +57,13 @@ class ReplayEngine:
         *,
         catalog: MatchContractCatalog,
         event_factory: EventFactory,
+        historical_arena_migration: ModelSOCurrentLiveArenaSnapshot | None = None,
     ) -> None:
         self._ledger = ledger
         self._match_id = match_id
         self._catalog = catalog
         self._event_factory = event_factory
+        self._historical_arena_migration = historical_arena_migration
         # Cache the full canonical event list once.
         self._events: list[ModelSOEventEnvelope] = list(ledger.read_all(match_id))
         if not self._events:
@@ -155,9 +159,19 @@ class ReplayEngine:
             bus=None,
             event_factory=self._event_factory,
             catalog=self._catalog,
+            historical_arena_migration=self._historical_arena_migration,
         )
         for event in self._events:
             if event.tick > target_tick:
                 break
+            if event.event_type is SOEventType.MATCH_STARTED and "arena" not in event.payload:
+                if self._historical_arena_migration is None:
+                    raise ValueError(
+                        "historical MATCH_STARTED requires explicit offline arena migration"
+                    )
+                event = migrate_historical_match_started_arena(
+                    event,
+                    arena=self._historical_arena_migration,
+                )
             fold.apply(event)
         return fold.state

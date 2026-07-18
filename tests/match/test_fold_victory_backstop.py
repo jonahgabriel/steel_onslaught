@@ -62,6 +62,7 @@ def _env(
 
 def _mech_dict(mech_id: str, player_id: str) -> dict[str, Any]:
     """Complete current-live mech snapshot for the MATCH_STARTED payload."""
+    position = {"x": 5, "y": 5} if player_id == "player.red" else {"x": 35, "y": 35}
     return {
         "schema_version": "0.1.0",
         "kind": "steel_onslaught.mech_runtime_state",
@@ -75,7 +76,7 @@ def _mech_dict(mech_id: str, player_id: str) -> dict[str, Any]:
         "sensor_ids": [],
         "gizmo_ids": [],
         "base_speed": 4,
-        "position": {"x": 5, "y": 5},
+        "position": position,
         "facing": 45,
         "speed": 4,
         "hp": 100,
@@ -132,6 +133,7 @@ def _drive_to_two_mechs(fold: MatchStateFold) -> None:
                     _mech_dict("mech.red.01", "player.red"),
                     _mech_dict("mech.blue.01", "player.blue"),
                 ],
+                "arena": runtime_dependencies().arena.to_snapshot().model_dump(mode="json"),
             },
         )
     )

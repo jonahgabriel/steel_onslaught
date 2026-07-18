@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -13,22 +14,30 @@ from pydantic import (
     StrictBool,
     StrictFloat,
     StrictInt,
+    StrictStr,
     field_serializer,
     field_validator,
     model_validator,
 )
 
+from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.mode import (
     ModeId,
     ModelSOModeSwitchIntentPayload,
     ModelSOModeTransitionStartedPayload,
 )
+from steel_onslaught.contracts.player_selection import (
+    DecisionSource,
+    ModelSOMatchLaunchProvenance,
+)
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.immutable import FrozenJSONMapping, FrozenMapping, thaw_json_mapping
+from steel_onslaught.llm.schemas import LlmSemanticFailureCode
 from steel_onslaught.match.state import ModelSOMechRuntimeState, SOMatchEndReason
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPosition,
+    SOMoveDirection,
     SOPilotAction,
     SOPilotReasonCode,
 )
@@ -73,6 +82,25 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
     seed: StrictInt = Field(ge=0)
     max_ticks: StrictInt = Field(gt=0)
     mechs: tuple[ModelSOCurrentLiveMechSnapshot, ...] = Field(min_length=1)
+    arena: ModelSOCurrentLiveArenaSnapshot = Field(...)
+    launch_provenance: ModelSOMatchLaunchProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @field_validator("launch_provenance", mode="before")
+    @classmethod
+    def _normalize_frozen_launch_provenance(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            normalized = thaw_json_mapping(value)
+            command_id = normalized.get("launch_command_id")
+            if isinstance(command_id, str):
+                normalized["launch_command_id"] = UUID(command_id)
+            assignments = normalized.get("seat_assignments")
+            if isinstance(assignments, list):
+                normalized["seat_assignments"] = tuple(assignments)
+            return normalized
+        return value
 
     @field_validator("mechs", mode="before")
     @classmethod
@@ -103,11 +131,34 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         return normalized
 
     @model_validator(mode="after")
-    def _mech_ids_unique(self) -> ModelSOMatchStartedPayload:
+    def _validate_current_roster_against_arena(self) -> ModelSOMatchStartedPayload:
         ids = [mech.mech_id for mech in self.mechs]
         duplicates = sorted({mech_id for mech_id in ids if ids.count(mech_id) > 1})
         if duplicates:
             raise ValueError(f"duplicate mech_ids in match_started payload: {duplicates}")
+        if len(self.mechs) != 2:
+            raise ValueError(
+                "current-live match_started requires exactly two mechs in canonical roster order"
+            )
+        expected_spawns = (self.arena.spawn_a, self.arena.spawn_b)
+        obstacles = self.arena.obstacle_cells
+        for index, (mech, expected_spawn) in enumerate(
+            zip(self.mechs, expected_spawns, strict=True)
+        ):
+            position = mech.position
+            cell = (position.x, position.y)
+            if not (0 <= position.x < self.arena.size and 0 <= position.y < self.arena.size):
+                raise ValueError(
+                    f"mechs[{index}].position {cell} is outside arena {self.arena.arena_id!r}"
+                )
+            if cell in obstacles:
+                raise ValueError(f"mechs[{index}].position {cell} occupies an arena obstacle")
+            if position != expected_spawn:
+                spawn_name = "spawn_a" if index == 0 else "spawn_b"
+                raise ValueError(
+                    f"mechs[{index}].position {cell} must equal arena.{spawn_name} "
+                    "in canonical roster order"
+                )
         return self
 
 
@@ -208,6 +259,21 @@ class ModelSOPilotDecisionPayload(_ClosedPayload):
     confidence: StrictFloat
     considered_actions: tuple[ModelSOConsideredAction, ...]
     rationale: str | None
+    decision_source: DecisionSource | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @field_validator("decision_source", mode="before")
+    @classmethod
+    def _normalize_frozen_decision_source(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            normalized = thaw_json_mapping(value)
+            command_id = normalized.get("command_id")
+            if isinstance(command_id, str):
+                normalized["command_id"] = UUID(command_id)
+            return normalized
+        return value
 
     @field_validator("confidence")
     @classmethod
@@ -246,14 +312,33 @@ class ModelSOLlmCompletionFailedPayload(_ClosedPayload):
         "consumer_error",
         "abandoned",
     ]
+    semantic_failure_code: LlmSemanticFailureCode | None
     model: str | None
+    finish_reason: StrictStr | None = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
     prompt_tokens: StrictInt | None = Field(ge=0)
     completion_tokens: StrictInt | None = Field(ge=0)
     cost_usd: StrictFloat | None = Field(ge=0.0, allow_inf_nan=False)
 
+    @model_validator(mode="after")
+    def _semantic_failure_matches_reason(self) -> ModelSOLlmCompletionFailedPayload:
+        if self.reason_code == "invalid_response":
+            if self.semantic_failure_code is None:
+                raise ValueError(
+                    "semantic_failure_code is required when reason_code is invalid_response"
+                )
+        elif self.semantic_failure_code is not None:
+            raise ValueError(
+                "semantic_failure_code is forbidden unless reason_code is invalid_response"
+            )
+        return self
+
 
 class ModelSOMoveIntentPayload(_ClosedPayload):
-    direction: Literal["toward_enemy", "defensive"]
+    direction: SOMoveDirection
     speed: Literal["full"] | None = None
 
 

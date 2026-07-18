@@ -23,7 +23,7 @@ from typing import Any, Protocol
 from steel_onslaught.contracts.lineage import ParamDict
 from steel_onslaught.learning.protocols import BoundsDict
 from steel_onslaught.llm.context_arms import ContextArm, assemble_arm_context
-from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
+from steel_onslaught.llm.effect import consume_llm_completion
 from steel_onslaught.llm.schemas import (
     LlmResponse,
     LlmUsage,
@@ -34,6 +34,11 @@ from steel_onslaught.llm.schemas import (
 )
 
 _LOG = logging.getLogger(__name__)
+
+
+class _LlmTunerResponseError(ValueError):
+    """A tuner response failed the tuner's private semantic contract."""
+
 
 _PROPOSAL_PROMPT = """
 
@@ -212,9 +217,9 @@ def tune_with_usage(
         try:
             decoded: object = json.loads(response.text)
         except (json.JSONDecodeError, TypeError):
-            raise LlmSemanticError("unparseable tuner JSON") from None
+            raise _LlmTunerResponseError("unparseable tuner JSON") from None
         if not isinstance(decoded, list) or not all(isinstance(item, dict) for item in decoded):
-            raise LlmSemanticError("tuner response must be an array of objects")
+            raise _LlmTunerResponseError("tuner response must be an array of objects")
         proposals_raw = decoded
 
         seen_hashes: set[str] = set()
@@ -225,7 +230,7 @@ def tune_with_usage(
 
         for raw in proposals_raw:
             if set(raw) - set(bounds):
-                raise LlmSemanticError("tuner proposal contains unknown parameters")
+                raise _LlmTunerResponseError("tuner proposal contains unknown parameters")
             snapped: dict[str, Any] = {}
             snapped_any = False
             for name, bound in bounds.items():
@@ -244,20 +249,20 @@ def tune_with_usage(
                         or not isinstance(value, int | float)
                         or not math.isfinite(value)
                     ):
-                        raise LlmSemanticError("tuner numeric proposal is not finite")
+                        raise _LlmTunerResponseError("tuner numeric proposal is not finite")
                     snapped_val = _snap_to_lattice(float(value), bound)
                     if snapped_val is None:
-                        raise LlmSemanticError("tuner numeric proposal is invalid")
+                        raise _LlmTunerResponseError("tuner numeric proposal is invalid")
                     snapped[name] = snapped_val
                     snapped_any = True
                 elif isinstance(bound, ModelSOCategoricalBound):
                     validated = _validate_categorical(value, bound)
                     if validated is None:
-                        raise LlmSemanticError("tuner categorical proposal is invalid")
+                        raise _LlmTunerResponseError("tuner categorical proposal is invalid")
                     snapped[name] = validated
                     snapped_any = True
                 else:
-                    raise LlmSemanticError("tuner bound contract is unsupported")
+                    raise _LlmTunerResponseError("tuner bound contract is unsupported")
 
             if not snapped_any:
                 continue

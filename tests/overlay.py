@@ -11,8 +11,15 @@ def complete_test_overlay(raw: dict[str, object], root: Path) -> dict[str, objec
     learning = raw.get("learning_artifacts")
     if not isinstance(learning, dict):
         raise TypeError("test overlay must declare learning_artifacts")
+    contracts = raw.get("contracts")
+    if not isinstance(contracts, dict):
+        raise TypeError("test overlay must declare contracts")
     return {
         **raw,
+        "contracts": {
+            **contracts,
+            "arena_id": "open_field",
+        },
         "learning_artifacts": {
             **learning,
             "experiment_root": str(root / "experiments"),
@@ -27,7 +34,9 @@ def complete_test_overlay(raw: dict[str, object], root: Path) -> dict[str, objec
                 {"kind": "stub", "provider_id": "qwen35", "model": "qwen35-test"},
                 {"kind": "stub", "provider_id": "qwen27", "model": "qwen27-test"},
                 {"kind": "stub", "provider_id": "deepseek", "model": "deepseek-test"},
+                {"kind": "stub", "provider_id": "glm-5.2", "model": "glm-5.2-test"},
             ],
+            "model_identities": [],
             "personas_dir": str(_REPO_ROOT / "contracts_data/pilots/personas"),
             "secret_resolver": {"kind": "none"},
         },

@@ -28,6 +28,7 @@ def _assert_snapshot[K, V](exposed: Mapping[K, V], original: dict[K, V]) -> None
 @pytest.mark.unit
 def test_catalog_defensively_copies_and_freezes_every_exposed_index() -> None:
     source = runtime_dependencies().catalog
+    arenas = dict(source.arenas)
     chassis = dict(source.chassis)
     boilers = dict(source.boilers)
     sensors = dict(source.sensors)
@@ -35,6 +36,7 @@ def test_catalog_defensively_copies_and_freezes_every_exposed_index() -> None:
     gizmos = dict(source.gizmos)
     transitions = dict(source.transitions)
     catalog = MatchContractCatalog(
+        arenas=arenas,
         chassis=chassis,
         boilers=boilers,
         sensors=sensors,
@@ -43,6 +45,7 @@ def test_catalog_defensively_copies_and_freezes_every_exposed_index() -> None:
         transitions=transitions,
     )
 
+    _assert_snapshot(catalog.arenas, arenas)
     _assert_snapshot(catalog.chassis, chassis)
     _assert_snapshot(catalog.boilers, boilers)
     _assert_snapshot(catalog.sensors, sensors)
@@ -56,6 +59,7 @@ def test_catalog_values_and_derived_safety_index_are_immutable() -> None:
     source = runtime_dependencies().catalog
     gizmos = dict(source.gizmos)
     catalog = MatchContractCatalog(
+        arenas=source.arenas,
         chassis=source.chassis,
         boilers=source.boilers,
         sensors=source.sensors,
@@ -78,6 +82,7 @@ def test_catalog_values_and_derived_safety_index_are_immutable() -> None:
     "attribute",
     [
         "chassis",
+        "arenas",
         "boilers",
         "sensors",
         "weapons",

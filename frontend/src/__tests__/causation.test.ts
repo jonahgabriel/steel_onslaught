@@ -13,14 +13,14 @@ import {
   highlightChain,
   rootOf,
 } from "../lib/causation";
-import { makeEnvelope } from "./helpers";
+import { makeEnvelope, TEST_ARENA } from "./helpers";
 
 // A chain: root(m1) → m2 → m3, plus a sibling branch m1 → m4, and an
 // unrelated root m5.
 function chain() {
   const m1 = makeEnvelope(
     "match_started",
-    { seed: 1, max_ticks: 10, mechs: [] },
+    { seed: 1, max_ticks: 10, mechs: [], arena: TEST_ARENA },
     {
       messageId: "m1",
       causationId: null,

@@ -156,6 +156,13 @@ type LlmCompletionFailureReason = Literal[
     "abandoned",
 ]
 
+type LlmSemanticFailureCode = Literal[
+    "malformed_json",
+    "unknown_action",
+    "action_unavailable",
+    "invalid_action_parameters",
+]
+
 
 @runtime_checkable
 class ProtocolLlmAttempt(Protocol):
@@ -164,7 +171,12 @@ class ProtocolLlmAttempt(Protocol):
 
     def resolve(self) -> None: ...
 
-    def fail(self, reason_code: LlmCompletionFailureReason) -> None: ...
+    def fail(
+        self,
+        reason_code: LlmCompletionFailureReason,
+        *,
+        semantic_failure_code: LlmSemanticFailureCode | None = None,
+    ) -> None: ...
 
     def __enter__(self) -> Self: ...
 
@@ -205,6 +217,8 @@ class ProtocolLlmCompletionObserver(Protocol):
         reason_code: LlmCompletionFailureReason,
         response: LlmResponse | None,
         requested: ModelSOEventEnvelope,
+        *,
+        semantic_failure_code: LlmSemanticFailureCode | None = None,
     ) -> None: ...
 
 
@@ -220,6 +234,7 @@ class ProtocolPilotFactory(Protocol):
 __all__ = [
     "LlmCompletionFailureReason",
     "LlmResponse",
+    "LlmSemanticFailureCode",
     "LlmTransportError",
     "LlmUsage",
     "ModelSOLlmCompletionRequest",
