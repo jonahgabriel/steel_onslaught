@@ -305,6 +305,7 @@ def test_full_named_provider_graph_resolves_every_shipped_llm_spec(tmp_path: Pat
                 ("qwen35", "Qwen3.6-35B-A3B"),
                 ("qwen27", "Qwen3.6-27B-MTP-IQ4_XS.gguf"),
                 ("deepseek", "deepseek-v4-pro"),
+                ("glm-5.2", "glm-5.2"),
             )
         ],
     ]
@@ -325,6 +326,7 @@ def test_full_named_provider_graph_resolves_every_shipped_llm_spec(tmp_path: Pat
             "qwen35",
             "qwen27",
             "deepseek",
+            "glm-5.2",
         }
         for spec in shipped.values():
             dependencies.pilot_factory.from_spec(spec)
