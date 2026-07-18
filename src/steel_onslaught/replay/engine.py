@@ -28,6 +28,7 @@ Usage::
 from __future__ import annotations
 
 from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
+from steel_onslaught.contracts.card import ModelSOCardCatalog
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.ledger.protocol import EventLedger
@@ -43,6 +44,9 @@ class ReplayEngine:
         ledger:   Event ledger holding the target match's canonical events.
         match_id: The match identifier whose events are replayed.
         catalog:  Already resolved static contract catalog for the fold.
+        card_catalog: Optional immutable card snapshot selected by the same
+                      composition root as live execution. Card events remain
+                      outside this fold until the register-runtime slice.
 
     The engine caches the full ordered event list on first construction to
     avoid repeated ledger scans.  The ledger is expected to be complete
@@ -57,11 +61,15 @@ class ReplayEngine:
         *,
         catalog: MatchContractCatalog,
         event_factory: EventFactory,
+        card_catalog: ModelSOCardCatalog | None = None,
         historical_arena_migration: ModelSOCurrentLiveArenaSnapshot | None = None,
     ) -> None:
         self._ledger = ledger
         self._match_id = match_id
         self._catalog = catalog
+        # Keep the composition snapshot available to replay without activating
+        # card-event folding; register gameplay is a later slice.
+        self._card_catalog = card_catalog
         self._event_factory = event_factory
         self._historical_arena_migration = historical_arena_migration
         # Cache the full canonical event list once.
