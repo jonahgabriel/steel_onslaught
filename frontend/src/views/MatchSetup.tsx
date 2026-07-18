@@ -4,9 +4,9 @@
  * The bootstrap projection owns which options exist and which seat may use
  * them. Browser state is only an unsubmitted intent: it is never a match
  * assignment. The production App injects the command capability from the
- * validated bootstrap. Model rosters default both seats to GLM when present
- * (otherwise the first configured model); operators can still choose another
- * model or the human option explicitly.
+ * validated bootstrap. Defaults come only from each server-declared seat
+ * policy; there is no identifier/display-name inference. A null default leaves
+ * the seat empty and keeps start disabled until an allowed option is chosen.
  */
 import type React from "react";
 import { useState } from "react";
@@ -52,16 +52,12 @@ function optionsFor(
   return roster.options.filter((option) => allowed.has(option.option_id));
 }
 
-function defaultModelOptionId(roster: PlayerRosterProjection | null, side: PlayerSide): string {
+function defaultOptionId(roster: PlayerRosterProjection | null, side: PlayerSide): string {
   if (roster === null) return "";
-  const modelOptions = optionsFor(roster, side).filter((option) => option.kind === "model");
-  const glm = modelOptions.find((option) => {
-    const identity = option.model_identity_id.toLowerCase();
-    const optionId = option.option_id.toLowerCase();
-    const displayName = option.display_name.toLowerCase();
-    return identity.includes("glm") || optionId.includes("glm") || displayName.includes("glm");
-  });
-  return (glm ?? modelOptions[0])?.option_id ?? "";
+  const policy = roster.seats.find((seat) => seat.side === side);
+  if (policy === undefined || policy.default_option_id === null) return "";
+  const allowed = new Set(optionsFor(roster, side).map((option) => option.option_id));
+  return allowed.has(policy.default_option_id) ? policy.default_option_id : "";
 }
 
 function optionLabel(option: PublicPlayerOption): string {
@@ -109,8 +105,8 @@ export default function MatchSetup({
   humanPrompt,
 }: MatchSetupProps): React.JSX.Element {
   const roster = bootstrap.player_roster;
-  const [redOptionId, setRedOptionId] = useState(() => defaultModelOptionId(roster, "red"));
-  const [blueOptionId, setBlueOptionId] = useState(() => defaultModelOptionId(roster, "blue"));
+  const [redOptionId, setRedOptionId] = useState(() => defaultOptionId(roster, "red"));
+  const [blueOptionId, setBlueOptionId] = useState(() => defaultOptionId(roster, "blue"));
 
   if (roster === null) {
     return (

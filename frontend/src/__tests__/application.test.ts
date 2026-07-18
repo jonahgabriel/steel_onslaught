@@ -67,6 +67,7 @@ function playerRosterBinding(): Record<string, unknown> {
     seats: [
       {
         side: "red",
+        default_option_id: "player_option.glm_model",
         allowed_option_ids: [
           "player_option.browser_human",
           "player_option.local_model",
@@ -77,6 +78,7 @@ function playerRosterBinding(): Record<string, unknown> {
       },
       {
         side: "blue",
+        default_option_id: "player_option.glm_model",
         allowed_option_ids: [
           "player_option.local_model",
           "player_option.openrouter_model",
@@ -140,6 +142,10 @@ describe("frontend application bootstrap", () => {
       "model",
       "model",
     ]);
+    expect(parsed.player_roster?.seats.map((seat) => seat.default_option_id)).toEqual([
+      "player_option.glm_model",
+      "player_option.glm_model",
+    ]);
     expect(
       parsed.player_roster?.options
         .filter((option) => option.kind === "model")
@@ -154,6 +160,32 @@ describe("frontend application bootstrap", () => {
 
   it("accepts explicit null roster without inferring player options", () => {
     expect(parseFrontendBootstrap({ ...binding(), player_roster: null }).player_roster).toBeNull();
+  });
+
+  it("accepts legacy seats without defaults but never infers one", () => {
+    const roster = playerRosterBinding();
+    const seats = roster["seats"];
+    if (!Array.isArray(seats)) throw new Error("test roster seats must be an array");
+    const first = seats[0];
+    if (typeof first !== "object" || first === null || Array.isArray(first)) {
+      throw new Error("test roster seat must be an object");
+    }
+    const { default_option_id: _default, ...legacySeat } = first as Record<string, unknown>;
+    const legacy = parseFrontendBootstrap({
+      ...binding(),
+      player_roster: { ...roster, seats: [legacySeat, seats[1]] },
+    });
+    expect(legacy.player_roster?.seats[0]?.default_option_id).toBeNull();
+
+    expect(() =>
+      parseFrontendBootstrap({
+        ...binding(),
+        player_roster: {
+          ...roster,
+          seats: [{ ...first, default_option_id: "player_option.unknown" }, seats[1]],
+        },
+      }),
+    ).toThrow(/default_option_id must be one of allowed_option_ids/);
   });
 
   it("derives the dev bootstrap origin from a validated non-default binding", () => {
@@ -241,8 +273,16 @@ describe("frontend application bootstrap", () => {
         player_roster: {
           ...roster,
           seats: [
-            { side: "red", allowed_option_ids: ["player_option.unknown"] },
-            { side: "blue", allowed_option_ids: ["player_option.local_model"] },
+            {
+              side: "red",
+              default_option_id: "player_option.unknown",
+              allowed_option_ids: ["player_option.unknown"],
+            },
+            {
+              side: "blue",
+              default_option_id: "player_option.local_model",
+              allowed_option_ids: ["player_option.local_model"],
+            },
           ],
         },
       }),
@@ -254,8 +294,16 @@ describe("frontend application bootstrap", () => {
         player_roster: {
           ...roster,
           seats: [
-            { side: "red", allowed_option_ids: ["player_option.browser_human"] },
-            { side: "blue", allowed_option_ids: ["player_option.local_model"] },
+            {
+              side: "red",
+              default_option_id: "player_option.browser_human",
+              allowed_option_ids: ["player_option.browser_human"],
+            },
+            {
+              side: "blue",
+              default_option_id: "player_option.local_model",
+              allowed_option_ids: ["player_option.local_model"],
+            },
           ],
         },
       }),
