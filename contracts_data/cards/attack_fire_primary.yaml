@@ -1,0 +1,11 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.attack.fire_primary"
+display_name: "Fire Primary"
+category: "attack"
+# Higher priority resolves first when registers fire simultaneously (Phase 2).
+priority: 600
+# Power-neutral: heat comes from the weapon contract, not the card.
+heat_cost: 0
+effect:
+  weapon_slot: 0

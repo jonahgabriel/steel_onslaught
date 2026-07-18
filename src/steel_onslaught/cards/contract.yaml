@@ -1,0 +1,32 @@
+---
+# Inert ONEX descriptor for the pure card dealer compute surface.
+# It is not registered by an application overlay and has no event-bus bindings.
+name: card_dealer_compute
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: compute
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  Unbound pure dealer compute descriptor. The handler accepts explicit deck,
+  immutable deck state, scoped MatchRng, tick, seat, and count inputs. It
+  performs no catalog lookup, event publication, runtime mutation, or I/O.
+
+handler:
+  module: steel_onslaught.cards.dealer
+  class: DealerCompute
+
+handler_routing:
+  default_handler: steel_onslaught.cards.dealer:DealerCompute
+
+descriptor:
+  node_archetype: compute
+  purity: pure
+  idempotent: true
+  timeout_ms: 100
+
+event_bus:
+  subscribe_topics: []
+  publish_topics: []
+
+metadata:
+  transport_type: in_process

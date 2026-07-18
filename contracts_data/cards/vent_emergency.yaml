@@ -1,0 +1,8 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.vent.emergency_vent"
+display_name: "Emergency Vent"
+category: "vent"
+priority: 200
+heat_cost: 0
+effect: {}
