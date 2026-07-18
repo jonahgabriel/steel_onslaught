@@ -245,6 +245,11 @@ class YamlFilesystemLearningArtifactStore:
         decision_diffs: list[tuple[tuple[str, str, int, str], str]] = []
         paths = sorted(self._config.evaluation_root.rglob("*.sqlite3"), key=lambda p: p.as_posix())
         for path in paths:
+            # EvaluationStorageAllocator owns this shape. Do not interpret a
+            # caller's unrelated SQLite database beneath the artifact root as
+            # a learning duel (or let its schema affect the arm).
+            if not path.name.startswith("seed_") or "_cand_" not in path.stem:
+                continue
             matches = self._read_evaluation_ledgers(path)
             for match_id, events in matches.items():
                 score_events = [

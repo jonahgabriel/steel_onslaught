@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -16,6 +17,7 @@ from steel_onslaught.contracts.lineage import (
     ModelSOLineagePerformance,
     ModelSOLineagePromotion,
     ModelSOLineageRecord,
+    ParamDict,
     SOPromotionStatus,
     meta_hash,
     spec_hash,
@@ -28,6 +30,7 @@ from steel_onslaught.events.envelope import (
     SOEventType,
     make_event,
 )
+from steel_onslaught.learning.artifacts import LearningContextArtifacts
 from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
     YamlFilesystemLearningArtifactStore,
@@ -347,7 +350,7 @@ def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
         ledger.append(event)
     ledger._conn.close()  # test-only cleanup for the adapter's explicit connection
 
-    params = {
+    params: ParamDict = {
         "vent_at_heat_margin": 5,
         "idle_vent_heat_threshold": 90,
         "mode_switch_pressure_floor": 12,
@@ -384,6 +387,19 @@ def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
     assert match_id in artifacts.replay_traces[0]
     assert "parent" in artifacts.decision_diffs[0]
     assert record_hash in artifacts.exemplars[0]
+
+
+@pytest.mark.unit
+def test_context_reader_ignores_unrelated_sqlite_files(tmp_path: Path) -> None:
+    unrelated = tmp_path / "evaluations" / "unrelated.sqlite3"
+    unrelated.parent.mkdir(parents=True)
+    with sqlite3.connect(unrelated) as connection:
+        connection.execute("CREATE TABLE unrelated (value TEXT)")
+
+    assert (
+        _store(tmp_path).read_context_artifacts(archetype="aggressive")
+        == LearningContextArtifacts()
+    )
 
 
 @pytest.mark.unit

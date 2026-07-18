@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
-from steel_onslaught.learning.protocols import ModelSONumericBound
+from steel_onslaught.contracts.lineage import ParamDict
+from steel_onslaught.learning.protocols import BoundsDict, ModelSONumericBound
 from steel_onslaught.llm.context_arms import (
     ContextArm,
     MissingContextArtifactError,
     assemble_arm_context,
 )
 
-_BOUNDS = {"aggression": ModelSONumericBound(minimum=0.0, maximum=1.0, step=0.1)}
-_COMMON = {
+_BOUNDS: BoundsDict = {
+    "aggression": ModelSONumericBound(minimum=0.0, maximum=1.0, step=0.1)
+}
+
+
+class _CommonKwargs(TypedDict):
+    archetype: str
+    parent_params: ParamDict
+    bounds: BoundsDict
+
+
+_COMMON: _CommonKwargs = {
     "archetype": "aggressive",
     "parent_params": {"aggression": 0.5},
     "bounds": _BOUNDS,
@@ -64,20 +76,19 @@ def test_rich_arms_have_distinct_prompts_and_content_manifests(tmp_path: Path) -
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("arm", "kwargs", "artifact_name"),
+    ("arm", "artifact_name"),
     [
-        (ContextArm.LLM_REPLAY_TRACE, {}, "replay trace"),
-        (ContextArm.LLM_DECISION_DIFF, {}, "decision diff"),
-        (ContextArm.LLM_EXEMPLAR, {}, "exemplar"),
+        (ContextArm.LLM_REPLAY_TRACE, "replay trace"),
+        (ContextArm.LLM_DECISION_DIFF, "decision diff"),
+        (ContextArm.LLM_EXEMPLAR, "exemplar"),
     ],
 )
 def test_rich_arms_fail_closed_when_artifacts_are_missing(
     arm: ContextArm,
-    kwargs: dict[str, object],
     artifact_name: str,
 ) -> None:
     with pytest.raises(MissingContextArtifactError, match=artifact_name):
-        assemble_arm_context(arm, **_COMMON, **kwargs)
+        assemble_arm_context(arm, **_COMMON)
 
 
 @pytest.mark.unit
