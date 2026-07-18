@@ -528,6 +528,210 @@ body {
   overflow: hidden;
   border-left: 1px solid var(--seam);
 }
+
+/* ---- projection-only arena feedback ------------------------------------
+   This is deliberately compact: it sits above the river, never replaces the
+   canonical event stream, and remains useful when a match is replayed. */
+.pd-feedback {
+  flex: 0 1 auto;
+  max-height: min(42vh, 25rem);
+  margin: 0.45rem 0.55rem 0;
+  padding: 0.5rem 0.55rem;
+  overflow-y: auto;
+  color: var(--steam);
+}
+.pd-feedback-head,
+.pd-feedback-meter,
+.pd-feedback-card-head,
+.pd-feedback-score,
+.pd-feedback-recap,
+.pd-feedback-intent {
+  display: flex;
+  align-items: center;
+}
+.pd-feedback-head {
+  justify-content: space-between;
+  color: var(--phosphor);
+  font-family: var(--font-stencil);
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+}
+.pd-feedback-kicker {
+  color: var(--ash);
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+}
+.pd-feedback-momentum {
+  display: grid;
+  gap: 0.18rem;
+  margin: 0.45rem 0;
+}
+.pd-feedback-meter {
+  gap: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+}
+.pd-feedback-meter > span:first-child {
+  width: 2.4rem;
+}
+.pd-feedback-phase {
+  width: 4.8rem;
+  font-size: 0.48rem;
+  letter-spacing: 0.05em;
+}
+.pd-feedback-meter[data-side="red"] > span:first-child,
+.pd-feedback-intent[data-side="red"] .pd-feedback-phase,
+.pd-feedback-card[data-side="red"] .pd-feedback-card-head,
+.pd-feedback-score[data-side="red"] {
+  color: var(--ember);
+}
+.pd-feedback-meter[data-side="blue"] > span:first-child,
+.pd-feedback-intent[data-side="blue"] .pd-feedback-phase,
+.pd-feedback-card[data-side="blue"] .pd-feedback-card-head,
+.pd-feedback-score[data-side="blue"] {
+  color: var(--arc);
+}
+.pd-feedback-track {
+  flex: 1;
+  height: 0.32rem;
+  overflow: hidden;
+  background: #0d0f13;
+  border: 1px solid var(--seam);
+}
+.pd-feedback-track span {
+  display: block;
+  height: 100%;
+  background: var(--phosphor);
+  transition: width 180ms ease-out;
+}
+.pd-feedback-meter[data-side="red"] .pd-feedback-track span {
+  background: var(--ember);
+}
+.pd-feedback-meter[data-side="blue"] .pd-feedback-track span {
+  background: var(--arc);
+}
+.pd-feedback-meter b {
+  width: 2ch;
+  color: var(--steam);
+  text-align: right;
+}
+.pd-feedback-section {
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--seam);
+  padding-top: 0.35rem;
+}
+.pd-feedback-label {
+  margin-bottom: 0.25rem;
+  color: var(--ash);
+  font-family: var(--font-mono);
+  font-size: 0.53rem;
+  letter-spacing: 0.1em;
+}
+.pd-feedback-list {
+  display: grid;
+  gap: 0.22rem;
+}
+.pd-feedback-intent,
+.pd-feedback-recap,
+.pd-feedback-score {
+  min-width: 0;
+  gap: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+}
+.pd-feedback-intent {
+  padding: 0.2rem 0.25rem;
+  background: rgba(13, 15, 19, 0.7);
+  border-left: 2px solid var(--seam);
+}
+.pd-feedback-intent[data-side="red"] {
+  border-left-color: var(--ember);
+}
+.pd-feedback-intent[data-side="blue"] {
+  border-left-color: var(--arc);
+}
+.pd-feedback-intent-kind {
+  color: var(--phosphor);
+}
+.pd-feedback-intent-label,
+.pd-feedback-recap span:last-child,
+.pd-feedback-score span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pd-feedback-tick {
+  margin-left: auto;
+  color: var(--ash);
+}
+.pd-feedback-card {
+  padding: 0.25rem 0.35rem;
+  background: rgba(13, 15, 19, 0.7);
+  border-left: 2px solid var(--seam);
+}
+.pd-feedback-card[data-side="red"] {
+  border-left-color: var(--ember);
+}
+.pd-feedback-card[data-side="blue"] {
+  border-left-color: var(--arc);
+}
+.pd-feedback-card-head {
+  justify-content: space-between;
+  gap: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+}
+.pd-feedback-card-head span:nth-child(2) {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pd-feedback-card-head span:last-child {
+  color: var(--phosphor);
+}
+.pd-feedback-card-reason {
+  margin-top: 0.12rem;
+  color: var(--ash);
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  text-transform: uppercase;
+}
+.pd-feedback-rationale {
+  margin-top: 0.16rem;
+  overflow: hidden;
+  color: var(--steam);
+  font-family: var(--font-prose);
+  font-size: 0.67rem;
+  line-height: 1.12;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pd-feedback-recap {
+  padding: 0.18rem 0;
+  border-bottom: 1px solid rgba(38, 42, 51, 0.5);
+}
+.pd-feedback-recap > span:first-child {
+  width: 2.2rem;
+  color: var(--phosphor);
+}
+.pd-feedback-score {
+  justify-content: space-between;
+  padding: 0.2rem 0.25rem;
+  background: rgba(13, 15, 19, 0.7);
+}
+.pd-feedback-score[data-winner="true"] {
+  outline: 1px solid var(--phosphor);
+}
+.pd-feedback-score b {
+  color: var(--phosphor);
+}
+.pd-feedback-score span:last-child {
+  color: var(--ash);
+  font-size: 0.49rem;
+}
 /* ---- mech spec panel (Rev 2 left rail) ---- */
 .pd-spec {
   padding: 0.55rem 0.6rem;
