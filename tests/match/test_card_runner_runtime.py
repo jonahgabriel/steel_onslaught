@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID
 
@@ -27,6 +28,7 @@ from steel_onslaught.replay.card_round import (
     parse_card_round_events,
     validate_card_round_events,
 )
+from steel_onslaught.replay.engine import ReplayEngine
 from tests.runtime import FixedClock, SequentialIdentities, pilot_from_spec, runtime_dependencies
 
 pytestmark = pytest.mark.integration
@@ -34,6 +36,21 @@ pytestmark = pytest.mark.integration
 _ROOT = Path("contracts_data")
 _LOADOUT_A = _ROOT / "loadouts/example_aggressive_light.yaml"
 _LOADOUT_B = _ROOT / "loadouts/example_predictive_heavy.yaml"
+
+
+class _ReplayLedger:
+    def __init__(self, events: list[ModelSOEventEnvelope]) -> None:
+        self._events = events
+
+    def read_all(self, match_id: str) -> Iterator[ModelSOEventEnvelope]:
+        return (event for event in self._events if event.match_id == match_id)
+
+    def read_after(self, match_id: str, after_tick: int) -> Iterator[ModelSOEventEnvelope]:
+        return (
+            event
+            for event in self._events
+            if event.match_id == match_id and event.tick > after_tick
+        )
 
 
 def _snapshot() -> ModelSOCardRuntimeSnapshot:
@@ -127,6 +144,20 @@ def test_default_runner_has_no_card_events() -> None:
     }.intersection(event.event_type for event in events)
 
 
+def test_replay_engine_default_no_card_path_remains_unvalidated() -> None:
+    events = _run(card_enabled=False)
+    runtime = runtime_dependencies()
+    replay = ReplayEngine(
+        _ReplayLedger(events),
+        "match.test.card-runner",
+        catalog=runtime.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=_snapshot(),
+    )
+    assert replay.validated_card_rounds == ()
+    assert replay.reconstruct_at_tick(2).status is SOMatchStatus.ENDED
+
+
 def test_opt_in_card_events_have_subjects_and_causal_intents() -> None:
     events = _run(card_enabled=True)
     card_events = [
@@ -211,3 +242,77 @@ def test_card_round_replay_validates_and_rejects_tampering() -> None:
     tampered[register] = card_events[register].model_copy(update={"payload": tampered_payload})
     with pytest.raises(CardRoundReplayError):
         validate_card_round_events(tampered, snapshot=snapshot)
+
+
+def test_replay_engine_validates_complete_card_stream_once_and_preserves_state() -> None:
+    events = _run(card_enabled=True, max_ticks=3)
+    runtime = runtime_dependencies()
+    card_snapshot = _snapshot()
+    default = ReplayEngine(
+        _ReplayLedger(events),
+        "match.test.card-runner",
+        catalog=runtime.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=card_snapshot,
+    )
+    validated = ReplayEngine(
+        _ReplayLedger(events),
+        "match.test.card-runner",
+        catalog=runtime.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=card_snapshot,
+        validate_card_events=True,
+    )
+    assert len(validated.validated_card_rounds) == 2
+    assert validated.reconstruct_at_tick(3) == default.reconstruct_at_tick(3)
+
+
+@pytest.mark.parametrize("tamper", ["payload", "order", "provenance"])
+def test_replay_engine_card_validation_rejects_tampered_stream(tamper: str) -> None:
+    events = _run(card_enabled=True, max_ticks=2)
+    card_snapshot = _snapshot()
+    card_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event.event_type
+        in {
+            SOEventType.HAND_DEALT,
+            SOEventType.PLAN_COMMITTED,
+            SOEventType.REGISTER_RESOLVED,
+            SOEventType.CARDS_DISCARDED,
+        }
+    ]
+    changed = list(events)
+    if tamper == "payload":
+        index = next(
+            index
+            for index in card_indexes
+            if changed[index].event_type is SOEventType.REGISTER_RESOLVED
+        )
+        payload = dict(changed[index].payload)
+        payload["action"] = "unknown_action"
+        changed[index] = changed[index].model_copy(update={"payload": payload})
+    elif tamper == "order":
+        first, second = card_indexes[:2]
+        changed[first], changed[second] = changed[second], changed[first]
+    else:
+        index = next(
+            index
+            for index, event in enumerate(changed)
+            if event.event_type is SOEventType.MATCH_STARTED
+        )
+        payload = dict(changed[index].payload)
+        provenance = dict(payload["card_runtime_provenance"])
+        provenance["content_sha256"] = "0" * 64
+        payload["card_runtime_provenance"] = provenance
+        changed[index] = changed[index].model_copy(update={"payload": payload})
+    runtime = runtime_dependencies()
+    with pytest.raises((CardRoundReplayError, ValueError)):
+        ReplayEngine(
+            _ReplayLedger(changed),
+            "match.test.card-runner",
+            catalog=runtime.catalog,
+            event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+            card_runtime_snapshot=card_snapshot,
+            validate_card_events=True,
+        )
