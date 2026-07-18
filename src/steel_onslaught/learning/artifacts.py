@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 from steel_onslaught.contracts.lineage import ModelSOLineageRecord
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
+from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
 
 if TYPE_CHECKING:
     from steel_onslaught.events.envelope import ModelSOEventEnvelope
@@ -32,6 +33,8 @@ class MaterializedLoadout:
 
 
 class LearningArtifactStore(Protocol):
+    def write_after_match_evidence(self, evidence: ModelSOAfterMatchLearningEvidence) -> Path: ...
+
     def prepare_evaluation(self, index: int) -> EvaluationWorkspace: ...
 
     def materialize_loadout(

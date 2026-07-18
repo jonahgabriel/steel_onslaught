@@ -124,6 +124,14 @@ _APPROVED_CALLS = Counter(
             "steel_onslaught.projections.leaderboard.handler.LeaderboardHandler",
         ): 1,
         (
+            "build_runtime_dependencies",
+            "steel_onslaught.learning.filesystem_artifacts.ModelSOFilesystemLearningArtifactsConfig",
+        ): 1,
+        (
+            "build_runtime_dependencies",
+            "steel_onslaught.learning.filesystem_artifacts.YamlFilesystemLearningArtifactStore",
+        ): 1,
+        (
             "build_learning_dependencies",
             "steel_onslaught.match.composition.SystemClock",
         ): 1,
