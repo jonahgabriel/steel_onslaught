@@ -173,10 +173,16 @@ class LLMPilot:
         self._client = client
         self._persona = persona
         self._failure_policy = failure_policy
+        # Remember only each mech's own observed HP trend.  This is pilot
+        # context, not authoritative match state: the observation remains the
+        # sole source of truth and the maps are intentionally not serialized
+        # into events or projections.
+        self._last_hp_percent_by_mech: dict[str, float] = {}
+        self._hp_loss_streak_by_mech: dict[str, int] = {}
 
     def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
         """Consult the LLM and return a validated decision, or REMAIN on failure."""
-        user_prompt = _serialize_observation(observation, persona_id=self._persona.persona_id)
+        user_prompt = self._serialize_observation_with_memory(observation)
         try:
             return consume_llm_completion(
                 client=self._client,
@@ -201,6 +207,36 @@ class LLMPilot:
             if self._failure_policy == "raise":
                 raise
             return _fallback_decision(type(exc).__name__)
+
+    def _serialize_observation_with_memory(self, observation: ModelSOPilotObservation) -> str:
+        """Serialize the current observation with the pilot's remembered HP trend."""
+        base = _serialize_observation(observation, persona_id=self._persona.persona_id)
+        previous_hp = self._last_hp_percent_by_mech.get(observation.mech_id)
+        if previous_hp is None:
+            hp_delta = 0.0
+            loss_streak = 0
+            previous_text = "unknown"
+        else:
+            hp_delta = observation.hp_percent - previous_hp
+            previous_text = f"{previous_hp:.1f}%"
+            previous_streak = self._hp_loss_streak_by_mech.get(observation.mech_id, 0)
+            loss_streak = previous_streak + 1 if hp_delta < -0.01 else 0
+
+        self._last_hp_percent_by_mech[observation.mech_id] = observation.hp_percent
+        self._hp_loss_streak_by_mech[observation.mech_id] = loss_streak
+
+        memory = [
+            "--- COMBAT MEMORY (your own remembered state) ---",
+            f"previous_hp_percent: {previous_text}",
+            f"hp_delta_since_last_decision: {hp_delta:.1f}",
+            f"consecutive_hp_loss_ticks: {loss_streak}",
+            "attrition_guidance: if you are taking repeated damage and not clearly",
+            "winning the exchange, prefer defensive movement, cover, venting, or",
+            "range control over standing still to trade shots. Enemy HP is not",
+            "authoritative unless a sensor reports it; do not assume a favorable",
+            "trade just because your weapon is ready.",
+        ]
+        return base + "\n" + "\n".join(memory)
 
     def _parse_response(
         self, response: LlmResponse, observation: ModelSOPilotObservation
