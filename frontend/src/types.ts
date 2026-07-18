@@ -26,6 +26,7 @@ export type JsonValue =
 
 export const SO_EVENT_TYPES = [
   "match_started",
+  "runtime_status_changed",
   "match_tick",
   "mech_spawned",
   "sensor_observation",
@@ -239,6 +240,18 @@ export interface MatchStartedPayload {
   mechs: SOMechRuntimeState[];
   arena: SOArenaSnapshot;
   launch_provenance?: SOMatchLaunchProvenance;
+}
+
+export type SORuntimeStatus = "ready" | "running" | "paused" | "ended";
+export type SORuntimeMode = "one_game" | "continuous";
+
+export interface RuntimeStatusChangedPayload {
+  status: SORuntimeStatus;
+  mode: SORuntimeMode | null;
+  revision: number;
+  owner_id: string;
+  match_index: number;
+  last_command_id: string | null;
 }
 
 export type MatchTickPayload = Record<string, never>;
@@ -474,6 +487,7 @@ export interface MatchScoredPayload {
 
 export interface PayloadMap {
   match_started: MatchStartedPayload;
+  runtime_status_changed: RuntimeStatusChangedPayload;
   match_tick: MatchTickPayload;
   mech_spawned: MechSpawnedPayload;
   sensor_observation: SensorObservationPayload;
@@ -1452,6 +1466,61 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       mechs: parsedMechs,
       arena,
       ...(launchProvenance === undefined ? {} : { launch_provenance: launchProvenance }),
+    };
+  },
+  runtime_status_changed: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      ["status", "mode", "revision", "owner_id", "match_index", "last_command_id"],
+      context,
+    );
+    const status = str(record, "status", context);
+    if (!(["ready", "running", "paused", "ended"] as const).includes(status as SORuntimeStatus)) {
+      fail(context, `field "status" has an unknown value ${JSON.stringify(status)}`);
+    }
+    if (!("mode" in record)) {
+      fail(context, 'missing required field "mode"');
+    }
+    const mode = nullableStr(record, "mode", context);
+    if (mode !== null && mode !== "one_game" && mode !== "continuous") {
+      fail(context, `field "mode" has an unknown value ${JSON.stringify(mode)}`);
+    }
+    if (!("last_command_id" in record)) {
+      fail(context, 'missing required field "last_command_id"');
+    }
+    const lastCommandId = nullableStr(record, "last_command_id", context);
+    if (status === "ready" && mode !== null) {
+      fail(context, "ready status requires mode=null");
+    }
+    if (status !== "ready" && mode === null) {
+      fail(context, "active status requires a mode");
+    }
+    if (status === "ready" && lastCommandId !== null) {
+      fail(context, "ready status requires last_command_id=null");
+    }
+    const ownerId = str(record, "owner_id", context);
+    if (ownerId.length === 0) {
+      fail(context, 'field "owner_id" must be a non-empty string');
+    }
+    if (ownerId.length > 128) {
+      fail(context, "field owner_id must be at most 128 characters");
+    }
+    return {
+      status: status as SORuntimeStatus,
+      mode: mode as SORuntimeMode | null,
+      revision: boundedInt(record, "revision", context, 0, Number.MAX_SAFE_INTEGER),
+      owner_id: ownerId,
+      match_index: boundedInt(record, "match_index", context, 0, Number.MAX_SAFE_INTEGER),
+      last_command_id:
+        lastCommandId === null
+          ? null
+          : patternString(
+              lastCommandId,
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+              "a UUID",
+              `${context}.last_command_id`,
+            ),
     };
   },
   match_tick: (value, context) => {

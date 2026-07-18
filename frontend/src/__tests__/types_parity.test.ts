@@ -187,6 +187,29 @@ describe("types parity against Python-emitted fixtures", () => {
     expect(() => parseEnvelope({ ...record, payload })).toThrow(/winner_player_id/);
   });
 
+  it.each([
+    "11111111111141118111111111111111",
+    "{11111111-1111-4111-8111-111111111111}",
+  ])("rejects non-canonical runtime status command UUID spellings: %s", (lastCommandId) => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("runtime_status_changed", (payload) => {
+          payload["last_command_id"] = lastCommandId;
+        }),
+      ),
+    ).toThrow(/last_command_id.*UUID/);
+  });
+
+  it("rejects an empty runtime status owner", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("runtime_status_changed", (payload) => {
+          payload["owner_id"] = "";
+        }),
+      ),
+    ).toThrow(/owner_id.*non-empty/);
+  });
+
   for (const eventType of ["victory_declared", "match_ended"] as const) {
     it(`rejects an unknown ${eventType} terminal field`, () => {
       const raw: unknown = JSON.parse(

@@ -31,6 +31,7 @@ descriptor:
 event_bus:
   subscribe_topics:
     - onex.evt.steel-onslaught.match-started.v1
+    - onex.evt.steel-onslaught.runtime-status-changed.v1
     - onex.evt.steel-onslaught.match-tick.v1
     - onex.evt.steel-onslaught.mech-spawned.v1
     - onex.evt.steel-onslaught.sensor-observation.v1

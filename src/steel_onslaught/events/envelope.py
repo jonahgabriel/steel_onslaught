@@ -15,6 +15,7 @@ from steel_onslaught.immutable import FrozenJSONMapping
 class SOEventType(StrEnum):
     # Lifecycle
     MATCH_STARTED = "match_started"
+    RUNTIME_STATUS_CHANGED = "runtime_status_changed"
     MATCH_TICK = "match_tick"
     MECH_SPAWNED = "mech_spawned"
     # Observation
