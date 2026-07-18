@@ -166,6 +166,62 @@ describe("BrowserCommandGateway", () => {
     expect(gateway.status).toBe("cancelled");
   });
 
+  it("sends strict runtime commands and accepts their closed receipts", () => {
+    const socket = new FakeSocket();
+    const gateway = new BrowserCommandGateway({
+      binding,
+      socketFactory: factory(socket),
+    });
+    expect(
+      gateway.sendRuntime({
+        schema_version: "1",
+        kind: "steel_onslaught.runtime_command",
+        command_id: "22222222-2222-4222-8222-222222222222",
+        expected_revision: 1,
+        owner_id: "runtime_owner.browser",
+        action: "pause",
+      }),
+    ).toBe("pending");
+    socket.emitOpen();
+    expect(JSON.parse(socket.sent.at(0) ?? "")).toMatchObject({
+      kind: "steel_onslaught.runtime_command",
+      action: "pause",
+    });
+    socket.receive({
+      schema_version: "1",
+      kind: "steel_onslaught.runtime_command_accepted",
+      authority_scope: "process_lifetime",
+      outcome: "accepted",
+      command_id: "22222222-2222-4222-8222-222222222222",
+      status: {
+        status: "paused",
+        mode: "one_game",
+        revision: 2,
+        owner_id: "runtime_owner.browser",
+        match_index: 0,
+        last_command_id: "22222222-2222-4222-8222-222222222222",
+      },
+    });
+    expect(gateway.status).toBe("accepted");
+    expect(() =>
+      socket.receive({
+        schema_version: "1",
+        kind: "steel_onslaught.runtime_command_accepted",
+        authority_scope: "process_lifetime",
+        outcome: "accepted",
+        command_id: "22222222-2222-4222-8222-222222222222",
+        status: {
+          status: "running",
+          mode: null,
+          revision: 3,
+          owner_id: "runtime_owner.browser",
+          match_index: 0,
+          last_command_id: "22222222-2222-4222-8222-222222222222",
+        },
+      }),
+    ).toThrow(/mode does not match/);
+  });
+
   it("sends authoritative cancellation after Start is accepted and a prompt is active", () => {
     const socket = new FakeSocket();
     const ids = ["request.start.04", "request.cancel.04"];

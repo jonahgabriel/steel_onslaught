@@ -7,7 +7,10 @@
  * server endpoint.  A missing binding therefore remains fail-closed.
  */
 
+import type { RuntimeCommand } from "./runtime_contract";
+
 export const BROWSER_COMMAND_CONTRACT = "steel_onslaught.browser_command_gateway.v1";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface CommandGatewayBinding {
   readonly kind: "websocket";
@@ -74,6 +77,7 @@ interface ResultFrame {
   readonly kind:
     | "steel_onslaught.browser_start_accepted"
     | "steel_onslaught.browser_action_accepted"
+    | "steel_onslaught.runtime_command_accepted"
     | "steel_onslaught.browser_cancelled"
     | "steel_onslaught.browser_command_failed";
   readonly outcome: "accepted" | "cancelled" | "failed";
@@ -170,6 +174,27 @@ function parseFrame(value: unknown): ResultFrame | null {
     if (record["outcome"] !== "accepted") throw new Error("command gateway: invalid action result");
     return { kind: record["kind"], outcome: "accepted" };
   }
+  if (record["kind"] === "steel_onslaught.runtime_command_accepted") {
+    requireClosedKeys(record, [
+      "schema_version",
+      "kind",
+      "authority_scope",
+      "outcome",
+      "command_id",
+      "status",
+    ]);
+    if (
+      record["outcome"] !== "accepted" ||
+      typeof record["command_id"] !== "string" ||
+      typeof record["status"] !== "object" ||
+      record["status"] === null ||
+      Array.isArray(record["status"])
+    ) {
+      throw new Error("command gateway: invalid runtime result");
+    }
+    validateRuntimeStatusResult(record["status"]);
+    return { kind: record["kind"], outcome: "accepted" };
+  }
   if (record["kind"] === "steel_onslaught.browser_cancelled") {
     requireClosedKeys(record, [
       "schema_version",
@@ -209,6 +234,60 @@ function requireClosedKeys(record: Record<string, unknown>, expected: readonly s
   }
   for (const key of expected) {
     if (!(key in record)) throw new Error(`command gateway: missing result field ${key}`);
+  }
+}
+
+function validateRuntimeStatusResult(value: unknown): void {
+  const record = object(value);
+  if (record === null) throw new Error("command gateway: runtime status must be an object");
+  requireClosedKeys(record, [
+    "status",
+    "mode",
+    "revision",
+    "owner_id",
+    "match_index",
+    "last_command_id",
+  ]);
+  if (
+    record["status"] !== "ready" &&
+    record["status"] !== "running" &&
+    record["status"] !== "paused" &&
+    record["status"] !== "ended"
+  ) {
+    throw new Error("command gateway: invalid runtime status");
+  }
+  if (record["mode"] !== null && record["mode"] !== "one_game" && record["mode"] !== "continuous") {
+    throw new Error("command gateway: invalid runtime status mode");
+  }
+  if (
+    (record["status"] === "ready" && record["mode"] !== null) ||
+    (record["status"] !== "ready" && record["mode"] === null)
+  ) {
+    throw new Error("command gateway: runtime status mode does not match status");
+  }
+  if (
+    typeof record["revision"] !== "number" ||
+    !Number.isSafeInteger(record["revision"]) ||
+    record["revision"] < 0 ||
+    typeof record["match_index"] !== "number" ||
+    !Number.isSafeInteger(record["match_index"]) ||
+    record["match_index"] < 0
+  ) {
+    throw new Error("command gateway: invalid runtime status revision");
+  }
+  if (
+    typeof record["owner_id"] !== "string" ||
+    record["owner_id"].length === 0 ||
+    record["owner_id"].length > 128
+  ) {
+    throw new Error("command gateway: invalid runtime status owner");
+  }
+  const commandId = record["last_command_id"];
+  if (commandId !== null && (typeof commandId !== "string" || !UUID_PATTERN.test(commandId))) {
+    throw new Error("command gateway: invalid runtime status command id");
+  }
+  if (record["status"] === "ready" && commandId !== null) {
+    throw new Error("command gateway: ready runtime status requires no command id");
   }
 }
 
@@ -302,6 +381,17 @@ export class BrowserCommandGateway {
     return this.currentStatus;
   }
 
+  sendRuntime(command: RuntimeCommand): GatewayStatus {
+    if (this.binding === null || this.currentStatus === "rejected") {
+      this.setStatus("rejected");
+      return this.currentStatus;
+    }
+    this.activeRequestId = command.command_id;
+    this.send(command);
+    this.setStatus("pending");
+    return this.currentStatus;
+  }
+
   cancel(): void {
     if (this.socket !== null) {
       const requestId = this.activeRequestId ?? this.makeRequestId();
@@ -326,7 +416,7 @@ export class BrowserCommandGateway {
     this.closeAfterOpen = false;
   }
 
-  private send(frame: RequestFrame): void {
+  private send(frame: RequestFrame | RuntimeCommand): void {
     if (this.socket === null) {
       const socket = this.socketFactory.open(this.binding?.websocket_url ?? "");
       this.socket = socket;

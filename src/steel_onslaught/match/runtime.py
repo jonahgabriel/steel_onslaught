@@ -60,7 +60,7 @@ class ProgressGate(Protocol):
 class RuntimeProgressGate(ProgressGate, Protocol):
     """Lifecycle controls consumed by ``MatchRuntime``."""
 
-    def pause(self) -> None: ...
+    def pause(self) -> int: ...
 
     def resume(self) -> None: ...
 
@@ -68,12 +68,30 @@ class RuntimeProgressGate(ProgressGate, Protocol):
 
     def start(self) -> None: ...
 
+    def wait_for_pause_boundary(self, epoch: int) -> int: ...
+
 
 class OpenProgressGate:
     """Default no-op gate used by legacy/non-lifecycle runner callers."""
 
     def checkpoint(self, *, match_id: str, next_tick: int) -> None:
         del match_id, next_tick
+
+    def pause(self) -> int:
+        return 0
+
+    def resume(self) -> None:
+        return
+
+    def stop(self) -> None:
+        return
+
+    def start(self) -> None:
+        return
+
+    def wait_for_pause_boundary(self, epoch: int) -> int:
+        del epoch
+        return 0
 
 
 class ConditionProgressGate:
@@ -89,6 +107,9 @@ class ConditionProgressGate:
         self._condition = Condition()
         self._open = True
         self._stopped = False
+        self._pause_epoch = 0
+        self._last_blocked_epoch = 0
+        self._last_blocked_next_tick: int | None = None
 
     def checkpoint(self, *, match_id: str, next_tick: int) -> None:
         if not match_id:
@@ -97,14 +118,20 @@ class ConditionProgressGate:
             raise ValueError("next_tick must be positive")
         with self._condition:
             while not self._open and not self._stopped:
+                self._last_blocked_epoch = self._pause_epoch
+                self._last_blocked_next_tick = next_tick
+                self._condition.notify_all()
                 self._condition.wait()
             if self._stopped:
                 raise ProgressGateStoppedError("progress gate is stopped")
 
-    def pause(self) -> None:
+    def pause(self) -> int:
         with self._condition:
             if not self._stopped:
                 self._open = False
+            self._pause_epoch += 1
+            self._condition.notify_all()
+            return self._pause_epoch
 
     def resume(self) -> None:
         with self._condition:
@@ -124,6 +151,18 @@ class ConditionProgressGate:
             self._stopped = False
             self._open = True
             self._condition.notify_all()
+
+    def wait_for_pause_boundary(self, epoch: int) -> int:
+        if epoch < 1:
+            return 0
+        with self._condition:
+            while self._last_blocked_epoch < epoch and not self._stopped:
+                self._condition.wait()
+            if self._stopped and self._last_blocked_epoch < epoch:
+                raise ProgressGateStoppedError("progress gate is stopped")
+            if self._last_blocked_next_tick is None:
+                raise RuntimeError("pause boundary did not record a next tick")
+            return self._last_blocked_next_tick - 1
 
 
 @dataclass(frozen=True)
@@ -177,6 +216,7 @@ class MatchRuntime:
         self._active_mode: SORuntimeMode | None = None
         self._stop_requested = False
         self._worker_started = False
+        self._pause_epochs: dict[UUID, int] = {}
 
     @property
     def match_id(self) -> str:
@@ -233,6 +273,17 @@ class MatchRuntime:
             self._gate.stop()
             self._stop_requested = True
             raise
+
+    def wait_for_pause_boundary(self, command_id: UUID) -> int:
+        """Wait until a pause command has blocked the runner before its next tick."""
+        with self._lock:
+            try:
+                epoch = self._pause_epochs[command_id]
+            except KeyError as exc:
+                raise RuntimeTransitionError(
+                    f"pause command {command_id} has no recorded boundary"
+                ) from exc
+        return self._gate.wait_for_pause_boundary(epoch)
 
     def mark_match_ended(self) -> ModelSORuntimeStatusPayload:
         """Commit terminal status only after durable ``MATCH_ENDED`` evidence."""
@@ -303,7 +354,8 @@ class MatchRuntime:
         if command.action is SORuntimeAction.PAUSE:
             if status is not SORuntimeStatus.RUNNING:
                 raise RuntimeTransitionError(f"pause is not legal from {status.value}")
-            self._gate.pause()
+            pause_epoch = self._gate.pause()
+            self._pause_epochs[command.command_id] = pause_epoch
             self._status = self._next_status(
                 status=SORuntimeStatus.PAUSED,
                 mode=self._status.mode,

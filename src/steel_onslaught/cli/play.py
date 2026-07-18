@@ -13,7 +13,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -40,6 +40,7 @@ from steel_onslaught.commands.browser_gateway import (
     ModelSOBrowserActionAccepted,
     ModelSOBrowserActionRequest,
     ModelSOBrowserRequestContext,
+    ModelSOBrowserRuntimeAccepted,
     ModelSOBrowserStartAccepted,
     ModelSOBrowserStartMatchRequest,
 )
@@ -61,7 +62,17 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOModelPlayerOptionBinding,
     ModelSOPlayerRosterBinding,
 )
-from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.contracts.runtime import (
+    ModelSORuntimeCommand,
+    SORuntimeAction,
+    SORuntimeMode,
+    SORuntimeStatus,
+)
+from steel_onslaught.events.envelope import (
+    ModelSOEventEnvelope,
+    ModelSOEventSubject,
+    SOEventType,
+)
 from steel_onslaught.match.composition import (
     LiveMatchStack,
     RuntimeDependencies,
@@ -122,6 +133,12 @@ class BrowserPlaySession:
 
         if self._closed:
             raise RuntimeError("browser play session is closed")
+        runtime = getattr(self.stack, "runtime", None)
+        if runtime is not None:
+            result = runtime.run()
+            if not isinstance(result, ModelSOMatchState):
+                raise TypeError("injected runtime worker returned an invalid match state")
+            return result
         return self.stack.runner.run()
 
     def close(self) -> None:
@@ -228,6 +245,8 @@ def launch_browser_play_session(
                 provenance=stack.launch_provenance,
             ),
             human_coordinator=stack.human_inbox,
+            runtime=getattr(stack, "runtime", None),
+            runtime_authority=(principal_id, session_id),
             allowed_origins=allowed_origins,
         )
         start_result = gateway.start_match(
@@ -307,6 +326,7 @@ class BrowserPlayServer:
         self._pending_events: dict[str, list[ModelSOEventEnvelope]] = {}
         self._pending_ticks: dict[str, int] = {}
         self._pending_event_ids: set[str] = set()
+        self._runtime_status_event_ids: set[str] = set()
         self._command_clients: set[ServerConnection] = set()
         self._command_authorities: dict[ServerConnection, tuple[PrincipalId, SessionId]] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -665,6 +685,7 @@ class BrowserPlayServer:
             self._pending_events.clear()
             self._pending_ticks.clear()
             self._pending_event_ids.clear()
+            self._runtime_status_event_ids.clear()
             candidate: BrowserPlaySession | None = None
             try:
                 if self._session_factory is not None:
@@ -690,6 +711,26 @@ class BrowserPlayServer:
                 # browser's event socket and the UI sees MATCH_TICK as the
                 # first frame, violating the canonical prefix contract.
                 if candidate is not None:
+                    runtime = getattr(candidate.stack, "runtime", None)
+                    dispatch_runtime = getattr(candidate.gateway, "dispatch_runtime", None)
+                    if runtime is not None:
+                        if dispatch_runtime is None:
+                            raise ValueError("browser gateway has no runtime command port")
+                        runtime_status = runtime.status
+                        dispatch_runtime(
+                            ModelSORuntimeCommand(
+                                schema_version="1",
+                                kind="steel_onslaught.runtime_command",
+                                command_id=command_id,
+                                expected_revision=runtime_status.revision,
+                                owner_id=runtime_status.owner_id,
+                                action=SORuntimeAction.START,
+                                mode=SORuntimeMode.ONE_GAME,
+                            ),
+                            transport=transport,
+                            principal_id=principal_id,
+                            session_id=session_id,
+                        )
                     self._start_run_task()
                     self._start_prompt_watchers()
             except Exception:
@@ -722,11 +763,49 @@ class BrowserPlayServer:
                 start_request = self._start_request(payload)
             elif kind == "steel_onslaught.browser_start_match":
                 start_request = ModelSOBrowserStartMatchRequest.model_validate(payload)
+            elif kind == "steel_onslaught.runtime_command":
+                runtime_command = ModelSORuntimeCommand.model_validate(payload)
+                if self._gateway is None:
+                    raise ValueError("browser session has not been started")
+                if self._session_owner is not None and self._session_owner != (
+                    principal_id,
+                    session_id,
+                ):
+                    raise ValueError("runtime commands belong to the admitted launch authority")
+                dispatch_runtime = getattr(self._gateway, "dispatch_runtime", None)
+                if dispatch_runtime is None:
+                    raise ValueError("browser gateway has no runtime command port")
+                result = cast(
+                    ModelSOBrowserRuntimeAccepted,
+                    dispatch_runtime(
+                        runtime_command,
+                        transport=transport,
+                        principal_id=principal_id,
+                        session_id=session_id,
+                    ),
+                )
+                if runtime_command.action is SORuntimeAction.PAUSE and self._session is not None:
+                    runtime = getattr(self._session.stack, "runtime", None)
+                    if runtime is None:
+                        raise ValueError("browser session has no injected runtime")
+                    tick = await asyncio.to_thread(
+                        runtime.wait_for_pause_boundary,
+                        runtime_command.command_id,
+                    )
+                    self._enqueue_runtime_status(tick=tick)
+                    # A pause boundary is a complete tick boundary.  There
+                    # may be no subsequent MATCH_TICK while paused to trigger
+                    # the normal one-tick ordering flush, so release this
+                    # status (and any same-tick game events) now.
+                    self._flush_pending_tick(self._session.match_id)
+                elif runtime_command.action is SORuntimeAction.RESUME:
+                    self._enqueue_runtime_status()
+                return result.model_dump_json()
             elif kind == "steel_onslaught.browser_player_action":
                 if set(payload) == {"schema_version", "kind", "side", "command"}:
-                    command = ModelSOPlayerActionCommand.model_validate(payload["command"])
+                    action_command = ModelSOPlayerActionCommand.model_validate(payload["command"])
                     action_request = ModelSOBrowserActionRequest(
-                        side=payload["side"], command=command
+                        side=payload["side"], command=action_command
                     )
                 else:
                     action_request = self._action_request(payload)
@@ -818,6 +897,11 @@ class BrowserPlayServer:
             self._retire_task = asyncio.create_task(self._retire_completed_session())
 
     async def _retire_completed_session(self) -> None:
+        # Drain callbacks funnelled from the worker thread before clearing the
+        # session.  In particular, MATCH_ENDED must reach the browser queue so
+        # its server-only runtime ``ended`` projection can sort immediately
+        # before the terminal envelope.
+        await asyncio.sleep(0)
         session = self._session
         if session is None:
             return
@@ -949,6 +1033,24 @@ class BrowserPlayServer:
     def _on_event(self, event: ModelSOEventEnvelope) -> None:
         if self._loop is None:
             return
+        if (
+            event.event_type is SOEventType.MATCH_ENDED
+            and self._session is not None
+            and event.match_id == self._session.match_id
+        ):
+            # The ledger subscriber is installed before the browser subscriber
+            # in the composition root.  Marking the runtime here therefore
+            # proves durable terminal evidence before the server projects an
+            # ``ended`` status into the browser stream.
+            runtime = getattr(self._session.stack, "runtime", None)
+            if runtime is not None:
+                try:
+                    runtime.mark_match_ended()
+                except Exception:
+                    # Preserve canonical terminal delivery even when a test or
+                    # legacy stack cannot prove the evidence.  The projection
+                    # helper will omit a false ``ended`` status in that case.
+                    self._report_terminal_failure()
         # Runner events can be emitted from a worker thread. Funnel callbacks
         # through the event loop, then hold one tick until its next tick (or
         # terminal) arrives so same-tick sequence numbers can be sorted before
@@ -966,6 +1068,7 @@ class BrowserPlayServer:
         if event.event_type is SOEventType.MATCH_STARTED:
             self._publish_ordered_events((event,))
             self._pending_ticks[event.match_id] = event.tick
+            self._enqueue_runtime_status(tick=event.tick)
             return
 
         current_tick = self._pending_ticks.get(event.match_id)
@@ -981,10 +1084,81 @@ class BrowserPlayServer:
         if event.tick > current_tick:
             self._flush_pending_tick(event.match_id)
             self._pending_ticks[event.match_id] = event.tick
+        if event.event_type is SOEventType.MATCH_ENDED:
+            # Runtime ENDED is server-stream metadata, not canonical ledger
+            # truth.  Give it the same tick/sequence as MATCH_ENDED and a
+            # lexically minimal event id so it sorts immediately before the
+            # terminal envelope without changing the game ledger.
+            self._enqueue_runtime_status(tick=event.tick, terminal=event)
         self._pending_events.setdefault(event.match_id, []).append(event)
         self._pending_event_ids.add(event.event_id)
         if event.event_type is SOEventType.MATCH_ENDED:
             self._flush_pending_tick(event.match_id)
+
+    def _runtime_sequence(self, match_id: str, tick: int) -> int:
+        events = [
+            *self._event_history,
+            *self._pending_events.get(match_id, []),
+        ]
+        same_tick = [
+            event.sequence_in_tick
+            for event in events
+            if event.match_id == match_id and event.tick == tick
+        ]
+        return max(same_tick, default=-1) + 1
+
+    def _enqueue_runtime_status(
+        self,
+        *,
+        tick: int | None = None,
+        terminal: ModelSOEventEnvelope | None = None,
+    ) -> None:
+        """Project injected runtime state into the browser event stream.
+
+        Runtime status is deliberately not published on the event bus: it is
+        a transport projection, while the ledger remains the sole source of
+        canonical game truth.  Status frames still use the regular envelope
+        factory so the frontend can apply the same closed parser and ordering
+        checks as every other event.
+        """
+
+        if self._session is None:
+            return
+        runtime = getattr(self._session.stack, "runtime", None)
+        if runtime is None:
+            return
+        status = runtime.status
+        if status.status is SORuntimeStatus.READY:
+            return
+        match_id = self._session.match_id
+        if match_id in self._pending_ticks and tick is None:
+            selected_tick = self._pending_ticks[match_id]
+        elif tick is not None:
+            selected_tick = tick
+        else:
+            selected_tick = int(getattr(self._session.stack.runner.fold.state, "tick", 0))
+        key = f"{match_id}:{status.revision}:{status.status.value}"
+        if key in self._runtime_status_event_ids:
+            return
+        sequence = (
+            terminal.sequence_in_tick
+            if terminal is not None
+            else self._runtime_sequence(match_id, selected_tick)
+        )
+        event = self._session.stack.event_factory.make(
+            match_id=match_id,
+            tick=selected_tick,
+            sequence_in_tick=sequence,
+            event_type=SOEventType.RUNTIME_STATUS_CHANGED,
+            producer_node="node.browser.play.runtime",
+            subject=ModelSOEventSubject(mech_id="*", player_id="*"),
+            payload=status.model_dump(mode="json"),
+            correlation_id=self._session.stack.runner.identity.correlation_id,
+        )
+        if terminal is not None:
+            event = event.model_copy(update={"event_id": "0" * 26})
+        self._runtime_status_event_ids.add(key)
+        self._enqueue_event(event)
 
     def _flush_pending_tick(self, match_id: str) -> None:
         events = self._pending_events.pop(match_id, [])
