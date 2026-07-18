@@ -106,6 +106,11 @@ from steel_onslaught.match.runner import (
     MatchRunner,
     _require_valid_budgets,
 )
+from steel_onslaught.match.runtime import (
+    ConditionProgressGate,
+    MatchRuntime,
+    RuntimeProgressGate,
+)
 from steel_onslaught.match.state import ModelSOMatchState, SOMatchEndReason, SOMatchStatus
 from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.defensive import DefensivePilot
@@ -279,6 +284,7 @@ class RuntimeDependencies:
     pilot_factory: ProtocolPilotFactory
     closer: ProtocolResourceCloser
     learning_artifacts: LearningArtifactStore | None = None
+    progress_gate: RuntimeProgressGate | None = None
 
     def close(self) -> None:
         self.closer.close()
@@ -353,6 +359,7 @@ class LiveMatchStack:
     leaderboard: LeaderboardRepository
     event_factory: EventFactory
     catalog: MatchContractCatalog
+    runtime: MatchRuntime
     closer: ProtocolResourceCloser
     _launch_provenance: ModelSOMatchLaunchProvenance | None = None
     _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
@@ -1097,6 +1104,8 @@ def assemble_match_with_dependencies(
     side_b: str = "blue",
     pilots_override: Mapping[str, PilotProtocol] | None = None,
     launch_provenance: ModelSOMatchLaunchProvenance | None = None,
+    progress_gate: RuntimeProgressGate | None = None,
+    runtime_owner_id: str = "runtime_owner.local",
 ) -> LiveMatchStack:
     """Pure DI seam used by production root and hermetic tests."""
     _require_valid_budgets(red, dependencies.catalog)
@@ -1129,6 +1138,7 @@ def assemble_match_with_dependencies(
                 blue, loadout_path=blue_loadout_path, dependencies=match_dependencies
             )
     dependencies.bus.subscribe(dependencies.ledger.append)
+    resolved_progress_gate = progress_gate or dependencies.progress_gate or ConditionProgressGate()
     runner = MatchRunner(
         identity=identity,
         seed=seed,
@@ -1143,6 +1153,7 @@ def assemble_match_with_dependencies(
         side_a=side_a,
         side_b=side_b,
         launch_provenance=launch_provenance,
+        progress_gate=resolved_progress_gate,
     )
     scoring = ReducerScoring(
         identity.match_id,
@@ -1158,6 +1169,17 @@ def assemble_match_with_dependencies(
         ),
     )
     dependencies.bus.subscribe(scoring.handle)
+
+    runtime = MatchRuntime(
+        match_id=identity.match_id,
+        owner_id=runtime_owner_id,
+        run_match=runner.run,
+        progress_gate=resolved_progress_gate,
+        terminal_evidence=lambda match_id: any(
+            event.event_type is SOEventType.MATCH_ENDED
+            for event in dependencies.ledger.read_all(match_id)
+        ),
+    )
 
     def _on_match_scored(event: ModelSOEventEnvelope) -> None:
         payload = ModelSOMatchScoredPayload.model_validate(event.payload)
@@ -1190,6 +1212,7 @@ def assemble_match_with_dependencies(
         leaderboard=dependencies.leaderboard,
         event_factory=dependencies.event_factory,
         catalog=dependencies.catalog,
+        runtime=runtime,
         closer=dependencies.closer,
     )
 
@@ -1411,6 +1434,7 @@ __all__ = [
     "LearningDependencies",
     "LiveMatchStack",
     "LlmDependencies",
+    "MatchRuntime",
     "RuntimeDependencies",
     "assemble_match_live",
     "assemble_match_with_dependencies",
