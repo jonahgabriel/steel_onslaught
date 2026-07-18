@@ -31,6 +31,27 @@ function tickStream(matchId: string, n: number): SOEventEnvelope[] {
   return out;
 }
 
+function runtimeStatus(
+  matchId: string,
+  status: "running" | "paused" | "ended",
+  revision: number,
+  tick: number,
+  seq = 0,
+): SOEventEnvelope {
+  return makeEnvelope(
+    "runtime_status_changed",
+    {
+      status,
+      mode: "one_game",
+      revision,
+      owner_id: "runtime_owner.browser",
+      match_index: 0,
+      last_command_id: "11111111-1111-4111-8111-111111111111",
+    },
+    { matchId, tick, seq },
+  );
+}
+
 /** A sink that mirrors a downstream fold: reset() clears, release() appends. */
 function recordingSink(): {
   sink: ReleaseSink;
@@ -77,6 +98,69 @@ describe("MatchTransport — buffering", () => {
     expect(alpha?.tickCount).toBe(3); // ticks 0..2 → count 3
     expect(bravo?.tickCount).toBe(5);
     expect(snap.activeMatchId).toBe("match.alpha"); // first seen is active
+  });
+});
+
+describe("MatchTransport — runtime lifecycle projection", () => {
+  it("accepts running/paused/ended statuses and orders ended before match_ended", () => {
+    const t = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("runtime", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    t.ingest(started);
+    t.ingest(runtimeStatus("runtime", "running", 1, 0, 1));
+    t.ingest(runtimeStatus("runtime", "paused", 2, 1));
+    t.ingest(runtimeStatus("runtime", "ended", 3, 2));
+    t.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "aborted", winner_id: null },
+        { matchId: "runtime", tick: 2, seq: 0 },
+      ),
+    );
+    expect(t.snapshot().runtimeStatus?.status).toBe("ended");
+    expect(t.snapshot().matchComplete).toBe(true);
+  });
+
+  it("rejects lifecycle statuses before start, non-running first, and after terminal", () => {
+    const preStart = new MatchTransport({ msPerTick: 500 });
+    expect(() => preStart.ingest(runtimeStatus("runtime.pre", "running", 1, 0))).toThrow(
+      /first event/,
+    );
+
+    const wrongFirst = new MatchTransport({ msPerTick: 500 });
+    const [wrongStarted] = tickStream("runtime.wrong", 1);
+    if (wrongStarted === undefined) throw new Error("missing match_started fixture");
+    wrongFirst.ingest(wrongStarted);
+    expect(() => wrongFirst.ingest(runtimeStatus("runtime.wrong", "paused", 1, 0, 1))).toThrow(
+      /first runtime status/,
+    );
+
+    const terminal = new MatchTransport({ msPerTick: 500 });
+    const [terminalStarted] = tickStream("runtime.terminal", 1);
+    if (terminalStarted === undefined) throw new Error("missing match_started fixture");
+    terminal.ingest(terminalStarted);
+    terminal.ingest(runtimeStatus("runtime.terminal", "running", 1, 0, 1));
+    expect(() =>
+      terminal.ingest(
+        makeEnvelope(
+          "match_ended",
+          { reason: "aborted", winner_id: null },
+          { matchId: "runtime.terminal", tick: 1 },
+        ),
+      ),
+    ).toThrow(/runtime status must be ended/);
+
+    terminal.ingest(runtimeStatus("runtime.terminal", "ended", 2, 1));
+    terminal.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "aborted", winner_id: null },
+        { matchId: "runtime.terminal", tick: 1, seq: 1 },
+      ),
+    );
+    expect(() => terminal.ingest(runtimeStatus("runtime.terminal", "running", 3, 2))).toThrow(
+      /after match_ended/,
+    );
   });
 });
 

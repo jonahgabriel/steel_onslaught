@@ -21,7 +21,7 @@
  * The engine is framework-agnostic and deterministic: all timing flows through
  * the `now` passed to `frame`, so tests drive it with an injected clock.
  */
-import type { SOEventEnvelope } from "../types";
+import type { RuntimeStatusChangedPayload, SOEventEnvelope } from "../types";
 
 export type TransportSpeed = 1 | 2 | 4;
 export const TRANSPORT_SPEEDS: readonly TransportSpeed[] = [1, 2, 4];
@@ -65,6 +65,8 @@ export interface TransportSnapshot {
   atEnd: boolean;
   /** The active match has streamed its sole canonical terminal (`match_ended`). */
   matchComplete: boolean;
+  /** Latest injected runtime lifecycle projection, if the stream carries one. */
+  runtimeStatus: RuntimeStatusChangedPayload | null;
   /**
    * Paced replay has reached the final tick of a *finished* match — playback is
    * over and the play control should offer REPLAY (restart from tick 0). False
@@ -96,6 +98,7 @@ interface MatchBuffer {
   complete: boolean;
   lastOrder: readonly [tick: number, sequence: number, eventId: string] | null;
   llmRequests: Map<string, boolean>;
+  runtimeStatus: RuntimeStatusChangedPayload | null;
 }
 
 export interface MatchTransportOptions {
@@ -235,6 +238,7 @@ export class MatchTransport {
         complete: false,
         lastOrder: null,
         llmRequests: new Map<string, boolean>(),
+        runtimeStatus: null,
       };
       this.buffers.set(matchId, buf);
       this.order.push(matchId);
@@ -255,6 +259,38 @@ export class MatchTransport {
     if (env.event_type === "match_started" && buf.events.length > 0) {
       throw new ProjectionIntegrityError(`match_started repeated for ${matchId}`);
     }
+    if (env.event_type === "runtime_status_changed") {
+      const status = env.payload;
+      if (status.status === "ready") {
+        throw new ProjectionIntegrityError(
+          "ready runtime status is not streamable after match_started",
+        );
+      }
+      if (buf.runtimeStatus === null) {
+        if (status.status !== "running" || env.tick !== 0 || env.sequence_in_tick <= 0) {
+          throw new ProjectionIntegrityError(
+            "first runtime status after match_started must be running at tick 0",
+          );
+        }
+      } else {
+        if (status.revision <= buf.runtimeStatus.revision) {
+          throw new ProjectionIntegrityError("runtime status revision is not strictly monotonic");
+        }
+        if (
+          status.owner_id !== buf.runtimeStatus.owner_id ||
+          status.mode !== buf.runtimeStatus.mode ||
+          status.match_index !== buf.runtimeStatus.match_index
+        ) {
+          throw new ProjectionIntegrityError("runtime status identity changed within a match");
+        }
+        if (buf.runtimeStatus.status === "ended") {
+          throw new ProjectionIntegrityError(
+            "runtime ended status must be followed by match_ended",
+          );
+        }
+      }
+      buf.runtimeStatus = status;
+    }
     if (env.event_type === "llm_completion_requested") {
       buf.llmRequests.set(messageId, false);
     }
@@ -274,6 +310,9 @@ export class MatchTransport {
       buf.llmRequests.set(requestId, true);
     }
     if (env.event_type === "match_ended") {
+      if (buf.runtimeStatus !== null && buf.runtimeStatus.status !== "ended") {
+        throw new ProjectionIntegrityError("runtime status must be ended before match_ended");
+      }
       const unresolved = [...buf.llmRequests].filter(([, resolved]) => !resolved);
       if (unresolved.length > 0) {
         throw new ProjectionIntegrityError(
@@ -534,6 +573,7 @@ export class MatchTransport {
       bufferedCount: events.length,
       atEnd,
       matchComplete,
+      runtimeStatus: buf?.runtimeStatus ?? null,
       ended,
     };
   }
@@ -543,7 +583,11 @@ export class MatchTransport {
     const matchSig = s.matches
       .map((m) => `${m.matchId}:${m.tickCount}:${m.redLabel}:${m.blueLabel}`)
       .join("|");
-    return `${s.status};${s.speed};${s.activeMatchId};${s.cursorTick};${s.atEnd};${s.ended};${s.matchComplete};${matchSig}`;
+    const runtimeSig =
+      s.runtimeStatus === null
+        ? ""
+        : `${s.runtimeStatus.status}:${s.runtimeStatus.revision}:${s.runtimeStatus.last_command_id ?? ""}`;
+    return `${s.status};${s.speed};${s.activeMatchId};${s.cursorTick};${s.atEnd};${s.ended};${s.matchComplete};${runtimeSig};${matchSig}`;
   }
 
   private notifyState(): void {

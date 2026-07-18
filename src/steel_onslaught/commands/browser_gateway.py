@@ -45,6 +45,8 @@ from steel_onslaught.contracts.player_selection import (
     Side,
     TurnId,
 )
+from steel_onslaught.contracts.runtime import ModelSORuntimeCommand, ModelSORuntimeStatusPayload
+from steel_onslaught.match.runtime import RuntimeCommandReceipt
 
 
 class BrowserGatewayError(ValueError):
@@ -157,6 +159,19 @@ class ModelSOBrowserActionAccepted(_ClosedGatewayModel):
     prompt_sha256: Sha256Digest
 
 
+class ModelSOBrowserRuntimeAccepted(_ClosedGatewayModel):
+    """Closed command-channel receipt for an injected runtime transition."""
+
+    schema_version: Literal["1"] = "1"
+    kind: Literal["steel_onslaught.runtime_command_accepted"] = (
+        "steel_onslaught.runtime_command_accepted"
+    )
+    authority_scope: Literal["process_lifetime"] = "process_lifetime"
+    outcome: Literal["accepted"] = "accepted"
+    command_id: UUID
+    status: ModelSORuntimeStatusPayload
+
+
 class _StartPort(Protocol):
     def admit_start_match(
         self,
@@ -178,6 +193,10 @@ class _HumanPort(Protocol):
     ) -> ModelSOHumanActionAdmission: ...
 
 
+class _RuntimePort(Protocol):
+    def dispatch(self, command: ModelSORuntimeCommand) -> RuntimeCommandReceipt: ...
+
+
 class BrowserCommandGateway:
     """Authenticate and admit browser commands over injected process ports.
 
@@ -194,6 +213,8 @@ class BrowserCommandGateway:
         roster: ModelSOPlayerRosterBinding,
         start_coordinator: _StartPort | ProcessLocalMatchLaunchCoordinator,
         human_coordinator: _HumanPort | ProcessLocalHumanLoopbackCoordinator,
+        runtime: _RuntimePort | None = None,
+        runtime_authority: tuple[PrincipalId, SessionId] | None = None,
         allowed_origins: tuple[str, ...],
     ) -> None:
         if not allowed_origins:
@@ -203,6 +224,8 @@ class BrowserCommandGateway:
         self._roster = roster
         self._start_coordinator = start_coordinator
         self._human_coordinator = human_coordinator
+        self._runtime = runtime
+        self._runtime_authority = runtime_authority
         self._lock = Lock()
         self._start_results: dict[UUID, ModelSOBrowserStartAccepted] = {}
         self._action_results: dict[UUID, ModelSOBrowserActionAccepted] = {}
@@ -340,6 +363,42 @@ class BrowserCommandGateway:
             self._action_owners[command.command_id] = (principal_id, session_id)
             return result
 
+    def dispatch_runtime(
+        self,
+        command: ModelSORuntimeCommand,
+        *,
+        transport: ModelSOBrowserRequestContext,
+        principal_id: PrincipalId,
+        session_id: SessionId,
+    ) -> ModelSOBrowserRuntimeAccepted:
+        """Authenticate and dispatch one strict runtime CAS command."""
+        self._check_context(transport)
+        if self._runtime is None:
+            raise BrowserGatewayError("runtime command port is not configured")
+        with self._lock:
+            if (
+                self._runtime_authority is not None
+                and (
+                    principal_id,
+                    session_id,
+                )
+                != self._runtime_authority
+            ):
+                raise BrowserGatewayCommandConflictError(
+                    "runtime commands belong to the admitted launch authority"
+                )
+            require_session_permission(
+                self._sessions,
+                principal_id=principal_id,
+                session_id=session_id,
+                permission="match:create",
+            )
+            receipt = self._runtime.dispatch(command)
+            return ModelSOBrowserRuntimeAccepted(
+                command_id=command.command_id,
+                status=receipt.status,
+            )
+
 
 __all__ = [
     "BrowserCommandGateway",
@@ -350,6 +409,7 @@ __all__ = [
     "ModelSOBrowserActionAccepted",
     "ModelSOBrowserActionRequest",
     "ModelSOBrowserRequestContext",
+    "ModelSOBrowserRuntimeAccepted",
     "ModelSOBrowserStartAccepted",
     "ModelSOBrowserStartMatchRequest",
 ]

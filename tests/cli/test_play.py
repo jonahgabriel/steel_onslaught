@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import cast
 from uuid import UUID
 
 import pytest
+import ulid
 from click.testing import CliRunner
 
 from steel_onslaught.cli.main import main
@@ -29,6 +31,7 @@ from steel_onslaught.commands.authority import (
 )
 from steel_onslaught.commands.browser_gateway import (
     ModelSOBrowserRequestContext,
+    ModelSOBrowserRuntimeAccepted,
     ModelSOBrowserStartMatchRequest,
 )
 from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProviderCapability
@@ -42,7 +45,18 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
 )
-from steel_onslaught.match.composition import RuntimeDependencies
+from steel_onslaught.contracts.runtime import (
+    ModelSORuntimeCommand,
+    ModelSORuntimeStatusPayload,
+    SORuntimeMode,
+    SORuntimeStatus,
+)
+from steel_onslaught.events.factory import EventFactory
+from steel_onslaught.match.composition import (
+    RuntimeDependencies,
+    SystemClock,
+    SystemIdentityProvider,
+)
 from steel_onslaught.match.runner import MatchIdentity
 
 _PRINCIPAL = "principal.browser"
@@ -249,6 +263,129 @@ def test_configured_model_loader_parses_json_arrays_as_wire_tuples(tmp_path: Pat
 @pytest.mark.unit
 def test_browser_play_server_exports_ephemeral_loopback_contract() -> None:
     assert BrowserPlayServer.__name__ == "BrowserPlayServer"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_browser_server_projects_runtime_status_before_terminal_event() -> None:
+    fixture = Path(__file__).parents[2] / "frontend/src/__tests__/fixtures/match_started.json"
+    from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+
+    started = ModelSOEventEnvelope.model_validate_json(fixture.read_text(encoding="utf-8"))
+
+    class Bus:
+        def subscribe(self, handler: object, **_: object) -> int:
+            del handler
+            return 1
+
+        def unsubscribe(self, token: int) -> None:
+            del token
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.status = ModelSORuntimeStatusPayload(
+                status=SORuntimeStatus.RUNNING,
+                mode=SORuntimeMode.ONE_GAME,
+                revision=1,
+                owner_id="runtime_owner.browser",
+                match_index=0,
+                last_command_id=_COMMAND_ID,
+            )
+
+        def mark_match_ended(self) -> ModelSORuntimeStatusPayload:
+            self.status = self.status.model_copy(
+                update={"status": SORuntimeStatus.ENDED, "revision": 2}
+            )
+            return self.status
+
+        def wait_for_pause_boundary(self, _command_id: UUID) -> int:
+            return 0
+
+    runtime = Runtime()
+    event_factory = EventFactory(clock=SystemClock(), identities=SystemIdentityProvider())
+    stack = SimpleNamespace(
+        match_id=started.match_id,
+        runtime=runtime,
+        event_factory=event_factory,
+        runner=SimpleNamespace(identity=SimpleNamespace(correlation_id=started.correlation_id)),
+        close=lambda: None,
+    )
+    session = SimpleNamespace(stack=stack, match_id=started.match_id, close=lambda: None)
+    server = BrowserPlayServer(
+        bootstrap=object(),  # type: ignore[arg-type]
+        gateway=None,
+        bus=Bus(),  # type: ignore[arg-type]
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+    )
+    server._session = session  # type: ignore[assignment]
+    server._session_owner = (_PRINCIPAL, _SESSION)
+    server._loop = asyncio.get_running_loop()
+    try:
+        server._on_event(started)
+        await asyncio.sleep(0)
+
+        class Gateway:
+            def dispatch_runtime(
+                self, command: ModelSORuntimeCommand, **_: object
+            ) -> ModelSOBrowserRuntimeAccepted:
+                runtime.status = runtime.status.model_copy(
+                    update={"status": SORuntimeStatus.PAUSED, "revision": 2}
+                )
+                return ModelSOBrowserRuntimeAccepted(
+                    command_id=command.command_id,
+                    status=runtime.status,
+                )
+
+        server._gateway = Gateway()  # type: ignore[assignment]
+        pause_response = await server._dispatch_command(
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "kind": "steel_onslaught.runtime_command",
+                    "command_id": "33333333-3333-4333-8333-333333333333",
+                    "expected_revision": 1,
+                    "owner_id": "runtime_owner.browser",
+                    "action": "pause",
+                }
+            ),
+            transport=ModelSOBrowserRequestContext(
+                origin="http://localhost:5173", host="127.0.0.1:8765"
+            ),
+            principal_id=_PRINCIPAL,
+            session_id=_SESSION,
+        )
+        assert json.loads(pause_response or "{}")["outcome"] == "accepted"
+        assert [event.payload.get("status") for event in server._event_history[1:]] == [
+            "running",
+            "paused",
+        ]
+        terminal = started.model_copy(
+            update={
+                "event_id": ulid.new().str,
+                "event_type": SOEventType.MATCH_ENDED,
+                "sequence_in_tick": 3,
+                "payload": {"reason": "aborted", "winner_id": None},
+                "envelope": started.envelope.model_copy(
+                    update={"message_id": UUID("22222222-2222-4222-8222-222222222222")}
+                ),
+            }
+        )
+        server._on_event(terminal)
+        await asyncio.sleep(0)
+        assert [event.event_type for event in server._event_history] == [
+            SOEventType.MATCH_STARTED,
+            SOEventType.RUNTIME_STATUS_CHANGED,
+            SOEventType.RUNTIME_STATUS_CHANGED,
+            SOEventType.RUNTIME_STATUS_CHANGED,
+            SOEventType.MATCH_ENDED,
+        ]
+        assert server._event_history[-2].payload["status"] == "ended"
+        assert (
+            server._event_history[-2].sequence_in_tick == server._event_history[-1].sequence_in_tick
+        )
+    finally:
+        server._loop = None
 
 
 @pytest.mark.unit

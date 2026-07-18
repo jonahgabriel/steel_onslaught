@@ -20,6 +20,7 @@ from steel_onslaught.commands.browser_gateway import (
     BrowserGatewayReceiveOnlyError,
     ModelSOBrowserActionRequest,
     ModelSOBrowserRequestContext,
+    ModelSOBrowserRuntimeAccepted,
     ModelSOBrowserStartMatchRequest,
 )
 from steel_onslaught.commands.inbox import ModelSOHumanActionAdmission
@@ -37,6 +38,8 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
 )
+from steel_onslaught.contracts.runtime import ModelSORuntimeCommand
+from steel_onslaught.match.runtime import ConditionProgressGate, MatchRuntime
 
 _PRINCIPAL = "principal.browser"
 _SESSION = "session.browser"
@@ -191,6 +194,60 @@ def _gateway() -> tuple[BrowserCommandGateway, _Start, _Human]:
 
 def _transport() -> ModelSOBrowserRequestContext:
     return ModelSOBrowserRequestContext(origin="http://localhost:5173", host="127.0.0.1:8765")
+
+
+@pytest.mark.unit
+def test_runtime_gateway_is_authenticated_and_idempotent() -> None:
+    runtime = MatchRuntime(
+        match_id=_MATCH_ID,
+        owner_id="runtime_owner.browser",
+        run_match=lambda: None,
+        progress_gate=ConditionProgressGate(),
+        terminal_evidence=lambda _match_id: True,
+    )
+    gateway, _, _ = _gateway()
+    gateway = BrowserCommandGateway(
+        sessions=_Sessions(),
+        roster=_roster(),
+        start_coordinator=_Start(),
+        human_coordinator=_Human(),
+        runtime=runtime,
+        runtime_authority=(_PRINCIPAL, _SESSION),
+        allowed_origins=("http://localhost:5173",),
+    )
+    command = ModelSORuntimeCommand.model_validate(
+        {
+            "schema_version": "1",
+            "kind": "steel_onslaught.runtime_command",
+            "command_id": UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+            "expected_revision": 0,
+            "owner_id": "runtime_owner.browser",
+            "action": "start",
+            "mode": "one_game",
+        }
+    )
+    first = gateway.dispatch_runtime(
+        command,
+        transport=_transport(),
+        principal_id=_PRINCIPAL,
+        session_id=_SESSION,
+    )
+    second = gateway.dispatch_runtime(
+        command,
+        transport=_transport(),
+        principal_id=_PRINCIPAL,
+        session_id=_SESSION,
+    )
+    assert isinstance(first, ModelSOBrowserRuntimeAccepted)
+    assert first == second
+    assert first.status.status.value == "running"
+    with pytest.raises(BrowserGatewayCommandConflictError, match=r"launch authority"):
+        gateway.dispatch_runtime(
+            command.model_copy(update={"command_id": UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")}),
+            transport=_transport(),
+            principal_id="principal.other",
+            session_id=_SESSION,
+        )
 
 
 @pytest.mark.unit

@@ -146,6 +146,9 @@ def test_pause_resume_hold_progress_and_stop_waits_for_terminal_evidence() -> No
     checkpoint_worker.start()
     sleep(0.02)
     assert not blocked.is_set()
+    # The command-side waiter resolves only after the runner (or an injected
+    # equivalent checkpoint) has actually reached the safe boundary.
+    assert runtime.wait_for_pause_boundary(pause_id) == 0
 
     resume_id = UUID("33333333-3333-4333-8333-333333333333")
     runtime.dispatch(_command("resume", revision=2, command_id=resume_id))
