@@ -67,6 +67,32 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
+> **Current reconciliation (2026-07-18, `origin/main` 905524e).** The Rev 5
+> history below is retained as historical evidence. The following three
+> follow-up PRs are now landed and are the current implementation baseline:
+>
+> - [PR #39](https://github.com/jonahgabriel/steel_onslaught/pull/39),
+>   commit `835d2a7`, adds the whole-round `ProgrammingPilot` seam for LLM
+>   card plans. `LLMProgrammingPilot` accepts the closed JSON register-plan
+>   shape, validates it through the canonical `program_for_seat` boundary, and
+>   keeps explicit `raise` versus deterministic fallback policy.
+> - [PR #40](https://github.com/jonahgabriel/steel_onslaught/pull/40),
+>   commit `0629a4a`, adds contract-declared roster defaults (including human
+>   options), public default projection, and multi-provider model composition
+>   through injected DI capabilities. Selection is exact and fail-closed; no
+>   provider identity is inferred from a string search.
+> - [PR #41](https://github.com/jonahgabriel/steel_onslaught/pull/41),
+>   commit `905524e`, wires durable context-arm artifacts. The artifact port
+>   reads canonical replay traces, decision diffs, and promoted exemplars;
+>   the filesystem adapter reads evaluation SQLite ledgers read-only and
+>   lineage records deterministically, while the experiment CLI injects the
+>   selected artifacts and carries the resulting context manifest hash into
+>   experiment rows and usage sidecars.
+>
+> The frontend default projection follow-up is still in progress (PR pending);
+> it is intentionally not claimed as landed here and is outside this
+> backend/docs reconciliation.
+
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
 ### Landed on this branch (commits `c4f8bc5`, `9461720`, `f3a08f0`, `9307a67`, `76879ff`)
@@ -148,6 +174,33 @@ genuine strategic rationale stored in the ledger.
   foreground; implementation dispatched to an Opus agent workflow.
   — **UI-workflow-owned** (not part of this backend integration gate;
   `frontend/` changes are staged/committed by that workflow separately).
+
+## Next — paced card cadence (deferred)
+
+The current card runtime intentionally emits one complete hand/plan/register
+sequence per tick. One-register-per-tick pacing is deferred to a separate
+runtime/replay slice; it is not implied by PR #39's whole-round programmer.
+That slice must preserve these invariants:
+
+- latch the active round's seats, hand, deck state, plan, previous plan, and
+  heat-lock context; do not deal or re-plan again between register ticks;
+- emit `CARDS_DISCARDED` only after the final register, then commit the deck,
+  previous-plan, and round-index state for the next round;
+- group card lifecycle events by one stable causation root across ticks (the
+  current validator groups by `(tick, root)` and requires all four phases on
+  one tick), while retaining phase order, unique seat/register rows, and
+  canonical `(tick, sequence_in_tick, event_id)` ordering;
+- close or explicitly cancel an active round at decisive death or a
+  `max_ticks` terminal boundary, and retain lifecycle rows for seats that die
+  mid-round even though their later intents are void.
+
+The risks are material: longer matches need a larger tick budget, and boiler
+regen, cooldowns, sensors, mode transitions, and initiative can change between
+registers. A safe interim demo is the existing atomic cadence with an explicit
+larger `max_ticks`/presentation pacing knob. Configuring `round_length=1`
+preserves the current wire validator but deals and discards a new hand every
+tick and removes meaningful suffix heat-lock behavior, so it is a demo-only
+fallback rather than the target semantics.
 
 ## Core principle (verified, unchanged from Rev 1)
 
