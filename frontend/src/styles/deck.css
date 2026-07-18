@@ -390,6 +390,26 @@ body {
     transparent 70%
   );
 }
+/* De-overlap outline — when two units are adjacent/co-celled the sprites are
+   nudged apart and each gets a crisp side-colored ring so the pair reads as
+   two distinct silhouettes instead of a merged blob. */
+.pd-arena-unit[data-paired="true"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 94%;
+  height: 94%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.pd-arena-unit[data-side="red"][data-paired="true"]::after {
+  border: 1px solid rgba(255, 93, 64, 0.85);
+}
+.pd-arena-unit[data-side="blue"][data-paired="true"]::after {
+  border: 1px solid rgba(88, 182, 255, 0.85);
+}
 /* Name tag (A-01 / B-01) under each sprite. */
 .pd-arena-tag {
   position: absolute;

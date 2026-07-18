@@ -20,11 +20,17 @@ import { displayNameOf, mechStateOf } from "../lib/gauges";
 import { weaponClassOf } from "../lib/weapons";
 import type { SOEventEnvelope, SOMechRuntimeState, SOPosition } from "../types";
 
+/**
+ * The authoritative dimension is the arena contract's `size` carried on
+ * MATCH_STARTED (`payload.arena.size`).
+ */
 export const GRID_CELLS = 40;
 /** Minor grid lines every 2 cells (subtle) — keyed by coordinate, not index. */
-const MINOR = Array.from({ length: GRID_CELLS / 2 + 1 }, (_, i) => i * 2);
+const minorLines = (cells: number): number[] =>
+  Array.from({ length: Math.floor(cells / 2) + 1 }, (_, i) => i * 2);
 /** Sector marks every 8 cells (brighter) — the readable coarse grid. */
-const SECTORS = Array.from({ length: GRID_CELLS / 8 + 1 }, (_, i) => i * 8);
+const sectorLines = (cells: number): number[] =>
+  Array.from({ length: Math.floor(cells / 8) + 1 }, (_, i) => i * 8);
 const TRAIL_MAX = 8;
 const TRACER_TTL_MS = 700;
 const FIRING_TTL_MS = 420;
@@ -33,7 +39,7 @@ const SHIMMER_TTL_MS = 520;
 
 interface ArenaMech {
   mechId: string;
-  side: SOMechRuntimeState["side"];
+  playerId: string;
   chassisClass: "light" | "medium" | "heavy";
   position: SOPosition;
   facing: number;
@@ -48,7 +54,6 @@ interface ArenaTracer {
   id: string;
   from: SOPosition;
   to: SOPosition;
-  side: SOMechRuntimeState["side"];
   weaponClass: WeaponClass;
   expiresAt: number;
   impact: boolean;
@@ -62,6 +67,10 @@ interface Shimmer {
 
 export interface ArenaState {
   mechs: Record<string, ArenaMech>;
+  /** Static obstacle cells carried by the authoritative arena snapshot. */
+  obstacles: SOPosition[];
+  /** Grid dimension from the arena contract (`arena.size`). */
+  gridCells: number;
   trails: Record<string, SOPosition[]>;
   tracers: ArenaTracer[];
   shimmers: Shimmer[];
@@ -72,6 +81,8 @@ export interface ArenaState {
 
 export const ARENA_INITIAL_STATE: ArenaState = {
   mechs: {},
+  obstacles: [],
+  gridCells: GRID_CELLS,
   trails: {},
   tracers: [],
   shimmers: [],
@@ -88,7 +99,7 @@ type ArenaAction =
 function mechFromRuntime(state: SOMechRuntimeState): ArenaMech {
   return {
     mechId: state.mech_id,
-    side: state.side,
+    playerId: state.player_id,
     chassisClass: state.chassis_class,
     position: state.position,
     facing: state.facing,
@@ -131,7 +142,9 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
     case "match_started": {
       const mechs: Record<string, ArenaMech> = {};
       for (const m of envelope.payload.mechs) mechs[m.mech_id] = mechFromRuntime(m);
-      return { ...ARENA_INITIAL_STATE, mechs };
+      const obstacles = envelope.payload.arena.obstacles;
+      const gridCells = envelope.payload.arena.size;
+      return { ...ARENA_INITIAL_STATE, mechs, obstacles, gridCells };
     }
 
     case "movement_resolved": {
@@ -158,7 +171,6 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
         id: envelope.event_id,
         from: attacker.position,
         to: target.position,
-        side: attacker.side,
         weaponClass: weaponClassOf(envelope.payload.weapon_id),
         expiresAt: now + TRACER_TTL_MS,
         impact: false,
@@ -240,7 +252,178 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
 
 // ---------------------------------------------------------------------------
 
-const pct = (cell: number): string => `${((cell + 0.5) / GRID_CELLS) * 100}%`;
+/** Center of `cell` as a percentage of the arena square, on a `cells` grid. */
+const pctOf = (cell: number, cells: number): string => `${((cell + 0.5) / cells) * 100}%`;
+
+// --- sprite scale + de-overlap ---------------------------------------------
+
+/** Sprite footprint in grid cells — the unit box spans this many cells. */
+const SPRITE_FOOTPRINT_CELLS = 4;
+/** Legibility floor for the unit box (% of the arena square). */
+const SPRITE_FLOOR_PCT = 6;
+/** Pair de-overlap applies at Chebyshev distance <= this (cells). */
+const PAIR_RANGE_CELLS = 2;
+/** Co-celled pair offset (% of the unit's own box), tapering with distance. */
+const PAIR_OFFSET_PCT = 40;
+const PAIR_OFFSET_TAPER_PCT = 10;
+/** Paired sprites shrink to this scale so the pair reads as two silhouettes. */
+const PAIR_SCALE = 0.85;
+
+/**
+ * Unit-box side length (% of the arena square). Sprites track the cell scale
+ * (a fixed {@link SPRITE_FOOTPRINT_CELLS}-cell footprint — 10% on the classic
+ * 40 grid, unchanged) with a floor so they stay legible on huge grids.
+ */
+export function spriteSizePct(gridCells: number): number {
+  return Math.max((SPRITE_FOOTPRINT_CELLS / gridCells) * 100, SPRITE_FLOOR_PCT);
+}
+
+export interface SpriteOffset {
+  /** Nudge along the pair-separation axis, % of the unit's OWN box. */
+  dx: number;
+  dy: number;
+  /** True when this sprite is being de-overlapped against a neighbor. */
+  paired: boolean;
+}
+
+/** The minimal shape {@link spriteOffsets} needs — every ArenaMech qualifies. */
+export interface SpriteAnchor {
+  mechId: string;
+  position: SOPosition;
+}
+
+/**
+ * De-overlap for adjacent / co-located sprites. Mechs legally clamber through
+ * cover cells and each other's neighborhoods, so two units within
+ * {@link PAIR_RANGE_CELLS} Chebyshev get nudged apart along their separation
+ * axis (a fixed diagonal when co-celled, keyed by mech-id order so it is
+ * deterministic). Offsets are in percent of the sprite's own box — cell-sized
+ * nudges would be invisible at sprite scale. The TRUE cell stays inferable via
+ * the always-on cell-anchor outline drawn in the grid layer.
+ */
+export function spriteOffsets(mechs: readonly SpriteAnchor[]): Record<string, SpriteOffset> {
+  const result: Record<string, SpriteOffset> = {};
+  for (const m of mechs) result[m.mechId] = { dx: 0, dy: 0, paired: false };
+  const ordered = [...mechs].sort((a, b) => a.mechId.localeCompare(b.mechId));
+  for (let i = 0; i < ordered.length; i += 1) {
+    for (let j = i + 1; j < ordered.length; j += 1) {
+      const a = ordered[i];
+      const b = ordered[j];
+      if (a === undefined || b === undefined) continue;
+      const ddx = b.position.x - a.position.x;
+      const ddy = b.position.y - a.position.y;
+      const cheb = Math.max(Math.abs(ddx), Math.abs(ddy));
+      if (cheb > PAIR_RANGE_CELLS) continue;
+      let ux = Math.SQRT1_2;
+      let uy = Math.SQRT1_2;
+      if (ddx !== 0 || ddy !== 0) {
+        const len = Math.hypot(ddx, ddy);
+        ux = ddx / len;
+        uy = ddy / len;
+      }
+      const magnitude = PAIR_OFFSET_PCT - PAIR_OFFSET_TAPER_PCT * cheb;
+      const ra = result[a.mechId];
+      const rb = result[b.mechId];
+      if (ra !== undefined) {
+        ra.dx -= ux * magnitude;
+        ra.dy -= uy * magnitude;
+        ra.paired = true;
+      }
+      if (rb !== undefined) {
+        rb.dx += ux * magnitude;
+        rb.dy += uy * magnitude;
+        rb.paired = true;
+      }
+    }
+  }
+  return result;
+}
+
+export interface SpritePlacement {
+  /** Final visual center, % of the arena square. */
+  left: number;
+  top: number;
+  paired: boolean;
+}
+
+/**
+ * Final sprite centers in arena-% space: cell center + the pair nudge from
+ * {@link spriteOffsets}, with EDGE HANDLING — a nudge near the border must not
+ * push a sprite off the board (verified live: a corner-adjacent pair clipped
+ * the outer sprite). Each pair is shifted RIGIDLY back inside the arena
+ * (preserving its separation, unlike per-sprite clamping which would re-merge
+ * the blob), then hard-clamped as a safety net. Unpaired sprites always sit
+ * exactly on their true cell center.
+ */
+export function spritePlacements(
+  mechs: readonly SpriteAnchor[],
+  gridCells: number,
+): Record<string, SpritePlacement> {
+  const unit = spriteSizePct(gridCells);
+  const offsets = spriteOffsets(mechs);
+  const result: Record<string, SpritePlacement> = {};
+  for (const m of mechs) {
+    const o = offsets[m.mechId] ?? { dx: 0, dy: 0, paired: false };
+    result[m.mechId] = {
+      left: ((m.position.x + 0.5) / gridCells) * 100 + (o.dx / 100) * unit,
+      top: ((m.position.y + 0.5) / gridCells) * 100 + (o.dy / 100) * unit,
+      paired: o.paired,
+    };
+  }
+  const half = (unit * PAIR_SCALE) / 2;
+  const lo = half;
+  const hi = 100 - half;
+  const overhang = (v: number) => (v < lo ? lo - v : v > hi ? hi - v : 0);
+  const ordered = [...mechs].sort((a, b) => a.mechId.localeCompare(b.mechId));
+  for (let i = 0; i < ordered.length; i += 1) {
+    for (let j = i + 1; j < ordered.length; j += 1) {
+      const a = ordered[i];
+      const b = ordered[j];
+      if (a === undefined || b === undefined) continue;
+      const cheb = Math.max(
+        Math.abs(b.position.x - a.position.x),
+        Math.abs(b.position.y - a.position.y),
+      );
+      if (cheb > PAIR_RANGE_CELLS) continue;
+      const pa = result[a.mechId];
+      const pb = result[b.mechId];
+      if (pa === undefined || pb === undefined) continue;
+      const shiftX = overhang(pa.left) + overhang(pb.left);
+      const shiftY = overhang(pa.top) + overhang(pb.top);
+      pa.left += shiftX;
+      pb.left += shiftX;
+      pa.top += shiftY;
+      pb.top += shiftY;
+    }
+  }
+  for (const p of Object.values(result)) {
+    if (!p.paired) continue;
+    p.left = Math.min(Math.max(p.left, lo), hi);
+    p.top = Math.min(Math.max(p.top, lo), hi);
+  }
+  return result;
+}
+
+/** Obstacle-block inset from the cell edge (grid units). */
+const OBSTACLE_INSET = 0.08;
+/** Corner-notch depth (grid units) — the asset-pack signature plate cut. */
+const OBSTACLE_NOTCH = 0.22;
+
+/**
+ * Notched iron-block outline for the obstacle cell whose top-left is (x, y),
+ * in grid coordinates (1 unit = 1 cell). Mirrors the favicon signature plate
+ * (`M3 3 H23 L29 9 V29 H9 L3 23 Z`): a square with two opposite corners cut.
+ */
+function obstaclePath(x: number, y: number): string {
+  const left = x + OBSTACLE_INSET;
+  const right = x + 1 - OBSTACLE_INSET;
+  const top = y + OBSTACLE_INSET;
+  const bottom = y + 1 - OBSTACLE_INSET;
+  return (
+    `M${left} ${top} H${right - OBSTACLE_NOTCH} L${right} ${top + OBSTACLE_NOTCH} ` +
+    `V${bottom} H${left + OBSTACLE_NOTCH} L${left} ${bottom - OBSTACLE_NOTCH} Z`
+  );
+}
 
 function SteamBurst({ mechId }: { mechId: string }): React.JSX.Element {
   return (
@@ -293,37 +476,55 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
   const mechs = Object.values(state.mechs);
   const selected = state.selectedMechId !== null ? state.mechs[state.selectedMechId] : undefined;
 
+  const cells = state.gridCells;
+  const minor = minorLines(cells);
+  const sectors = sectorLines(cells);
+  const unitPct = spriteSizePct(cells);
+  const placements = spritePlacements(mechs, cells);
+  // Painter's order: lower on screen renders on top (deterministic tiebreaks),
+  // so a de-overlapped pair stacks the same way every render.
+  const paintRank = new Map(
+    [...mechs]
+      .sort(
+        (a, b) =>
+          a.position.y - b.position.y ||
+          a.position.x - b.position.x ||
+          a.mechId.localeCompare(b.mechId),
+      )
+      .map((m, i) => [m.mechId, i]),
+  );
+
   return (
     <div className="pd-arena" data-testid="arena">
       {/* grid floor + trails + range rings (grid-coordinate SVG) */}
       <svg
         className="pd-arena-grid"
         data-testid="arena-grid"
-        viewBox={`0 0 ${GRID_CELLS} ${GRID_CELLS}`}
+        viewBox={`0 0 ${cells} ${cells}`}
         preserveAspectRatio="none"
         role="img"
         aria-label="Arena plotting grid"
       >
         <title>Arena plotting grid</title>
-        <rect x={0} y={0} width={GRID_CELLS} height={GRID_CELLS} fill="var(--coal)" />
+        <rect x={0} y={0} width={cells} height={cells} fill="var(--coal)" />
         {/* Minor grid — subtle, at the seam level (every 2 cells). */}
         <g stroke="var(--seam)" strokeWidth={1} opacity={0.32}>
-          {MINOR.map((c) => (
+          {minor.map((c) => (
             <line
               key={`mv-${c}`}
               x1={c}
               y1={0}
               x2={c}
-              y2={GRID_CELLS}
+              y2={cells}
               vectorEffect="non-scaling-stroke"
             />
           ))}
-          {MINOR.map((c) => (
+          {minor.map((c) => (
             <line
               key={`mh-${c}`}
               x1={0}
               y1={c}
-              x2={GRID_CELLS}
+              x2={cells}
               y2={c}
               vectorEffect="non-scaling-stroke"
             />
@@ -331,27 +532,53 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
         </g>
         {/* Sector marks — brighter coarse grid (every 8 cells) so the arena reads. */}
         <g stroke="var(--ash)" strokeWidth={1.2} opacity={0.5}>
-          {SECTORS.map((c) => (
+          {sectors.map((c) => (
             <line
               key={`v-${c}`}
               x1={c}
               y1={0}
               x2={c}
-              y2={GRID_CELLS}
+              y2={cells}
               vectorEffect="non-scaling-stroke"
             />
           ))}
-          {SECTORS.map((c) => (
+          {sectors.map((c) => (
             <line
               key={`h-${c}`}
               x1={0}
               y1={c}
-              x2={GRID_CELLS}
+              x2={cells}
               y2={c}
               vectorEffect="non-scaling-stroke"
             />
           ))}
         </g>
+
+        {/* obstacle terrain — notched iron blocks (foundry map). Drawn above
+            the grid but below trails/sprites so units read over the walls. */}
+        {state.obstacles.map((o) => (
+          <g key={`obstacle-${o.x}-${o.y}`} data-testid="arena-obstacle">
+            <path
+              d={obstaclePath(o.x, o.y)}
+              fill="var(--iron)"
+              stroke="var(--seam)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            />
+            {/* interior seam — an ash diagonal so the low-contrast iron block
+                reads unmistakably against the coal floor. */}
+            <line
+              x1={o.x + 0.3}
+              y1={o.y + 0.3}
+              x2={o.x + 0.7}
+              y2={o.y + 0.7}
+              stroke="var(--ash)"
+              strokeWidth={1}
+              opacity={0.55}
+              vectorEffect="non-scaling-stroke"
+            />
+          </g>
+        ))}
 
         {/* movement trails — most recent brightest */}
         {mechs.map((mech) => {
@@ -364,17 +591,30 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
               cx={p.x + 0.5}
               cy={p.y + 0.5}
               r={0.5}
-              fill={
-                mech.side === "red"
-                  ? "var(--ember)"
-                  : mech.side === "blue"
-                    ? "var(--arc)"
-                    : "var(--steam)"
-              }
+              fill={mech.playerId === mechs[0]?.playerId ? "var(--ember)" : "var(--arc)"}
               opacity={0.16 + (i / TRAIL_MAX) * 0.5}
             />
           ));
         })}
+
+        {/* true-cell anchors — one outlined cell per mech, ALWAYS on. The unit
+            sprite spans several cells (and de-overlap can nudge it off-center),
+            so this outline is the ground truth for which cell a mech occupies. */}
+        {mechs.map((mech) => (
+          <rect
+            key={`anchor-${mech.mechId}`}
+            data-testid={`arena-cell-anchor-${mech.mechId}`}
+            x={mech.position.x + 0.14}
+            y={mech.position.y + 0.14}
+            width={0.72}
+            height={0.72}
+            fill="none"
+            stroke={mech.playerId === mechs[0]?.playerId ? "var(--ember)" : "var(--arc)"}
+            strokeWidth={1.2}
+            opacity={mech.alive ? 0.9 : 0.4}
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
 
         {/* range rings on the selected mech */}
         {selected !== undefined
@@ -398,7 +638,13 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
 
       {/* per-weapon-class tracers */}
       {state.tracers.map((t) => (
-        <TracerLayer key={t.id} tracer={t} />
+        <TracerLayer
+          key={t.id}
+          tracer={t}
+          gridCells={cells}
+          redPlayerId={mechs[0]?.playerId}
+          mechs={state.mechs}
+        />
       ))}
 
       {/* armor-absorb shimmers */}
@@ -407,7 +653,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
           key={s.id}
           className="pd-arena-shimmer"
           data-testid="arena-shimmer"
-          style={{ left: pct(s.position.x), top: pct(s.position.y) }}
+          style={{ left: pctOf(s.position.x, cells), top: pctOf(s.position.y, cells) }}
           aria-hidden="true"
         />
       ))}
@@ -415,8 +661,14 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
       {/* chassis sprites (+ wreck + steam burst) */}
       {mechs.map((mech) => {
         const spriteState = mechStateOf(mech.hp, mech.hpMax, mech.alive);
-        const side = mech.side;
+        const side = mech.playerId === mechs[0]?.playerId ? "red" : "blue";
         const selectedNow = state.selectedMechId === mech.mechId;
+        const placement = placements[mech.mechId] ?? {
+          left: ((mech.position.x + 0.5) / cells) * 100,
+          top: ((mech.position.y + 0.5) / cells) * 100,
+          paired: false,
+        };
+        const scale = placement.paired ? PAIR_SCALE : 1;
         return (
           <div
             key={mech.mechId}
@@ -426,7 +678,15 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
             data-state={spriteState}
             data-selected={selectedNow}
             data-side={side}
-            style={{ left: pct(mech.position.x), top: pct(mech.position.y) }}
+            data-paired={placement.paired}
+            style={{
+              left: `${placement.left}%`,
+              top: `${placement.top}%`,
+              width: `${unitPct}%`,
+              height: `${unitPct}%`,
+              transform: `translate(-50%, -50%) scale(${scale})`,
+              zIndex: 4 + (paintRank.get(mech.mechId) ?? 0),
+            }}
           >
             {/* Side-colored glow ring under the sprite — makes each unit read
                 against the dark arena and encodes its side at a glance. */}
@@ -444,7 +704,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
                 facing={mech.facing}
                 venting={mech.alive && mech.ventingUntil > now}
                 firing={mech.alive && mech.firingUntil > now}
-                side={side === "neutral" ? undefined : side}
+                side={side}
                 size={40}
               />
             </button>
@@ -467,7 +727,14 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
           data-testid="arena-victory"
           data-winner={state.victoryWinnerId}
         >
-          VICTORY · {state.victoryWinnerId}
+          {/* `victory-banner` is the Proof-of-Life projection contract (Task 34):
+              the headless harness waits for
+              [data-testid="victory-banner"][data-winner="<winner>"] and reads its
+              text. It is a nested span (not a second testid on the band) so the
+              `arena-victory` band keeps its own testid + styling. */}
+          <span data-testid="victory-banner" data-winner={state.victoryWinnerId}>
+            VICTORY · {state.victoryWinnerId}
+          </span>
         </div>
       ) : null}
     </div>
@@ -475,13 +742,29 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
 }
 
 /** One tracer, positioned over the arena; impact ring appears on hit_resolved. */
-function TracerLayer({ tracer }: { tracer: ArenaTracer }): React.JSX.Element {
+function TracerLayer({
+  tracer,
+  gridCells,
+  redPlayerId,
+  mechs,
+}: {
+  tracer: ArenaTracer;
+  gridCells: number;
+  redPlayerId: string | undefined;
+  mechs: Record<string, ArenaMech>;
+}): React.JSX.Element {
+  // Attribute the tracer color to the firing side (the mech at `from`).
+  const firer = Object.values(mechs).find(
+    (m) => m.position.x === tracer.from.x && m.position.y === tracer.from.y,
+  );
+  const side = firer !== undefined && firer.playerId === redPlayerId ? "red" : "blue";
   return (
     <Tracer
       from={tracer.from}
       to={tracer.to}
       weaponClass={tracer.weaponClass}
-      side={tracer.side === "neutral" ? undefined : tracer.side}
+      gridCells={gridCells}
+      side={side}
       impact={tracer.impact}
     />
   );
