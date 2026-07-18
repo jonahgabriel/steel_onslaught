@@ -30,6 +30,9 @@ from steel_onslaught.contracts.player_selection import (
     DecisionSource,
     ModelSOMatchLaunchProvenance,
 )
+from steel_onslaught.contracts.runtime import (
+    ModelSORuntimeStatusPayload,
+)
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.immutable import FrozenJSONMapping, FrozenMapping, thaw_json_mapping
 from steel_onslaught.llm.schemas import LlmSemanticFailureCode
@@ -49,6 +52,10 @@ class _ClosedPayload(BaseModel):
 
 class ModelSOEmptyPayload(_ClosedPayload):
     """Canonical empty payload used by MATCH_TICK."""
+
+
+class ModelSORuntimeStatusChangedPayload(ModelSORuntimeStatusPayload):
+    """Event-payload alias for the strict runtime status projection."""
 
 
 class ModelSOCurrentLiveMechSnapshot(ModelSOMechRuntimeState):
@@ -442,6 +449,7 @@ class ModelSOMatchScoredPayload(_ClosedPayload):
 CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = MappingProxyType(
     {
         SOEventType.MATCH_STARTED: ModelSOMatchStartedPayload,
+        SOEventType.RUNTIME_STATUS_CHANGED: ModelSORuntimeStatusChangedPayload,
         SOEventType.MATCH_TICK: ModelSOEmptyPayload,
         SOEventType.MOVE_INTENT: ModelSOMoveIntentPayload,
         SOEventType.WEAPON_FIRE_INTENT: ModelSOWeaponFireIntentPayload,
@@ -498,6 +506,7 @@ __all__ = [
     "ModelSOPilotDecisionPayload",
     "ModelSOPilotKilledPayload",
     "ModelSOPlayerScore",
+    "ModelSORuntimeStatusChangedPayload",
     "ModelSOScoredWinner",
     "ModelSOSensorObservationPayload",
     "ModelSOVictoryDeclaredPayload",

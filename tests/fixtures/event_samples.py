@@ -34,6 +34,11 @@ from uuid import UUID, uuid5
 from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.contracts.runtime import (
+    ModelSORuntimeStatusPayload,
+    SORuntimeMode,
+    SORuntimeStatus,
+)
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -182,6 +187,14 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
                 obstacles=(),
             ).model_dump(mode="json"),
         },
+        SOEventType.RUNTIME_STATUS_CHANGED: ModelSORuntimeStatusPayload(
+            status=SORuntimeStatus.RUNNING,
+            mode=SORuntimeMode.ONE_GAME,
+            revision=1,
+            owner_id="runtime_owner.browser",
+            match_index=0,
+            last_command_id=UUID("11111111-1111-4111-8111-111111111111"),
+        ).model_dump(mode="json"),
         SOEventType.MATCH_TICK: {},
         SOEventType.MECH_SPAWNED: {"position": {"x": 5, "y": 5}, "facing": 90},
         SOEventType.SENSOR_OBSERVATION: {

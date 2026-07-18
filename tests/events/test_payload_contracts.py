@@ -33,6 +33,7 @@ from tests.fixtures.event_samples import build_sample_envelopes
 EXPECTED_CURRENT_CONSUMED_EVENT_TYPES = frozenset(
     {
         SOEventType.MATCH_STARTED,
+        SOEventType.RUNTIME_STATUS_CHANGED,
         SOEventType.MATCH_TICK,
         SOEventType.MECH_SPAWNED,
         SOEventType.SENSOR_OBSERVATION,
@@ -97,7 +98,7 @@ def _assert_deeply_frozen(value: object) -> None:
 
 @pytest.mark.unit
 def test_current_consumed_payload_registry_has_exact_independent_census() -> None:
-    assert len(EXPECTED_CURRENT_CONSUMED_EVENT_TYPES) == 28
+    assert len(EXPECTED_CURRENT_CONSUMED_EVENT_TYPES) == 29
     assert set(CURRENT_CONSUMED_PAYLOAD_MODELS) == EXPECTED_CURRENT_CONSUMED_EVENT_TYPES
     assert set(SOEventType) - EXPECTED_CURRENT_CONSUMED_EVENT_TYPES == {
         SOEventType.MODE_TRANSITION_COMPLETED,

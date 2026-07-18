@@ -118,11 +118,13 @@ _PERMISSIVE_THRESHOLDS = ModelSOPromotionThresholds(
     min_param_distance=0.0,
 )
 
-# The pre-plan SOEventType member set, pinned literally (Decision #6: no new
-# members, no schema drift — learning ships zero event-type changes).
+# The current SOEventType member set, pinned literally.  Runtime lifecycle
+# status is a contract foundation event; future runtime wiring must not add
+# further members without updating this explicit schema gate.
 _PINNED_EVENT_TYPES = frozenset(
     {
         "match_started",
+        "runtime_status_changed",
         "match_tick",
         "mech_spawned",
         "sensor_observation",
