@@ -28,7 +28,12 @@ from steel_onslaught.commands.live_provider import (
 )
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
-from steel_onslaught.contracts.card import ModelSOCard, ModelSOCardCatalog
+from steel_onslaught.contracts.card import (
+    ModelSOCard,
+    ModelSOCardCatalog,
+    ModelSOCardEffect,
+    SOCardCategory,
+)
 from steel_onslaught.contracts.commands import (
     ModelSOStartMatchCommand,
     ModelSOStartMatchSeatSelection,
@@ -450,10 +455,10 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
                     kind="steel_onslaught.card",
                     id="card.test.advance",
                     display_name="Advance",
-                    category="movement",
+                    category=SOCardCategory.MOVEMENT,
                     priority=100,
                     heat_cost=0,
-                    effect={"direction": "toward_enemy", "speed": "full"},
+                    effect=ModelSOCardEffect(direction="toward_enemy", speed="full"),
                 ),
             )
         ),

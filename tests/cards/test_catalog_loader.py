@@ -46,7 +46,7 @@ def test_loader_returns_sorted_immutable_snapshot_and_ignores_inert_deck_root(
     assert tuple(card.id for card in catalog.cards) == ("card.test.advance", "card.test.vent")
     assert isinstance(catalog.cards, tuple)
     with pytest.raises(ValidationError):
-        catalog.cards += (catalog.cards[0],)  # type: ignore[misc]
+        catalog.cards += (catalog.cards[0],)
 
     # A source-file edit cannot mutate the already validated value object.
     (cards_dir / "z.yaml").write_text(yaml.safe_dump(dict(_CARD, priority=999)), encoding="utf-8")

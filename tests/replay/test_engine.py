@@ -20,7 +20,12 @@ from pydantic import ValidationError
 
 from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.arena import ModelSOArenaSpec, neutral_historical_arena_snapshot
-from steel_onslaught.contracts.card import ModelSOCard, ModelSOCardCatalog
+from steel_onslaught.contracts.card import (
+    ModelSOCard,
+    ModelSOCardCatalog,
+    ModelSOCardEffect,
+    SOCardCategory,
+)
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.player_selection import (
     ModelSOHumanDecisionSource,
@@ -183,10 +188,10 @@ def test_replay_retains_the_same_immutable_card_snapshot_as_composition() -> Non
                 kind="steel_onslaught.card",
                 id="card.test.advance",
                 display_name="Advance",
-                category="movement",
+                category=SOCardCategory.MOVEMENT,
                 priority=100,
                 heat_cost=0,
-                effect={"direction": "toward_enemy", "speed": "full"},
+                effect=ModelSOCardEffect(direction="toward_enemy", speed="full"),
             ),
         )
     )
