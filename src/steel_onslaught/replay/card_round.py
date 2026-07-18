@@ -39,7 +39,10 @@ from steel_onslaught.events.card_payloads import (
     SORegisterOutcome,
 )
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
-from steel_onslaught.events.payloads import CURRENT_CONSUMED_PAYLOAD_MODELS
+from steel_onslaught.events.payloads import (
+    CURRENT_CONSUMED_PAYLOAD_MODELS,
+    ModelSOMatchStartedPayload,
+)
 
 _CARD_EVENT_TYPES = (
     SOEventType.HAND_DEALT,
@@ -47,6 +50,7 @@ _CARD_EVENT_TYPES = (
     SOEventType.REGISTER_RESOLVED,
     SOEventType.CARDS_DISCARDED,
 )
+_CARD_EVENT_TYPE_SET = frozenset(_CARD_EVENT_TYPES)
 
 type CardRoundPayload = (
     ModelSOHandDealtPayload
@@ -329,6 +333,126 @@ def validate_card_round_events(
     )
 
 
+def _card_round_root(
+    event: ModelSOEventEnvelope,
+    *,
+    card_events_by_message: dict[UUID, ModelSOEventEnvelope],
+) -> UUID | None:
+    """Return the external causation root for one card lifecycle event.
+
+    Card lifecycle events form one causal chain per round while intent events
+    may be interleaved in the ledger and are deliberately not part of the
+    lifecycle payload batch.  Walking only lifecycle message ids keeps the
+    grouping boundary explicit without treating a card intent as a new round.
+    """
+
+    root = event.causation_id
+    visited: set[UUID] = set()
+    while root in card_events_by_message:
+        if root in visited:
+            raise CardRoundReplayError("card event causation graph contains a cycle")
+        visited.add(root)
+        parent = card_events_by_message[root]
+        root = parent.causation_id
+    return root
+
+
+def _validate_match_started_provenance(
+    events: Sequence[ModelSOEventEnvelope],
+    *,
+    snapshot: ModelSOCardRuntimeSnapshot,
+    expected_provenance: ModelSOCardRuntimeProvenance | None,
+) -> None:
+    """Validate the retained card snapshot against MATCH_STARTED once.
+
+    The engine invokes this stream-level check before prefix folding.  Keeping
+    it here also gives live consumers a single validator for the same
+    evidence, rather than relying on a fold to notice a drifted start payload.
+    """
+
+    started = [event for event in events if event.event_type is SOEventType.MATCH_STARTED]
+    if len(started) != 1:
+        raise CardRoundReplayError("card-event replay requires exactly one MATCH_STARTED event")
+    try:
+        payload = ModelSOMatchStartedPayload.model_validate(started[0].payload)
+    except ValueError as exc:
+        raise CardRoundReplayError("MATCH_STARTED payload is not canonical") from exc
+    recorded = payload.card_runtime_provenance
+    expected = expected_provenance if expected_provenance is not None else snapshot.provenance
+    if expected is None:
+        if recorded is not None:
+            raise CardRoundReplayError(
+                "MATCH_STARTED carries card runtime provenance but snapshot has none"
+            )
+        return
+    if recorded is None or recorded != expected:
+        raise CardRoundReplayError("card runtime provenance does not match replay snapshot")
+
+
+def validate_card_event_stream(
+    events: Sequence[ModelSOEventEnvelope],
+    *,
+    snapshot: ModelSOCardRuntimeSnapshot,
+    expected_match_id: str | None = None,
+    expected_provenance: ModelSOCardRuntimeProvenance | None = None,
+) -> tuple[ModelSOCardRoundReplay, ...]:
+    """Validate every complete card round in a canonical match event stream.
+
+    Card lifecycle events can be interleaved with card-produced intents and
+    ordinary combat events.  This helper extracts lifecycle events, groups them
+    by ``(tick, external causation root)``, and validates each complete batch
+    only after the full ledger list is available.  In particular, it never
+    feeds a HAND_DEALT or PLAN_COMMITTED prefix into :func:`parse_card_round_events`.
+
+    An empty lifecycle stream is valid and returns an empty tuple; callers can
+    use the same hook for ordinary no-card replays without changing their
+    state-fold behavior.
+    """
+
+    if not isinstance(snapshot, ModelSOCardRuntimeSnapshot):
+        raise TypeError("card-event replay requires ModelSOCardRuntimeSnapshot")
+    if not events:
+        return ()
+    card_events = tuple(event for event in events if event.event_type in _CARD_EVENT_TYPE_SET)
+    if not card_events:
+        return ()
+    _validate_match_started_provenance(
+        events,
+        snapshot=snapshot,
+        expected_provenance=expected_provenance,
+    )
+    by_message: dict[UUID, ModelSOEventEnvelope] = {}
+    for event in card_events:
+        message_id = event.envelope.message_id
+        if message_id in by_message:
+            raise CardRoundReplayError("card lifecycle message ids must be unique")
+        by_message[message_id] = event
+
+    grouped: dict[tuple[int, UUID | None], list[ModelSOEventEnvelope]] = {}
+    group_order: list[tuple[int, UUID | None]] = []
+    for event in card_events:
+        root = _card_round_root(event, card_events_by_message=by_message)
+        key = (event.tick, root)
+        if key not in grouped:
+            grouped[key] = []
+            group_order.append(key)
+        grouped[key].append(event)
+
+    replays: list[ModelSOCardRoundReplay] = []
+    for key in group_order:
+        batch = grouped[key]
+        if key[1] is None:
+            raise CardRoundReplayError("card round root causation must not be null")
+        replay = validate_card_round_events(
+            batch,
+            snapshot=snapshot,
+            expected_match_id=expected_match_id,
+            expected_provenance=expected_provenance,
+        )
+        replays.append(replay)
+    return tuple(replays)
+
+
 parse_card_round_events = validate_card_round_events
 
 
@@ -337,5 +461,6 @@ __all__ = [
     "ModelSOCardRoundReplay",
     "ModelSOParsedCardRoundEvent",
     "parse_card_round_events",
+    "validate_card_event_stream",
     "validate_card_round_events",
 ]

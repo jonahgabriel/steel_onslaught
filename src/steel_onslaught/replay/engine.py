@@ -27,6 +27,8 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.card import ModelSOCardCatalog
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
@@ -36,7 +38,13 @@ from steel_onslaught.events.payloads import ModelSOMatchStartedPayload
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.state import ModelSOMatchState
+from steel_onslaught.replay.card_round import (
+    ModelSOCardRoundReplay,
+    validate_card_event_stream,
+)
 from steel_onslaught.replay.migrations import migrate_historical_match_started_arena
+
+CardRoundEventValidator = Callable[..., tuple[ModelSOCardRoundReplay, ...]]
 
 
 class ReplayEngine:
@@ -49,6 +57,13 @@ class ReplayEngine:
         card_catalog: Optional immutable card snapshot selected by the same
                       composition root as live execution. Card events remain
                       outside this fold until the register-runtime slice.
+        card_runtime_snapshot: Optional immutable card/deck snapshot. Required
+                      when ``validate_card_events`` is enabled.
+        validate_card_events: Opt-in complete-stream card lifecycle validation;
+                      the validated evidence is retained but never folded into
+                      ``ModelSOMatchState``.
+        card_round_validator: Optional injected stream validator with the same
+                      keyword arguments as ``validate_card_event_stream``.
 
     The engine caches the full ordered event list on first construction to
     avoid repeated ledger scans.  The ledger is expected to be complete
@@ -66,6 +81,8 @@ class ReplayEngine:
         card_catalog: ModelSOCardCatalog | None = None,
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
         historical_arena_migration: ModelSOCurrentLiveArenaSnapshot | None = None,
+        card_round_validator: CardRoundEventValidator | None = None,
+        validate_card_events: bool = False,
     ) -> None:
         self._ledger = ledger
         self._match_id = match_id
@@ -85,10 +102,30 @@ class ReplayEngine:
                 raise ValueError("card_catalog and card_runtime_snapshot must share identity")
         self._event_factory = event_factory
         self._historical_arena_migration = historical_arena_migration
+        if not isinstance(validate_card_events, bool):
+            raise TypeError("validate_card_events must be a bool")
+        if card_round_validator is not None and not callable(card_round_validator):
+            raise TypeError("card_round_validator must be callable when supplied")
         # Cache the full canonical event list once.
         self._events: list[ModelSOEventEnvelope] = list(ledger.read_all(match_id))
         if not self._events:
             raise ValueError(f"no events for match_id={match_id!r}")
+        if card_round_validator is not None or validate_card_events:
+            if self._card_runtime_snapshot is None:
+                raise ValueError("card event validation requires an injected card_runtime_snapshot")
+            validator = card_round_validator or validate_card_event_stream
+            # Validate the complete cached stream exactly once. Prefix folds
+            # must never feed an incomplete card lifecycle into the parser.
+            self._validated_card_rounds = tuple(
+                validator(
+                    self._events,
+                    snapshot=self._card_runtime_snapshot,
+                    expected_match_id=self._match_id,
+                    expected_provenance=self._card_runtime_snapshot.provenance,
+                )
+            )
+        else:
+            self._validated_card_rounds = ()
         # ONEX workflow correlation id shared across every event of this match.
         # Derived from the ledger (the replay path never emits, so the fold's
         # bus=None; correlation_id is threaded only to satisfy the factory
@@ -165,6 +202,17 @@ class ReplayEngine:
         """Return the immutable composition snapshot retained for replay."""
 
         return self._card_runtime_snapshot
+
+    @property
+    def validated_card_rounds(self) -> tuple[ModelSOCardRoundReplay, ...]:
+        """Return immutable card-round evidence validated at construction.
+
+        The tuple is empty for the default replay path or a match with no
+        card lifecycle events. Card rounds remain outside
+        ``ModelSOMatchState`` and the canonical fold is unchanged.
+        """
+
+        return self._validated_card_rounds
 
     def events_at_tick(self, tick: int) -> list[ModelSOEventEnvelope]:
         """Return all events for *tick* in canonical order
