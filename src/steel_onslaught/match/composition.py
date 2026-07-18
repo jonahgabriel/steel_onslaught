@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Self, cast
+from typing import Any, Literal, Self, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -315,8 +315,17 @@ class RuntimeDependencies:
     # absent the card adapter uses its deterministic priority programmer;
     # ordinary decide-only pilots are never used as a fallback.
     card_programmers: Mapping[str, ProgrammingPilot] | None = None
+    # Card cadence is contract-selected at the application overlay.  Atomic
+    # remains the safe default; paced requires an enabled card adapter.
+    card_cadence: Literal["atomic", "paced"] = "atomic"
 
     def __post_init__(self) -> None:
+        if self.card_cadence not in {"atomic", "paced"}:
+            raise ValueError("card_cadence must be 'atomic' or 'paced'")
+        if self.card_cadence == "paced" and (
+            self.card_adapter is None or not self.card_adapter.registers_enabled
+        ):
+            raise ValueError("paced card cadence requires enabled card mode")
         snapshot = self.card_runtime_snapshot
         if snapshot is None:
             return
@@ -993,6 +1002,9 @@ def build_runtime_dependencies(
         load_card_runtime_snapshot(card_binding) if card_binding is not None else None
     )
     card_catalog = card_runtime_snapshot.card_catalog if card_runtime_snapshot is not None else None
+    card_cadence: Literal["atomic", "paced"] = (
+        card_binding.card_cadence if card_binding is not None else "atomic"
+    )
     owns_llm = llm_dependencies is None
     llm = llm_dependencies or build_llm_dependencies(
         overlay,
@@ -1084,6 +1096,7 @@ def build_runtime_dependencies(
             card_runtime_snapshot=card_runtime_snapshot,
             card_adapter=card_adapter,
             card_programmers=resolved_card_programmers,
+            card_cadence=card_cadence,
         )
     except Exception:
         if owns_llm:
@@ -1479,6 +1492,7 @@ def assemble_match_with_dependencies(
         launch_provenance=launch_provenance,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
         card_adapter=dependencies.card_adapter,
+        card_cadence=dependencies.card_cadence,
         progress_gate=resolved_progress_gate,
     )
     scoring = ReducerScoring(
