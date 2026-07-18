@@ -11,6 +11,7 @@ from steel_onslaught.events.factory import EventFactory
 _NOW = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
 _CORRELATION = UUID("11111111-1111-1111-1111-111111111111")
 _MESSAGE = UUID("22222222-2222-2222-2222-222222222222")
+_EXPLICIT_MESSAGE = UUID("33333333-3333-3333-3333-333333333333")
 
 
 class _Clock:
@@ -50,3 +51,22 @@ def test_factory_uses_only_injected_clock_and_identity_values() -> None:
     assert event.envelope.correlation_id == _CORRELATION
     assert event.envelope.emitted_at == _NOW
     assert event.envelope.entity_id == event.match_id
+
+
+@pytest.mark.unit
+def test_factory_preserves_explicit_message_id_for_causal_spec_adapters() -> None:
+    event = EventFactory(clock=_Clock(), identities=_Identities()).make_with_message_id(
+        message_id=_EXPLICIT_MESSAGE,
+        match_id="match.injected.001",
+        tick=4,
+        sequence_in_tick=0,
+        event_type=SOEventType.HAND_DEALT,
+        producer_node="node.test",
+        subject=ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a"),
+        payload={"seat": "a"},
+        correlation_id=_CORRELATION,
+        causation_id=_MESSAGE,
+    )
+
+    assert event.envelope.message_id == _EXPLICIT_MESSAGE
+    assert event.envelope.causation_id == _MESSAGE
