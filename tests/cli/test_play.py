@@ -262,7 +262,7 @@ def test_browser_play_accepts_only_localhost_loopback_origin_aliases() -> None:
         "http://127.0.0.1:5173",
     )
     with pytest.raises(ValueError, match="loopback"):
-        _loopback_origin_aliases("http://192.168.1.20:5173")
+        _loopback_origin_aliases("http://192.168.1.20:5173")  # sanitize-ok: shape fixture
 
 
 @pytest.mark.unit

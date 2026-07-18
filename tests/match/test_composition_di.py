@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 from uuid import UUID
 
 import pytest
@@ -198,6 +198,17 @@ class _Sessions:
         ):
             return self._session
         return None
+
+
+class _LiveProviderGrantBindings(TypedDict):
+    creator_principal_id: str
+    creator_session_id: str
+    launch_command_id: UUID
+    launch_command_sha256: str
+    overlay_sha256: str
+    roster_sha256: str
+    model_identity_id: str
+    provider_id: str
 
 
 def _loadout(name: str) -> ModelSOLoadout:
@@ -669,7 +680,7 @@ def test_selected_live_provider_admits_before_only_exact_live_runtime_factory(
         pilot_factory=_PilotFactory(),
         closer=_Closer(),
     )
-    bindings = {
+    bindings: _LiveProviderGrantBindings = {
         "creator_principal_id": context.creator_principal_id,
         "creator_session_id": context.creator_session_id,
         "launch_command_id": command.command_id,

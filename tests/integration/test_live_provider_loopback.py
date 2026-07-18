@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import cast
 from uuid import UUID
 
+import httpx
 import pytest
 
 from steel_onslaught.cli import play as play_cli
@@ -56,7 +57,6 @@ from steel_onslaught.llm.schemas import (
     ModelSOOpenAIChatRequest,
     ModelSOOpenAIChatResponse,
 )
-from steel_onslaught.match import composition
 from steel_onslaught.match.composition import (
     RuntimeDependencies,
     assemble_selected_match_live,
@@ -327,7 +327,7 @@ def test_selected_runtime_closes_root_owned_http_client_exactly_once(
         assert kwargs == {"trust_env": False}
         return raw
 
-    monkeypatch.setattr(composition.httpx, "Client", fake_http_client)
+    monkeypatch.setattr(httpx, "Client", fake_http_client)
     dependencies = build_selected_runtime_dependencies(
         _overlay(tmp_path),
         selected_provider_id="selected",
@@ -597,7 +597,7 @@ def test_authenticated_human_vs_one_shot_live_provider_is_replayable_and_sanitiz
         del args, kwargs
         raise AssertionError("injected live runtime must not construct an HTTP client")
 
-    monkeypatch.setattr(composition.httpx, "Client", poison_http_client)
+    monkeypatch.setattr(httpx, "Client", poison_http_client)
     overlay = _overlay(tmp_path)
     red = load_loadout(_RED_PATH)
     blue = load_loadout(_BLUE_PATH).model_copy(update={"pilot_id": "pilot.live.selected"})
@@ -797,7 +797,7 @@ def test_authenticated_live_provider_failure_is_terminal_and_sanitized(
         del args, kwargs
         raise AssertionError("injected live runtime must not construct an HTTP client")
 
-    monkeypatch.setattr(composition.httpx, "Client", poison_http_client)
+    monkeypatch.setattr(httpx, "Client", poison_http_client)
     overlay = _overlay(tmp_path)
     red = load_loadout(_RED_PATH)
     blue = load_loadout(_BLUE_PATH).model_copy(update={"pilot_id": "pilot.live.selected"})

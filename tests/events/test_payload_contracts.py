@@ -6,7 +6,7 @@ import ast
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
@@ -23,6 +23,7 @@ from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.events.payloads import (
     CURRENT_CONSUMED_PAYLOAD_MODELS,
     ModelSOCurrentLiveMechSnapshot,
+    ModelSOLlmCompletionFailedPayload,
     ModelSOMatchStartedPayload,
     ModelSOPilotDecisionPayload,
 )
@@ -502,7 +503,9 @@ def test_llm_invalid_response_accepts_each_closed_semantic_failure_code(
     raw = sample.model_dump(mode="json")["payload"]
     raw["semantic_failure_code"] = semantic_failure_code
 
-    validated = _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+    validated = cast(
+        ModelSOLlmCompletionFailedPayload, _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+    )
 
     assert validated.semantic_failure_code == semantic_failure_code
 
@@ -553,7 +556,9 @@ def test_llm_failed_finish_reason_accepts_safe_maximum_length_token() -> None:
     raw = sample.model_dump(mode="json")["payload"]
     raw["finish_reason"] = "x" * 64
 
-    validated = _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+    validated = cast(
+        ModelSOLlmCompletionFailedPayload, _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+    )
 
     assert validated.finish_reason == "x" * 64
 

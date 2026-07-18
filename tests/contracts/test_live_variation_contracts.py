@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.contracts.player_selection import (
     ModelSOModelPlayerOptionBinding,

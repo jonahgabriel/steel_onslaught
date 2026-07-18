@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import TypedDict, cast
 from uuid import UUID
 
 import pytest
@@ -50,6 +51,17 @@ from steel_onslaught.contracts.player_selection import (
 
 _MATCH_ID = "match.01JABCDE0123456789ABCDEFGX"
 _COMMAND_ID = UUID("11111111-1111-4111-8111-111111111111")
+
+
+class _LiveProviderGrantBindings(TypedDict):
+    creator_principal_id: str
+    creator_session_id: str
+    launch_command_id: UUID
+    launch_command_sha256: str
+    overlay_sha256: str
+    roster_sha256: str
+    model_identity_id: str
+    provider_id: str
 
 
 class _Sessions:
@@ -373,7 +385,7 @@ def test_live_provider_grant_exact_binding_is_authenticated_and_consumed_once(
     overlay = _live_overlay(tmp_path)
     roster = _roster()
     command = _command(overlay, roster)
-    bindings = {
+    bindings: _LiveProviderGrantBindings = {
         "creator_principal_id": "principal.local_operator",
         "creator_session_id": "session.local_operator",
         "launch_command_id": command.command_id,
@@ -401,7 +413,7 @@ def test_live_provider_grant_exact_binding_is_authenticated_and_consumed_once(
     for field, mismatch in mismatches.items():
         capability = ProcessLocalOneShotLiveProviderCapability(grant=grant)
         with pytest.raises(LiveProviderGrantBindingError, match=field):
-            capability.consume(**(bindings | {field: mismatch}))
+            capability.consume(**cast(_LiveProviderGrantBindings, bindings | {field: mismatch}))
         assert capability.consumption_count == 0
 
     unauthenticated = ProcessLocalOneShotLiveProviderCapability(grant=grant)
