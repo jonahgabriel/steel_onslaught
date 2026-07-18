@@ -264,7 +264,9 @@ export default function SpecPanel({
   return (
     <div className="pd-rail" data-rail-side={side} data-testid={`spec-rail-${side}`}>
       {ordered.length === 0 ? (
-        emptyPlaceholder ? <div className="pd-earlier">awaiting match_started…</div> : null
+        emptyPlaceholder ? (
+          <div className="pd-earlier">awaiting match_started…</div>
+        ) : null
       ) : (
         ordered.map((g) => <MechSpec key={g.mechId} g={g} />)
       )}

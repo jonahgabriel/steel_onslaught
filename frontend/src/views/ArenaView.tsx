@@ -696,11 +696,7 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
 
       {/* per-weapon-class tracers */}
       {state.tracers.map((t) => (
-        <TracerLayer
-          key={t.id}
-          tracer={t}
-          gridCells={cells}
-        />
+        <TracerLayer key={t.id} tracer={t} gridCells={cells} />
       ))}
 
       {/* armor-absorb shimmers */}
