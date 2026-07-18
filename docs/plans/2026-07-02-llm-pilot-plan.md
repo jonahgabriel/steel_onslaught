@@ -67,9 +67,9 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-18, `origin/main` 23bbe5c).** The Rev 5
-> history below is retained as historical evidence. The following four
-> follow-up PRs are now landed and are the current implementation baseline:
+> **Current reconciliation (2026-07-18, `origin/main` e73c7c3).** The Rev 5
+> history below is retained as historical evidence. The following follow-up
+> PRs are now landed and are the current implementation baseline:
 >
 > - [PR #39](https://github.com/jonahgabriel/steel_onslaught/pull/39),
 >   commit `835d2a7`, adds the whole-round `ProgrammingPilot` seam for LLM
@@ -94,6 +94,22 @@
 >   omit them, while `MatchSetup` honors only the server-declared default and
 >   performs no GLM/name inference. The legacy path remains empty/disabled
 >   until an allowed option is explicitly selected.
+> - [PR #43](https://github.com/jonahgabriel/steel_onslaught/pull/43),
+>   commit `2a74c65`, reconciles this plan with the landed LLM pilot, roster,
+>   and learning-loop slices; it is documentation-only.
+> - [PR #44](https://github.com/jonahgabriel/steel_onslaught/pull/44),
+>   commit `fba70f2`, refreshes the reconciliation after the frontend default
+>   projection landed; it is documentation-only.
+> - [PR #45](https://github.com/jonahgabriel/steel_onslaught/pull/45),
+>   commit `e73c7c3`, adds strict overlay card-programmer bindings by seat and
+>   pilot-spec reference. Composition resolves only explicitly bound `llm`
+>   specs through the injected provider-client and persona graph, then threads
+>   the resulting whole-round programmers into `CardRunnerAdapter`. Missing
+>   bindings preserve deterministic priority programming; duplicate, disabled,
+>   unknown, non-LLM, missing-client, and missing-persona bindings fail closed.
+>   This slice does not change runner cadence, replay, event schemas, provider
+>   endpoints, UI, deployment, or OCC. A telemetry observer remains a separate
+>   deferred slice, as does paced one-register-per-tick card cadence.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
@@ -177,7 +193,7 @@ genuine strategic rationale stored in the ledger.
   — **UI-workflow-owned** (not part of this backend integration gate;
   `frontend/` changes are staged/committed by that workflow separately).
 
-## Next — paced card cadence (deferred)
+## Next — paced card cadence and telemetry observer (deferred)
 
 The current card runtime intentionally emits one complete hand/plan/register
 sequence per tick. One-register-per-tick pacing is deferred to a separate
@@ -195,6 +211,11 @@ That slice must preserve these invariants:
 - close or explicitly cancel an active round at decisive death or a
   `max_ticks` terminal boundary, and retain lifecycle rows for seats that die
   mid-round even though their later intents are void.
+
+The telemetry observer is also deferred and remains independent of both PR #45
+composition and the paced-cadence runtime work. Its eventual contract must
+consume the canonical event stream without becoming an alternate source of
+match truth or changing replay semantics.
 
 The risks are material: longer matches need a larger tick budget, and boiler
 regen, cooldowns, sensors, mode transitions, and initiative can change between
