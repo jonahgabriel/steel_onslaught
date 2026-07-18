@@ -179,6 +179,67 @@ describe("types parity against Python-emitted fixtures", () => {
     expect(() => parseEnvelope({ ...record, payload })).toThrow(/bogus/);
   });
 
+  it("keeps card event payloads closed and semantically strict", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("hand_dealt", (payload) => {
+          payload["unknown"] = true;
+        }),
+      ),
+    ).toThrow(/unknown/);
+
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("plan_committed", (payload) => {
+          const registers = arrayValue(payload["registers"], "registers");
+          objectValue(registers[0], "registers[0]")["unknown"] = true;
+        }),
+      ),
+    ).toThrow(/unknown/);
+
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("register_resolved", (payload) => {
+          payload["outcome"] = "invented";
+        }),
+      ),
+    ).toThrow(/outcome/);
+
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("cards_discarded", (payload) => {
+          payload["card_ids"] = ["not-a-card-id"];
+        }),
+      ),
+    ).toThrow(/card/);
+
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("plan_committed", (payload) => {
+          const registers = arrayValue(payload["registers"], "registers");
+          objectValue(registers[1], "registers[1]")["register_index"] = 0;
+        }),
+      ),
+    ).toThrow(/duplicate/);
+
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("cards_discarded", (payload) => {
+          payload["card_ids"] = [];
+        }),
+      ),
+    ).toThrow(/at least one/);
+
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("register_resolved", (payload) => {
+          payload["outcome"] = "resolved";
+          payload["card_id"] = null;
+        }),
+      ),
+    ).toThrow(/requires a card/);
+  });
+
   it("rejects a missing required payload field", () => {
     const raw: unknown = JSON.parse(
       readFileSync(join(FIXTURES_DIR, "victory_declared.json"), "utf-8"),

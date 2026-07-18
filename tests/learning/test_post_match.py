@@ -62,8 +62,9 @@ def test_projection_rejects_unknown_payload_fields_before_persisting() -> None:
 
 @pytest.mark.unit
 def test_projection_rejects_duplicate_terminal_score_events() -> None:
+    samples = build_sample_envelopes()
     stream = _complete_fixture_stream()
-    stream.append(stream[-1])
+    stream.append(samples[SOEventType.MATCH_SCORED])
 
     with pytest.raises(ValueError, match="exactly one MATCH_SCORED"):
         project_match_learning_evidence(stream)

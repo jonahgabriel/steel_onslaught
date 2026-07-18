@@ -52,6 +52,13 @@ class SOEventType(StrEnum):
     VICTORY_DECLARED = "victory_declared"
     MATCH_ENDED = "match_ended"
     MATCH_SCORED = "match_scored"
+    # Card lifecycle (typed telemetry; activation remains out of scope for this
+    # slice and the canonical fold treats these as no-op observations). These
+    # members append to the existing protocol vocabulary to preserve ordering.
+    HAND_DEALT = "hand_dealt"
+    PLAN_COMMITTED = "plan_committed"
+    REGISTER_RESOLVED = "register_resolved"
+    CARDS_DISCARDED = "cards_discarded"
 
 
 class ModelSOEventSubject(BaseModel):

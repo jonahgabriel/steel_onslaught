@@ -33,6 +33,12 @@ from steel_onslaught.contracts.player_selection import (
 from steel_onslaught.contracts.runtime import (
     ModelSORuntimeStatusPayload,
 )
+from steel_onslaught.events.card_payloads import (
+    ModelSOCardsDiscardedPayload,
+    ModelSOHandDealtPayload,
+    ModelSOPlanCommittedPayload,
+    ModelSORegisterResolvedPayload,
+)
 from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.immutable import FrozenJSONMapping, FrozenMapping, thaw_json_mapping
 from steel_onslaught.llm.schemas import LlmSemanticFailureCode
@@ -477,6 +483,10 @@ CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = Mapping
         SOEventType.VICTORY_DECLARED: ModelSOVictoryDeclaredPayload,
         SOEventType.MATCH_ENDED: ModelSOMatchEndedPayload,
         SOEventType.MATCH_SCORED: ModelSOMatchScoredPayload,
+        SOEventType.HAND_DEALT: ModelSOHandDealtPayload,
+        SOEventType.PLAN_COMMITTED: ModelSOPlanCommittedPayload,
+        SOEventType.REGISTER_RESOLVED: ModelSORegisterResolvedPayload,
+        SOEventType.CARDS_DISCARDED: ModelSOCardsDiscardedPayload,
     }
 )
 
@@ -487,9 +497,11 @@ __all__ = [
     "ModelSOBoilerOverloadedPayload",
     "ModelSOBoilerRupturedPayload",
     "ModelSOBoilerUpdatedPayload",
+    "ModelSOCardsDiscardedPayload",
     "ModelSOCurrentLiveMechSnapshot",
     "ModelSODamageAppliedPayload",
     "ModelSOEmptyPayload",
+    "ModelSOHandDealtPayload",
     "ModelSOHeatRedlinePayload",
     "ModelSOHitResolvedPayload",
     "ModelSOHitResult",
@@ -505,7 +517,9 @@ __all__ = [
     "ModelSOMovementResolvedPayload",
     "ModelSOPilotDecisionPayload",
     "ModelSOPilotKilledPayload",
+    "ModelSOPlanCommittedPayload",
     "ModelSOPlayerScore",
+    "ModelSORegisterResolvedPayload",
     "ModelSORuntimeStatusChangedPayload",
     "ModelSOScoredWinner",
     "ModelSOSensorObservationPayload",

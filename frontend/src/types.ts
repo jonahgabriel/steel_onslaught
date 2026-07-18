@@ -56,6 +56,10 @@ export const SO_EVENT_TYPES = [
   "victory_declared",
   "match_ended",
   "match_scored",
+  "hand_dealt",
+  "plan_committed",
+  "register_resolved",
+  "cards_discarded",
 ] as const;
 
 export type SOEventType = (typeof SO_EVENT_TYPES)[number];
@@ -488,6 +492,52 @@ export interface MatchScoredPayload {
   is_draw: boolean;
 }
 
+export type SORegisterOutcome = "resolved" | "auto_remain" | "heat_locked";
+export type SORegisterFillReason = "short_deck";
+
+/** Mirror of ModelSOHandDealtPayload. */
+export interface HandDealtPayload {
+  seat: string;
+  deck_id: string;
+  card_ids: string[];
+  hand_size: number;
+  deck_remaining: number;
+  reshuffled: boolean;
+}
+
+/** Mirror of ModelSOPlanRegister. */
+export interface PlanRegister {
+  register_index: number;
+  card_id: string;
+}
+
+/** Mirror of ModelSOPlanCommittedPayload. */
+export interface PlanCommittedPayload {
+  seat: string;
+  registers: PlanRegister[];
+  rationale: string | null;
+  confidence: number;
+}
+
+/** Mirror of ModelSORegisterResolvedPayload. */
+export interface RegisterResolvedPayload {
+  seat: string;
+  register_index: number;
+  card_id: string | null;
+  action: string;
+  outcome: SORegisterOutcome;
+  priority: number;
+  priority_rank: number;
+  fill_reason: SORegisterFillReason | null;
+}
+
+/** Mirror of ModelSOCardsDiscardedPayload. */
+export interface CardsDiscardedPayload {
+  seat: string;
+  card_ids: string[];
+  reason: string;
+}
+
 export interface PayloadMap {
   match_started: MatchStartedPayload;
   runtime_status_changed: RuntimeStatusChangedPayload;
@@ -495,6 +545,10 @@ export interface PayloadMap {
   mech_spawned: MechSpawnedPayload;
   sensor_observation: SensorObservationPayload;
   pilot_decision_made: PilotDecisionMadePayload;
+  hand_dealt: HandDealtPayload;
+  plan_committed: PlanCommittedPayload;
+  register_resolved: RegisterResolvedPayload;
+  cards_discarded: CardsDiscardedPayload;
   llm_completion_requested: LlmCompletionRequestedPayload;
   llm_completion_resolved: LlmCompletionResolvedPayload;
   llm_completion_failed: LlmCompletionFailedPayload;
@@ -600,6 +654,39 @@ function str(record: Record<string, unknown>, key: string, context: string): str
     fail(context, `field ${JSON.stringify(key)} must be a string, got ${typeof value}`);
   }
   return value;
+}
+
+function cardId(value: unknown, context: string): string {
+  if (typeof value !== "string" || !/^card\.[a-z0-9_]+(?:\.[a-z0-9_]+)*$/.test(value)) {
+    fail(context, 'card id must match "card.<slug>"');
+  }
+  return value;
+}
+
+function nonEmptyString(value: unknown, context: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    fail(context, "must be a non-empty string");
+  }
+  return value;
+}
+
+function cardIdArray(value: unknown, context: string): string[] {
+  if (!Array.isArray(value)) {
+    fail(context, "expected an array");
+  }
+  return value.map((item, index) => cardId(item, `${context}[${index}]`));
+}
+
+function parseRegisterOutcome(value: unknown, context: string): SORegisterOutcome {
+  if (value === "resolved" || value === "auto_remain" || value === "heat_locked") {
+    return value;
+  }
+  fail(context, `unknown register outcome ${JSON.stringify(value)}`);
+}
+
+function parseRegisterFillReason(value: unknown, context: string): SORegisterFillReason {
+  if (value === "short_deck") return value;
+  fail(context, `unknown register fill reason ${JSON.stringify(value)}`);
 }
 
 function num(record: Record<string, unknown>, key: string, context: string): number {
@@ -1614,6 +1701,115 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       considered_actions,
       rationale: nullableStr(record, "rationale", context),
       ...(decisionSource === undefined ? {} : { decision_source: decisionSource }),
+    };
+  },
+  hand_dealt: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      ["seat", "deck_id", "card_ids", "hand_size", "deck_remaining", "reshuffled"],
+      context,
+    );
+    const card_ids = cardIdArray(record["card_ids"], `${context}.card_ids`);
+    if (card_ids.length === 0) {
+      fail(context, 'field "card_ids" must contain at least one card');
+    }
+    const hand_size = positiveInt(record, "hand_size", context);
+    if (hand_size !== card_ids.length) {
+      fail(context, 'field "hand_size" must equal card_ids.length');
+    }
+    return {
+      seat: nonEmptyString(record["seat"], `${context}.seat`),
+      deck_id: nonEmptyString(record["deck_id"], `${context}.deck_id`),
+      card_ids,
+      hand_size,
+      deck_remaining: nonNegativeInt(record, "deck_remaining", context),
+      reshuffled: bool(record, "reshuffled", context),
+    };
+  },
+  plan_committed: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, ["seat", "registers", "rationale", "confidence"], context);
+    requireFields(record, ["rationale"], context);
+    const rawRegisters = record["registers"];
+    if (!Array.isArray(rawRegisters)) {
+      fail(context, 'field "registers" must be an array');
+    }
+    const registers = rawRegisters.map((item, index) => {
+      const registerContext = `${context}.registers[${index}]`;
+      const inner = asRecord(item, registerContext);
+      rejectUnknown(inner, ["register_index", "card_id"], registerContext);
+      return {
+        register_index: nonNegativeInt(inner, "register_index", registerContext),
+        card_id: cardId(inner["card_id"], `${registerContext}.card_id`),
+      };
+    });
+    const registerIndexes = new Set(registers.map((register) => register.register_index));
+    if (registerIndexes.size !== registers.length) {
+      fail(context, 'field "registers" contains duplicate register_index values');
+    }
+    return {
+      seat: nonEmptyString(record["seat"], `${context}.seat`),
+      registers,
+      rationale: nullableStr(record, "rationale", context),
+      confidence: boundedNum(record, "confidence", context, 0, 1),
+    };
+  },
+  register_resolved: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      [
+        "seat",
+        "register_index",
+        "card_id",
+        "action",
+        "outcome",
+        "priority",
+        "priority_rank",
+        "fill_reason",
+      ],
+      context,
+    );
+    requireFields(record, ["card_id", "fill_reason"], context);
+    const card_id =
+      record["card_id"] === null ? null : cardId(record["card_id"], `${context}.card_id`);
+    const outcome = parseRegisterOutcome(record["outcome"], `${context}.outcome`);
+    const fill_reason =
+      record["fill_reason"] === null
+        ? null
+        : parseRegisterFillReason(record["fill_reason"], `${context}.fill_reason`);
+    if (outcome === "auto_remain" && (card_id !== null || fill_reason === null)) {
+      fail(context, "auto_remain requires card_id=null and fill_reason");
+    }
+    if (outcome !== "auto_remain" && card_id === null) {
+      fail(context, `${outcome} requires a card_id`);
+    }
+    if (outcome !== "auto_remain" && fill_reason !== null) {
+      fail(context, "fill_reason is only valid for auto_remain");
+    }
+    return {
+      seat: nonEmptyString(record["seat"], `${context}.seat`),
+      register_index: nonNegativeInt(record, "register_index", context),
+      card_id,
+      action: nonEmptyString(record["action"], `${context}.action`),
+      outcome,
+      priority: nonNegativeInt(record, "priority", context),
+      priority_rank: nonNegativeInt(record, "priority_rank", context),
+      fill_reason,
+    };
+  },
+  cards_discarded: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, ["seat", "card_ids", "reason"], context);
+    const card_ids = cardIdArray(record["card_ids"], `${context}.card_ids`);
+    if (card_ids.length === 0) {
+      fail(context, 'field "card_ids" must contain at least one card');
+    }
+    return {
+      seat: nonEmptyString(record["seat"], `${context}.seat`),
+      card_ids,
+      reason: nonEmptyString(record["reason"], `${context}.reason`),
     };
   },
   llm_completion_requested: (value, context) => {

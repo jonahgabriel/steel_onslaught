@@ -17,7 +17,7 @@ from steel_onslaught.events.payloads import (
 from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
 
 # ``MODE_TRANSITION_COMPLETED`` is an emitted, closed payload that is
-# intentionally outside the current-consumed census (31/29 protocol).  The
+# intentionally outside the current-consumed census (35/33 protocol).  The
 # after-match projector still validates it because real match ledgers contain
 # it; no event schema or registry census change is needed.
 _PROJECTED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = {

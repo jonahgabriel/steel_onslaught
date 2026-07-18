@@ -412,10 +412,19 @@ def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
     leaderboard = overlay.leaderboard.model_copy(
         update={"path": resolved(overlay.leaderboard.path)}
     )
+    card_catalog = overlay.contracts.card_catalog
+    if card_catalog is not None:
+        card_catalog = card_catalog.model_copy(
+            update={
+                "cards_dir": resolved(card_catalog.cards_dir),
+                "decks_dir": resolved(card_catalog.decks_dir),
+            }
+        )
     contracts = overlay.contracts.model_copy(
         update={
             "catalog_dir": resolved(overlay.contracts.catalog_dir),
             "pilot_registry_dir": resolved(overlay.contracts.pilot_registry_dir),
+            "card_catalog": card_catalog,
         }
     )
     learning_artifacts = overlay.learning_artifacts.model_copy(
