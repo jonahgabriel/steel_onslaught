@@ -344,6 +344,23 @@ def test_overlay_is_complete_and_frozen(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_shipped_roster_declares_explicit_model_defaults() -> None:
+    raw = yaml.safe_load((_CONTRACTS_DATA / "rosters/live_glm_varied.yaml").read_text())
+    assert isinstance(raw, dict)
+    seats = tuple(
+        {**seat, "allowed_option_ids": tuple(seat["allowed_option_ids"])} for seat in raw["seats"]
+    )
+    roster = ModelSOPlayerRosterBinding.model_validate(
+        {**raw, "options": tuple(raw["options"]), "seats": seats}
+    )
+    projection = roster.public_projection()
+    assert roster.default_option_for_side("red") == "player_option.glm_sniper"
+    assert roster.default_option_for_side("blue") == "player_option.glm_opportunist"
+    assert projection.seats[0].default_option_id == "player_option.glm_sniper"
+    assert projection.seats[1].default_option_id == "player_option.glm_opportunist"
+
+
+@pytest.mark.unit
 def test_overlay_rejects_unknown_nested_policy(tmp_path: Path) -> None:
     raw = _overlay_data(tmp_path)
     assert isinstance(raw["event_ledger"], dict)

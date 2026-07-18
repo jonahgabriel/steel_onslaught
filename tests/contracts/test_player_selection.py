@@ -145,6 +145,39 @@ def test_public_projection_is_allowlisted_and_secret_free_recursively() -> None:
 
 
 @pytest.mark.unit
+def test_explicit_roster_defaults_are_projected_and_fail_closed() -> None:
+    roster = _roster().model_copy(
+        update={
+            "seats": (
+                _roster()
+                .seats[0]
+                .model_copy(update={"default_option_id": "player_option.browser_human"}),
+                _roster()
+                .seats[1]
+                .model_copy(update={"default_option_id": "player_option.local_qwen"}),
+            )
+        }
+    )
+    projection = roster.public_projection()
+    assert projection.seats[0].default_option_id == "player_option.browser_human"
+    assert projection.seats[1].default_option_id == "player_option.local_qwen"
+    assert roster.default_option_for_side("red") == "player_option.browser_human"
+    with pytest.raises(ValueError, match="no explicit default"):
+        _roster().default_option_for_side("red")
+
+
+@pytest.mark.unit
+def test_default_option_must_be_allowed_by_its_seat() -> None:
+    with pytest.raises(ValidationError, match="default_option_id"):
+        ModelSOSeatLaunchPolicy(
+            side="red",
+            loadout_id="loadout.playable.red_light",
+            allowed_option_ids=("player_option.browser_human",),
+            default_option_id="player_option.local_qwen",
+        )
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("field", "value"),
     [

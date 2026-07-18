@@ -25,10 +25,12 @@ options:
 seats:
   - side: red
     loadout_id: loadout.live.glm_sniper_ironclad
+    default_option_id: player_option.glm_sniper
     allowed_option_ids:
       - player_option.local_human
       - player_option.glm_sniper
   - side: blue
     loadout_id: loadout.live.glm_opportunist_hunter
+    default_option_id: player_option.glm_opportunist
     allowed_option_ids:
       - player_option.glm_opportunist

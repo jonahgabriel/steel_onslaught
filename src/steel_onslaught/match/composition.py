@@ -756,15 +756,26 @@ def build_llm_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
     selected_provider_id: str | None = None,
+    selected_provider_ids: tuple[str, ...] | None = None,
     pilot_failure_policy: LlmPilotFailurePolicy | None = None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
 ) -> LlmDependencies:
     """Build the immutable LLM dependency graph from the validated overlay."""
+    if selected_provider_id is not None and selected_provider_ids is not None:
+        raise ValueError("selected_provider_id and selected_provider_ids are mutually exclusive")
     if selected_provider_id is None:
-        providers = overlay.llm.providers
-        resolved_failure_policy: LlmPilotFailurePolicy = "fallback"
+        if selected_provider_ids is None:
+            providers = overlay.llm.providers
+        else:
+            providers = SelectedOnlyLlmClientBuilder().select_many(
+                providers=overlay.llm.providers,
+                selected_provider_ids=selected_provider_ids,
+            )
+        resolved_failure_policy: LlmPilotFailurePolicy = (
+            "raise" if selected_provider_ids is not None else "fallback"
+        )
     else:
         providers = (
             SelectedOnlyLlmClientBuilder().select(
@@ -842,7 +853,7 @@ def build_llm_dependencies(
                     secret_resolver=resolved_secrets,
                     sleeper=resolved_sleeper,
                 )
-                if selected_provider_id is not None:
+                if selected_provider_id is not None or selected_provider_ids is not None:
                     # A selected live launch is admitted once, then may need
                     # one completion per pilot turn. Keep the completion
                     # budget finite and explicit rather than one-shot.
@@ -873,15 +884,19 @@ def build_llm_dependencies(
 def build_selected_llm_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
-    selected_provider_id: str,
+    selected_provider_id: str | None = None,
+    selected_provider_ids: tuple[str, ...] | None = None,
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
 ) -> LlmDependencies:
-    """Build exactly one explicitly selected, one-attempt live provider."""
+    """Build one or more explicitly selected, one-attempt live providers."""
+    if selected_provider_id is None and selected_provider_ids is None:
+        raise ValueError("a selected provider id is required")
     return build_llm_dependencies(
         overlay,
         selected_provider_id=selected_provider_id,
+        selected_provider_ids=selected_provider_ids,
         secret_resolver=secret_resolver,
         http_transport=http_transport,
         sleeper=sleeper,
@@ -893,6 +908,7 @@ def build_runtime_dependencies(
     *,
     llm_dependencies: LlmDependencies | None = None,
     selected_provider_id: str | None = None,
+    selected_provider_ids: tuple[str, ...] | None = None,
     selected_pilot_spec_ids: tuple[str, ...] | None = None,
     card_programmers: Mapping[str, ProgrammingPilot] | None = None,
     llm_failure_policy: LlmPilotFailurePolicy | None = None,
@@ -901,14 +917,19 @@ def build_runtime_dependencies(
     sleeper: ProtocolSleeper | None = None,
 ) -> RuntimeDependencies:
     """Construct every selected outer adapter exactly once."""
-    if (selected_provider_id is None) != (selected_pilot_spec_ids is None):
+    if selected_provider_id is not None and selected_provider_ids is not None:
+        raise ValueError("selected_provider_id and selected_provider_ids are mutually exclusive")
+    if (selected_provider_id is None and selected_provider_ids is None) != (
+        selected_pilot_spec_ids is None
+    ):
         raise ValueError(
-            "selected_provider_id and selected_pilot_spec_ids must be supplied together"
+            "selected provider ids and selected_pilot_spec_ids must be supplied together"
         )
     if llm_dependencies is not None and any(
         capability is not None
         for capability in (
             selected_provider_id,
+            selected_provider_ids,
             selected_pilot_spec_ids,
             llm_failure_policy,
             secret_resolver,
@@ -940,6 +961,7 @@ def build_runtime_dependencies(
     llm = llm_dependencies or build_llm_dependencies(
         overlay,
         selected_provider_id=selected_provider_id,
+        selected_provider_ids=selected_provider_ids,
         pilot_failure_policy=llm_failure_policy,
         secret_resolver=secret_resolver,
         http_transport=http_transport,
@@ -1015,7 +1037,8 @@ def build_runtime_dependencies(
 def build_selected_runtime_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
-    selected_provider_id: str,
+    selected_provider_id: str | None = None,
+    selected_provider_ids: tuple[str, ...] | None = None,
     selected_pilot_spec_ids: tuple[str, ...],
     card_programmers: Mapping[str, ProgrammingPilot] | None = None,
     failure_policy: LlmPilotFailurePolicy = "raise",
@@ -1023,10 +1046,13 @@ def build_selected_runtime_dependencies(
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
 ) -> RuntimeDependencies:
-    """Construct runtime ports around exactly one selected live provider."""
+    """Construct runtime ports around one or more selected live providers."""
+    if selected_provider_id is None and selected_provider_ids is None:
+        raise ValueError("a selected provider id is required")
     return build_runtime_dependencies(
         overlay,
         selected_provider_id=selected_provider_id,
+        selected_provider_ids=selected_provider_ids,
         selected_pilot_spec_ids=selected_pilot_spec_ids,
         card_programmers=card_programmers,
         llm_failure_policy=failure_policy,
@@ -1479,11 +1505,12 @@ def assemble_selected_match_live(
     identity: MatchIdentity,
     loadouts: Mapping[str, ModelSOLoadout],
     runtime_factory: Callable[[ModelSOApplicationOverlay], RuntimeDependencies],
-    live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
-    live_runtime_factory: Callable[
-        [ModelSOApplicationOverlay, str, tuple[str, ...]], RuntimeDependencies
-    ]
-    | None = None,
+    live_provider_capability: (
+        ProcessLocalOneShotLiveProviderCapability
+        | Mapping[str, ProcessLocalOneShotLiveProviderCapability]
+        | None
+    ) = None,
+    live_runtime_factory: Callable[..., RuntimeDependencies] | None = None,
     seed: int,
     max_ticks: int | None,
 ) -> LiveMatchStack:
@@ -1543,28 +1570,33 @@ def assemble_selected_match_live(
 
     # The same configured model may occupy both seats with different
     # contract-bound personas (for example GLM sniper vs GLM opportunist).
-    # Build one provider lane and validate every selected pilot spec against
-    # it; distinct model identities/providers remain a separate capability
-    # decision and are rejected by launch admission.
+    # Distinct selected providers are retained as one explicit tuple so the
+    # injected runtime factory can compose one client/pilot lane per identity.
     unique_live_providers = list(
         dict.fromkeys(provider_id for provider_id, _pilot_spec_id in selected_live_bindings)
     )
-    if len(unique_live_providers) > 1:
-        raise ValueError("admitted launch must select one exact non-stub model identity")
     if unique_live_providers:
         if live_runtime_factory is None:
             raise ValueError("admitted live provider has no live_runtime_factory")
-        selected_provider_id = unique_live_providers[0]
+        selected_provider_selection: str | tuple[str, ...] = (
+            unique_live_providers[0]
+            if len(unique_live_providers) == 1
+            else tuple(unique_live_providers)
+        )
         selected_pilot_spec_ids = tuple(
             dict.fromkeys(
                 assignment.pilot_spec_id
                 for assignment in assignments.values()
                 if isinstance(assignment, ModelSOModelSeatAssignment)
+                and providers[
+                    model_identities[assignment.model_identity_id].provider_binding_id
+                ].provider_id
+                in unique_live_providers
             )
         )
         dependencies = live_runtime_factory(
             overlay,
-            selected_provider_id,
+            selected_provider_selection,
             selected_pilot_spec_ids,
         )
     else:

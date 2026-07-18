@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from threading import Condition, Lock
 from uuid import UUID
 
@@ -262,7 +263,11 @@ class ProcessLocalMatchLaunchCoordinator:
         overlay: ModelSOApplicationOverlay,
         roster: ModelSOPlayerRosterBinding,
         sessions: AuthenticatedSessionCapability,
-        live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
+        live_provider_capability: (
+            ProcessLocalOneShotLiveProviderCapability
+            | Mapping[str, ProcessLocalOneShotLiveProviderCapability]
+            | None
+        ) = None,
     ) -> None:
         self._overlay = overlay
         self._roster = roster
@@ -362,18 +367,45 @@ class ProcessLocalMatchLaunchCoordinator:
                 for _option_id, model_identity_id, provider_id in selected_live_bindings
             )
         )
+        capability = self._live_provider_capability
+        if isinstance(capability, Mapping):
+            selected_capabilities: list[ProcessLocalOneShotLiveProviderCapability] = []
+            for model_identity_id, _provider_id in unique_live_bindings:
+                selected_capability = capability.get(model_identity_id)
+                if selected_capability is None:
+                    raise NonStubModelProviderError(
+                        f"selected model identity {model_identity_id!r} has no injected "
+                        "live capability"
+                    )
+                selected_capabilities.append(selected_capability)
+            for (model_identity_id, provider_id), selected_capability in zip(
+                unique_live_bindings,
+                selected_capabilities,
+                strict=True,
+            ):
+                selected_capability.consume(
+                    creator_principal_id=context.creator_principal_id,
+                    creator_session_id=context.creator_session_id,
+                    launch_command_id=command.command_id,
+                    launch_command_sha256=command_sha256,
+                    overlay_sha256=canonical_overlay_sha256(self._overlay),
+                    roster_sha256=self._roster.canonical_sha256(),
+                    model_identity_id=model_identity_id,
+                    provider_id=provider_id,
+                )
+            return
         if len(unique_live_bindings) > 1:
             raise NonStubModelProviderError(
-                "the process-local live gate accepts one exact non-stub model identity per launch"
+                "distinct non-stub model identities require one injected capability per identity"
             )
         option_id, model_identity_id, provider_id = selected_live_bindings[0]
-        if self._live_provider_capability is None:
+        if capability is None:
             raise NonStubModelProviderError(
                 f"selected model option {option_id!r} requires a non-stub provider; "
                 "the process-local playable gate accepts only stub providers without "
                 "an explicit one-shot capability"
             )
-        self._live_provider_capability.consume(
+        capability.consume(
             creator_principal_id=context.creator_principal_id,
             creator_session_id=context.creator_session_id,
             launch_command_id=command.command_id,
