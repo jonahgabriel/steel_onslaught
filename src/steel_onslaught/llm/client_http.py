@@ -255,6 +255,22 @@ class SelectedOnlyLlmClientBuilder:
             raise ValueError("selected live provider requires max_attempts=1")
         return provider
 
+    def select_many(
+        self,
+        *,
+        providers: Sequence[ModelSOStubLlmProviderBinding | ModelSOOpenAICompatibleProviderBinding],
+        selected_provider_ids: Sequence[str],
+    ) -> tuple[ModelSOOpenAICompatibleProviderBinding, ...]:
+        """Return each explicitly selected live provider exactly once."""
+
+        ids = tuple(selected_provider_ids)
+        if not ids or len(ids) != len(set(ids)):
+            raise ProviderRegistryError("selected live providers must be non-empty and unique")
+        return tuple(
+            self.select(providers=providers, selected_provider_id=provider_id)
+            for provider_id in ids
+        )
+
 
 class StaticLlmClientFactory:
     """Immutable provider selection over clients constructed at the root."""

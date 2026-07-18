@@ -752,6 +752,31 @@ def test_selected_runtime_forwards_explicit_browser_fallback_policy(
 
 
 @pytest.mark.unit
+def test_selected_runtime_forwards_distinct_provider_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    sentinel = cast(RuntimeDependencies, object())
+
+    def fake_build_runtime(overlay: object, **kwargs: object) -> RuntimeDependencies:
+        captured["overlay"] = overlay
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(composition, "build_runtime_dependencies", fake_build_runtime)
+    overlay = cast(ModelSOApplicationOverlay, object())
+    result = composition.build_selected_runtime_dependencies(
+        overlay,
+        selected_provider_ids=("local", "openrouter"),
+        selected_pilot_spec_ids=("pilot.local", "pilot.openrouter"),
+    )
+
+    assert result is sentinel
+    assert captured["selected_provider_ids"] == ("local", "openrouter")
+    assert captured["selected_pilot_spec_ids"] == ("pilot.local", "pilot.openrouter")
+
+
+@pytest.mark.unit
 def test_selected_human_and_stub_match_admits_before_runtime_factory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,

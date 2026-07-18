@@ -89,11 +89,24 @@ class ModelSOSeatLaunchPolicy(_ClosedStrictModel):
     side: Side
     loadout_id: LoadoutId
     allowed_option_ids: tuple[PlayerOptionId, ...] = Field(min_length=1)
+    # A default is an explicit roster fact, never inferred from model or
+    # provider naming.  Legacy callers may omit it; any consumer that needs a
+    # default must use ``default_option_for_side`` and fail closed when it is
+    # absent.
+    default_option_id: PlayerOptionId | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _allowed_options_are_unique(self) -> Self:
         if len(self.allowed_option_ids) != len(set(self.allowed_option_ids)):
             raise ValueError("allowed_option_ids must be unique")
+        if (
+            self.default_option_id is not None
+            and self.default_option_id not in self.allowed_option_ids
+        ):
+            raise ValueError("default_option_id must be one of allowed_option_ids")
         return self
 
 
@@ -119,11 +132,20 @@ PublicPlayerOption = Annotated[
 class ModelSOPublicSeatLaunchPolicy(_ClosedStrictModel):
     side: Side
     allowed_option_ids: tuple[PlayerOptionId, ...] = Field(min_length=1)
+    default_option_id: PlayerOptionId | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _allowed_options_are_unique(self) -> Self:
         if len(self.allowed_option_ids) != len(set(self.allowed_option_ids)):
             raise ValueError("allowed_option_ids must be unique")
+        if (
+            self.default_option_id is not None
+            and self.default_option_id not in self.allowed_option_ids
+        ):
+            raise ValueError("default_option_id must be one of allowed_option_ids")
         return self
 
 
@@ -215,10 +237,12 @@ class ModelSOPlayerRosterBinding(_ClosedStrictModel):
             ModelSOPublicSeatLaunchPolicy(
                 side=self.seats[0].side,
                 allowed_option_ids=self.seats[0].allowed_option_ids,
+                default_option_id=self.seats[0].default_option_id,
             ),
             ModelSOPublicSeatLaunchPolicy(
                 side=self.seats[1].side,
                 allowed_option_ids=self.seats[1].allowed_option_ids,
+                default_option_id=self.seats[1].default_option_id,
             ),
         )
         return ModelSOPlayerRosterProjection(
@@ -229,6 +253,20 @@ class ModelSOPlayerRosterBinding(_ClosedStrictModel):
             options=tuple(options),
             seats=public_seats,
         )
+
+    def default_option_for_side(self, side: Side) -> PlayerOptionId:
+        """Return the explicit default for ``side`` or fail closed.
+
+        This helper intentionally does not select the first option, inspect a
+        display name, or infer a provider/model from an identifier substring.
+        """
+
+        for policy in self.seats:
+            if policy.side == side:
+                if policy.default_option_id is None:
+                    raise ValueError(f"roster has no explicit default option for {side} seat")
+                return policy.default_option_id
+        raise ValueError(f"roster has no launch policy for {side} seat")
 
 
 def validate_player_roster_against_overlay(

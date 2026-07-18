@@ -45,6 +45,7 @@ from steel_onslaught.contracts.commands import (
 from steel_onslaught.contracts.player_selection import (
     ModelSOHumanPlayerOptionBinding,
     ModelSOModelPlayerOptionBinding,
+    ModelSOModelSeatAssignment,
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
 )
@@ -504,6 +505,100 @@ def test_same_live_model_identity_can_fill_both_llm_seats(tmp_path: Path) -> Non
 
     assert [assignment.kind for assignment in provenance.seat_assignments] == ["model", "model"]
     assert capability.consumption_count == 1
+
+
+@pytest.mark.unit
+def test_distinct_live_model_identities_use_one_injected_capability_each(tmp_path: Path) -> None:
+    overlay = _live_overlay(tmp_path)
+    first = overlay.llm.model_identities[0]
+    second = first.model_copy(
+        update={
+            "model_identity_id": "model_identity.remote_two",
+            "display_name": "Remote Two",
+            "provider_binding_id": "remote_two",
+        }
+    )
+    second_provider = overlay.llm.providers[0].model_copy(
+        update={"provider_id": "remote_two", "model": "remote-two-model"}
+    )
+    overlay = overlay.model_copy(
+        update={
+            "llm": overlay.llm.model_copy(
+                update={
+                    "providers": (*overlay.llm.providers, second_provider),
+                    "model_identities": (first, second),
+                }
+            )
+        }
+    )
+    base = _roster()
+    first_option = next(
+        option for option in base.options if isinstance(option, ModelSOModelPlayerOptionBinding)
+    )
+    second_option = first_option.model_copy(
+        update={
+            "option_id": "player_option.remote_two",
+            "display_name": "Remote Two",
+            "model_identity_id": "model_identity.remote_two",
+        }
+    )
+    roster = base.model_copy(
+        update={
+            "options": (first_option, second_option),
+            "seats": (
+                base.seats[0].model_copy(update={"allowed_option_ids": (first_option.option_id,)}),
+                base.seats[1].model_copy(update={"allowed_option_ids": (second_option.option_id,)}),
+            ),
+        }
+    )
+    command = _command(overlay, roster).model_copy(
+        update={
+            "selections": (
+                ModelSOStartMatchSeatSelection(side="red", option_id=first_option.option_id),
+                ModelSOStartMatchSeatSelection(side="blue", option_id=second_option.option_id),
+            )
+        }
+    )
+    session = _operator().model_copy(
+        update={"human_identity_id": None, "permissions": ("match:create",)}
+    )
+    context = ModelSOStartMatchAuthorityContext(
+        creator_principal_id=session.principal_id,
+        creator_session_id=session.session_id,
+    )
+    grants = {
+        identity_id: ProcessLocalOneShotLiveProviderCapability(
+            grant=ModelSOLiveProviderLaunchGrant(
+                creator_principal_id=session.principal_id,
+                creator_session_id=session.session_id,
+                launch_command_id=command.command_id,
+                launch_command_sha256=canonical_command_sha256(command),
+                overlay_sha256=canonical_overlay_sha256(overlay),
+                roster_sha256=roster.canonical_sha256(),
+                model_identity_id=identity_id,
+                provider_id=provider_id,
+            )
+        )
+        for identity_id, provider_id in (
+            ("model_identity.local_qwen", "remote"),
+            ("model_identity.remote_two", "remote_two"),
+        )
+    }
+    provenance = ProcessLocalMatchLaunchCoordinator(
+        overlay=overlay,
+        roster=roster,
+        sessions=_Sessions(session),
+        live_provider_capability=grants,
+    ).admit_start_match(command, context=context, match_id=_MATCH_ID)
+    model_assignments = cast(
+        tuple[ModelSOModelSeatAssignment, ModelSOModelSeatAssignment],
+        provenance.seat_assignments,
+    )
+    assert [assignment.model_identity_id for assignment in model_assignments] == [
+        "model_identity.local_qwen",
+        "model_identity.remote_two",
+    ]
+    assert all(capability.consumption_count == 1 for capability in grants.values())
 
 
 @pytest.mark.unit

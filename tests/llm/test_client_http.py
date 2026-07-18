@@ -22,6 +22,7 @@ from steel_onslaught.llm.client_http import (
     OneShotLlmClientConsumedError,
     OpenAICompatibleClient,
     ProviderRegistryError,
+    SelectedOnlyLlmClientBuilder,
     StaticLlmClientFactory,
 )
 from steel_onslaught.llm.schemas import (
@@ -401,6 +402,26 @@ def test_selected_only_builder_ignores_unselected_provider_and_requires_one_atte
         builder.select(
             providers=(unselected, selected),
             selected_provider_id="unselected",
+        )
+
+
+@pytest.mark.unit
+def test_selected_only_builder_composes_distinct_provider_bindings() -> None:
+    first = _config(max_attempts=1).model_copy(
+        update={"provider_id": "first", "endpoint_url": "https://first.test/chat"}
+    )
+    second = _config(max_attempts=1).model_copy(
+        update={"provider_id": "second", "endpoint_url": "https://second.test/chat"}
+    )
+    selected = SelectedOnlyLlmClientBuilder().select_many(
+        providers=(first, second),
+        selected_provider_ids=("first", "second"),
+    )
+    assert selected == (first, second)
+    with pytest.raises(ProviderRegistryError, match="non-empty and unique"):
+        SelectedOnlyLlmClientBuilder().select_many(
+            providers=(first, second),
+            selected_provider_ids=("first", "first"),
         )
 
 
