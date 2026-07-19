@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import yaml  # type: ignore[import-untyped]
@@ -67,6 +68,22 @@ def test_projection_rejects_duplicate_terminal_score_events() -> None:
     stream.append(samples[SOEventType.MATCH_SCORED])
 
     with pytest.raises(ValueError, match="exactly one MATCH_SCORED"):
+        project_match_learning_evidence(stream)
+
+
+@pytest.mark.unit
+def test_projection_rejects_mixed_workflow_correlation_ids() -> None:
+    stream = _complete_fixture_stream()
+    changed = stream[1]
+    stream[1] = changed.model_copy(
+        update={
+            "envelope": changed.envelope.model_copy(
+                update={"correlation_id": UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="workflow correlation_id"):
         project_match_learning_evidence(stream)
 
 
