@@ -341,6 +341,11 @@ class BrowserPlayServer:
         self._pending_events: dict[str, list[ModelSOEventEnvelope]] = {}
         self._pending_ticks: dict[str, int] = {}
         self._pending_event_ids: set[str] = set()
+        # Event-bus callbacks can arrive after a later tick has already been
+        # published to the browser. Keep those callbacks quarantined so a
+        # transport race can never append an out-of-order live frame (or be
+        # reconsidered repeatedly by a duplicate callback).
+        self._quarantined_event_ids: set[str] = set()
         self._runtime_status_event_ids: set[str] = set()
         self._command_clients: set[ServerConnection] = set()
         self._command_authorities: dict[ServerConnection, tuple[PrincipalId, SessionId]] = {}
@@ -700,6 +705,7 @@ class BrowserPlayServer:
             self._pending_events.clear()
             self._pending_ticks.clear()
             self._pending_event_ids.clear()
+            self._quarantined_event_ids.clear()
             self._runtime_status_event_ids.clear()
             candidate: BrowserPlaySession | None = None
             try:
@@ -1078,7 +1084,11 @@ class BrowserPlayServer:
         # contaminate the new browser stream.
         if self._session is not None and event.match_id != self._session.match_id:
             return
-        if event.event_id in self._event_history_ids or event.event_id in self._pending_event_ids:
+        if (
+            event.event_id in self._event_history_ids
+            or event.event_id in self._pending_event_ids
+            or event.event_id in self._quarantined_event_ids
+        ):
             return
         if event.event_type is SOEventType.MATCH_STARTED:
             self._publish_ordered_events((event,))
@@ -1091,10 +1101,13 @@ class BrowserPlayServer:
             self._pending_ticks[event.match_id] = event.tick
             current_tick = event.tick
         if event.tick < current_tick:
-            # This is a transport-late event for an already published tick;
-            # history replay remains sorted, while live callers retain the
-            # canonical event-order integrity guard at the browser boundary.
-            self._publish_ordered_events((event,))
+            # This is a transport-late event for a tick that has already
+            # drained (or is ahead in the current buffer). Publishing it
+            # directly would violate the live browser's canonical order;
+            # quarantine it instead. A stable id also prevents repeated
+            # cross-thread callbacks for the same stale event from doing
+            # additional work.
+            self._quarantined_event_ids.add(event.event_id)
             return
         if event.tick > current_tick:
             self._flush_pending_tick(event.match_id)
