@@ -69,7 +69,7 @@ llm:
       provider_binding_id: qwen35
   personas_dir: ../pilots/personas
   secret_resolver:
-    kind: injected
+    kind: none
 clock:
   kind: system_utc
 identity:
