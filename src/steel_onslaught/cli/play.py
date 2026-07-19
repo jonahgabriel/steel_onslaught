@@ -34,6 +34,7 @@ from steel_onslaught.commands.authority import (
     ModelSOStartMatchAuthorityContext,
     PrincipalId,
     SessionId,
+    canonical_overlay_sha256,
 )
 from steel_onslaught.commands.browser_gateway import (
     BrowserCommandGateway,
@@ -45,7 +46,10 @@ from steel_onslaught.commands.browser_gateway import (
     ModelSOBrowserStartMatchRequest,
 )
 from steel_onslaught.commands.inbox import HumanDecisionCancelledError
-from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProviderCapability
+from steel_onslaught.commands.live_provider import (
+    ModelSOLiveProviderLaunchGrant,
+    ProcessLocalOneShotLiveProviderCapability,
+)
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOFrontendBootstrap,
@@ -55,6 +59,7 @@ from steel_onslaught.contracts.commands import (
     ModelSOHumanTurnPrompt,
     ModelSOPlayerActionCommand,
     ModelSOStartMatchCommand,
+    canonical_command_sha256,
 )
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.player_selection import (
@@ -73,6 +78,11 @@ from steel_onslaught.events.envelope import (
     ModelSOEventSubject,
     SOEventType,
 )
+from steel_onslaught.llm.schemas import (
+    ProtocolHttpTransport,
+    ProtocolSecretResolver,
+    ProtocolSleeper,
+)
 from steel_onslaught.match.composition import (
     LiveMatchStack,
     RuntimeDependencies,
@@ -83,6 +93,11 @@ from steel_onslaught.match.composition import (
 from steel_onslaught.match.runner import MatchIdentity
 from steel_onslaught.match.state import ModelSOMatchState
 
+BrowserLiveProviderCapability = (
+    ProcessLocalOneShotLiveProviderCapability
+    | Mapping[str, ProcessLocalOneShotLiveProviderCapability]
+)
+
 BrowserLiveProviderCapabilityFactory = Callable[
     [
         ModelSOBrowserStartMatchRequest,
@@ -90,7 +105,7 @@ BrowserLiveProviderCapabilityFactory = Callable[
         ModelSOApplicationOverlay,
         ModelSOPlayerRosterBinding,
     ],
-    ProcessLocalOneShotLiveProviderCapability,
+    BrowserLiveProviderCapability,
 ]
 
 
@@ -199,9 +214,9 @@ def launch_browser_play_session(
     identity: MatchIdentity,
     loadouts: Mapping[str, ModelSOLoadout],
     runtime_factory: Callable[[ModelSOApplicationOverlay], RuntimeDependencies],
-    live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
+    live_provider_capability: BrowserLiveProviderCapability | None = None,
     live_runtime_factory: Callable[
-        [ModelSOApplicationOverlay, str, tuple[str, ...]], RuntimeDependencies
+        [ModelSOApplicationOverlay, str | tuple[str, ...], tuple[str, ...]], RuntimeDependencies
     ]
     | None = None,
     seed: int,
@@ -1236,6 +1251,64 @@ def _loopback_origin_aliases(origin: str) -> tuple[str, ...]:
     return tuple(f"{parsed.scheme}://{host}:{parsed.port}" for host in hosts)
 
 
+def _injected_live_provider_capability_factory(
+    *,
+    max_completions: int,
+) -> BrowserLiveProviderCapabilityFactory:
+    """Bind a fresh, bounded launch grant for each browser start.
+
+    The grant contains only canonical launch hashes and model/provider ids.
+    Endpoint and credential authority remains in the injected application
+    factory's transport and secret-resolver ports.
+    """
+
+    if max_completions <= 1:
+        raise ValueError("live browser completion budget must allow multiple completions")
+
+    def build_capability(
+        request: ModelSOBrowserStartMatchRequest,
+        context: ModelSOStartMatchAuthorityContext,
+        overlay: ModelSOApplicationOverlay,
+        roster: ModelSOPlayerRosterBinding,
+    ) -> BrowserLiveProviderCapability:
+        options = {option.option_id: option for option in roster.options}
+        identities = {
+            identity.model_identity_id: identity for identity in overlay.llm.model_identities
+        }
+        providers = {provider.provider_id: provider for provider in overlay.llm.providers}
+        capabilities: dict[str, ProcessLocalOneShotLiveProviderCapability] = {}
+        for selection in request.command.selections:
+            option = options[selection.option_id]
+            if not isinstance(option, ModelSOModelPlayerOptionBinding):
+                continue
+            identity = identities[option.model_identity_id]
+            provider = providers[identity.provider_binding_id]
+            if provider.kind == "stub":
+                continue
+            if option.model_identity_id in capabilities:
+                continue
+            capabilities[option.model_identity_id] = ProcessLocalOneShotLiveProviderCapability(
+                grant=ModelSOLiveProviderLaunchGrant(
+                    creator_principal_id=context.creator_principal_id,
+                    creator_session_id=context.creator_session_id,
+                    launch_command_id=request.command.command_id,
+                    launch_command_sha256=canonical_command_sha256(request.command),
+                    overlay_sha256=canonical_overlay_sha256(overlay),
+                    roster_sha256=roster.canonical_sha256(),
+                    model_identity_id=option.model_identity_id,
+                    provider_id=provider.provider_id,
+                    max_completions=max_completions,
+                )
+            )
+        if not capabilities:
+            raise ValueError("live provider capability requested for a stub-only launch")
+        if len(capabilities) == 1:
+            return next(iter(capabilities.values()))
+        return capabilities
+
+    return build_capability
+
+
 def _configured_browser_server(
     *,
     overlay_path: Path,
@@ -1248,15 +1321,35 @@ def _configured_browser_server(
     origin: str,
     host: str,
     port: int,
-    live_provider_capability: ProcessLocalOneShotLiveProviderCapability | None = None,
+    live_provider_capability: BrowserLiveProviderCapability | None = None,
     live_provider_capability_factory: BrowserLiveProviderCapabilityFactory | None = None,
     live_runtime_factory: Callable[
-        [ModelSOApplicationOverlay, str, tuple[str, ...]], RuntimeDependencies
+        [ModelSOApplicationOverlay, str | tuple[str, ...], tuple[str, ...]], RuntimeDependencies
     ]
     | None = None,
+    application_factory: CliApplicationFactory | None = None,
+    live_max_completions: int = 256,
 ) -> BrowserPlayServer:
+    if application_factory is not None and (
+        live_provider_capability is not None
+        or live_provider_capability_factory is not None
+        or live_runtime_factory is not None
+    ):
+        raise ValueError(
+            "application_factory cannot be combined with explicit live composition ports"
+        )
     if live_provider_capability is not None and live_provider_capability_factory is not None:
         raise ValueError("fixed and per-start live provider capabilities cannot be combined")
+    factory = application_factory or CliApplicationFactory.packaged()
+    if bool(getattr(factory, "live_enabled", False)):
+        live_provider_capability_factory = _injected_live_provider_capability_factory(
+            max_completions=live_max_completions,
+        )
+        live_runtime_factory = factory.selected_runtime
+    elif application_factory is not None:
+        raise ValueError(
+            "application_factory requires both injected secret and HTTP capabilities for live play"
+        )
     has_live_authority = (
         live_provider_capability is not None or live_provider_capability_factory is not None
     )
@@ -1272,7 +1365,6 @@ def _configured_browser_server(
     blue_loadout = load_loadout(blue_loadout_path)
     loadouts = {red_loadout.id: red_loadout, blue_loadout.id: blue_loadout}
     sessions = _ConfiguredSessionCapability(session)
-    factory = CliApplicationFactory.packaged()
     allowed_origins = _loopback_origin_aliases(origin)
 
     def authenticate(candidate_origin: str) -> tuple[str, str] | None:
@@ -1301,7 +1393,7 @@ def _configured_browser_server(
             creator_session_id=session_id,
             human_seats=claims,
         )
-        selected_live_capability: ProcessLocalOneShotLiveProviderCapability | None = None
+        selected_live_capability: BrowserLiveProviderCapability | None = None
         selected_live_runtime_factory = None
         if _selects_non_stub_provider(request, overlay=overlay, roster=roster):
             selected_live_capability = live_provider_capability
@@ -1344,6 +1436,50 @@ def _configured_browser_server(
         host=host,
         port=port,
         session_factory=session_factory,
+    )
+
+
+def configured_live_browser_server(
+    *,
+    overlay_path: Path,
+    roster_path: Path,
+    session_path: Path,
+    red_loadout_path: Path,
+    blue_loadout_path: Path,
+    seed: int,
+    max_ticks: int | None,
+    origin: str,
+    host: str,
+    port: int,
+    secret_resolver: ProtocolSecretResolver,
+    http_transport: ProtocolHttpTransport,
+    sleeper: ProtocolSleeper | None = None,
+    live_max_completions: int = 256,
+) -> BrowserPlayServer:
+    """Explicit live-play entrypoint for callers owning provider capabilities.
+
+    ``play_command`` continues to use the packaged, stub-safe factory.  A
+    process that has intentionally acquired provider capabilities calls this
+    entrypoint and supplies them directly; no ambient discovery is performed.
+    """
+
+    return _configured_browser_server(
+        overlay_path=overlay_path,
+        roster_path=roster_path,
+        session_path=session_path,
+        red_loadout_path=red_loadout_path,
+        blue_loadout_path=blue_loadout_path,
+        seed=seed,
+        max_ticks=max_ticks,
+        origin=origin,
+        host=host,
+        port=port,
+        application_factory=CliApplicationFactory.live(
+            secret_resolver=secret_resolver,
+            http_transport=http_transport,
+            sleeper=sleeper,
+        ),
+        live_max_completions=live_max_completions,
     )
 
 
@@ -1439,6 +1575,7 @@ def play_command(
 __all__ = [
     "BrowserPlayServer",
     "BrowserPlaySession",
+    "configured_live_browser_server",
     "launch_browser_play_session",
     "play_command",
 ]

@@ -7,13 +7,14 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
 import ulid
 from click.testing import CliRunner
 
+from steel_onslaught.cli.application import CliApplicationFactory
 from steel_onslaught.cli.main import main
 from steel_onslaught.cli.play import (
     BrowserLiveProviderCapabilityFactory,
@@ -186,12 +187,12 @@ def test_launch_admits_before_runner_and_reuses_stack_human_inbox(
 
     live_capability = cast(ProcessLocalOneShotLiveProviderCapability, object())
     live_runtime_factory = cast(
-        Callable[[object, str, tuple[str, ...]], RuntimeDependencies],
+        Callable[[Any, str | tuple[str, ...], tuple[str, ...]], RuntimeDependencies],
         lambda *_: cast(RuntimeDependencies, object()),
     )
 
     session = launch_browser_play_session(
-        overlay=object(),  # type: ignore[arg-type]
+        overlay=cast(Any, object()),
         roster=_roster(),
         sessions=_Sessions(),
         request=_request(),
@@ -238,6 +239,48 @@ def test_play_cli_requires_explicit_contract_inputs() -> None:
     result = CliRunner().invoke(main, ["play"])
     assert result.exit_code != 0
     assert "Missing option '--overlay'" in result.stderr
+
+
+@pytest.mark.unit
+def test_packaged_cli_factory_is_fail_closed_for_live_selection() -> None:
+    factory = CliApplicationFactory.packaged()
+    assert factory.live_enabled is False
+    with pytest.raises(ValueError, match="injected secret and HTTP"):
+        factory.selected_runtime(cast(Any, object()), "provider.live", ("pilot.live",))
+
+
+@pytest.mark.unit
+def test_live_cli_factory_passes_exact_selected_provider_and_pilots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def build_selected(_overlay: object, **kwargs: object) -> object:
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "steel_onslaught.cli.application.build_selected_runtime_dependencies",
+        build_selected,
+    )
+    resolver = cast(Any, object())
+    transport = cast(Any, object())
+    factory = CliApplicationFactory.live(secret_resolver=resolver, http_transport=transport)
+    result = factory.selected_runtime(
+        cast(Any, object()),
+        ("provider.red", "provider.blue"),
+        ("pilot.red", "pilot.blue"),
+    )
+    assert result is not None
+    assert calls == [
+        {
+            "selected_provider_ids": ("provider.red", "provider.blue"),
+            "selected_pilot_spec_ids": ("pilot.red", "pilot.blue"),
+            "secret_resolver": resolver,
+            "http_transport": transport,
+            "sleeper": None,
+        }
+    ]
 
 
 @pytest.mark.unit
@@ -438,7 +481,7 @@ def test_configured_browser_server_rejects_ambiguous_or_unpaired_live_injection(
                 live_provider_capability_factory,
             ),
             live_runtime_factory=cast(
-                Callable[[object, str, tuple[str, ...]], RuntimeDependencies] | None,
+                Callable[[Any, str | tuple[str, ...], tuple[str, ...]], RuntimeDependencies] | None,
                 live_runtime_factory,
             ),
         )

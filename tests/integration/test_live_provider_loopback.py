@@ -7,7 +7,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 from uuid import UUID
 
 import httpx
@@ -58,7 +57,6 @@ from steel_onslaught.llm.schemas import (
     ModelSOOpenAIChatResponse,
 )
 from steel_onslaught.match.composition import (
-    RuntimeDependencies,
     assemble_selected_match_live,
     build_selected_runtime_dependencies,
     load_loadout,
@@ -426,55 +424,13 @@ def test_browser_live_start_mints_one_exact_capability_and_replay_does_not_remin
         ),
     )
     request = ModelSOBrowserStartMatchRequest(match_id=_MATCH_ID, command=command)
-    expected_context = ModelSOStartMatchAuthorityContext(
-        creator_principal_id="principal.local_operator",
-        creator_session_id="session.local_operator",
-        human_seats=(
-            ModelSOHumanSeatAuthorityClaim(
-                side="red",
-                principal_id="principal.local_operator",
-                session_id="session.local_operator",
-            ),
-        ),
-    )
     session = ModelSOAuthenticatedSession(
         principal_id="principal.local_operator",
         session_id="session.local_operator",
         human_identity_id="human_identity.local_operator",
         permissions=("match:create", "seat:red"),
     )
-    capabilities: list[ProcessLocalOneShotLiveProviderCapability] = []
-    factory_calls: list[
-        tuple[
-            ModelSOBrowserStartMatchRequest,
-            ModelSOStartMatchAuthorityContext,
-            ModelSOApplicationOverlay,
-            ModelSOPlayerRosterBinding,
-        ]
-    ] = []
     launch_calls: list[dict[str, object]] = []
-
-    def capability_factory(
-        exact_request: ModelSOBrowserStartMatchRequest,
-        context: ModelSOStartMatchAuthorityContext,
-        exact_overlay: ModelSOApplicationOverlay,
-        exact_roster: ModelSOPlayerRosterBinding,
-    ) -> ProcessLocalOneShotLiveProviderCapability:
-        factory_calls.append((exact_request, context, exact_overlay, exact_roster))
-        capability = ProcessLocalOneShotLiveProviderCapability(
-            grant=ModelSOLiveProviderLaunchGrant(
-                creator_principal_id=context.creator_principal_id,
-                creator_session_id=context.creator_session_id,
-                launch_command_id=exact_request.command.command_id,
-                launch_command_sha256=canonical_command_sha256(exact_request.command),
-                overlay_sha256=canonical_overlay_sha256(exact_overlay),
-                roster_sha256=exact_roster.canonical_sha256(),
-                model_identity_id="model_identity.selected",
-                provider_id="selected",
-            )
-        )
-        capabilities.append(capability)
-        return capability
 
     class Bus:
         def subscribe(self, _handler: object, **_kwargs: object) -> int:
@@ -497,6 +453,14 @@ def test_browser_live_start_mints_one_exact_capability_and_replay_does_not_remin
 
     def launch(**kwargs: object) -> object:
         launch_calls.append(kwargs)
+        selected_runtime_factory = kwargs["live_runtime_factory"]
+        assert callable(selected_runtime_factory)
+        selected_dependencies = selected_runtime_factory(
+            overlay,
+            "selected",
+            ("pilot.live.selected",),
+        )
+        selected_dependencies.close()
         stack = SimpleNamespace(
             bus=Bus(),
             launch_provenance=SimpleNamespace(seat_assignments=()),
@@ -528,23 +492,10 @@ def test_browser_live_start_mints_one_exact_capability_and_replay_does_not_remin
         ),
     )
 
-    def default_runtime_factory(_overlay: ModelSOApplicationOverlay) -> RuntimeDependencies:
-        return cast(RuntimeDependencies, object())
-
-    def live_runtime_factory(
-        _overlay: ModelSOApplicationOverlay, _provider: str, _pilots: tuple[str, ...]
-    ) -> RuntimeDependencies:
-        return cast(RuntimeDependencies, object())
-
-    monkeypatch.setattr(
-        CliApplicationFactory,
-        "packaged",
-        lambda: SimpleNamespace(runtime=default_runtime_factory),
-    )
     monkeypatch.setattr(play_cli, "build_frontend_bootstrap", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(play_cli, "launch_browser_play_session", launch)
 
-    server = play_cli._configured_browser_server(
+    server = play_cli.configured_live_browser_server(
         overlay_path=tmp_path / "overlay.yaml",
         roster_path=tmp_path / "roster.yaml",
         session_path=tmp_path / "session.yaml",
@@ -555,8 +506,9 @@ def test_browser_live_start_mints_one_exact_capability_and_replay_does_not_remin
         origin="http://localhost:5173",
         host="127.0.0.1",
         port=0,
-        live_provider_capability_factory=capability_factory,
-        live_runtime_factory=live_runtime_factory,
+        secret_resolver=_Resolver("unused-test-secret"),
+        http_transport=_Transport(),
+        live_max_completions=8,
     )
 
     async def admit_twice() -> tuple[str, str]:
@@ -581,11 +533,14 @@ def test_browser_live_start_mints_one_exact_capability_and_replay_does_not_remin
     first, replay = asyncio.run(admit_twice())
 
     assert first == replay
-    assert factory_calls == [(request, expected_context, overlay, roster)]
-    assert len(capabilities) == 1
     assert len(launch_calls) == 1
-    assert launch_calls[0]["live_provider_capability"] is capabilities[0]
-    assert launch_calls[0]["live_runtime_factory"] is live_runtime_factory
+    capability = launch_calls[0]["live_provider_capability"]
+    assert isinstance(capability, ProcessLocalOneShotLiveProviderCapability)
+    grant = capability._grant
+    assert grant.model_identity_id == "model_identity.selected"
+    assert grant.provider_id == "selected"
+    assert grant.max_completions == 8
+    assert callable(launch_calls[0]["live_runtime_factory"])
 
 
 @pytest.mark.integration
@@ -639,6 +594,11 @@ def test_authenticated_human_vs_one_shot_live_provider_is_replayable_and_sanitiz
     transport = _Transport(_response())
     resolver = _Resolver("resolved-credential-must-not-be-emitted")
     sleeper = _Sleeper()
+    live_factory = CliApplicationFactory.live(
+        secret_resolver=resolver,
+        http_transport=transport,
+        sleeper=sleeper,
+    )
 
     def forbidden_default_runtime(candidate: ModelSOApplicationOverlay) -> object:
         del candidate
@@ -649,14 +609,7 @@ def test_authenticated_human_vs_one_shot_live_provider_is_replayable_and_sanitiz
         provider_id: str,
         pilot_spec_ids: tuple[str, ...],
     ) -> object:
-        return build_selected_runtime_dependencies(
-            candidate,
-            selected_provider_id=provider_id,
-            selected_pilot_spec_ids=pilot_spec_ids,
-            secret_resolver=resolver,
-            http_transport=transport,
-            sleeper=sleeper,
-        )
+        return live_factory.selected_runtime(candidate, provider_id, pilot_spec_ids)
 
     stack = assemble_selected_match_live(
         overlay=overlay,
