@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` 7ff4920).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` 2d1961a).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -165,6 +165,21 @@
 >   ambient configuration; hosted Python, frontend, sanitize-text, and
 >   evidence-schema checks all passed. This closes the DI wiring proof gap but
 >   does not claim the real-provider/browser Gate 1 run.
+> - [PR #56](https://github.com/jonahgabriel/steel_onslaught/pull/56),
+>   commit `278b659`, hardens card-round replay validation to require
+>   contiguous `priority_rank` values (`0..N-1`) within each emitted register.
+>   Focused card/replay coverage (243 passed), the unit/non-slow integration
+>   suite (1777 passed, 30 deselected), strict mypy, Ruff, sanitization, and
+>   diff checks passed locally; hosted Python, frontend, sanitize-text, and
+>   evidence-schema checks also passed. This is replay/card validation only.
+> - [PR #57](https://github.com/jonahgabriel/steel_onslaught/pull/57),
+>   commit `2d1961a`, requires every emitted `REGISTER_RESOLVED` register to
+>   cover exactly the seats present in `HAND_DEALT`, while preserving valid
+>   paced cancellation prefixes. Multi-register committed and cancelled
+>   replay cases now reject per-register seat omissions; the focused card,
+>   match, and replay suite (230 passed) plus all hosted Python, frontend,
+>   sanitize-text, and evidence-schema checks passed. No UI, provider,
+>   deployment, or OCC behavior changed.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
