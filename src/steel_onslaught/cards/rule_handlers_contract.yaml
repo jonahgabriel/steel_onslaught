@@ -1,0 +1,34 @@
+---
+# RSD-generated contract descriptor for the pure card-programming rule seam.
+# Application overlays must select an allowlisted handler id explicitly; this
+# descriptor does not enable a rule or own any runtime/event-bus authority.
+name: card_programming_rule_handler
+contract_version: {major: 1, minor: 0, patch: 0}
+node_type: compute
+node_version: {major: 1, minor: 0, patch: 0}
+
+description: >
+  Pure typed policy plugin that transforms a proposed whole-round card plan
+  using one immutable programming observation. Every result is revalidated
+  against the dealt hand and free registers before reducer execution.
+
+handler:
+  module: steel_onslaught.cards.rules
+  class: CardProgrammingRuleRegistry
+
+handler_routing:
+  default_handler: steel_onslaught.cards.rules:CardProgrammingRuleRegistry
+
+descriptor:
+  node_archetype: compute
+  purity: pure
+  idempotent: true
+  timeout_ms: 100
+
+event_bus:
+  subscribe_topics: []
+  publish_topics: []
+
+metadata:
+  transport_type: in_process
+  contract_shape: typed-handler-registry
