@@ -273,3 +273,28 @@ def test_explicit_fallback_policy_is_deterministic_and_non_llm() -> None:
     )
     assert plan.confidence == 1.0
     assert len(client.requests) == 1
+
+
+def test_explicit_fallback_policy_recovers_invalid_action_parameters() -> None:
+    client = _ResponseClient(
+        _response(
+            registers=[
+                {"register_index": 0, "card_id": "card.test.unknown"},
+                {"register_index": 2, "card_id": "card.test.vent"},
+            ]
+        )
+    )
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        failure_policy="fallback",
+    )
+
+    plan = program_for_seat(pilot, _observation())
+
+    assert tuple(register.card_id for register in plan.registers) == (
+        "card.test.advance",
+        "card.test.vent",
+    )
+    assert plan.confidence == 1.0
+    assert len(client.requests) == 1

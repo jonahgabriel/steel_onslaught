@@ -835,6 +835,21 @@ describe("types parity against Python-emitted fixtures", () => {
           },
         ],
       };
+      payload["card_rule_pack_provenance"] = {
+        schema_version: "0.1.0",
+        kind: "steel_onslaught.card_rule_pack",
+        pack_id: "rules.card_programming_v1",
+        handlers: [
+          {
+            schema_version: "0.1.0",
+            kind: "steel_onslaught.card_rule_handler",
+            handler_id: "prefer_attack_cards",
+            version: "v1.0.0",
+            implementation_sha256: "7".repeat(64),
+          },
+        ],
+        content_sha256: "8".repeat(64),
+      };
     });
     const decision = corruptPayload("pilot_decision_made", (payload) => {
       payload["decision_source"] = {
@@ -847,6 +862,7 @@ describe("types parity against Python-emitted fixtures", () => {
     });
 
     expect(parseEnvelope(started).payload).toHaveProperty("launch_provenance");
+    expect(parseEnvelope(started).payload).toHaveProperty("card_rule_pack_provenance");
     expect(parseEnvelope(decision).payload).toHaveProperty("decision_source");
   });
 

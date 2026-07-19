@@ -251,10 +251,10 @@ class LLMProgrammingPilot:
                 consumer=lambda response: self._parse_response(response, observation),
             )
         except LlmSemanticError as exc:
-            if exc.code != "malformed_json":
-                raise
             if self._failure_policy == "fallback":
                 return program_for_seat(None, observation)
+            if exc.code != "malformed_json":
+                raise
             # Some reasoning providers occasionally spend the full response
             # budget before emitting the requested object.  A single compact
             # semantic repair remains on the same injected provider and uses

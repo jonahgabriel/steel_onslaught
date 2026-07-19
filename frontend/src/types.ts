@@ -226,6 +226,22 @@ export interface SOCardRuntimeProvenance {
   content_sha256: string;
 }
 
+export interface SOCardRuleHandlerMetadata {
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.card_rule_handler";
+  handler_id: string;
+  version: string;
+  implementation_sha256: string;
+}
+
+export interface SOCardRulePackProvenance {
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.card_rule_pack";
+  pack_id: string;
+  handlers: SOCardRuleHandlerMetadata[];
+  content_sha256: string;
+}
+
 export interface SOHumanDecisionSource {
   kind: "human";
   input_source: "browser_command";
@@ -255,6 +271,7 @@ export interface MatchStartedPayload {
   arena: SOArenaSnapshot;
   launch_provenance?: SOMatchLaunchProvenance;
   card_runtime_provenance?: SOCardRuntimeProvenance;
+  card_rule_pack_provenance?: SOCardRulePackProvenance;
 }
 
 export type SORuntimeStatus = "ready" | "running" | "paused" | "ended";
@@ -1223,6 +1240,81 @@ function parseCardRuntimeProvenance(value: unknown, context: string): SOCardRunt
   };
 }
 
+function parseCardRulePackProvenance(value: unknown, context: string): SOCardRulePackProvenance {
+  const record = asRecord(value, context);
+  rejectUnknown(
+    record,
+    ["schema_version", "kind", "pack_id", "handlers", "content_sha256"],
+    context,
+  );
+  const handlers = record["handlers"];
+  if (!Array.isArray(handlers)) {
+    fail(context, 'field "handlers" must be an array');
+  }
+  return {
+    schema_version: exactString(
+      record["schema_version"],
+      "0.1.0",
+      `${context}.schema_version`,
+    ) as "0.1.0",
+    kind: exactString(
+      record["kind"],
+      "steel_onslaught.card_rule_pack",
+      `${context}.kind`,
+    ) as "steel_onslaught.card_rule_pack",
+    pack_id: patternString(
+      record["pack_id"],
+      /^[a-z][a-z0-9_.-]*$/,
+      "a rule pack id",
+      `${context}.pack_id`,
+    ),
+    handlers: handlers.map((handler, index) => {
+      const handlerRecord = asRecord(handler, `${context}.handlers[${index}]`);
+      rejectUnknown(
+        handlerRecord,
+        ["schema_version", "kind", "handler_id", "version", "implementation_sha256"],
+        `${context}.handlers[${index}]`,
+      );
+      return {
+        schema_version: exactString(
+          handlerRecord["schema_version"],
+          "0.1.0",
+          `${context}.handlers[${index}].schema_version`,
+        ) as "0.1.0",
+        kind: exactString(
+          handlerRecord["kind"],
+          "steel_onslaught.card_rule_handler",
+          `${context}.handlers[${index}].kind`,
+        ) as "steel_onslaught.card_rule_handler",
+        handler_id: patternString(
+          handlerRecord["handler_id"],
+          /^[a-z][a-z0-9_.-]*$/,
+          "a rule handler id",
+          `${context}.handlers[${index}].handler_id`,
+        ),
+        version: patternString(
+          handlerRecord["version"],
+          /^v[0-9]+\.[0-9]+\.[0-9]+$/,
+          "a semantic handler version",
+          `${context}.handlers[${index}].version`,
+        ),
+        implementation_sha256: patternString(
+          handlerRecord["implementation_sha256"],
+          /^[0-9a-f]{64}$/,
+          "a lowercase SHA-256 digest",
+          `${context}.handlers[${index}].implementation_sha256`,
+        ),
+      };
+    }),
+    content_sha256: patternString(
+      record["content_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.content_sha256`,
+    ),
+  };
+}
+
 function parseDecisionSource(value: unknown, context: string): SODecisionSource {
   const record = asRecord(value, context);
   const kind = record["kind"];
@@ -1560,7 +1652,15 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(
       record,
-      ["seed", "max_ticks", "mechs", "arena", "launch_provenance", "card_runtime_provenance"],
+      [
+        "seed",
+        "max_ticks",
+        "mechs",
+        "arena",
+        "launch_provenance",
+        "card_runtime_provenance",
+        "card_rule_pack_provenance",
+      ],
       context,
     );
     const mechs = record["mechs"];
@@ -1613,6 +1713,13 @@ const PAYLOAD_PARSERS: PayloadParsers = {
             `${context}.card_runtime_provenance`,
           )
         : undefined;
+    const cardRulePackProvenance =
+      "card_rule_pack_provenance" in record
+        ? parseCardRulePackProvenance(
+            record["card_rule_pack_provenance"],
+            `${context}.card_rule_pack_provenance`,
+          )
+        : undefined;
     return {
       seed: nonNegativeInt(record, "seed", context),
       max_ticks: nullablePositiveInt(record, "max_ticks", context),
@@ -1622,6 +1729,9 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       ...(cardRuntimeProvenance === undefined
         ? {}
         : { card_runtime_provenance: cardRuntimeProvenance }),
+      ...(cardRulePackProvenance === undefined
+        ? {}
+        : { card_rule_pack_provenance: cardRulePackProvenance }),
     };
   },
   runtime_status_changed: (value, context) => {
