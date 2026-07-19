@@ -54,8 +54,8 @@ _LANES: tuple[Lane, ...] = (
         "identity": "model_identity.openrouter",
         "pilot_ids": {"pilot.openrouter.sniper", "pilot.openrouter.opportunist"},
         "loadouts": (
-            _ROOT / "contracts_data/loadouts/tactical_openrouter_sniper_ironclad.yaml",
-            _ROOT / "contracts_data/loadouts/tactical_openrouter_opportunist_hunter.yaml",
+            _ROOT / "contracts_data/loadouts/tactical_openrouter/sniper_ironclad.yaml",
+            _ROOT / "contracts_data/loadouts/tactical_openrouter/opportunist_hunter.yaml",
         ),
     },
     {
@@ -70,8 +70,8 @@ _LANES: tuple[Lane, ...] = (
         "identity": "model_identity.gemini",
         "pilot_ids": {"pilot.gemini.sniper", "pilot.gemini.opportunist"},
         "loadouts": (
-            _ROOT / "contracts_data/loadouts/tactical_gemini_sniper_ironclad.yaml",
-            _ROOT / "contracts_data/loadouts/tactical_gemini_opportunist_hunter.yaml",
+            _ROOT / "contracts_data/loadouts/tactical_gemini/sniper_ironclad.yaml",
+            _ROOT / "contracts_data/loadouts/tactical_gemini/opportunist_hunter.yaml",
         ),
     },
 )
