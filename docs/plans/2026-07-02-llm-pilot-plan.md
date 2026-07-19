@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` bdd9b33).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` a79d3dc).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -243,6 +243,14 @@
 >   parent-winner duels excluded. This is learning-artifact projection only;
 >   it does not change match truth, replay semantics, UI, provider endpoints,
 >   deployment, OCC, Kafka, or the manual real-provider/browser Gate 1.
+> - [PR #71](https://github.com/jonahgabriel/steel_onslaught/pull/71),
+>   commit `a79d3dc`, makes post-match learning evidence fail closed when one
+>   match stream contains more than one workflow `correlation_id`. The
+>   projection now enforces the match-wide event-envelope correlation contract
+>   before payload aggregation, with deterministic regression coverage. This is
+>   learning-evidence validation only; it does not change match truth, replay
+>   semantics, UI, provider endpoints, deployment, OCC, Kafka, or the manual
+>   real-provider/browser Gate 1.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
