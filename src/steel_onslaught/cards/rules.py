@@ -14,7 +14,6 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import ClassVar
 
 from steel_onslaught.contracts.card import SOCardCategory
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, ModelSOPlanRegister
@@ -122,7 +121,7 @@ class PreferAttackCardsRuleHandler:
     attack card, the proposal is returned unchanged.
     """
 
-    metadata: ClassVar[ModelSOCardRuleHandlerMetadata] = ModelSOCardRuleHandlerMetadata(
+    metadata: ModelSOCardRuleHandlerMetadata = ModelSOCardRuleHandlerMetadata(
         handler_id="prefer_attack_cards",
         version="v1.0.0",
         implementation_sha256=hashlib.sha256(
