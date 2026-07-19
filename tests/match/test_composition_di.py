@@ -226,13 +226,13 @@ class _LiveProviderGrantBindings(TypedDict):
     provider_id: str
 
 
-def _loadout(name: str) -> ModelSOLoadout:
+def _loadout(name: str, pilot_spec_id: str = "pilot.fake.v1") -> ModelSOLoadout:
     return ModelSOLoadout.model_validate(
         {
             "id": f"loadout.fake.{name}",
             "chassis_id": "chassis.fake",
             "boiler_id": "boiler.fake",
-            "pilot_id": "pilot.fake.v1",
+            "pilot_id": pilot_spec_id,
             "modules": {},
             "budgets": {
                 "points_used": 0,
@@ -283,6 +283,27 @@ def _card_runtime_snapshot(*, selected: bool) -> ModelSOCardRuntimeSnapshot:
 
 
 def _selection_overlay(tmp_path: Any) -> ModelSOApplicationOverlay:
+    pilot_registry_dir = tmp_path / "pilots"
+    pilot_registry_dir.mkdir()
+    for provider_id in ("stub", "local", "openrouter", "glm", "gemini"):
+        (pilot_registry_dir / f"fake_{provider_id}.yaml").write_text(
+            'schema_version: "0.1.0"\n'
+            "kind: steel_onslaught.pilot\n"
+            f"id: pilot.fake.{provider_id}\n"
+            f"display_name: {provider_id}\n"
+            "archetype: llm\n"
+            "lineage:\n  parent: pilot.template.llm\n"
+            "parameters:\n"
+            "  persona: configured\n"
+            f"  provider: {provider_id}\n",
+            encoding="utf-8",
+        )
+    (pilot_registry_dir / "fake_v1.yaml").write_text(
+        (pilot_registry_dir / "fake_stub.yaml")
+        .read_text(encoding="utf-8")
+        .replace("id: pilot.fake.stub", "id: pilot.fake.v1"),
+        encoding="utf-8",
+    )
     providers: list[dict[str, object]] = [
         {"kind": "stub", "provider_id": "stub", "model": "fixture"},
     ]
@@ -355,7 +376,7 @@ def _selection_overlay(tmp_path: Any) -> ModelSOApplicationOverlay:
             },
             "contracts": {
                 "catalog_dir": tmp_path / "catalog",
-                "pilot_registry_dir": tmp_path / "pilots",
+                "pilot_registry_dir": pilot_registry_dir,
                 "arena_id": "open_field",
             },
             "llm": {
@@ -391,7 +412,11 @@ def _selection_roster(model_identity: str) -> ModelSOPlayerRosterBinding:
         option_id="player_option.configured_model",
         display_name="Configured model",
         model_identity_id=model_identity,
-        pilot_spec_id="pilot.fake.v1",
+        pilot_spec_id=(
+            "pilot.fake.v1"
+            if model_identity == "model_identity.stub"
+            else f"pilot.fake.{model_identity.removeprefix('model_identity.')}"
+        ),
         persona_id="configured",
         input_source="llm_completion",
     )
@@ -919,8 +944,8 @@ def test_selected_non_stub_provider_rejects_before_runtime_factory(
                 correlation_id=UUID("11111111-1111-4111-8111-111111111111"),
             ),
             loadouts={
-                "loadout.fake.red": _loadout("red"),
-                "loadout.fake.blue": _loadout("blue"),
+                "loadout.fake.red": _loadout("red", f"pilot.fake.{provider_id}"),
+                "loadout.fake.blue": _loadout("blue", f"pilot.fake.{provider_id}"),
             },
             runtime_factory=forbidden_runtime_factory,
             seed=7,
@@ -945,7 +970,7 @@ def test_selected_live_provider_admits_before_only_exact_live_runtime_factory(
         correlation_id=UUID("11111111-1111-4111-8111-111111111111"),
     )
     red = _loadout("red")
-    blue = _loadout("blue")
+    blue = _loadout("blue", "pilot.fake.local")
     dependencies = RuntimeDependencies(
         bus=_Bus(),
         ledger=_Ledger(),
@@ -1038,5 +1063,5 @@ def test_selected_live_provider_admits_before_only_exact_live_runtime_factory(
     assert sessions.resolve_count > 0
     assert capability.consumption_count == 1
     assert normal_calls == 0
-    assert live_calls == [("local", ("pilot.fake.v1",))]
+    assert live_calls == [("local", ("pilot.fake.local",))]
     stack.close()

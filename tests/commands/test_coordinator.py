@@ -49,6 +49,7 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
 )
+from steel_onslaught.match.composition import load_pilot_registry
 
 _MATCH_ID = "match.01JABCDE0123456789ABCDEFGX"
 _COMMAND_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -90,6 +91,28 @@ def _operator() -> ModelSOAuthenticatedSession:
 
 
 def _overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
+    pilot_registry_dir = tmp_path / "pilots"
+    pilot_registry_dir.mkdir()
+    (pilot_registry_dir / "human_browser.yaml").write_text(
+        'schema_version: "0.2.0"\n'
+        "kind: steel_onslaught.pilot\n"
+        "id: pilot.human.browser\n"
+        "display_name: Browser human\n"
+        "archetype: human\n"
+        "lineage:\n  parent: pilot.template.llm\n"
+        "parameters:\n  input_source: browser_command\n",
+        encoding="utf-8",
+    )
+    (pilot_registry_dir / "llm_qwen35.yaml").write_text(
+        'schema_version: "0.1.0"\n'
+        "kind: steel_onslaught.pilot\n"
+        "id: pilot.llm.qwen35\n"
+        "display_name: Local Qwen\n"
+        "archetype: llm\n"
+        "lineage:\n  parent: pilot.template.llm\n"
+        "parameters:\n  persona: berserker\n  provider: stub\n",
+        encoding="utf-8",
+    )
     return ModelSOApplicationOverlay.model_validate(
         {
             "schema_version": "1",
@@ -127,7 +150,7 @@ def _overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
             },
             "contracts": {
                 "catalog_dir": tmp_path / "catalog",
-                "pilot_registry_dir": tmp_path / "pilots",
+                "pilot_registry_dir": pilot_registry_dir,
                 "arena_id": "open_field",
             },
             "llm": {
@@ -241,11 +264,18 @@ def _coordinator(
         overlay=overlay,
         roster=_roster(),
         sessions=sessions or _Sessions(_operator()),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
 
 
 def _live_overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
     base = _overlay(tmp_path)
+    (base.contracts.pilot_registry_dir / "llm_qwen35.yaml").write_text(
+        (base.contracts.pilot_registry_dir / "llm_qwen35.yaml")
+        .read_text(encoding="utf-8")
+        .replace("provider: stub", "provider: remote"),
+        encoding="utf-8",
+    )
     identity = base.llm.model_identities[0]
     return base.model_copy(
         update={
@@ -287,6 +317,7 @@ def test_authenticated_start_returns_canonical_secret_free_launch_provenance(
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(_operator()),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
 
     provenance = coordinator.admit_start_match(
@@ -335,6 +366,7 @@ def test_coordinator_delegates_authentication_digest_and_seat_validation(
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
     with pytest.raises(SessionAuthenticationError):
         missing_session.admit_start_match(command, context=_context(), match_id=_MATCH_ID)
@@ -367,6 +399,7 @@ def test_non_stub_selected_model_fails_before_launch_admission(tmp_path: Path) -
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(_operator()),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
 
     with pytest.raises(NonStubModelProviderError, match="stub"):
@@ -422,6 +455,7 @@ def test_live_provider_grant_exact_binding_is_authenticated_and_consumed_once(
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
         live_provider_capability=unauthenticated,
     )
     with pytest.raises(SessionAuthenticationError):
@@ -433,6 +467,7 @@ def test_live_provider_grant_exact_binding_is_authenticated_and_consumed_once(
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(_operator()),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
         live_provider_capability=capability,
     )
     provenance = coordinator.admit_start_match(
@@ -491,6 +526,7 @@ def test_same_live_model_identity_can_fill_both_llm_seats(tmp_path: Path) -> Non
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(session),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
         live_provider_capability=capability,
     )
 
@@ -540,7 +576,15 @@ def test_distinct_live_model_identities_use_one_injected_capability_each(tmp_pat
             "option_id": "player_option.remote_two",
             "display_name": "Remote Two",
             "model_identity_id": "model_identity.remote_two",
+            "pilot_spec_id": "pilot.llm.remote_two",
         }
+    )
+    (overlay.contracts.pilot_registry_dir / "llm_remote_two.yaml").write_text(
+        (overlay.contracts.pilot_registry_dir / "llm_qwen35.yaml")
+        .read_text(encoding="utf-8")
+        .replace("id: pilot.llm.qwen35", "id: pilot.llm.remote_two")
+        .replace("provider: remote", "provider: remote_two"),
+        encoding="utf-8",
     )
     roster = base.model_copy(
         update={
@@ -588,6 +632,7 @@ def test_distinct_live_model_identities_use_one_injected_capability_each(tmp_pat
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(session),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
         live_provider_capability=grants,
     ).admit_start_match(command, context=context, match_id=_MATCH_ID)
     model_assignments = cast(
@@ -609,6 +654,7 @@ def test_command_cannot_be_rebound_to_another_match_id(tmp_path: Path) -> None:
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(_operator()),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
     command = _command(overlay, roster)
     first = coordinator.admit_start_match(command, context=_context(), match_id=_MATCH_ID)

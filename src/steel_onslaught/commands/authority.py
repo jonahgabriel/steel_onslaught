@@ -26,6 +26,7 @@ from pydantic import (
 
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.commands import ModelSOStartMatchCommand, canonical_command_sha256
+from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
 from steel_onslaught.contracts.player_selection import (
     HumanIdentityId,
     ModelSOHumanPlayerOptionBinding,
@@ -224,8 +225,13 @@ class ProcessLocalCommandAuthority:
         overlay: ModelSOApplicationOverlay,
         roster: ModelSOPlayerRosterBinding,
         sessions: AuthenticatedSessionCapability,
+        pilot_registry: PilotSpecRegistry,
     ) -> None:
-        validate_player_roster_against_overlay(roster=roster, overlay=overlay)
+        validate_player_roster_against_overlay(
+            roster=roster,
+            overlay=overlay,
+            pilot_registry=pilot_registry,
+        )
         self._overlay = overlay
         self._roster = roster
         self._sessions = sessions

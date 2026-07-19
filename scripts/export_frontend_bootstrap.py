@@ -17,7 +17,7 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOPlayerRosterBinding,
     validate_player_roster_against_overlay,
 )
-from steel_onslaught.match.composition import load_application_overlay
+from steel_onslaught.match.composition import load_application_overlay, load_pilot_registry
 
 
 def export_frontend_bootstrap(
@@ -38,7 +38,11 @@ def export_frontend_bootstrap(
         roster = ModelSOPlayerRosterBinding.model_validate_json(
             json.dumps(yaml.safe_load(roster_path.read_text(encoding="utf-8")))
         )
-        validate_player_roster_against_overlay(roster=roster, overlay=overlay)
+        validate_player_roster_against_overlay(
+            roster=roster,
+            overlay=overlay,
+            pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
+        )
         bootstrap = ModelSOFrontendBootstrap.model_validate(
             {
                 **bootstrap.model_dump(mode="python"),

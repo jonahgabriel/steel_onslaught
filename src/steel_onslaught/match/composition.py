@@ -1661,10 +1661,12 @@ def assemble_selected_match_live(
             "live_provider_capability and live_runtime_factory must be supplied together"
         )
 
+    pilot_registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
     provenance = ProcessLocalMatchLaunchCoordinator(
         overlay=overlay,
         roster=roster,
         sessions=sessions,
+        pilot_registry=pilot_registry,
         live_provider_capability=live_provider_capability,
     ).admit_start_match(
         command,

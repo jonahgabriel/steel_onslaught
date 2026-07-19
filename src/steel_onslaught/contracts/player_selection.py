@@ -13,7 +13,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, StringConstraints, model_validator
 
-from steel_onslaught.contracts.pilot import PilotId
+from steel_onslaught.contracts.pilot import ModelSOLlmPilotParams, PilotId
+from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
 
 if TYPE_CHECKING:
     from steel_onslaught.contracts.application import ModelSOApplicationOverlay
@@ -273,8 +274,9 @@ def validate_player_roster_against_overlay(
     *,
     roster: ModelSOPlayerRosterBinding,
     overlay: ModelSOApplicationOverlay,
+    pilot_registry: PilotSpecRegistry | None = None,
 ) -> None:
-    """Validate the explicit roster -> model identity -> provider reference chain."""
+    """Validate each model option's closed spec -> identity -> provider chain."""
 
     provider_ids = {provider.provider_id for provider in overlay.llm.providers}
     identities = {identity.model_identity_id: identity for identity in overlay.llm.model_identities}
@@ -299,6 +301,67 @@ def validate_player_roster_against_overlay(
     )
     if unknown_identities:
         raise ValueError(f"roster options reference unknown model identities: {unknown_identities}")
+
+    model_options = tuple(
+        option for option in roster.options if isinstance(option, ModelSOModelPlayerOptionBinding)
+    )
+    if not model_options:
+        return
+    if pilot_registry is None:
+        raise ValueError("model roster validation requires an injected pilot registry")
+    registry = pilot_registry
+    unknown_specs = sorted(
+        {
+            option.pilot_spec_id
+            for option in model_options
+            if registry.get(option.pilot_spec_id) is None
+        }
+    )
+    if unknown_specs:
+        raise ValueError(f"roster model options reference unknown pilot specs: {unknown_specs}")
+
+    non_llm_specs = sorted(
+        {
+            option.pilot_spec_id
+            for option in model_options
+            if (spec := registry.get(option.pilot_spec_id)) is not None and spec.archetype != "llm"
+        }
+    )
+    if non_llm_specs:
+        raise ValueError(f"roster model options require llm pilot specs: {non_llm_specs}")
+
+    provider_mismatches = sorted(
+        {
+            option.option_id
+            for option in model_options
+            if (
+                (spec := registry.get(option.pilot_spec_id)) is not None
+                and isinstance(spec.parameters, ModelSOLlmPilotParams)
+                and spec.parameters.provider
+                != identities[option.model_identity_id].provider_binding_id
+            )
+        }
+    )
+    if provider_mismatches:
+        raise ValueError(
+            f"roster model options have pilot/provider binding mismatches: {provider_mismatches}"
+        )
+
+    persona_mismatches = sorted(
+        {
+            option.option_id
+            for option in model_options
+            if (
+                (spec := registry.get(option.pilot_spec_id)) is not None
+                and isinstance(spec.parameters, ModelSOLlmPilotParams)
+                and spec.parameters.persona != option.persona_id
+            )
+        }
+    )
+    if persona_mismatches:
+        raise ValueError(
+            f"roster model options have pilot/persona binding mismatches: {persona_mismatches}"
+        )
 
 
 class _SeatAssignmentBase(_ClosedStrictModel):
