@@ -44,6 +44,9 @@ def project_match_learning_evidence(
     match_id = stream[0].match_id
     if any(event.match_id != match_id for event in stream):
         raise ValueError("match stream contains events for more than one match")
+    correlation_id = stream[0].correlation_id
+    if any(event.correlation_id != correlation_id for event in stream):
+        raise ValueError("match stream contains more than one workflow correlation_id")
 
     scored: list[tuple[ModelSOEventEnvelope, ModelSOMatchScoredPayload]] = []
     decisions: list[ModelSOPilotDecisionPayload] = []
@@ -73,7 +76,7 @@ def project_match_learning_evidence(
     return ModelSOAfterMatchLearningEvidence(
         match_id=match_id,
         scored_event_id=scored_event.event_id,
-        correlation_id=scored_event.correlation_id,
+        correlation_id=correlation_id,
         duration_ticks=score.duration_ticks,
         winner_player_id=score.winner_player_id,
         is_draw=score.is_draw,
