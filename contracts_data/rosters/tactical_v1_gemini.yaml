@@ -1,0 +1,43 @@
+schema_version: "1"
+kind: steel_onslaught.player_roster
+roster_id: roster.tactical_v1_gemini
+options:
+  - kind: human
+    option_id: player_option.local_human_sniper
+    display_name: Local human — Sniper seat
+    human_identity_id: human_identity.local_operator
+    pilot_spec_id: pilot.gemini.sniper
+    input_source: browser_command
+  - kind: human
+    option_id: player_option.local_human_opportunist
+    display_name: Local human — Opportunist seat
+    human_identity_id: human_identity.local_operator
+    pilot_spec_id: pilot.gemini.opportunist
+    input_source: browser_command
+  - kind: model
+    option_id: player_option.gemini_sniper
+    display_name: Gemini 2.5 Flash — Sniper
+    model_identity_id: model_identity.gemini
+    pilot_spec_id: pilot.gemini.sniper
+    persona_id: sniper
+    input_source: llm_completion
+  - kind: model
+    option_id: player_option.gemini_opportunist
+    display_name: Gemini 2.5 Flash — Opportunist
+    model_identity_id: model_identity.gemini
+    pilot_spec_id: pilot.gemini.opportunist
+    persona_id: opportunist
+    input_source: llm_completion
+seats:
+  - side: red
+    loadout_id: loadout.tactical.gemini_sniper_ironclad
+    default_option_id: player_option.gemini_sniper
+    allowed_option_ids:
+      - player_option.local_human_sniper
+      - player_option.gemini_sniper
+  - side: blue
+    loadout_id: loadout.tactical.gemini_opportunist_hunter
+    default_option_id: player_option.gemini_opportunist
+    allowed_option_ids:
+      - player_option.local_human_opportunist
+      - player_option.gemini_opportunist

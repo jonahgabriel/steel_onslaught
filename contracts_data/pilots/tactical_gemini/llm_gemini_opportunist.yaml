@@ -1,0 +1,10 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.gemini.opportunist
+display_name: "Gemini 2.5 Flash — Opportunist"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: opportunist
+  provider: gemini
