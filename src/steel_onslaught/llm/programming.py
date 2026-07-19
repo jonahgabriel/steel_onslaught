@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from typing import Literal
 from uuid import UUID
 
@@ -88,7 +89,11 @@ JSON object with this exact shape:
 "confidence":0.0,"rationale":"one short sentence"}
 
 Use every free register exactly once, in ascending register_index order. Use
-each physical card at most once and only card ids from the dealt hand. Never
+each physical card at most once and only card ids from ``legal_hand``. The
+ONLY legal card IDs are the ``legal_hand`` entries: do not copy ids from the
+deck description or persona instructions. Duplicate an id only up to its
+``available_copies`` count. Before emitting, check every register against that
+allowlist and replace any unavailable tactic with an available card. Never
 assign a card to a locked register. Do not add fields, prose, markdown, or
 comments. Keep rationale to twelve words or fewer. Emit the JSON object as the
 first character of the response and stop immediately after its closing brace.
@@ -124,7 +129,19 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
     locked_indices = tuple(
         index for index in range(deck.register_count) if index not in free_indices
     )
+    hand_card_ids = tuple(str(card_id) for card_id in observation.hand)
+    hand_counts = Counter(hand_card_ids)
     pilot = observation.pilot_observation
+    legal_hand = [
+        {
+            "card_id": card_id,
+            "available_copies": hand_counts[card_id],
+            "definition": _card_definition(
+                observation.card_runtime_snapshot.card_catalog.require(card_id)
+            ),
+        }
+        for card_id in dict.fromkeys(hand_card_ids)
+    ]
     prompt_value = {
         "protocol": "steel_onslaught.whole_round_programming.v1",
         "match": {
@@ -140,21 +157,18 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
             "locked_indices": locked_indices,
             "free_indices": free_indices,
         },
+        # The full deck is intentionally not repeated here.  It is a tempting
+        # source of otherwise-valid-looking ids for providers that must choose
+        # only from this round's dealt hand.  The hand definitions below carry
+        # all card semantics needed for planning; ``legal_hand`` is the closed
+        # multiset boundary used by the parser.
         "deck": {
             "deck_id": deck.id,
             "display_name": deck.display_name,
             "hand_size": deck.hand_size,
-            "cards": [
-                {
-                    "card_id": entry.card_id,
-                    "count": entry.count,
-                    "definition": _card_definition(
-                        observation.card_runtime_snapshot.card_catalog.require(entry.card_id)
-                    ),
-                }
-                for entry in deck.cards
-            ],
+            "register_count": deck.register_count,
         },
+        "legal_hand": legal_hand,
         "hand": [
             {
                 "card_id": card.id,
