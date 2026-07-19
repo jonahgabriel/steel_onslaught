@@ -1,0 +1,10 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen27
+display_name: "Qwen3.6-27B-MTP (AI PC 4090)"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: sniper
+  provider: qwen27
