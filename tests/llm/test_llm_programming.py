@@ -215,6 +215,65 @@ def test_programming_request_carries_typed_evidence_and_card_context() -> None:
     assert '"own_observation"' in request.user_prompt
     assert '"opponent_observations"' in request.user_prompt
     assert '"registers"' in request.system_prompt
+    context = json.loads(request.user_prompt)
+    assert "cards" not in context["deck"]
+    assert [entry["card_id"] for entry in context["legal_hand"]] == [
+        "card.test.vent",
+        "card.test.advance",
+        "card.test.advance_alt",
+    ]
+    assert [entry["available_copies"] for entry in context["legal_hand"]] == [1, 1, 1]
+    assert "ONLY legal card IDs" in request.system_prompt
+
+
+def test_programming_request_preserves_dealt_hand_multiplicity() -> None:
+    base = _observation()
+    deck = base.deck.model_copy(
+        update={
+            "cards": tuple(
+                entry.model_copy(update={"count": 2})
+                if entry.card_id == "card.test.advance"
+                else entry
+                for entry in base.deck.cards
+            )
+        }
+    )
+    snapshot = base.card_runtime_snapshot.model_copy(
+        update={
+            "decks": (deck,),
+            "selected_deck_id": deck.id,
+            "content_sha256": canonical_card_runtime_sha256(
+                base.card_runtime_snapshot.card_catalog, (deck,)
+            ),
+        }
+    )
+    observation = base.model_copy(
+        update={
+            "card_runtime_snapshot": snapshot,
+            "hand": (
+                "card.test.advance",
+                "card.test.advance",
+                "card.test.vent",
+            ),
+            "free_indices": (0, 1, 2),
+        }
+    )
+    response = _response(
+        registers=[
+            {"register_index": 0, "card_id": "card.test.advance"},
+            {"register_index": 1, "card_id": "card.test.advance"},
+            {"register_index": 2, "card_id": "card.test.vent"},
+        ]
+    )
+    client = _ResponseClient(response)
+    plan = program_for_seat(LLMProgrammingPilot(client=client, persona=_persona()), observation)
+
+    assert len(plan.registers) == 3
+    context = json.loads(client.requests[0].user_prompt)
+    assert [(entry["card_id"], entry["available_copies"]) for entry in context["legal_hand"]] == [
+        ("card.test.advance", 2),
+        ("card.test.vent", 1),
+    ]
 
 
 @pytest.mark.parametrize(
