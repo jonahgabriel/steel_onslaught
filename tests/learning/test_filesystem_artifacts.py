@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from functools import partial
@@ -275,14 +276,15 @@ def test_resolved_llm_cost_survives_artifact_materialization_exactly(tmp_path: P
     assert persisted.payload["cost_usd"] == 0.0
 
 
-@pytest.mark.unit
-def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
-    tmp_path: Path,
+def _write_context_duel(
+    *, sqlite_path: Path, match_id: str, winner_side: str, identity_seed: int
 ) -> None:
-    store = _store(tmp_path)
-    workspace = store.prepare_evaluation(1)
-    match_id = "match.learn.seed_1.cand_red"
-    sqlite_path = tmp_path / "evaluations" / workspace.key / "seed_1_cand_red.sqlite3"
+    """Write one side-labelled evaluation duel for context-arm projection.
+
+    ``cand_red`` means the candidate is red and the parent is blue.  The
+    reader must retain only the candidate-winner (parent-lost) stream, while
+    excluding the otherwise identical parent-winner stream.
+    """
     ledger = SQLiteLedger(
         ModelSOSQLiteLedgerConfig(
             path=sqlite_path,
@@ -293,10 +295,10 @@ def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
         )
     )
     samples = build_sample_envelopes()
-    correlation_id = UUID("44444444-4444-4444-8444-444444444444")
+    correlation_id = UUID(int=identity_seed)
     parent_decision = make_event(
-        event_id=samples[SOEventType.PILOT_DECISION_MADE].event_id[:-1] + "1",
-        message_id=UUID("44444444-4444-4444-8444-444444444441"),
+        event_id=samples[SOEventType.PILOT_DECISION_MADE].event_id[:-1] + str(identity_seed),
+        message_id=UUID(int=identity_seed * 10 + 1),
         emitted_at=datetime(2026, 7, 18, tzinfo=UTC),
         match_id=match_id,
         correlation_id=correlation_id,
@@ -310,8 +312,8 @@ def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
     winning_payload = dict(samples[SOEventType.PILOT_DECISION_MADE].payload)
     winning_payload["action"] = "move"
     winning_decision = make_event(
-        event_id=samples[SOEventType.PILOT_DECISION_MADE].event_id[:-1] + "2",
-        message_id=UUID("44444444-4444-4444-8444-444444444442"),
+        event_id=samples[SOEventType.PILOT_DECISION_MADE].event_id[:-1] + str(identity_seed + 2),
+        message_id=UUID(int=identity_seed * 10 + 2),
         emitted_at=datetime(2026, 7, 18, tzinfo=UTC),
         match_id=match_id,
         correlation_id=correlation_id,
@@ -324,31 +326,59 @@ def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
     )
     score = dict(samples[SOEventType.MATCH_SCORED].payload)
     score["match_id"] = match_id
-    score["winner"] = {"player_id": "player.blue", "mech_id": "mech.blue.01"}
-    score["winner_player_id"] = "player.blue"
-    score["loser_player_id"] = "player.red"
-    score["scores"] = {
-        "player.blue": score["scores"]["player.a"],
-        "player.red": score["scores"]["player.b"],
+    loser_side = "red" if winner_side == "blue" else "blue"
+    score["winner"] = {
+        "player_id": f"player.{winner_side}",
+        "mech_id": f"mech.{winner_side}.01",
     }
-    score["winner_score"] = score["scores"]["player.blue"]["final_score"]
-    score["loser_score"] = score["scores"]["player.red"]["final_score"]
+    score["winner_player_id"] = f"player.{winner_side}"
+    score["loser_player_id"] = f"player.{loser_side}"
+    score["scores"] = {
+        f"player.{winner_side}": score["scores"]["player.a"],
+        f"player.{loser_side}": score["scores"]["player.b"],
+    }
+    score["winner_score"] = score["scores"][f"player.{winner_side}"]["final_score"]
+    score["loser_score"] = score["scores"][f"player.{loser_side}"]["final_score"]
     scored = make_event(
-        event_id=samples[SOEventType.MATCH_SCORED].event_id,
-        message_id=UUID("44444444-4444-4444-8444-444444444443"),
+        event_id=samples[SOEventType.MATCH_SCORED].event_id[:-1] + str(identity_seed + 3),
+        message_id=UUID(int=identity_seed * 10 + 3),
         emitted_at=datetime(2026, 7, 18, tzinfo=UTC),
         match_id=match_id,
         correlation_id=correlation_id,
         tick=2,
         sequence_in_tick=0,
         producer_node="node.test",
-        subject=ModelSOEventSubject(mech_id="mech.blue.01", player_id="player.blue"),
+        subject=ModelSOEventSubject(
+            mech_id=f"mech.{winner_side}.01", player_id=f"player.{winner_side}"
+        ),
         event_type=SOEventType.MATCH_SCORED,
         payload=score,
     )
     for event in (parent_decision, winning_decision, scored):
         ledger.append(event)
     ledger._conn.close()  # test-only cleanup for the adapter's explicit connection
+
+
+@pytest.mark.unit
+def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    workspace = store.prepare_evaluation(1)
+    parent_winner_match_id = "match.learn.seed_1.cand_red"
+    candidate_winner_match_id = "match.learn.seed_2.cand_red"
+    _write_context_duel(
+        sqlite_path=tmp_path / "evaluations" / workspace.key / "seed_1_cand_red.sqlite3",
+        match_id=parent_winner_match_id,
+        winner_side="blue",
+        identity_seed=1,
+    )
+    _write_context_duel(
+        sqlite_path=tmp_path / "evaluations" / workspace.key / "seed_2_cand_red.sqlite3",
+        match_id=candidate_winner_match_id,
+        winner_side="red",
+        identity_seed=2,
+    )
 
     params: ParamDict = {
         "vent_at_heat_margin": 5,
@@ -384,8 +414,12 @@ def test_context_reader_loads_only_canonical_lost_duel_and_promoted_lineage(
     assert len(artifacts.replay_traces) == 2
     assert len(artifacts.decision_diffs) == 1
     assert len(artifacts.exemplars) == 1
-    assert match_id in artifacts.replay_traces[0]
-    assert "parent" in artifacts.decision_diffs[0]
+    assert all(candidate_winner_match_id in trace for trace in artifacts.replay_traces)
+    assert all(parent_winner_match_id not in trace for trace in artifacts.replay_traces)
+    diff = json.loads(artifacts.decision_diffs[0])
+    assert diff["match_id"] == candidate_winner_match_id
+    assert diff["parent"]["action"] != diff["winner"]["action"]
+    assert diff["winner"]["action"] == "move"
     assert record_hash in artifacts.exemplars[0]
 
 

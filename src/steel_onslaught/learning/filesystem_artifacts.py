@@ -259,7 +259,8 @@ class YamlFilesystemLearningArtifactStore:
                     continue
                 score = ModelSOMatchScoredPayload.model_validate(score_events[0].payload)
                 parent_side = self._parent_side(match_id)
-                if score.is_draw or score.winner_player_id != f"player.{parent_side}":
+                candidate_side = "blue" if parent_side == "red" else "red"
+                if score.is_draw or score.winner_player_id != f"player.{candidate_side}":
                     continue
                 decisions = [
                     event for event in events if event.event_type is SOEventType.PILOT_DECISION_MADE
@@ -274,7 +275,6 @@ class YamlFilesystemLearningArtifactStore:
                         event.event_id,
                     )
                     replay_traces.append((key, fragment))
-                winning_side = "blue" if parent_side == "red" else "red"
                 parent_decisions = {
                     event.tick: ModelSOPilotDecisionPayload.model_validate(event.payload)
                     for event in decisions
@@ -283,7 +283,7 @@ class YamlFilesystemLearningArtifactStore:
                 winning_decisions = {
                     event.tick: ModelSOPilotDecisionPayload.model_validate(event.payload)
                     for event in decisions
-                    if event.subject.mech_id == f"mech.{winning_side}.01"
+                    if event.subject.mech_id == f"mech.{candidate_side}.01"
                 }
                 for tick in sorted(set(parent_decisions) | set(winning_decisions)):
                     parent = parent_decisions.get(tick)
