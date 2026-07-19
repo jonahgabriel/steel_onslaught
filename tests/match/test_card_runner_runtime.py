@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -95,6 +95,8 @@ def _run(
     max_ticks: int = 2,
     card_cadence: Literal["atomic", "paced"] = "atomic",
     force_decisive: bool = False,
+    terminal_observer: Callable[[ModelSOEventEnvelope, list[ModelSOEventEnvelope]], None]
+    | None = None,
 ) -> list[ModelSOEventEnvelope]:
     runtime = runtime_dependencies()
     identities = SequentialIdentities()
@@ -164,6 +166,8 @@ def _run(
             forced = True
 
         runner._resolve_intent = resolve_and_force  # type: ignore[method-assign]
+    if terminal_observer is not None:
+        bus.subscribe(lambda event: terminal_observer(event, events))
     assert runner.run().status is SOMatchStatus.ENDED
     return events
 
@@ -393,7 +397,7 @@ def test_paced_card_round_cancels_after_decisive_death_with_causal_discard() -> 
     ended_index = next(
         index for index, event in enumerate(events) if event.event_type is SOEventType.MATCH_ENDED
     )
-    assert all(events.index(discard) > ended_index for discard in discards)
+    assert all(events.index(discard) < ended_index for discard in discards)
 
     seen_messages: set[UUID] = set()
     for index, event in enumerate(lifecycle):
@@ -411,6 +415,29 @@ def test_paced_card_round_cancels_after_decisive_death_with_causal_discard() -> 
         validate_card_events=True,
     )
     assert replay.validated_card_rounds[0].cancelled is True
+
+
+def test_paced_card_round_closes_before_scoring_observes_victory() -> None:
+    terminal_snapshots: list[tuple[SOEventType, ...]] = []
+
+    def observe(event: ModelSOEventEnvelope, events: list[ModelSOEventEnvelope]) -> None:
+        if event.event_type is SOEventType.VICTORY_DECLARED:
+            terminal_snapshots.append(tuple(row.event_type for row in events))
+
+    _run(
+        card_enabled=True,
+        max_ticks=5,
+        card_cadence="paced",
+        force_decisive=True,
+        terminal_observer=observe,
+    )
+
+    assert terminal_snapshots
+    snapshot = terminal_snapshots[0]
+    assert SOEventType.CARDS_DISCARDED in snapshot
+    assert snapshot.index(SOEventType.CARDS_DISCARDED) < snapshot.index(
+        SOEventType.VICTORY_DECLARED
+    )
 
 
 @pytest.mark.parametrize("tamper", ["payload", "order", "provenance"])

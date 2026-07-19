@@ -42,6 +42,7 @@ from steel_onslaught.cards.round import (
     ModelSOCardRoundDeal,
     ModelSOCardRoundSequence,
 )
+from steel_onslaught.cards.rules import CardProgrammingRuleRegistry
 from steel_onslaught.contracts.card import CardId
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
@@ -59,6 +60,7 @@ from steel_onslaught.events.payloads import (
     ModelSOWeaponFireIntentPayload,
 )
 from steel_onslaught.pilots.programming import (
+    ModelSOCardRulePackProvenance,
     ModelSOProgrammingObservation,
     ProgrammingPilot,
     program_for_seat,
@@ -225,6 +227,8 @@ class CardRunnerAdapter:
     dealer: DealerCompute | None = None
     reducer: RegisterExecutionReducer | None = None
     programmers: Mapping[str, ProgrammingPilot] | None = None
+    rule_registry: CardProgrammingRuleRegistry | None = None
+    rule_handler_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.registers_enabled, bool):
@@ -238,6 +242,14 @@ class CardRunnerAdapter:
                 raise TypeError(f"{name} must be {expected.__name__} when supplied")
         if self.programmers is not None:
             object.__setattr__(self, "programmers", MappingProxyType(dict(self.programmers)))
+        if self.rule_registry is not None:
+            if not isinstance(self.rule_registry, CardProgrammingRuleRegistry):
+                raise TypeError("rule_registry must be CardProgrammingRuleRegistry when supplied")
+            self.rule_registry.select(self.rule_handler_ids)
+        elif self.rule_handler_ids:
+            raise CardRunnerAdapterError(
+                "rule_handler_ids require an explicit injected rule_registry"
+            )
         if not self.registers_enabled:
             return
         if self.card_round_runtime is None or self.dealer is None or self.reducer is None:
@@ -254,6 +266,14 @@ class CardRunnerAdapter:
         """Return the explicit snapshot, if this adapter is enabled."""
 
         return None if self.card_round_runtime is None else self.card_round_runtime.snapshot
+
+    @property
+    def rule_provenance(self) -> ModelSOCardRulePackProvenance | None:
+        """Return selected rule-pack provenance for match-start telemetry."""
+
+        if self.rule_registry is None:
+            return None
+        return self.rule_registry.provenance(self.rule_handler_ids)
 
     def produce(
         self,
@@ -316,6 +336,9 @@ class CardRunnerAdapter:
 
         contexts: list[ModelSOSeatResolutionContext] = []
         plans: dict[str, ModelSOPlanCommittedPayload] = {}
+        rule_handlers = (
+            () if self.rule_registry is None else self.rule_registry.select(self.rule_handler_ids)
+        )
         for request, deal in zip(canonical_seats, deals, strict=True):
             deck = self.card_round_runtime.snapshot.selected_deck
             locked = heat_locked_indices(request.lock_depth, deck.register_count)
@@ -330,7 +353,7 @@ class CardRunnerAdapter:
                 free_indices=free_indices,
             )
             programmer = None if self.programmers is None else self.programmers.get(request.seat)
-            plan = program_for_seat(programmer, observation)
+            plan = program_for_seat(programmer, observation, rule_handlers=rule_handlers)
             plans[request.seat] = plan
             contexts.append(
                 ModelSOSeatResolutionContext(

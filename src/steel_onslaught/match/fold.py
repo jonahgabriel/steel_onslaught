@@ -42,7 +42,7 @@ while the match is still RUNNING):
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal, TypeVar
@@ -208,6 +208,7 @@ class MatchStateFold:
         catalog: MatchContractCatalog,
         bus: EventBus | None = None,
         historical_arena_migration: ModelSOCurrentLiveArenaSnapshot | None = None,
+        before_emit: Callable[[ModelSOEventEnvelope], None] | None = None,
     ) -> None:
         self._match_id = match_id
         self._correlation_id = correlation_id
@@ -215,6 +216,7 @@ class MatchStateFold:
         self._bus = bus
         self._catalog = catalog
         self._historical_arena_migration = historical_arena_migration
+        self._before_emit = before_emit
         self._lifecycle = ReducerMatchLifecycle(
             match_id, correlation_id, event_factory=event_factory, bus=bus
         )
@@ -264,6 +266,8 @@ class MatchStateFold:
         # Commit happened inside delta; emissions go out only afterwards (live).
         if self._bus is not None:
             for intent in produced:
+                if self._before_emit is not None:
+                    self._before_emit(intent)
                 self._bus.publish(intent)
         return self.state
 

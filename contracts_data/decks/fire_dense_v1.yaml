@@ -1,0 +1,30 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.deck"
+id: "deck.fire_dense.v1"
+display_name: "Fire-Dense Action Deck v1"
+hand_size: 5
+register_count: 5
+cards:
+  # The experiment raises attack density from 9/30 to 14/30 cards.  Movement
+  # remains available, but a five-card hand is more likely to expose a legal
+  # weapon action once contact is established.
+  - card_id: "card.attack.fire_primary"
+    count: 8
+  - card_id: "card.attack.fire_secondary"
+    count: 6
+  - card_id: "card.movement.advance"
+    count: 4
+  - card_id: "card.movement.flank_left"
+    count: 1
+  - card_id: "card.movement.flank_right"
+    count: 1
+  - card_id: "card.movement.reposition"
+    count: 2
+  - card_id: "card.vent.emergency_vent"
+    count: 4
+  - card_id: "card.special.mode_assault"
+    count: 2
+  - card_id: "card.special.mode_evasion"
+    count: 1
+  - card_id: "card.special.mode_recon"
+    count: 1

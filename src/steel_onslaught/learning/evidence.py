@@ -14,6 +14,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from steel_onslaught.events.payloads import ModelSOPlayerScore
+from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 
 
 class ModelSOAfterMatchLearningEvidence(BaseModel):
@@ -40,6 +41,10 @@ class ModelSOAfterMatchLearningEvidence(BaseModel):
     event_counts: Mapping[str, StrictInt]
     decision_action_counts: Mapping[str, StrictInt]
     decision_reason_counts: Mapping[str, StrictInt]
+    card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 __all__ = ["ModelSOAfterMatchLearningEvidence"]

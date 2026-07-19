@@ -44,6 +44,7 @@ from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.immutable import FrozenJSONMapping, FrozenMapping, thaw_json_mapping
 from steel_onslaught.llm.schemas import LlmSemanticFailureCode
 from steel_onslaught.match.state import ModelSOMechRuntimeState, SOMatchEndReason
+from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPosition,
@@ -105,6 +106,10 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("launch_provenance", mode="before")
     @classmethod
@@ -125,6 +130,17 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
     def _normalize_frozen_card_runtime_provenance(cls, value: object) -> object:
         if isinstance(value, Mapping):
             return thaw_json_mapping(value)
+        return value
+
+    @field_validator("card_rule_pack_provenance", mode="before")
+    @classmethod
+    def _normalize_card_rule_pack_provenance(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            normalized = thaw_json_mapping(value)
+            handlers = normalized.get("handlers")
+            if isinstance(handlers, list):
+                normalized["handlers"] = tuple(handlers)
+            return normalized
         return value
 
     @field_validator("mechs", mode="before")

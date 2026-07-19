@@ -82,6 +82,7 @@ from steel_onslaught.match.state import (
     SOMatchEndReason,
     SOMatchStatus,
 )
+from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
 from steel_onslaught.reducers.damage import (
     compute_armor_reduction,
@@ -179,6 +180,7 @@ class MatchRunner:
         facing_b: int = _FACING_B,
         launch_provenance: ModelSOMatchLaunchProvenance | None = None,
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
+        card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None,
         card_adapter: CardRunnerAdapter | None = None,
         card_cadence: Literal["atomic", "paced"] = "atomic",
         progress_gate: ProgressGate | None = None,
@@ -225,6 +227,13 @@ class MatchRunner:
                 "card_runtime_snapshot and card_adapter must share the exact snapshot object"
             )
         self._card_runtime_snapshot = card_runtime_snapshot or adapter_snapshot
+        if card_rule_pack_provenance is not None and not isinstance(
+            card_rule_pack_provenance, ModelSOCardRulePackProvenance
+        ):
+            raise TypeError(
+                "card_rule_pack_provenance must be ModelSOCardRulePackProvenance when supplied"
+            )
+        self._card_rule_pack_provenance = card_rule_pack_provenance
         self._card_adapter = card_adapter
         if card_cadence not in {"atomic", "paced"}:
             raise ValueError("card_cadence must be 'atomic' or 'paced'")
@@ -256,6 +265,7 @@ class MatchRunner:
             event_factory=event_factory,
             bus=bus,
             catalog=self._catalog,
+            before_emit=self._before_fold_emit,
         )
         bus.subscribe(self.fold.handle)
 
@@ -314,6 +324,10 @@ class MatchRunner:
         )
         if card_provenance is not None:
             started_payload["card_runtime_provenance"] = card_provenance.model_dump(mode="json")
+        if self._card_rule_pack_provenance is not None:
+            started_payload["card_rule_pack_provenance"] = (
+                self._card_rule_pack_provenance.model_dump(mode="json")
+            )
         self._bus.publish(
             self._make_match_event(
                 SOEventType.MATCH_STARTED,
@@ -682,7 +696,33 @@ class MatchRunner:
                 last_lifecycle_message_id=active.last_lifecycle_message_id,
             )
 
-    def _cancel_active_card_round(self, *, tick: int, reason: str) -> None:
+    def _before_fold_emit(self, event: ModelSOEventEnvelope) -> None:
+        """Close a paced card round before a fold-produced terminal event.
+
+        Fold-produced victory declarations are published synchronously.  A
+        terminal scoring subscriber can therefore observe the declaration
+        before the runner's post-resolution cleanup unless the active card
+        round is closed at this effect boundary first.
+        """
+
+        if (
+            event.event_type is SOEventType.VICTORY_DECLARED
+            and self._card_cadence == "paced"
+            and self._card_active_round is not None
+        ):
+            self._cancel_active_card_round(
+                tick=event.tick,
+                reason="decisive_death",
+                emit_match_ended=False,
+            )
+
+    def _cancel_active_card_round(
+        self,
+        *,
+        tick: int,
+        reason: str,
+        emit_match_ended: bool = True,
+    ) -> None:
         """Close a paced round without committing its partial deck state.
 
         ``CARDS_DISCARDED`` is the existing terminal card vocabulary.  A
@@ -695,7 +735,11 @@ class MatchRunner:
         active = self._card_active_round
         if active is None:
             return
-        if self.fold.state.status is SOMatchStatus.ENDED and not self._match_ended_events:
+        if (
+            emit_match_ended
+            and self.fold.state.status is SOMatchStatus.ENDED
+            and not self._match_ended_events
+        ):
             self._bus.publish(
                 self._make_match_event(
                     SOEventType.MATCH_ENDED,

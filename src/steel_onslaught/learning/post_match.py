@@ -50,11 +50,14 @@ def project_match_learning_evidence(
 
     scored: list[tuple[ModelSOEventEnvelope, ModelSOMatchScoredPayload]] = []
     decisions: list[ModelSOPilotDecisionPayload] = []
+    rule_pack_provenance = None
     for event in stream:
         payload_model = _PROJECTED_PAYLOAD_MODELS.get(event.event_type)
         if payload_model is None:
             raise ValueError(f"no payload contract registered for {event.event_type.value!r}")
         payload = payload_model.model_validate(event.payload)
+        if event.event_type is SOEventType.MATCH_STARTED:
+            rule_pack_provenance = payload.card_rule_pack_provenance  # type: ignore[attr-defined]
         if event.event_type is SOEventType.MATCH_SCORED:
             if not isinstance(payload, ModelSOMatchScoredPayload):
                 raise TypeError("MATCH_SCORED payload authority returned the wrong model")
@@ -84,6 +87,7 @@ def project_match_learning_evidence(
         event_counts=dict(sorted(event_counts.items())),
         decision_action_counts=dict(sorted(action_counts.items())),
         decision_reason_counts=dict(sorted(reason_counts.items())),
+        card_rule_pack_provenance=rule_pack_provenance,
     )
 
 

@@ -15,6 +15,7 @@ LLM/network call.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Sequence
 from typing import Annotated, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
@@ -34,6 +35,48 @@ class ProgrammingPilotError(ValueError):
 
 class _ClosedProgrammingModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class ModelSOCardRuleHandlerMetadata(_ClosedProgrammingModel):
+    """Stable identity for one injected card-programming rule.
+
+    Rule implementations are application plugins, but their identity is part
+    of the match contract.  Requiring an explicit version and implementation
+    digest makes an experiment replayable without giving a plugin filesystem
+    or event-bus authority.
+    """
+
+    schema_version: Literal["0.1.0"] = "0.1.0"
+    kind: Literal["steel_onslaught.card_rule_handler"] = "steel_onslaught.card_rule_handler"
+    handler_id: StrictStr = Field(
+        min_length=1,
+        max_length=96,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    version: StrictStr = Field(
+        min_length=5,
+        max_length=32,
+        pattern=r"^v[0-9]+\.[0-9]+\.[0-9]+$",
+    )
+    implementation_sha256: StrictStr = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class ModelSOCardRulePackProvenance(_ClosedProgrammingModel):
+    """Content-addressed identity for the selected ordered rule pack."""
+
+    schema_version: Literal["0.1.0"] = "0.1.0"
+    kind: Literal["steel_onslaught.card_rule_pack"] = "steel_onslaught.card_rule_pack"
+    pack_id: StrictStr = Field(min_length=1, max_length=96, pattern=r"^[a-z][a-z0-9_.-]*$")
+    handlers: tuple[ModelSOCardRuleHandlerMetadata, ...] = ()
+    content_sha256: StrictStr = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 class ModelSOProgrammingObservation(_ClosedProgrammingModel):
@@ -119,6 +162,24 @@ class ProgrammingPilot(Protocol):
     ) -> ModelSOPlanCommittedPayload: ...
 
 
+@runtime_checkable
+class CardProgrammingRuleHandler(Protocol):
+    """Pure post-programming rule plugin.
+
+    A handler can adjust a proposed whole-round plan, but it cannot observe or
+    mutate runner state.  ``program_for_seat`` validates every handler result
+    against the same hand/register snapshot before passing it onward.
+    """
+
+    metadata: ModelSOCardRuleHandlerMetadata
+
+    def apply(
+        self,
+        observation: ModelSOProgrammingObservation,
+        proposed_plan: ModelSOPlanCommittedPayload,
+    ) -> ModelSOPlanCommittedPayload: ...
+
+
 def _validate_plan(
     plan: ModelSOPlanCommittedPayload,
     observation: ModelSOProgrammingObservation,
@@ -168,6 +229,8 @@ def _priority_plan(observation: ModelSOProgrammingObservation) -> ModelSOPlanCom
 def program_for_seat(
     programmer: ProgrammingPilot | None,
     observation: ModelSOProgrammingObservation,
+    *,
+    rule_handlers: Sequence[CardProgrammingRuleHandler] = (),
 ) -> ModelSOPlanCommittedPayload:
     """Return one strictly validated deterministic whole-round plan.
 
@@ -179,21 +242,43 @@ def program_for_seat(
     """
 
     if programmer is None:
-        return _validate_plan(_priority_plan(observation), observation)
-    if not isinstance(programmer, ProgrammingPilot):
-        if hasattr(programmer, "program"):
+        plan = _validate_plan(_priority_plan(observation), observation)
+    else:
+        if not isinstance(programmer, ProgrammingPilot):
+            if hasattr(programmer, "program"):
+                raise ProgrammingPilotError("ProgrammingPilot.program must be callable")
+            raise ProgrammingPilotError(
+                "program_for_seat requires an explicit ProgrammingPilot; decide-only pilots "
+                "cannot be used as an implicit LLM fallback"
+            )
+        program_method = programmer.program
+        if not callable(program_method):
             raise ProgrammingPilotError("ProgrammingPilot.program must be callable")
-        raise ProgrammingPilotError(
-            "program_for_seat requires an explicit ProgrammingPilot; decide-only pilots "
-            "cannot be used as an implicit LLM fallback"
-        )
-    program_method = programmer.program
-    if not callable(program_method):
-        raise ProgrammingPilotError("ProgrammingPilot.program must be callable")
-    return _validate_plan(program_method(observation), observation)
+        plan = _validate_plan(program_method(observation), observation)
+    for handler in rule_handlers:
+        if not isinstance(handler, CardProgrammingRuleHandler):
+            raise ProgrammingPilotError(
+                "card programming rule handlers must expose metadata and callable apply"
+            )
+        if not isinstance(handler.metadata, ModelSOCardRuleHandlerMetadata):
+            raise ProgrammingPilotError(
+                "card programming rule handler metadata must be the typed handler contract"
+            )
+        try:
+            plan = _validate_plan(handler.apply(observation, plan), observation)
+        except ProgrammingPilotError:
+            raise
+        except (TypeError, ValueError) as exc:
+            raise ProgrammingPilotError(
+                f"card programming rule handler {handler.metadata.handler_id!r} failed"
+            ) from exc
+    return plan
 
 
 __all__ = [
+    "CardProgrammingRuleHandler",
+    "ModelSOCardRuleHandlerMetadata",
+    "ModelSOCardRulePackProvenance",
     "ModelSOProgrammingObservation",
     "ProgrammingPilot",
     "ProgrammingPilotError",
