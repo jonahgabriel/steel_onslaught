@@ -83,8 +83,10 @@ def test_qwen_overlay_selects_fire_dense_deck_and_isolated_evidence_roots() -> N
         "pilot.llm.qwen35",
         "pilot.llm.qwen35",
     )
-    assert overlay.llm.providers[0].provider_id == "qwen35"
-    assert overlay.llm.providers[0].secret_ref is None
+    provider = overlay.llm.providers[0]
+    assert provider.kind == "openai_compatible"
+    assert provider.provider_id == "qwen35"
+    assert provider.secret_ref is None
     assert overlay.event_ledger.path.parts[-2:] == ("fire_dense_v1_qwen", "events.sqlite3")
 
     snapshot = load_card_runtime_snapshot(binding)

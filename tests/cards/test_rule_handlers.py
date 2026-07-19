@@ -21,7 +21,10 @@ from steel_onslaught.contracts.card_runtime import (
 )
 from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, ModelSOPlanRegister
-from steel_onslaught.pilots.programming import program_for_seat
+from steel_onslaught.pilots.programming import (
+    ModelSOProgrammingObservation,
+    program_for_seat,
+)
 from tests.cards.test_programming import _observation
 
 pytestmark = pytest.mark.unit
@@ -151,7 +154,11 @@ def test_rule_handler_outputs_are_revalidated_against_observation() -> None:
     class InvalidHandler:
         metadata = PreferAttackCardsRuleHandler.metadata
 
-        def apply(self, observation, proposed):  # type: ignore[no-untyped-def]
+        def apply(
+            self,
+            observation: ModelSOProgrammingObservation,
+            proposed: ModelSOPlanCommittedPayload,
+        ) -> ModelSOPlanCommittedPayload:
             del observation
             return proposed.model_copy(
                 update={
@@ -168,5 +175,5 @@ def test_rule_handler_outputs_are_revalidated_against_observation() -> None:
         program_for_seat(
             None,
             observation,
-            rule_handlers=(InvalidHandler(),),  # type: ignore[arg-type]
+            rule_handlers=(InvalidHandler(),),
         )

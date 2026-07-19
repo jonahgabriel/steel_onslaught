@@ -51,8 +51,18 @@ class _MemoryLedger:
     def __init__(self, events: list[ModelSOEventEnvelope]) -> None:
         self.events = events
 
+    def append(self, event: ModelSOEventEnvelope) -> None:
+        self.events.append(event)
+
     def read_all(self, match_id: str) -> Iterator[ModelSOEventEnvelope]:
         return (event for event in self.events if event.match_id == match_id)
+
+    def read_after(self, match_id: str, after_tick: int) -> Iterator[ModelSOEventEnvelope]:
+        return (
+            event
+            for event in self.events
+            if event.match_id == match_id and event.tick > after_tick
+        )
 
 
 @pytest.mark.unit
