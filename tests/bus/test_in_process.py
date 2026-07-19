@@ -300,3 +300,34 @@ def test_current_tick_advances_on_match_tick() -> None:
     bus.publish(_env(SOEventType.BOILER_UPDATED, _E3))
 
     assert seen_ticks == [0, 3, 3]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stale_tick", [2, 3], ids=["backward", "repeated"])
+def test_stale_match_tick_rejected_before_delivery_and_state_change(stale_tick: int) -> None:
+    """A MATCH_TICK boundary must advance, without consuming bus sequence state."""
+    bus = InProcessEventBus()
+    seen: list[tuple[str, int, int]] = []
+    bus.subscribe(lambda event: seen.append((event.event_id, event.tick, event.sequence_in_tick)))
+
+    bus.publish(_env(SOEventType.MATCH_STARTED, _E1))
+    tick3 = ModelSOEventEnvelope(
+        event_id=_E2,
+        match_id="m",
+        tick=3,
+        sequence_in_tick=0,
+        event_type=SOEventType.MATCH_TICK,
+        producer_node="p",
+        subject=ModelSOEventSubject(mech_id="m", player_id="p"),
+        payload={},
+        envelope=_envelope(),
+    )
+    bus.publish(tick3)
+
+    stale = tick3.model_copy(update={"event_id": _E4, "tick": stale_tick})
+    with pytest.raises(ValueError, match="MATCH_TICK must advance"):
+        bus.publish(stale)
+
+    # The rejected boundary was not delivered and did not consume sequence 1.
+    bus.publish(_env(SOEventType.BOILER_UPDATED, _E5))
+    assert seen == [(_E1, 0, 0), (_E2, 3, 0), (_E5, 3, 1)]

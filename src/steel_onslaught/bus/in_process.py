@@ -48,6 +48,11 @@ class InProcessEventBus:
     def publish(self, event: ModelSOEventEnvelope) -> None:
         # Tick boundary: MATCH_TICK advances current_tick and resets sequence.
         if event.event_type == SOEventType.MATCH_TICK:
+            if event.tick <= self._current_tick:
+                raise ValueError(
+                    "MATCH_TICK must advance the bus tick: "
+                    f"current_tick={self._current_tick}, received={event.tick}"
+                )
             self._current_tick = event.tick
             self._next_seq_in_tick = 0
 
