@@ -13,7 +13,8 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from types import MappingProxyType
+from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request as UrlRequest
@@ -57,6 +58,7 @@ from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOFrontendBootstrap,
     ModelSOFrontendCommandGatewayBinding,
+    ModelSOSecretRef,
 )
 from steel_onslaught.contracts.commands import (
     ModelSOHumanTurnPrompt,
@@ -116,25 +118,46 @@ BrowserLiveProviderCapabilityFactory = Callable[
 
 
 class _InjectedSecretResolver:
-    """Resolve the explicitly supplied live-provider secret at the CLI edge.
+    """Resolve explicitly supplied live-provider secrets at the CLI edge.
 
     Composition never reads the environment.  This tiny adapter is only used
     by ``so play-live`` after the operator has selected the live command.  The
-    Click option may be populated from the documented environment variable,
-    but the composition graph receives only this injected value.
+    Click options may be populated from documented environment variables, but
+    the composition graph receives only these injected values.  References are
+    the overlay's opaque ``secret://`` names; no provider key is inferred from
+    provider or model naming.
     """
 
-    _SUPPORTED_REFERENCE: ClassVar[str] = "secret://llm/glm"
+    def __init__(self, secrets: Mapping[str, str]) -> None:
+        normalized: dict[str, str] = {}
+        for reference, secret in secrets.items():
+            if not secret:
+                raise ValueError(f"live credential for {reference!r} must not be empty")
+            normalized[str(ModelSOSecretRef(kind="opaque", ref=reference).ref)] = secret
+        self._secrets = MappingProxyType(normalized)
 
-    def __init__(self, secret: str) -> None:
-        if not secret:
-            raise ValueError("GLM API key must not be empty")
-        self._secret = secret
+    @classmethod
+    def from_cli(
+        cls,
+        *,
+        glm_api_key: str | None,
+        openrouter_api_key: str | None,
+        gemini_api_key: str | None,
+    ) -> _InjectedSecretResolver:
+        """Build a resolver from explicit provider credential options."""
 
-    def resolve(self, reference: Any) -> str:
-        if str(reference.ref) != self._SUPPORTED_REFERENCE:
-            raise ValueError(f"no live secret mapping for {reference.ref!r}")
-        return self._secret
+        candidates = {
+            "secret://llm/glm": glm_api_key,
+            "secret://llm/openrouter": openrouter_api_key,
+            "secret://llm/gemini": gemini_api_key,
+        }
+        return cls({reference: secret for reference, secret in candidates.items() if secret})
+
+    def resolve(self, reference: ModelSOSecretRef) -> str:
+        try:
+            return self._secrets[str(reference.ref)]
+        except KeyError:
+            raise ValueError(f"no live secret mapping for {reference.ref!r}") from None
 
 
 class _UrllibJsonTransport:
@@ -1691,9 +1714,23 @@ def play_command(
 @click.option(
     "--glm-api-key",
     envvar="LLM_GLM_API_KEY",
-    required=True,
+    required=False,
     hide_input=True,
-    help="Injected GLM credential; defaults to the LLM_GLM_API_KEY environment variable.",
+    help="Injected GLM credential; defaults to LLM_GLM_API_KEY.",
+)
+@click.option(
+    "--openrouter-api-key",
+    envvar="OPENROUTER_API_KEY",
+    required=False,
+    hide_input=True,
+    help="Injected OpenRouter credential; defaults to OPENROUTER_API_KEY.",
+)
+@click.option(
+    "--gemini-api-key",
+    envvar="GEMINI_API_KEY",
+    required=False,
+    hide_input=True,
+    help="Injected Gemini credential; defaults to GEMINI_API_KEY.",
 )
 def play_live_command(
     overlay_path: Path,
@@ -1707,15 +1744,30 @@ def play_live_command(
     host: str,
     port: int,
     bootstrap_output: Path | None,
-    glm_api_key: str,
+    glm_api_key: str | None,
+    openrouter_api_key: str | None,
+    gemini_api_key: str | None,
 ) -> None:
-    """Run a browser match with explicitly injected GLM provider authority.
+    """Run a browser match with explicitly injected provider authority.
 
     Unlike ``so play``, this command is intentionally not stub-safe: it
-    requires the overlay's configured live provider and ``LLM_GLM_API_KEY``.
-    The HTTP client is root-owned here and is never discovered by runtime
-    composition.
+    requires at least one credential for the overlay's configured live
+    providers.  The browser roster selects which configured model/provider is
+    used; this command only injects credentials for the overlay's opaque secret
+    references.  The HTTP client is root-owned here and is never discovered by
+    runtime composition.
     """
+
+    if not any((glm_api_key, openrouter_api_key, gemini_api_key)):
+        raise click.ClickException(
+            "provide at least one live credential via --glm-api-key, "
+            "--openrouter-api-key, or --gemini-api-key"
+        )
+    secret_resolver = _InjectedSecretResolver.from_cli(
+        glm_api_key=glm_api_key,
+        openrouter_api_key=openrouter_api_key,
+        gemini_api_key=gemini_api_key,
+    )
 
     # The explicit live overlay owns its filesystem destinations.  Create
     # those destinations at this process boundary so SQLite can open them;
@@ -1743,7 +1795,7 @@ def play_live_command(
             origin=origin,
             host=host,
             port=port,
-            secret_resolver=_InjectedSecretResolver(glm_api_key),
+            secret_resolver=secret_resolver,
             http_transport=_UrllibJsonTransport(),
         )
         try:
