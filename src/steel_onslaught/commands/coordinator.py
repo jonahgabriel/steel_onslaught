@@ -46,6 +46,7 @@ from steel_onslaught.contracts.commands import (
     PlayerAction,
 )
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
 from steel_onslaught.contracts.player_selection import (
     MatchId,
     ModelSOHumanPlayerOptionBinding,
@@ -263,6 +264,7 @@ class ProcessLocalMatchLaunchCoordinator:
         overlay: ModelSOApplicationOverlay,
         roster: ModelSOPlayerRosterBinding,
         sessions: AuthenticatedSessionCapability,
+        pilot_registry: PilotSpecRegistry,
         live_provider_capability: (
             ProcessLocalOneShotLiveProviderCapability
             | Mapping[str, ProcessLocalOneShotLiveProviderCapability]
@@ -276,6 +278,7 @@ class ProcessLocalMatchLaunchCoordinator:
             overlay=overlay,
             roster=roster,
             sessions=sessions,
+            pilot_registry=pilot_registry,
         )
         self._options = {option.option_id: option for option in roster.options}
         self._seat_policies = {seat.side: seat for seat in roster.seats}

@@ -39,6 +39,27 @@ def _require_object_dict(value: object) -> dict[str, object]:
 
 
 def _overlay_data(tmp_path: Path) -> dict[str, object]:
+    pilot_registry_dir = tmp_path / "pilots"
+    pilot_registry_dir.mkdir(exist_ok=True)
+    for spec_id, provider in (
+        ("primary", "stub"),
+        ("local", "local"),
+        ("openrouter", "openrouter"),
+        ("glm", "glm"),
+        ("gemini", "gemini"),
+    ):
+        (pilot_registry_dir / f"llm_{spec_id}.yaml").write_text(
+            'schema_version: "0.1.0"\n'
+            "kind: steel_onslaught.pilot\n"
+            f"id: pilot.llm.{spec_id}\n"
+            f"display_name: {spec_id}\n"
+            "archetype: llm\n"
+            "lineage:\n  parent: pilot.template.llm\n"
+            "parameters:\n"
+            f"  persona: {'berserker' if spec_id == 'primary' else 'operator'}\n"
+            f"  provider: {provider}\n",
+            encoding="utf-8",
+        )
     return complete_test_overlay(
         {
             "schema_version": "1",
@@ -75,7 +96,7 @@ def _overlay_data(tmp_path: Path) -> dict[str, object]:
             },
             "contracts": {
                 "catalog_dir": tmp_path / "catalog",
-                "pilot_registry_dir": tmp_path / "pilots",
+                "pilot_registry_dir": pilot_registry_dir,
             },
             "clock": {"kind": "system_utc"},
             "identity": {"kind": "system"},
@@ -264,7 +285,11 @@ def test_roster_model_option_resolves_overlay_identity_and_provider_chain(tmp_pa
         ),
     )
 
-    validate_player_roster_against_overlay(roster=roster, overlay=overlay)
+    validate_player_roster_against_overlay(
+        roster=roster,
+        overlay=overlay,
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
+    )
 
     unknown = roster.model_copy(
         update={
@@ -272,7 +297,164 @@ def test_roster_model_option_resolves_overlay_identity_and_provider_chain(tmp_pa
         }
     )
     with pytest.raises(ValueError, match="unknown model identities"):
-        validate_player_roster_against_overlay(roster=unknown, overlay=overlay)
+        validate_player_roster_against_overlay(
+            roster=unknown,
+            overlay=overlay,
+            pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    (
+        ("provider", "pilot/provider binding mismatches"),
+        ("persona", "pilot/persona binding mismatches"),
+    ),
+)
+def test_roster_model_option_rejects_pilot_binding_mismatches(
+    tmp_path: Path,
+    field: str,
+    expected: str,
+) -> None:
+    raw = _overlay_data(tmp_path)
+    llm = _require_object_dict(raw["llm"])
+    llm["model_identities"] = (_model_identity(),)
+    overlay = ModelSOApplicationOverlay.model_validate(raw)
+    option = ModelSOModelPlayerOptionBinding(
+        kind="model",
+        option_id="player_option.primary",
+        display_name="Primary model",
+        model_identity_id="model_identity.primary",
+        pilot_spec_id="pilot.llm.primary",
+        persona_id="berserker",
+        input_source="llm_completion",
+    )
+    roster = ModelSOPlayerRosterBinding(
+        schema_version="1",
+        kind="steel_onslaught.player_roster",
+        roster_id="roster.primary",
+        options=(option,),
+        seats=(
+            ModelSOSeatLaunchPolicy(
+                side="red",
+                loadout_id="loadout.playable.red_light",
+                allowed_option_ids=(option.option_id,),
+            ),
+            ModelSOSeatLaunchPolicy(
+                side="blue",
+                loadout_id="loadout.playable.blue_light",
+                allowed_option_ids=(option.option_id,),
+            ),
+        ),
+    )
+    if field == "provider":
+        (overlay.contracts.pilot_registry_dir / "llm_primary.yaml").write_text(
+            (overlay.contracts.pilot_registry_dir / "llm_primary.yaml")
+            .read_text(encoding="utf-8")
+            .replace("provider: stub", "provider: qwen35"),
+            encoding="utf-8",
+        )
+    else:
+        roster = roster.model_copy(
+            update={"options": (option.model_copy(update={"persona_id": "sniper"}),)}
+        )
+    with pytest.raises(ValueError, match=expected):
+        validate_player_roster_against_overlay(
+            roster=roster,
+            overlay=overlay,
+            pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pilot_spec_id", ["pilot.llm.missing", "pilot.human.browser"])
+def test_roster_model_option_rejects_unknown_or_non_llm_pilot_spec(
+    tmp_path: Path,
+    pilot_spec_id: str,
+) -> None:
+    raw = _overlay_data(tmp_path)
+    llm = _require_object_dict(raw["llm"])
+    llm["model_identities"] = (_model_identity(),)
+    overlay = ModelSOApplicationOverlay.model_validate(raw)
+    option = ModelSOModelPlayerOptionBinding(
+        kind="model",
+        option_id="player_option.primary",
+        display_name="Primary model",
+        model_identity_id="model_identity.primary",
+        pilot_spec_id=pilot_spec_id,
+        persona_id="berserker",
+        input_source="llm_completion",
+    )
+    roster = ModelSOPlayerRosterBinding(
+        schema_version="1",
+        kind="steel_onslaught.player_roster",
+        roster_id="roster.primary",
+        options=(option,),
+        seats=(
+            ModelSOSeatLaunchPolicy(
+                side="red",
+                loadout_id="loadout.playable.red_light",
+                allowed_option_ids=(option.option_id,),
+            ),
+            ModelSOSeatLaunchPolicy(
+                side="blue",
+                loadout_id="loadout.playable.blue_light",
+                allowed_option_ids=(option.option_id,),
+            ),
+        ),
+    )
+    if pilot_spec_id == "pilot.human.browser":
+        (overlay.contracts.pilot_registry_dir / "human_browser.yaml").write_text(
+            'schema_version: "0.2.0"\n'
+            "kind: steel_onslaught.pilot\n"
+            "id: pilot.human.browser\n"
+            "display_name: Browser human\n"
+            "archetype: human\n"
+            "lineage:\n  parent: pilot.template.llm\n"
+            "parameters:\n  input_source: browser_command\n",
+            encoding="utf-8",
+        )
+        expected = "require llm pilot specs"
+    else:
+        expected = "unknown pilot specs"
+    with pytest.raises(ValueError, match=expected):
+        validate_player_roster_against_overlay(
+            roster=roster,
+            overlay=overlay,
+            pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
+        )
+
+
+@pytest.mark.integration
+def test_shipped_live_glm_varied_roster_passes_overlay_binding_validation(tmp_path: Path) -> None:
+    raw = _overlay_data(tmp_path)
+    raw["contracts"] = {
+        **_require_object_dict(raw["contracts"]),
+        "pilot_registry_dir": _CONTRACTS_DATA / "pilots",
+    }
+    raw["llm"] = {
+        **_require_object_dict(raw["llm"]),
+        "providers": [{"kind": "stub", "provider_id": "glm-5.2", "model": "fixture"}],
+        "model_identities": [
+            {
+                "schema_version": "1",
+                "kind": "steel_onslaught.model_identity",
+                "model_identity_id": "model_identity.glm",
+                "display_name": "GLM fixture",
+                "provider_binding_id": "glm-5.2",
+            }
+        ],
+    }
+    overlay = ModelSOApplicationOverlay.model_validate(raw)
+    roster = ModelSOPlayerRosterBinding.model_validate_json(
+        json.dumps(yaml.safe_load((_CONTRACTS_DATA / "rosters/live_glm_varied.yaml").read_text()))
+    )
+    validate_player_roster_against_overlay(
+        roster=roster,
+        overlay=overlay,
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
+    )
 
 
 class _NamedGraphResolver:

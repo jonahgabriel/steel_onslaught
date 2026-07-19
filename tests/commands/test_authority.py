@@ -35,6 +35,7 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
 )
+from steel_onslaught.match.composition import load_pilot_registry
 
 _COMMAND_ID = UUID("11111111-1111-4111-8111-111111111111")
 
@@ -70,6 +71,28 @@ def _operator(
 
 
 def _overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
+    pilot_registry_dir = tmp_path / "pilots"
+    pilot_registry_dir.mkdir()
+    (pilot_registry_dir / "human_browser.yaml").write_text(
+        'schema_version: "0.2.0"\n'
+        "kind: steel_onslaught.pilot\n"
+        "id: pilot.human.browser\n"
+        "display_name: Browser human\n"
+        "archetype: human\n"
+        "lineage:\n  parent: pilot.template.llm\n"
+        "parameters:\n  input_source: browser_command\n",
+        encoding="utf-8",
+    )
+    (pilot_registry_dir / "llm_qwen35.yaml").write_text(
+        'schema_version: "0.1.0"\n'
+        "kind: steel_onslaught.pilot\n"
+        "id: pilot.llm.qwen35\n"
+        "display_name: Local Qwen\n"
+        "archetype: llm\n"
+        "lineage:\n  parent: pilot.template.llm\n"
+        "parameters:\n  persona: berserker\n  provider: stub\n",
+        encoding="utf-8",
+    )
     return ModelSOApplicationOverlay.model_validate(
         {
             "schema_version": "1",
@@ -107,7 +130,7 @@ def _overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
             },
             "contracts": {
                 "catalog_dir": tmp_path / "catalog",
-                "pilot_registry_dir": tmp_path / "pilots",
+                "pilot_registry_dir": pilot_registry_dir,
                 "arena_id": "open_field",
             },
             "llm": {
@@ -221,6 +244,7 @@ def _authority(
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(session or _operator()),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
     return authority, overlay, roster
 
@@ -279,6 +303,7 @@ def test_mirrored_two_human_claim_order_is_semantically_idempotent(tmp_path: Pat
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(operator),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
     command = _command(overlay, roster).model_copy(
         update={
@@ -330,6 +355,7 @@ def test_same_command_with_different_authority_context_conflicts(tmp_path: Path)
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(operator, delegate),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
     command = _command(overlay, roster)
     authority.admit_start_match(command, context=_context())
@@ -359,6 +385,7 @@ def test_authentication_permission_and_human_identity_fail_closed(tmp_path: Path
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
     with pytest.raises(SessionAuthenticationError):
         missing.admit_start_match(command, context=_context())
@@ -367,6 +394,7 @@ def test_authentication_permission_and_human_identity_fail_closed(tmp_path: Path
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(_operator(permissions=("seat:red",))),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
     with pytest.raises(PermissionDeniedError, match="match:create"):
         no_create.admit_start_match(command, context=_context())
@@ -375,6 +403,7 @@ def test_authentication_permission_and_human_identity_fail_closed(tmp_path: Path
         overlay=overlay,
         roster=roster,
         sessions=_Sessions(_operator(human_identity_id="human_identity.someone_else")),
+        pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
     )
     with pytest.raises(SelectionAuthorityError, match="does not own"):
         wrong_human.admit_start_match(command, context=_context())
