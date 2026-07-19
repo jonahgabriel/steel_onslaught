@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` 02203aa).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` 3e2a200).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -191,6 +191,18 @@
 >   and strict mypy pass, and hosted Python, frontend, sanitize-text, and
 >   evidence-schema checks all passed. This is hermetic composition evidence;
 >   it does not satisfy the manual real-provider/browser Gate 1.
+> - [PR #60](https://github.com/jonahgabriel/steel_onslaught/pull/60),
+>   commit `27ea731`, reconciles the plan with the hermetic default-browser
+>   proof and keeps the manual real-provider/browser run as the next product
+>   gate. It is documentation-only and makes no UI, provider, deployment, or
+>   OCC changes.
+> - [PR #61](https://github.com/jonahgabriel/steel_onslaught/pull/61),
+>   commit `3e2a200`, quarantines stale browser event callbacks instead of
+>   publishing them behind an already-drained tick. Duplicate callbacks remain
+>   suppressed, same-tick buffering still drains in canonical sequence order,
+>   and the browser gateway loopback tests prove both invariants. The focused
+>   browser-gateway integration suite passes; this is transport-ordering
+>   hardening only and does not satisfy the manual real-provider/browser Gate 1.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
