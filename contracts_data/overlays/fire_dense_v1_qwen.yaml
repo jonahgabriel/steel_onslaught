@@ -44,11 +44,15 @@ contracts:
         pilot_spec_id: pilot.llm.qwen35
       - side: blue
         pilot_spec_id: pilot.llm.qwen35
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
 llm:
   providers:
     - kind: openai_compatible
       provider_id: qwen35
-      endpoint_url: http://omninode-pc:8000/v1/chat/completions
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
       model: Qwen3.6-35B-A3B
       secret_ref: null
       timeout_seconds: 45.0
