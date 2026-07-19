@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` 8a920f8).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` 7ff4920).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -157,6 +157,14 @@
 >   existing proof-of-life browser test remains environment-blocked by the
 >   missing `vite` executable; no provider, deploy, UI, or OCC mutation is part
 >   of this telemetry slice.
+> - [PR #54](https://github.com/jonahgabriel/steel_onslaught/pull/54),
+>   commit `7ff4920`, adds hermetic adapter-boundary proof that an explicit
+>   card-programmer binding invokes its injected LLM client and produces the
+>   typed card plan plus `MOVE_INTENT`. The focused integration and adjacent
+>   loop suites pass without credentials, network access, deployment, or
+>   ambient configuration; hosted Python, frontend, sanitize-text, and
+>   evidence-schema checks all passed. This closes the DI wiring proof gap but
+>   does not claim the real-provider/browser Gate 1 run.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
@@ -276,11 +284,11 @@ terminal projection. This is a live-loop/UI integration proof, not permission
 to broaden the dashboard, change provider endpoints, or mutate
 deployment/runtime infrastructure.
 
-The telemetry observer remains deferred and independent of both the PR #45
-composition seam and the shipped paced-cadence runtime. Its eventual contract
-must consume the canonical event stream without becoming an alternate source of
-match truth or changing replay semantics; it should follow the Gate 1 browser
-proof rather than precede it.
+The match-scoped card-mode telemetry observer landed in PR #52 and is covered
+for both atomic and paced cadence. Any future observer work, if needed, must
+remain event- and replay-preserving: consume the canonical event stream without
+becoming an alternate source of match truth or changing replay semantics. It
+should follow the Gate 1 browser proof rather than precede it.
 
 ## Core principle (verified, unchanged from Rev 1)
 
