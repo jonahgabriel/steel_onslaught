@@ -247,6 +247,7 @@ def _validate_structure(
         if chosen - hands[plan.seat]:
             raise CardRoundReplayError(f"PLAN_COMMITTED seat {plan.seat!r} uses an absent card")
     seen_registers: set[tuple[str, int]] = set()
+    priority_ranks_by_register: dict[int, list[int]] = {}
     last_register_index = -1
     last_priority_rank = -1
     register_seats: set[str] = set()
@@ -258,6 +259,7 @@ def _validate_structure(
             raise CardRoundReplayError("REGISTER_RESOLVED repeats a seat/register pair")
         seen_registers.add(key)
         register_seats.add(row.seat)
+        priority_ranks_by_register.setdefault(row.register_index, []).append(row.priority_rank)
         if row.register_index < last_register_index or (
             row.register_index == last_register_index and row.priority_rank < last_priority_rank
         ):
@@ -285,6 +287,14 @@ def _validate_structure(
             raise CardRoundReplayError("AUTO_REMAIN cannot name a card")
         if row.outcome is SORegisterOutcome.AUTO_REMAIN and row.action != "remain":
             raise CardRoundReplayError("AUTO_REMAIN rows must use the remain action")
+    for register_index, priority_ranks in priority_ranks_by_register.items():
+        expected_ranks = list(range(len(priority_ranks)))
+        if priority_ranks != expected_ranks:
+            raise CardRoundReplayError(
+                "REGISTER_RESOLVED priority_rank values for register "
+                f"{register_index} must be unique and contiguous from 0; "
+                f"got {priority_ranks!r}"
+            )
     if register_seats != set(seats):
         raise CardRoundReplayError("REGISTER_RESOLVED seats must match HAND_DEALT seats")
     for discarded in parsed.cards_discarded:
