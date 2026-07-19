@@ -337,9 +337,7 @@ class CardRunnerAdapter:
         contexts: list[ModelSOSeatResolutionContext] = []
         plans: dict[str, ModelSOPlanCommittedPayload] = {}
         rule_handlers = (
-            ()
-            if self.rule_registry is None
-            else self.rule_registry.select(self.rule_handler_ids)
+            () if self.rule_registry is None else self.rule_registry.select(self.rule_handler_ids)
         )
         for request, deal in zip(canonical_seats, deals, strict=True):
             deck = self.card_round_runtime.snapshot.selected_deck

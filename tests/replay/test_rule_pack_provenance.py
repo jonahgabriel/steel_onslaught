@@ -47,6 +47,8 @@ def test_overlay_rule_pack_binding_is_closed_and_ordered() -> None:
             pack_id="rules.card_programming_v1",
             handler_ids=("prefer_attack_cards", "prefer_attack_cards"),
         )
+
+
 class _MemoryLedger:
     def __init__(self, events: list[ModelSOEventEnvelope]) -> None:
         self.events = events
@@ -59,9 +61,7 @@ class _MemoryLedger:
 
     def read_after(self, match_id: str, after_tick: int) -> Iterator[ModelSOEventEnvelope]:
         return (
-            event
-            for event in self.events
-            if event.match_id == match_id and event.tick > after_tick
+            event for event in self.events if event.match_id == match_id and event.tick > after_tick
         )
 
 
@@ -70,8 +70,12 @@ def test_rule_pack_is_retained_in_start_and_learning_evidence() -> None:
     samples = build_sample_envelopes()
     provenance = _provenance()
     started = samples[SOEventType.MATCH_STARTED].model_copy(
-        update={"payload": {**samples[SOEventType.MATCH_STARTED].payload,
-                             "card_rule_pack_provenance": provenance.model_dump(mode="json")}}
+        update={
+            "payload": {
+                **samples[SOEventType.MATCH_STARTED].payload,
+                "card_rule_pack_provenance": provenance.model_dump(mode="json"),
+            }
+        }
     )
     started_payload = started.payload
     assert started_payload["card_rule_pack_provenance"] == provenance.model_dump(mode="json")
@@ -89,8 +93,12 @@ def test_replay_rejects_rule_pack_drift() -> None:
     started = build_sample_envelopes()[SOEventType.MATCH_STARTED]
     provenance = _provenance()
     started = started.model_copy(
-        update={"payload": {**started.payload,
-                             "card_rule_pack_provenance": provenance.model_dump(mode="json")}}
+        update={
+            "payload": {
+                **started.payload,
+                "card_rule_pack_provenance": provenance.model_dump(mode="json"),
+            }
+        }
     )
     runtime = runtime_dependencies()
     replay = ReplayEngine(

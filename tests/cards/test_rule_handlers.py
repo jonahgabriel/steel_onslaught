@@ -97,7 +97,7 @@ def _fire_snapshot() -> ModelSOCardRuntimeSnapshot:
 def test_prefer_attack_handler_replaces_only_available_non_attack_slots() -> None:
     observation = _observation(
         _fire_snapshot(),
-            hand=("card.test.advance", "card.test.fire", "card.test.vent", "card.test.advance_alt"),
+        hand=("card.test.advance", "card.test.fire", "card.test.vent", "card.test.advance_alt"),
     )
     proposed = ModelSOPlanCommittedPayload(
         seat="red",

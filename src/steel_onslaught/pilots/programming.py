@@ -47,9 +47,7 @@ class ModelSOCardRuleHandlerMetadata(_ClosedProgrammingModel):
     """
 
     schema_version: Literal["0.1.0"] = "0.1.0"
-    kind: Literal["steel_onslaught.card_rule_handler"] = (
-        "steel_onslaught.card_rule_handler"
-    )
+    kind: Literal["steel_onslaught.card_rule_handler"] = "steel_onslaught.card_rule_handler"
     handler_id: StrictStr = Field(
         min_length=1,
         max_length=96,

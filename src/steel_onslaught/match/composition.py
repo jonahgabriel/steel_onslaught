@@ -1131,9 +1131,7 @@ def build_runtime_dependencies(
         rule_handler_ids: tuple[str, ...] = ()
         if rule_binding is not None:
             if card_binding is None or not card_binding.card_mode_enabled:
-                raise ValueError(
-                    "balance_rule_pack requires an explicitly enabled card catalog"
-                )
+                raise ValueError("balance_rule_pack requires an explicitly enabled card catalog")
             rule_registry = default_rule_registry()
             if rule_binding.pack_id != rule_registry.pack_id:
                 raise ValueError(

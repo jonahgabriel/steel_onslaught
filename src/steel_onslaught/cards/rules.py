@@ -29,9 +29,7 @@ class CardProgrammingRuleError(ValueError):
     """A rule registry or plugin violated its explicit typed boundary."""
 
 
-def _pack_digest(
-    pack_id: str, handlers: tuple[ModelSOCardRuleHandlerMetadata, ...]
-) -> str:
+def _pack_digest(pack_id: str, handlers: tuple[ModelSOCardRuleHandlerMetadata, ...]) -> str:
     payload = {
         "pack_id": pack_id,
         "handlers": [handler.model_dump(mode="json") for handler in handlers],
