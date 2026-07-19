@@ -44,9 +44,10 @@ def test_tactical_qwen27_overlay_binds_exact_lab_provider_and_model() -> None:
     assert provider.secret_ref is None
     assert overlay.llm.model_identities[0].provider_binding_id == "qwen27"
     assert overlay.llm.personas_dir == (_ROOT / "contracts_data/pilots/personas").resolve()
-    assert overlay.contracts.pilot_registry_dir == (
-        _ROOT / "contracts_data/pilots/tactical_qwen27"
-    ).resolve()
+    assert (
+        overlay.contracts.pilot_registry_dir
+        == (_ROOT / "contracts_data/pilots/tactical_qwen27").resolve()
+    )
 
 
 @pytest.mark.unit
