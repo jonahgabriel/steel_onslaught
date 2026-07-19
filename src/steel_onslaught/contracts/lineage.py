@@ -8,6 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from steel_onslaught.contracts.card_learning import ModelSOCardLearningMetric
 from steel_onslaught.immutable import FrozenMapping
 
 ParamValue = int | float | str
@@ -51,6 +52,8 @@ class ModelSOLineageEvidence(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     search_seeds: tuple[int, ...] = Field(min_length=1)
     holdout_seeds: tuple[int, ...] = Field(min_length=1)
+    candidate_card_learning_metrics: tuple[ModelSOCardLearningMetric, ...] = ()
+    parent_card_learning_metrics: tuple[ModelSOCardLearningMetric, ...] = ()
 
     @model_validator(mode="after")
     def _disjoint(self) -> ModelSOLineageEvidence:

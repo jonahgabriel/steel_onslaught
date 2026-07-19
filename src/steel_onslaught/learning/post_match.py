@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
+from steel_onslaught.contracts.card_learning import ModelSOCardLearningMetric
 from steel_onslaught.contracts.mode import ModelSOModeTransitionCompletedPayload
+from steel_onslaught.events.card_payloads import (
+    ModelSOHandDealtPayload,
+    ModelSOPlanCommittedPayload,
+    ModelSORegisterResolvedPayload,
+)
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.payloads import (
     CURRENT_CONSUMED_PAYLOAD_MODELS,
@@ -88,7 +95,69 @@ def project_match_learning_evidence(
         decision_action_counts=dict(sorted(action_counts.items())),
         decision_reason_counts=dict(sorted(reason_counts.items())),
         card_rule_pack_provenance=rule_pack_provenance,
+        card_learning_metrics=project_card_learning_metrics(stream),
     )
 
 
-__all__ = ["project_match_learning_evidence"]
+def project_card_learning_metrics(
+    events: Iterable[ModelSOEventEnvelope],
+    *,
+    mech_id: str | None = None,
+) -> tuple[ModelSOCardLearningMetric, ...]:
+    """Project card lifecycle events, optionally for one canonical mech.
+
+    This helper intentionally validates every supplied card payload through
+    the consumed-event authority.  ``mech_id`` is only a side-selection filter
+    for paired evaluator telemetry; it does not alter the event truth.
+    """
+
+    state: dict[str, _MutableCardMetric] = {}
+    for event in events:
+        if event.event_type not in {
+            SOEventType.HAND_DEALT,
+            SOEventType.PLAN_COMMITTED,
+            SOEventType.REGISTER_RESOLVED,
+        }:
+            continue
+        if mech_id is not None and event.subject.mech_id != mech_id:
+            continue
+        payload_model = _PROJECTED_PAYLOAD_MODELS[event.event_type]
+        payload = payload_model.model_validate(event.payload)
+        if event.event_type is SOEventType.HAND_DEALT:
+            if not isinstance(payload, ModelSOHandDealtPayload):
+                raise TypeError("HAND_DEALT payload authority returned the wrong model")
+            for card_id in payload.card_ids:
+                state.setdefault(str(card_id), _MutableCardMetric()).dealt_count += 1
+        elif event.event_type is SOEventType.PLAN_COMMITTED:
+            if not isinstance(payload, ModelSOPlanCommittedPayload):
+                raise TypeError("PLAN_COMMITTED payload authority returned the wrong model")
+            for register in payload.registers:
+                state.setdefault(str(register.card_id), _MutableCardMetric()).planned_count += 1
+        elif isinstance(payload, ModelSORegisterResolvedPayload) and payload.card_id is not None:
+            item = state.setdefault(str(payload.card_id), _MutableCardMetric())
+            item.resolved_count += 1
+            item.outcome_counts[payload.outcome.value] += 1
+            item.action_counts[payload.action] += 1
+    return tuple(
+        ModelSOCardLearningMetric(
+            card_id=card_id,
+            dealt_count=item.dealt_count,
+            planned_count=item.planned_count,
+            resolved_count=item.resolved_count,
+            outcome_counts=dict(sorted(item.outcome_counts.items())),
+            action_counts=dict(sorted(item.action_counts.items())),
+        )
+        for card_id, item in sorted(state.items())
+    )
+
+
+@dataclass
+class _MutableCardMetric:
+    dealt_count: int = 0
+    planned_count: int = 0
+    resolved_count: int = 0
+    outcome_counts: Counter[str] = field(default_factory=Counter)
+    action_counts: Counter[str] = field(default_factory=Counter)
+
+
+__all__ = ["project_card_learning_metrics", "project_match_learning_evidence"]

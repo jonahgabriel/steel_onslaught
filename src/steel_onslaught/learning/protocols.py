@@ -6,6 +6,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from steel_onslaught.contracts.card_learning import ModelSOCardLearningMetric
 from steel_onslaught.contracts.lineage import ParamDict
 
 
@@ -70,6 +71,8 @@ class ModelSOSeedOutcome(BaseModel):
     winner: SOSeedWinner
     candidate_overloads: int = Field(ge=0)
     parent_overloads: int = Field(ge=0)
+    candidate_card_learning_metrics: tuple[ModelSOCardLearningMetric, ...] = ()
+    parent_card_learning_metrics: tuple[ModelSOCardLearningMetric, ...] = ()
 
 
 class ModelSOPairedComparison(BaseModel):
