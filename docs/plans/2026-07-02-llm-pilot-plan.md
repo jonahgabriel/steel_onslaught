@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` 1abc5a6).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` 7a03ca8).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -219,6 +219,14 @@
 >   validation and DI hardening only; it does not change UI, provider endpoints,
 >   deployment, or OCC and does not satisfy the manual real-provider/browser
 >   Gate 1.
+> - [PR #66](https://github.com/jonahgabriel/steel_onslaught/pull/66),
+>   commit `7a03ca8`, applies the exact selected-loadout `pilot_id` binding
+>   to both human and model seat assignments before runtime construction.
+>   A focused regression proves a mismatched human loadout fails closed before
+>   `runtime_factory`; this is composition-boundary hardening only and does
+>   not expand registry/archetype/input-source validation, change UI,
+>   provider endpoints, deployment, or OCC, and does not satisfy the manual
+>   real-provider/browser Gate 1.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
