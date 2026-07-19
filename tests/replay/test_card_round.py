@@ -47,7 +47,7 @@ _SUBJECT = ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a")
 _NOW = datetime(2026, 7, 18, tzinfo=UTC)
 
 
-def _snapshot() -> ModelSOCardRuntimeSnapshot:
+def _snapshot(*, register_count: int = 1) -> ModelSOCardRuntimeSnapshot:
     cards = ModelSOCardCatalog(
         cards=(
             ModelSOCard(
@@ -78,7 +78,7 @@ def _snapshot() -> ModelSOCardRuntimeSnapshot:
         id="deck.test.replay",
         display_name="Replay deck",
         hand_size=2,
-        register_count=1,
+        register_count=register_count,
         cards=tuple(ModelSODeckEntry(card_id=card.id, count=2) for card in cards.cards),
     )
     return ModelSOCardRuntimeSnapshot(
@@ -245,6 +245,120 @@ def _two_seat_events(priority_ranks: tuple[int, int]) -> list[ModelSOEventEnvelo
     return events
 
 
+def _multi_register_events(
+    *, omit_second_register_seat: bool = False, cancelled: bool = False
+) -> list[ModelSOEventEnvelope]:
+    """Build two-seat, two-register lifecycle events.
+
+    A cancelled paced round may contain only the complete registers emitted
+    before the terminal boundary.  The malformed variant intentionally keeps
+    register zero complete while omitting seat ``a`` from register one, which
+    must not pass validation merely because that seat appeared in another
+    register.
+    """
+    hands = tuple(
+        ModelSOHandDealtPayload(
+            seat=seat,
+            deck_id="deck.test.replay",
+            card_ids=("card.test.advance", "card.test.attack"),
+            hand_size=2,
+            deck_remaining=0,
+            reshuffled=False,
+        )
+        for seat in ("a", "b")
+    )
+    plans = tuple(
+        ModelSOPlanCommittedPayload(
+            seat=hand.seat,
+            registers=(
+                ModelSOPlanRegister(register_index=0, card_id="card.test.advance"),
+                ModelSOPlanRegister(register_index=1, card_id="card.test.attack"),
+            ),
+            rationale="advance then attack",
+            confidence=1.0,
+        )
+        for hand in hands
+    )
+    resolutions = [
+        ModelSORegisterResolvedPayload(
+            seat="b",
+            register_index=0,
+            card_id="card.test.advance",
+            action="move",
+            outcome=SORegisterOutcome.RESOLVED,
+            priority=10,
+            priority_rank=0,
+            fill_reason=None,
+        ),
+        ModelSORegisterResolvedPayload(
+            seat="a",
+            register_index=0,
+            card_id="card.test.advance",
+            action="move",
+            outcome=SORegisterOutcome.RESOLVED,
+            priority=10,
+            priority_rank=1,
+            fill_reason=None,
+        ),
+        ModelSORegisterResolvedPayload(
+            seat="b",
+            register_index=1,
+            card_id="card.test.attack",
+            action="fire_weapon",
+            outcome=SORegisterOutcome.RESOLVED,
+            priority=20,
+            priority_rank=0,
+            fill_reason=None,
+        ),
+        ModelSORegisterResolvedPayload(
+            seat="a",
+            register_index=1,
+            card_id="card.test.attack",
+            action="fire_weapon",
+            outcome=SORegisterOutcome.RESOLVED,
+            priority=20,
+            priority_rank=1,
+            fill_reason=None,
+        ),
+    ]
+    if omit_second_register_seat:
+        resolutions.pop()
+    if cancelled:
+        resolutions = resolutions[:2]
+    reason = "cancelled:max_ticks" if cancelled else "end_of_round"
+    discarded = tuple(
+        ModelSOCardsDiscardedPayload(seat=hand.seat, card_ids=hand.card_ids, reason=reason)
+        for hand in hands
+    )
+    payloads = (*hands, *plans, *resolutions, *discarded)
+    types = (
+        *(SOEventType.HAND_DEALT for _ in hands),
+        *(SOEventType.PLAN_COMMITTED for _ in plans),
+        *(SOEventType.REGISTER_RESOLVED for _ in resolutions),
+        *(SOEventType.CARDS_DISCARDED for _ in discarded),
+    )
+    events = []
+    previous: UUID | None = None
+    for index, (event_type, payload) in enumerate(zip(types, payloads, strict=True), start=1):
+        event = make_event(
+            match_id=_MATCH_ID,
+            tick=1,
+            sequence_in_tick=index,
+            event_type=event_type,
+            producer_node="node.test.card-replay",
+            subject=_SUBJECT,
+            payload=payload.model_dump(mode="json"),
+            correlation_id=_CORRELATION,
+            causation_id=previous,
+            event_id=f"01JTEST{index:019d}",
+            message_id=UUID(int=index),
+            emitted_at=_NOW,
+        )
+        events.append(event)
+        previous = event.envelope.message_id
+    return events
+
+
 def _swap(events: list[ModelSOEventEnvelope]) -> list[ModelSOEventEnvelope]:
     return [events[1], events[0], events[2], events[3]]
 
@@ -337,3 +451,26 @@ def test_parser_rejects_skipped_or_duplicate_priority_ranks(
             expected_match_id=_MATCH_ID,
         )
     assert f"got {list(priority_ranks)!r}" in str(exc_info.value)
+
+
+def test_parser_rejects_register_with_an_omitted_hand_seat() -> None:
+    """Every emitted register must contain one row for every dealt seat."""
+    with pytest.raises(CardRoundReplayError, match="register 1 seats"):
+        parse_card_round_events(
+            _multi_register_events(omit_second_register_seat=True),
+            snapshot=_snapshot(register_count=2),
+            expected_match_id=_MATCH_ID,
+        )
+
+
+@pytest.mark.parametrize("cancelled", [False, True], ids=["committed", "paced-cancelled"])
+def test_parser_accepts_complete_emitted_registers_and_cancellation_prefix(
+    cancelled: bool,
+) -> None:
+    replay = parse_card_round_events(
+        _multi_register_events(cancelled=cancelled),
+        snapshot=_snapshot(register_count=2),
+        expected_match_id=_MATCH_ID,
+    )
+    assert replay.cancelled is cancelled
+    assert len(replay.register_resolved) == (2 if cancelled else 4)
