@@ -1,0 +1,10 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.movement.flank_right"
+display_name: "Flank Right"
+category: "movement"
+priority: 340
+heat_cost: 0
+effect:
+  direction: "right"
+  speed: "full"

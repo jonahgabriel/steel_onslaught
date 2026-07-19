@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import pytest
 
+from steel_onslaught.cards.actions import compile_card_action
 from steel_onslaught.cards.dealer import DealerCompute, ModelSODealerScope, ModelSODeckState
 from steel_onslaught.cards.registers import RegisterExecutionReducer
 from steel_onslaught.cards.round import CardRoundRuntime
@@ -15,6 +16,7 @@ from steel_onslaught.contracts.card import (
     ModelSOCardCatalog,
     ModelSOCardEffect,
     SOCardCategory,
+    SOCardDirection,
 )
 from steel_onslaught.contracts.card_runtime import (
     ModelSOCardRuntimeSnapshot,
@@ -28,6 +30,7 @@ from steel_onslaught.events.card_payloads import (
     SORegisterOutcome,
 )
 from steel_onslaught.events.envelope import SOEventType
+from steel_onslaught.events.payloads import ModelSOMoveIntentPayload
 from steel_onslaught.match.card_adapter import (
     CardRunnerAdapter,
     CardRunnerAdapterError,
@@ -245,6 +248,30 @@ def test_disabled_adapter_emits_zero_card_values_and_events() -> None:
     assert emission.sequence is None
     assert emission.deck_state is None
     assert emission.suppressed_reason == "registers_disabled"
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_direction"),
+    (("left", "flank_left"), ("right", "flank_right")),
+)
+def test_flank_movement_cards_translate_to_perpendicular_move_intents(
+    direction: SOCardDirection, expected_direction: str
+) -> None:
+    card = _card(
+        f"card.test.flank_{direction}",
+        SOCardCategory.MOVEMENT,
+        11,
+        ModelSOCardEffect(direction=direction, speed="full"),
+    )
+    event_type, payload = CardRunnerAdapter._intent_for_translation(
+        compile_card_action(card),
+        _request("a"),
+    )
+
+    assert event_type is SOEventType.MOVE_INTENT
+    assert isinstance(payload, ModelSOMoveIntentPayload)
+    assert payload.direction == expected_direction
+    assert payload.speed == "full"
 
 
 def test_terminal_boundary_suppresses_enabled_card_round() -> None:

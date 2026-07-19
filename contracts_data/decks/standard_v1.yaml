@@ -11,6 +11,10 @@ cards:
     count: 4
   - card_id: "card.movement.advance"
     count: 6
+  - card_id: "card.movement.flank_left"
+    count: 2
+  - card_id: "card.movement.flank_right"
+    count: 2
   - card_id: "card.movement.reposition"
     count: 3
   - card_id: "card.vent.emergency_vent"
