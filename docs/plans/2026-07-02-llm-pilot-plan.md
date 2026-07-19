@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` 6e616af).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` 8a920f8).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -143,6 +143,20 @@
 >   closed when the live secret resolver and HTTP transport are not both
 >   supplied. This slice does not change provider endpoints, UI, deployment, or
 >   OCC.
+> - [PR #52](https://github.com/jonahgabriel/steel_onslaught/pull/52),
+>   commit `8a920f8`, lands match-scoped telemetry for explicit card-mode LLM
+>   programmers. Composition creates a fresh `CardProgrammerFactory` after
+>   match identity, event factory, and bus setup, wraps each selected provider
+>   client with the canonical observed LLM effect, and clones the card adapter
+>   without mutating shared runtime dependencies. Atomic and paced card modes
+>   both prove one requested event followed by exactly one resolved/failed
+>   terminal event per completion, with exact provider identity and replay
+>   equality. Local proof covered the focused DI/composition suite (22 passed),
+>   the non-proof-of-life suite (1800 passed, 2 skipped), Ruff, and mypy; hosted
+>   CI passed Python, frontend, sanitize-text, and evidence-schema checks. The
+>   existing proof-of-life browser test remains environment-blocked by the
+>   missing `vite` executable; no provider, deploy, UI, or OCC mutation is part
+>   of this telemetry slice.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
@@ -226,7 +240,7 @@ genuine strategic rationale stored in the ledger.
   — **UI-workflow-owned** (not part of this backend integration gate;
   `frontend/` changes are staged/committed by that workflow separately).
 
-## Next — Gate 1 manual live browser proof; telemetry observer remains deferred
+## Next — Gate 1 manual live browser proof (telemetry landed)
 
 Paced card cadence is now shipped as an explicit runtime mode rather than a
 plan item. The atomic cadence remains the default for callers that do not opt
@@ -247,7 +261,10 @@ invariants:
   incomplete round cannot be mistaken for a deck commit.
 
 The next remaining product gate is **Gate 1: a manual browser-started live
-loop against an actually injected real provider**. The shipped
+loop against an actually injected real provider**. Card-mode LLM completion
+telemetry is now landed and replay-proven for both atomic and paced cadence;
+the gate remains a live-loop/UI integration proof rather than another backend
+telemetry implementation task. The shipped
 `configured_live_browser_server` path is intentionally explicit and
 stub-safe: a packaged/default launch without the live secret resolver and HTTP
 transport is not evidence of a real-provider match. Use an admitted
