@@ -477,6 +477,159 @@ async def test_event_socket_serializes_same_tick_frames_in_canonical_order() -> 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_event_socket_quarantines_late_tick_without_leaking_or_reordering() -> None:
+    """A late callback cannot append a frame behind an already-published tick."""
+    import asyncio
+    import json
+
+    import websockets
+
+    class Bus:
+        def subscribe(self, handler: object, **_: object) -> int:
+            del handler
+            return 1
+
+        def unsubscribe(self, token: int) -> None:
+            del token
+
+    server = BrowserPlayServer(
+        bootstrap=_bootstrap(),
+        gateway=None,
+        bus=Bus(),  # type: ignore[arg-type]
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+    )
+    fixture = Path(__file__).parents[2] / "frontend/src/__tests__/fixtures/match_started.json"
+    started = ModelSOEventEnvelope.model_validate_json(fixture.read_text(encoding="utf-8"))
+
+    def tick_event(
+        tick: int, sequence: int, *, event_id: str | None = None
+    ) -> ModelSOEventEnvelope:
+        return started.model_copy(
+            update={
+                "event_id": event_id or ulid.new().str,
+                "tick": tick,
+                "sequence_in_tick": sequence,
+                "event_type": SOEventType.MATCH_TICK,
+                "payload": {},
+                "envelope": started.envelope.model_copy(update={"message_id": uuid4()}),
+            }
+        )
+
+    tick_one = tick_event(1, 0)
+    tick_two = tick_event(2, 0)
+    tick_three = tick_event(3, 0)
+    late_tick_one = tick_event(1, 1)
+    await server.start()
+    try:
+        async with websockets.connect(server.event_url) as events:
+            server._on_event(started)
+            server._on_event(tick_one)
+            server._on_event(tick_two)
+            server._on_event(tick_three)
+            await asyncio.sleep(0.01)
+            # Tick two flushes tick one, while tick three remains buffered;
+            # therefore the already-published history ends at tick two.
+
+            # The callback is a duplicate delivery of a tick already drained.
+            server._on_event(late_tick_one)
+            server._on_event(late_tick_one)
+            await asyncio.sleep(0.01)
+
+            frames = [
+                json.loads(await asyncio.wait_for(events.recv(), timeout=2)) for _ in range(3)
+            ]
+            assert [(frame["tick"], frame["sequence_in_tick"]) for frame in frames] == [
+                (0, 0),
+                (1, 0),
+                (2, 0),
+            ]
+            assert all(frame["event_id"] != late_tick_one.event_id for frame in frames)
+            assert [(event.tick, event.sequence_in_tick) for event in server._event_history] == [
+                (0, 0),
+                (1, 0),
+                (2, 0),
+            ]
+            assert late_tick_one.event_id in server._quarantined_event_ids
+    finally:
+        await server.stop()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_event_socket_preserves_same_tick_order_and_duplicate_suppression() -> None:
+    """Out-of-arrival-order callbacks still drain once in sequence order."""
+    import asyncio
+    import json
+
+    import websockets
+
+    class Bus:
+        def subscribe(self, handler: object, **_: object) -> int:
+            del handler
+            return 1
+
+        def unsubscribe(self, token: int) -> None:
+            del token
+
+    server = BrowserPlayServer(
+        bootstrap=_bootstrap(),
+        gateway=None,
+        bus=Bus(),  # type: ignore[arg-type]
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+    )
+    fixture = Path(__file__).parents[2] / "frontend/src/__tests__/fixtures/match_started.json"
+    started = ModelSOEventEnvelope.model_validate_json(fixture.read_text(encoding="utf-8"))
+
+    def tick_event(
+        tick: int, sequence: int, *, event_id: str | None = None
+    ) -> ModelSOEventEnvelope:
+        return started.model_copy(
+            update={
+                "event_id": event_id or ulid.new().str,
+                "tick": tick,
+                "sequence_in_tick": sequence,
+                "event_type": SOEventType.MATCH_TICK,
+                "payload": {},
+                "envelope": started.envelope.model_copy(update={"message_id": uuid4()}),
+            }
+        )
+
+    same_tick = [tick_event(1, sequence) for sequence in range(3)]
+    await server.start()
+    try:
+        async with websockets.connect(server.event_url) as events:
+            server._on_event(started)
+            for event in (same_tick[2], same_tick[0], same_tick[1]):
+                server._on_event(event)
+            server._on_event(tick_event(1, 1, event_id=same_tick[1].event_id))
+            server._on_event(tick_event(1, 0, event_id=same_tick[0].event_id))
+            server._on_event(tick_event(2, 0))
+            await asyncio.sleep(0.01)
+
+            # Duplicate callbacks after the tick drained are suppressed by
+            # the history id set just as pending duplicates are.
+            server._on_event(tick_event(1, 1, event_id=same_tick[1].event_id))
+            await asyncio.sleep(0.01)
+
+            frames = [
+                json.loads(await asyncio.wait_for(events.recv(), timeout=2)) for _ in range(4)
+            ]
+            assert [(frame["tick"], frame["sequence_in_tick"]) for frame in frames] == [
+                (0, 0),
+                (1, 0),
+                (1, 1),
+                (1, 2),
+            ]
+            assert len(server._event_history) == 4
+            assert len({event.event_id for event in server._event_history}) == 4
+    finally:
+        await server.stop()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_server_start_replay_runs_match_and_forwards_authoritative_prompt() -> None:
     import asyncio
     import json
