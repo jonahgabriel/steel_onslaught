@@ -7,10 +7,12 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 import httpx
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.cli import play as play_cli
 from steel_onslaught.cli.application import CliApplicationFactory
@@ -45,6 +47,7 @@ from steel_onslaught.contracts.commands import (
 from steel_onslaught.contracts.player_selection import (
     ModelSOHumanPlayerOptionBinding,
     ModelSOModelPlayerOptionBinding,
+    ModelSOModelSeatAssignment,
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
 )
@@ -67,6 +70,7 @@ from steel_onslaught.replay.engine import ReplayEngine
 _ROOT = Path(__file__).resolve().parents[2]
 _MATCH_ID = "match.01JABCDE0123456789ABCDEFGX"
 _FAILURE_MATCH_ID = "match.01JABCDE0123456789ABCDEFGY"
+_GLM_MATCH_ID = "match.01JABCDE0123456789ABCDEFGW"
 _RED_PATH = _ROOT / "contracts_data/loadouts/example_aggressive_light.yaml"
 _BLUE_PATH = _ROOT / "contracts_data/loadouts/example_llm_berserker_light.yaml"
 
@@ -271,6 +275,54 @@ def _overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
             },
         }
     )
+
+
+def _live_glm_overlay(tmp_path: Path) -> ModelSOApplicationOverlay:
+    """Build the live GLM roster's provider graph entirely from test ports."""
+
+    overlay = _overlay(tmp_path)
+    personas_dir = Path(overlay.llm.personas_dir)
+    pilot_registry_dir = Path(overlay.contracts.pilot_registry_dir)
+    for name in ("sniper", "opportunist"):
+        (personas_dir / f"{name}.yaml").write_text(
+            (_ROOT / f"contracts_data/pilots/personas/{name}.yaml").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+    for name in ("glm_sniper", "glm_opportunist"):
+        (pilot_registry_dir / f"{name}.yaml").write_text(
+            (_ROOT / f"contracts_data/pilots/{name}.yaml").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+    raw = overlay.model_dump(mode="python")
+    raw["llm"] = {
+        **raw["llm"],
+        "providers": [
+            {
+                "kind": "openai_compatible",
+                "provider_id": "glm-5.2",
+                "endpoint_url": "https://glm.invalid/v1/chat/completions",
+                "model": "glm-5.2-fixture",
+                "secret_ref": {"kind": "opaque", "ref": "secret://llm/glm"},
+                "timeout_seconds": 1.0,
+                "max_tokens": 16,
+                "retry": {
+                    "max_attempts": 1,
+                    "initial_backoff_seconds": 0.0,
+                    "backoff_multiplier": 1.0,
+                },
+            }
+        ],
+        "model_identities": [
+            {
+                "schema_version": "1",
+                "kind": "steel_onslaught.model_identity",
+                "display_name": "GLM 5.2 fixture",
+                "model_identity_id": "model_identity.glm",
+                "provider_binding_id": "glm-5.2",
+            }
+        ],
+    }
+    return ModelSOApplicationOverlay.model_validate(raw)
 
 
 @pytest.mark.integration
@@ -541,6 +593,148 @@ def test_browser_live_start_mints_one_exact_capability_and_replay_does_not_remin
     assert grant.provider_id == "selected"
     assert grant.max_completions == 8
     assert callable(launch_calls[0]["live_runtime_factory"])
+
+
+@pytest.mark.integration
+def test_browser_live_start_defaults_to_glm_vs_glm_and_replays_terminal_match(
+    tmp_path: Path,
+) -> None:
+    """The browser's explicit roster defaults launch two model seats."""
+
+    overlay = _live_glm_overlay(tmp_path)
+    roster = ModelSOPlayerRosterBinding.model_validate_json(
+        json.dumps(
+            yaml.safe_load(
+                (_ROOT / "contracts_data/rosters/live_glm_varied.yaml").read_text(encoding="utf-8")
+            )
+        )
+    )
+    red_loadout = load_loadout(_ROOT / "contracts_data/loadouts/live_glm_sniper_ironclad.yaml")
+    blue_loadout = load_loadout(_ROOT / "contracts_data/loadouts/live_glm_opportunist_hunter.yaml")
+    red_selection = ModelSOStartMatchSeatSelection(
+        side="red", option_id=roster.default_option_for_side("red")
+    )
+    blue_selection = ModelSOStartMatchSeatSelection(
+        side="blue", option_id=roster.default_option_for_side("blue")
+    )
+    command = ModelSOStartMatchCommand(
+        schema_version="1",
+        kind="steel_onslaught.start_match",
+        command_id=UUID("55555555-5555-4555-8555-555555555555"),
+        expected_overlay_sha256=canonical_overlay_sha256(overlay),
+        expected_roster_sha256=roster.canonical_sha256(),
+        selections=(red_selection, blue_selection),
+    )
+    request = ModelSOBrowserStartMatchRequest(match_id=_GLM_MATCH_ID, command=command)
+    context = ModelSOStartMatchAuthorityContext(
+        creator_principal_id="principal.local_operator",
+        creator_session_id="session.local_operator",
+        human_seats=(),
+    )
+    capability = ProcessLocalOneShotLiveProviderCapability(
+        grant=ModelSOLiveProviderLaunchGrant(
+            creator_principal_id=context.creator_principal_id,
+            creator_session_id=context.creator_session_id,
+            launch_command_id=command.command_id,
+            launch_command_sha256=canonical_command_sha256(command),
+            overlay_sha256=canonical_overlay_sha256(overlay),
+            roster_sha256=roster.canonical_sha256(),
+            model_identity_id="model_identity.glm",
+            provider_id="glm-5.2",
+            max_completions=16,
+        )
+    )
+    resolver = _Resolver("fixture-glm-secret")
+    transport = _Transport(_response())
+    factory = CliApplicationFactory.live(
+        secret_resolver=resolver,
+        http_transport=transport,
+        sleeper=_Sleeper(),
+    )
+
+    def forbidden_default_runtime(candidate: ModelSOApplicationOverlay) -> object:
+        del candidate
+        raise AssertionError("GLM defaults must use the explicit live runtime")
+
+    def live_runtime_factory(
+        candidate: ModelSOApplicationOverlay,
+        provider_selection: str | tuple[str, ...],
+        pilot_spec_ids: tuple[str, ...],
+    ) -> object:
+        assert provider_selection == "glm-5.2"
+        assert pilot_spec_ids == ("pilot.glm.sniper", "pilot.glm.opportunist")
+        return factory.selected_runtime(candidate, provider_selection, pilot_spec_ids)
+
+    session = play_cli.launch_browser_play_session(
+        overlay=overlay,
+        roster=roster,
+        sessions=_Sessions(),
+        request=request,
+        transport=ModelSOBrowserRequestContext(
+            origin="http://localhost:5173",
+            host="127.0.0.1:8765",
+        ),
+        principal_id=context.creator_principal_id,
+        session_id=context.creator_session_id,
+        context=context,
+        identity=MatchIdentity(
+            match_id=_GLM_MATCH_ID,
+            correlation_id=command.command_id,
+        ),
+        loadouts={red_loadout.id: red_loadout, blue_loadout.id: blue_loadout},
+        runtime_factory=forbidden_default_runtime,  # type: ignore[arg-type]
+        live_provider_capability=capability,
+        live_runtime_factory=live_runtime_factory,  # type: ignore[arg-type]
+        seed=7,
+        max_ticks=4,
+        allowed_origins=("http://localhost:5173", "http://127.0.0.1:5173"),
+    )
+    try:
+        assignments = {
+            assignment.side: assignment for assignment in session.launch_provenance.seat_assignments
+        }
+        assert set(assignments) == {"red", "blue"}
+        assert all(assignment.kind == "model" for assignment in assignments.values())
+        model_assignments = {
+            side: cast(ModelSOModelSeatAssignment, assignment)
+            for side, assignment in assignments.items()
+        }
+        assert {assignment.model_identity_id for assignment in model_assignments.values()} == {
+            "model_identity.glm"
+        }
+        assert model_assignments["red"].persona_id == "sniper"
+        assert model_assignments["blue"].persona_id == "opportunist"
+        assert session.start_result.match_id == _GLM_MATCH_ID
+
+        final = session.stack.runner.run()
+        events = list(session.stack.ledger.read_all(_GLM_MATCH_ID))
+        requested = [
+            event for event in events if event.event_type is SOEventType.LLM_COMPLETION_REQUESTED
+        ]
+        resolved = [
+            event for event in events if event.event_type is SOEventType.LLM_COMPLETION_RESOLVED
+        ]
+        assert requested
+        assert len(requested) == len(resolved) == len(transport.calls)
+        assert all(
+            thaw_json_mapping(event.payload)["provider_id"] == "glm-5.2"
+            for event in (*requested, *resolved)
+        )
+        assert final.status.value == "ended"
+        replayed = ReplayEngine(
+            session.stack.ledger,
+            _GLM_MATCH_ID,
+            catalog=session.stack.catalog,
+            event_factory=session.stack.event_factory,
+        ).reconstruct_at_tick(final.tick)
+        assert replayed == final
+        assert capability.consumption_count == 1
+        assert resolver.references == [
+            ModelSOSecretRef(kind="opaque", ref="secret://llm/glm")
+        ] * len(transport.calls)
+        assert all(url == "https://glm.invalid/v1/chat/completions" for url, *_ in transport.calls)
+    finally:
+        session.close()
 
 
 @pytest.mark.integration
