@@ -915,6 +915,45 @@ def test_selected_human_and_stub_match_admits_before_runtime_factory(
 
 
 @pytest.mark.unit
+def test_selected_human_loadout_pilot_mismatch_fails_before_runtime_factory(
+    tmp_path: Any,
+) -> None:
+    overlay = _selection_overlay(tmp_path)
+    roster = _selection_roster("model_identity.stub")
+    factory_calls = 0
+
+    def forbidden_runtime_factory(
+        candidate: ModelSOApplicationOverlay,
+    ) -> RuntimeDependencies:
+        nonlocal factory_calls
+        del candidate
+        factory_calls += 1
+        raise AssertionError("pilot mismatch must fail before runtime construction")
+
+    with pytest.raises(ValueError, match="selected red human loadout pilot_id"):
+        composition.assemble_selected_match_live(
+            overlay=overlay,
+            roster=roster,
+            sessions=_Sessions(),
+            command=_selection_command(overlay, roster),
+            context=_selection_context(),
+            identity=MatchIdentity(
+                match_id="match.01JABCDE0123456789ABCDEFGX",
+                correlation_id=UUID("11111111-1111-4111-8111-111111111111"),
+            ),
+            loadouts={
+                "loadout.fake.red": _loadout("red", "pilot.fake.other"),
+                "loadout.fake.blue": _loadout("blue"),
+            },
+            runtime_factory=forbidden_runtime_factory,
+            seed=7,
+            max_ticks=3,
+        )
+
+    assert factory_calls == 0
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("provider_id", ["local", "openrouter", "glm", "gemini"])
 def test_selected_non_stub_provider_rejects_before_runtime_factory(
     provider_id: str,

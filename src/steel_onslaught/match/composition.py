@@ -1696,15 +1696,15 @@ def assemble_selected_match_live(
     providers = {provider.provider_id: provider for provider in overlay.llm.providers}
     selected_live_bindings: list[tuple[str, str]] = []
     for assignment in assignments.values():
-        if not isinstance(assignment, ModelSOModelSeatAssignment):
-            continue
         selected_loadout = selected_loadouts[assignment.side]
         if selected_loadout.pilot_id != assignment.pilot_spec_id:
             raise ValueError(
-                f"selected {assignment.side} model loadout pilot_id "
+                f"selected {assignment.side} {assignment.kind} loadout pilot_id "
                 f"{selected_loadout.pilot_id!r} does not match admitted pilot_spec_id "
                 f"{assignment.pilot_spec_id!r}"
             )
+        if not isinstance(assignment, ModelSOModelSeatAssignment):
+            continue
         model_identity = model_identities[assignment.model_identity_id]
         provider = providers[model_identity.provider_binding_id]
         if not isinstance(provider, ModelSOStubLlmProviderBinding):
