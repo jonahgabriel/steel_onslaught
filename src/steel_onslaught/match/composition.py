@@ -444,8 +444,8 @@ class LiveMatchStack:
     closer: ProtocolResourceCloser
     card_catalog: ModelSOCardCatalog | None = None
     card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None
-    card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None
     card_adapter: CardRunnerAdapter | None = None
+    card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None
     _launch_provenance: ModelSOMatchLaunchProvenance | None = None
     _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
 
