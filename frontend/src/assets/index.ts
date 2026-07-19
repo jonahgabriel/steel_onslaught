@@ -7,6 +7,7 @@
  */
 
 // Deck furniture
+export { CardFace } from "./cards";
 export {
   AwaitingTransmission,
   type AwaitingTransmissionProps,

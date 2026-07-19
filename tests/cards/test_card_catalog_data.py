@@ -9,6 +9,7 @@ import yaml  # type: ignore[import-untyped]
 
 from steel_onslaught.cards.actions import action_for_card
 from steel_onslaught.contracts.card import ModelSOCard, SOCardCategory
+from steel_onslaught.contracts.deck import ModelSODeck
 from steel_onslaught.pilots.schemas import SOPilotAction
 
 _CARD_DIR = Path(__file__).resolve().parents[2] / "contracts_data/cards"
@@ -64,6 +65,10 @@ def test_fixed_card_data_stays_power_neutral_and_action_mapped() -> None:
 
 
 @pytest.mark.unit
-def test_fixed_file_set_is_explicit_and_contains_no_deck_data() -> None:
+def test_fixed_file_set_is_explicit_and_deck_is_declared_separately() -> None:
     assert tuple(sorted(path.name for path in _CARD_DIR.glob("*.yaml"))) == _CARD_FILES
-    assert not (Path(__file__).resolve().parents[2] / "contracts_data/decks").exists()
+    deck_path = Path(__file__).resolve().parents[2] / "contracts_data/decks/standard_v1.yaml"
+    deck = ModelSODeck.model_validate(yaml.safe_load(deck_path.read_text(encoding="utf-8")))
+    assert deck.id == "deck.standard.v1"
+    assert deck.hand_size == 5
+    assert deck.register_count == 5

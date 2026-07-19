@@ -9,8 +9,10 @@
 import type React from "react";
 import { ChassisSprite, LampCooldown, LampReady, WEAPON_CLASS_GLYPH } from "../assets";
 import { type GaugeState, type MechStatus, mechStateOf, pilotDescriptor } from "../lib/gauges";
+import type { CardPriorities, Hands, PlayedCards } from "../lib/hands";
 import type { Side } from "../lib/river";
 import { weaponClassOf, weaponLabel } from "../lib/weapons";
+import HandStrip from "./HandStrip";
 import HeatBar from "./HeatBar";
 
 const STATUS_LABEL: Record<MechStatus, string> = {
@@ -126,7 +128,17 @@ function WeaponRow({
   );
 }
 
-function MechSpec({ g }: { g: GaugeState }): React.JSX.Element {
+function MechSpec({
+  g,
+  hands,
+  priorities,
+  played,
+}: {
+  g: GaugeState;
+  hands: Hands;
+  priorities: CardPriorities;
+  played: PlayedCards;
+}): React.JSX.Element {
   const armorPct =
     g.armorMax > 0 ? Math.max(0, Math.min(100, (g.armorValue / g.armorMax) * 100)) : 0;
   const hpPct = g.hpMax > 0 ? Math.max(0, Math.min(100, (g.hp / g.hpMax) * 100)) : 0;
@@ -243,12 +255,22 @@ function MechSpec({ g }: { g: GaugeState }): React.JSX.Element {
         {statLine("SHOTS", g.shotsFired, `spec-shots-${g.mechId}`)}
         {statLine("DECISIONS", g.decisions, `spec-decisions-${g.mechId}`)}
       </div>
+      <HandStrip
+        mechId={g.mechId}
+        hand={hands[g.mechId]}
+        side={g.side}
+        priorities={priorities}
+        played={played[g.mechId]}
+      />
     </section>
   );
 }
 
 export interface SpecPanelProps {
   gauges: readonly GaugeState[];
+  hands?: Hands;
+  priorities?: CardPriorities;
+  played?: PlayedCards;
   side?: "left" | "right";
   emptyPlaceholder?: boolean;
 }
@@ -257,6 +279,9 @@ const SIDE_ORDER: Record<Side, number> = { red: 0, blue: 1, neutral: 2 };
 
 export default function SpecPanel({
   gauges,
+  hands = {},
+  priorities = {},
+  played = {},
   side = "left",
   emptyPlaceholder = true,
 }: SpecPanelProps): React.JSX.Element {
@@ -268,7 +293,9 @@ export default function SpecPanel({
           <div className="pd-earlier">awaiting match_started…</div>
         ) : null
       ) : (
-        ordered.map((g) => <MechSpec key={g.mechId} g={g} />)
+        ordered.map((g) => (
+          <MechSpec key={g.mechId} g={g} hands={hands} priorities={priorities} played={played} />
+        ))
       )}
     </div>
   );
