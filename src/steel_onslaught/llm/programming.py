@@ -303,9 +303,7 @@ class LLMProgrammingPilot:
                 end = text.rfind("}")
                 if start < 0 or end <= start:
                     raise
-                parsed = _ModelSOLlmProgrammingResponse.model_validate_json(
-                    text[start : end + 1]
-                )
+                parsed = _ModelSOLlmProgrammingResponse.model_validate_json(text[start : end + 1])
         except (ValidationError, ValueError, TypeError):
             raise LlmSemanticError("malformed_json") from None
 
