@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` 2d1961a).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` 02203aa).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -180,6 +180,17 @@
 >   match, and replay suite (230 passed) plus all hosted Python, frontend,
 >   sanitize-text, and evidence-schema checks passed. No UI, provider,
 >   deployment, or OCC behavior changed.
+> - [PR #59](https://github.com/jonahgabriel/steel_onslaught/pull/59),
+>   commit `fff015c` (merged as `02203aa`), adds a hermetic browser-start
+>   proof for the explicit `live_glm_varied` roster defaults. The test launches
+>   the contract-declared GLM-vs-GLM defaults with both model seats, exact
+>   provider/model/persona identities, and only injected secret-resolver and
+>   HTTP-transport capabilities; it asserts terminal LLM evidence and replay
+>   equality without human inboxes, ambient discovery, credentials, or network
+>   access. The focused live-provider integration file passes (6 tests), Ruff
+>   and strict mypy pass, and hosted Python, frontend, sanitize-text, and
+>   evidence-schema checks all passed. This is hermetic composition evidence;
+>   it does not satisfy the manual real-provider/browser Gate 1.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
@@ -298,6 +309,12 @@ selected-model match (including the LLM-vs-LLM default lane), and reaches a
 terminal projection. This is a live-loop/UI integration proof, not permission
 to broaden the dashboard, change provider endpoints, or mutate
 deployment/runtime infrastructure.
+
+The hermetic default-lane proof in PR #59 confirms the roster's explicit
+GLM-vs-GLM selection and injected composition path, but it is deliberately not
+the Gate 1 substitute: the next proof still requires a manually started
+browser session against an actually injected provider and its real event
+transport.
 
 The match-scoped card-mode telemetry observer landed in PR #52 and is covered
 for both atomic and paced cadence. Any future observer work, if needed, must
