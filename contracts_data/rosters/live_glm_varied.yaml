@@ -33,4 +33,5 @@ seats:
     loadout_id: loadout.live.glm_opportunist_hunter
     default_option_id: player_option.glm_opportunist
     allowed_option_ids:
+      - player_option.local_human
       - player_option.glm_opportunist
