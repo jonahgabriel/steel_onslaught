@@ -77,6 +77,10 @@ class ModelSOCardProgrammerBinding(_ClosedBinding):
 
     side: Side
     pilot_spec_id: PilotId
+    # Card-mode live experiments may explicitly record typed recovery instead
+    # of aborting the match on a malformed provider plan.  The strict default
+    # preserves fail-closed production behavior.
+    failure_policy: Literal["raise", "fallback"] = "raise"
 
 
 class ModelSOCardCatalogBinding(_ClosedBinding):

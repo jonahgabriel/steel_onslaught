@@ -42,8 +42,10 @@ contracts:
     programmers:
       - side: red
         pilot_spec_id: pilot.llm.qwen35
+        failure_policy: fallback
       - side: blue
         pilot_spec_id: pilot.llm.qwen35
+        failure_policy: fallback
   balance_rule_pack:
     kind: card_programming_rules
     pack_id: rules.card_programming_v1

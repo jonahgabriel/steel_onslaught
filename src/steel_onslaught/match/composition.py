@@ -835,8 +835,9 @@ def build_card_programmers(
         programmers[binding.side] = LLMProgrammingPilot(
             client=client,
             persona=persona,
-            # Card programming never inherits decide-only/browser fallback.
-            failure_policy="raise",
+            # The overlay chooses strict abort or explicit typed recovery;
+            # this is never an implicit provider/stub fallback.
+            failure_policy=binding.failure_policy,
             correlation_id=correlation_id,
         )
     return MappingProxyType(programmers)
