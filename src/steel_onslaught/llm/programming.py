@@ -90,7 +90,8 @@ JSON object with this exact shape:
 Use every free register exactly once, in ascending register_index order. Use
 each physical card at most once and only card ids from the dealt hand. Never
 assign a card to a locked register. Do not add fields, prose, markdown, or
-comments.
+comments. Keep rationale to twelve words or fewer. Emit the JSON object as the
+first character of the response and stop immediately after its closing brace.
 """.strip()
 
 
@@ -183,6 +184,27 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
     return json.dumps(prompt_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _serialize_repair_observation(observation: ModelSOProgrammingObservation) -> str:
+    """Build a deliberately tiny retry prompt after provider JSON drift."""
+
+    return json.dumps(
+        {
+            "free_register_indices": list(observation.free_indices),
+            "hand_card_ids": [str(card_id) for card_id in observation.hand],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+_PROGRAMMING_REPAIR_INSTRUCTIONS = (
+    "Return ONLY compact JSON with keys registers, confidence, rationale. "
+    "Use each free register exactly once, use only hand_card_ids, and keep "
+    "rationale under twelve words. No reasoning, prose, markdown, or extra keys."
+)
+
+
 class LLMProgrammingPilot:
     """A whole-round ``ProgrammingPilot`` backed by an injected LLM client."""
 
@@ -208,7 +230,11 @@ class LLMProgrammingPilot:
             system_prompt=f"{self._persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}",
             user_prompt=_serialize_programming_observation(observation),
             persona=self._persona.persona_id,
-            temperature=self._persona.temperature,
+            # Card programming is a typed planning protocol.  Keep the
+            # provider's tactical variation in the selected cards and
+            # observation, while a low sampling temperature prevents a
+            # reasoning gateway from consuming the entire JSON budget.
+            temperature=min(self._persona.temperature, 0.2),
             json_mode=True,
             evidence_context=ModelSOLlmEvidenceContext(
                 match_id=observation.pilot_observation.match_id,
@@ -224,6 +250,33 @@ class LLMProgrammingPilot:
                 request=request,
                 consumer=lambda response: self._parse_response(response, observation),
             )
+        except LlmSemanticError as exc:
+            if exc.code != "malformed_json":
+                raise
+            if self._failure_policy == "fallback":
+                return program_for_seat(None, observation)
+            # Some reasoning providers occasionally spend the full response
+            # budget before emitting the requested object.  A single compact
+            # semantic repair remains on the same injected provider and uses
+            # the same evidence context; it never changes provider or falls
+            # back to a deterministic pilot.
+            repair_request = request.model_copy(
+                update={
+                    "system_prompt": _PROGRAMMING_REPAIR_INSTRUCTIONS,
+                    "user_prompt": _serialize_repair_observation(observation),
+                    "temperature": 0.0,
+                    "persona": f"{self._persona.persona_id}.repair",
+                }
+            )
+            try:
+                return consume_llm_completion(
+                    client=self._client,
+                    request=repair_request,
+                    consumer=lambda response: self._parse_response(response, observation),
+                )
+            except Exception:
+                pass
+            raise exc
         except Exception as exc:
             _LOG.warning("LLM programming call failed (%s)", type(exc).__name__)
             if self._failure_policy == "fallback":
@@ -238,7 +291,21 @@ class LLMProgrammingPilot:
         observation: ModelSOProgrammingObservation,
     ) -> ModelSOPlanCommittedPayload:
         try:
-            parsed = _ModelSOLlmProgrammingResponse.model_validate_json(response.text)
+            try:
+                parsed = _ModelSOLlmProgrammingResponse.model_validate_json(response.text)
+            except (ValidationError, ValueError, TypeError):
+                # A few OpenAI-compatible reasoning gateways wrap an otherwise
+                # complete JSON object in a short markdown/thought prefix.
+                # Strip only that wrapper; the inner object remains subject to
+                # the closed response model and the canonical plan validator.
+                text = response.text.strip()
+                start = text.find("{")
+                end = text.rfind("}")
+                if start < 0 or end <= start:
+                    raise
+                parsed = _ModelSOLlmProgrammingResponse.model_validate_json(
+                    text[start : end + 1]
+                )
         except (ValidationError, ValueError, TypeError):
             raise LlmSemanticError("malformed_json") from None
 

@@ -1,0 +1,23 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.deck"
+id: "deck.standard.v1"
+display_name: "Standard Action Deck"
+hand_size: 5
+register_count: 5
+cards:
+  - card_id: "card.attack.fire_primary"
+    count: 5
+  - card_id: "card.attack.fire_secondary"
+    count: 4
+  - card_id: "card.movement.advance"
+    count: 6
+  - card_id: "card.movement.reposition"
+    count: 3
+  - card_id: "card.vent.emergency_vent"
+    count: 4
+  - card_id: "card.special.mode_assault"
+    count: 2
+  - card_id: "card.special.mode_evasion"
+    count: 1
+  - card_id: "card.special.mode_recon"
+    count: 1

@@ -1,0 +1,6 @@
+principal_id: principal.local_operator
+session_id: session.local_operator
+human_identity_id: human_identity.local_operator
+permissions:
+  - match:create
+  - seat:red

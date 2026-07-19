@@ -13,8 +13,11 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 from uuid import UUID
 
 import click
@@ -79,6 +82,9 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.llm.schemas import (
+    LlmTransportError,
+    ModelSOOpenAIChatRequest,
+    ModelSOOpenAIChatResponse,
     ProtocolHttpTransport,
     ProtocolSecretResolver,
     ProtocolSleeper,
@@ -107,6 +113,61 @@ BrowserLiveProviderCapabilityFactory = Callable[
     ],
     BrowserLiveProviderCapability,
 ]
+
+
+class _InjectedSecretResolver:
+    """Resolve the explicitly supplied live-provider secret at the CLI edge.
+
+    Composition never reads the environment.  This tiny adapter is only used
+    by ``so play-live`` after the operator has selected the live command.  The
+    Click option may be populated from the documented environment variable,
+    but the composition graph receives only this injected value.
+    """
+
+    _SUPPORTED_REFERENCE: ClassVar[str] = "secret://llm/glm"
+
+    def __init__(self, secret: str) -> None:
+        if not secret:
+            raise ValueError("GLM API key must not be empty")
+        self._secret = secret
+
+    def resolve(self, reference: Any) -> str:
+        if str(reference.ref) != self._SUPPORTED_REFERENCE:
+            raise ValueError(f"no live secret mapping for {reference.ref!r}")
+        return self._secret
+
+
+class _UrllibJsonTransport:
+    """Small injected HTTP port for the explicit live CLI command."""
+
+    def post_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        request: ModelSOOpenAIChatRequest,
+        timeout_seconds: float,
+    ) -> ModelSOOpenAIChatResponse:
+        wire = json.dumps(request.model_dump(mode="json", exclude_none=True)).encode("utf-8")
+        try:
+            with urlopen(
+                UrlRequest(url, data=wire, headers=headers, method="POST"),
+                timeout=timeout_seconds,
+            ) as response:
+                return ModelSOOpenAIChatResponse.model_validate_json(response.read())
+        except TimeoutError:
+            raise LlmTransportError("LLM request timed out", retryable=True) from None
+        except HTTPError as exc:
+            raise LlmTransportError(
+                f"LLM provider returned HTTP {exc.code}",
+                retryable=exc.code in {408, 429} or exc.code >= 500,
+            ) from None
+        except URLError:
+            raise LlmTransportError("LLM transport request failed", retryable=True) from None
+        except (TypeError, ValueError):
+            raise LlmTransportError(
+                "LLM provider returned an invalid response contract", retryable=False
+            ) from None
 
 
 @dataclass
@@ -1585,10 +1646,119 @@ def play_command(
         click.echo("play interrupted", err=True)
 
 
+@click.command(name="play-live")
+@click.option(
+    "--overlay",
+    "overlay_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--roster",
+    "roster_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--session",
+    "session_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--loadout-red",
+    "red_loadout_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option(
+    "--loadout-blue",
+    "blue_loadout_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+)
+@click.option("--seed", type=click.IntRange(min=0), required=True)
+@click.option(
+    "--max-ticks",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Optional debug/test cap. Omit for the configured sudden-death horizon.",
+)
+@click.option("--origin", default="http://localhost:5173", show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", type=click.IntRange(min=0, max=65_535), default=0, show_default=True)
+@click.option("--bootstrap-output", type=click.Path(dir_okay=False, path_type=Path), default=None)
+@click.option(
+    "--glm-api-key",
+    envvar="LLM_GLM_API_KEY",
+    required=True,
+    hide_input=True,
+    help="Injected GLM credential; defaults to the LLM_GLM_API_KEY environment variable.",
+)
+def play_live_command(
+    overlay_path: Path,
+    roster_path: Path,
+    session_path: Path,
+    red_loadout_path: Path,
+    blue_loadout_path: Path,
+    seed: int,
+    max_ticks: int | None,
+    origin: str,
+    host: str,
+    port: int,
+    bootstrap_output: Path | None,
+    glm_api_key: str,
+) -> None:
+    """Run a browser match with explicitly injected GLM provider authority.
+
+    Unlike ``so play``, this command is intentionally not stub-safe: it
+    requires the overlay's configured live provider and ``LLM_GLM_API_KEY``.
+    The HTTP client is root-owned here and is never discovered by runtime
+    composition.
+    """
+
+    # The explicit live overlay owns its filesystem destinations.  Create
+    # those destinations at this process boundary so SQLite can open them;
+    # composition still receives only the validated, resolved overlay.
+    overlay = load_application_overlay(overlay_path)
+    for directory in (
+        overlay.event_ledger.path.parent,
+        overlay.leaderboard.path.parent,
+        overlay.learning_artifacts.evaluation_root,
+        overlay.learning_artifacts.lineage_root,
+        overlay.learning_artifacts.experiment_root,
+        overlay.evaluation_storage.root,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    try:
+        server = configured_live_browser_server(
+            overlay_path=overlay_path,
+            roster_path=roster_path,
+            session_path=session_path,
+            red_loadout_path=red_loadout_path,
+            blue_loadout_path=blue_loadout_path,
+            seed=seed,
+            max_ticks=max_ticks,
+            origin=origin,
+            host=host,
+            port=port,
+            secret_resolver=_InjectedSecretResolver(glm_api_key),
+            http_transport=_UrllibJsonTransport(),
+        )
+        try:
+            asyncio.run(_serve_browser_play(server, bootstrap_output=bootstrap_output))
+        except KeyboardInterrupt:
+            click.echo("play-live interrupted", err=True)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 __all__ = [
     "BrowserPlayServer",
     "BrowserPlaySession",
     "configured_live_browser_server",
     "launch_browser_play_session",
     "play_command",
+    "play_live_command",
 ]

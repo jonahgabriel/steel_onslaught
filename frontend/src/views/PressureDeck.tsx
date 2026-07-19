@@ -21,6 +21,14 @@ import {
 } from "../lib/causation";
 import type { EnvelopeHandler } from "../lib/event_stream";
 import { applyGaugeEvent, type GaugeState, type Gauges, initGauges } from "../lib/gauges";
+import {
+  applyCardPlay,
+  applyCardPriority,
+  applyHandEvent,
+  type CardPriorities,
+  type Hands,
+  type PlayedCards,
+} from "../lib/hands";
 import { useReducedMotion } from "../lib/motion";
 import {
   buildSideMap,
@@ -59,6 +67,9 @@ interface DeckState {
   tick: number;
   sides: SideMap;
   gauges: Gauges;
+  hands: Hands;
+  cardPriorities: CardPriorities;
+  playedCards: PlayedCards;
   victoryPlayer: string | null;
   victorySide: Side;
   latest: string;
@@ -76,6 +87,9 @@ export const INITIAL: DeckState = {
   tick: 0,
   sides: EMPTY_SIDES,
   gauges: {},
+  hands: {},
+  cardPriorities: {},
+  playedCards: {},
   victoryPlayer: null,
   victorySide: "neutral",
   latest: "",
@@ -98,6 +112,9 @@ export function reduce(state: DeckState, action: DeckAction): DeckState {
     tick,
     sides,
     gauges,
+    hands,
+    cardPriorities,
+    playedCards,
     victoryPlayer,
     victorySide,
     latest,
@@ -124,6 +141,9 @@ export function reduce(state: DeckState, action: DeckAction): DeckState {
       latest = "";
       victoryPlayer = null;
       victorySide = "neutral";
+      hands = {};
+      cardPriorities = {};
+      playedCards = {};
     }
 
     rows.push({ env, arrival });
@@ -132,6 +152,10 @@ export function reduce(state: DeckState, action: DeckAction): DeckState {
     counts[groupOf(env)] += 1;
     if (env.match_id) matchId = env.match_id;
     if (env.tick > tick) tick = env.tick;
+
+    hands = applyHandEvent(hands, env);
+    cardPriorities = applyCardPriority(cardPriorities, env);
+    playedCards = applyCardPlay(playedCards, env);
 
     switch (env.event_type) {
       case "match_started": {
@@ -176,6 +200,9 @@ export function reduce(state: DeckState, action: DeckAction): DeckState {
     tick,
     sides,
     gauges,
+    hands,
+    cardPriorities,
+    playedCards,
     victoryPlayer,
     victorySide,
     latest,
@@ -418,7 +445,13 @@ export default function PressureDeck({
       </header>
 
       <div className="pd-body">
-        <SpecPanel gauges={redGauges} side="left" />
+        <SpecPanel
+          gauges={redGauges}
+          hands={state.hands}
+          priorities={state.cardPriorities}
+          played={state.playedCards}
+          side="left"
+        />
 
         <div className="pd-arena-cell" data-testid="arena-cell">
           {/* ArenaView is ALWAYS mounted so its own envelope subscription is
@@ -431,7 +464,14 @@ export default function PressureDeck({
         </div>
 
         <div className="pd-rightcol" data-testid="right-col">
-          <SpecPanel gauges={rightGauges} side="right" emptyPlaceholder={false} />
+          <SpecPanel
+            gauges={rightGauges}
+            hands={state.hands}
+            priorities={state.cardPriorities}
+            played={state.playedCards}
+            side="right"
+            emptyPlaceholder={false}
+          />
           <ArenaFeedback rows={state.rows} sides={state.sides} />
           <EventRiver
             groups={groups}

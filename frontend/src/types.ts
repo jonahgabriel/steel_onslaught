@@ -219,6 +219,13 @@ export interface SOMatchLaunchProvenance {
   seat_assignments: [SOSeatAssignment, SOSeatAssignment];
 }
 
+export interface SOCardRuntimeProvenance {
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.card_runtime_provenance";
+  deck_id: string;
+  content_sha256: string;
+}
+
 export interface SOHumanDecisionSource {
   kind: "human";
   input_source: "browser_command";
@@ -247,6 +254,7 @@ export interface MatchStartedPayload {
   mechs: SOMechRuntimeState[];
   arena: SOArenaSnapshot;
   launch_provenance?: SOMatchLaunchProvenance;
+  card_runtime_provenance?: SOCardRuntimeProvenance;
 }
 
 export type SORuntimeStatus = "ready" | "running" | "paused" | "ended";
@@ -1186,6 +1194,35 @@ function parseMatchLaunchProvenance(value: unknown, context: string): SOMatchLau
   };
 }
 
+function parseCardRuntimeProvenance(value: unknown, context: string): SOCardRuntimeProvenance {
+  const record = asRecord(value, context);
+  rejectUnknown(record, ["schema_version", "kind", "deck_id", "content_sha256"], context);
+  return {
+    schema_version: exactString(
+      record["schema_version"],
+      "0.1.0",
+      `${context}.schema_version`,
+    ) as "0.1.0",
+    kind: exactString(
+      record["kind"],
+      "steel_onslaught.card_runtime_provenance",
+      `${context}.kind`,
+    ) as "steel_onslaught.card_runtime_provenance",
+    deck_id: patternString(
+      record["deck_id"],
+      /^deck\.[a-z0-9][a-z0-9_.-]*$/,
+      "a deck id",
+      `${context}.deck_id`,
+    ),
+    content_sha256: patternString(
+      record["content_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.content_sha256`,
+    ),
+  };
+}
+
 function parseDecisionSource(value: unknown, context: string): SODecisionSource {
   const record = asRecord(value, context);
   const kind = record["kind"];
@@ -1521,7 +1558,11 @@ type PayloadParsers = { [K in SOEventType]: (value: unknown, context: string) =>
 const PAYLOAD_PARSERS: PayloadParsers = {
   match_started: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["seed", "max_ticks", "mechs", "arena", "launch_provenance"], context);
+    rejectUnknown(
+      record,
+      ["seed", "max_ticks", "mechs", "arena", "launch_provenance", "card_runtime_provenance"],
+      context,
+    );
     const mechs = record["mechs"];
     if (!Array.isArray(mechs)) {
       fail(context, 'field "mechs" must be an array');
@@ -1565,12 +1606,22 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       "launch_provenance" in record
         ? parseMatchLaunchProvenance(record["launch_provenance"], `${context}.launch_provenance`)
         : undefined;
+    const cardRuntimeProvenance =
+      "card_runtime_provenance" in record
+        ? parseCardRuntimeProvenance(
+            record["card_runtime_provenance"],
+            `${context}.card_runtime_provenance`,
+          )
+        : undefined;
     return {
       seed: nonNegativeInt(record, "seed", context),
       max_ticks: nullablePositiveInt(record, "max_ticks", context),
       mechs: parsedMechs,
       arena,
       ...(launchProvenance === undefined ? {} : { launch_provenance: launchProvenance }),
+      ...(cardRuntimeProvenance === undefined
+        ? {}
+        : { card_runtime_provenance: cardRuntimeProvenance }),
     };
   },
   runtime_status_changed: (value, context) => {

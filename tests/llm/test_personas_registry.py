@@ -42,7 +42,7 @@ def _write_persona(
 @pytest.mark.unit
 def test_shipped_registry_is_loaded_only_from_explicit_path() -> None:
     registry = PersonaRegistry.load(_SHIPPED_PERSONAS)
-    assert set(registry.as_mapping()) == {"berserker", "sniper", "opportunist"}
+    assert set(registry.as_mapping()) == {"berserker", "sniper", "opportunist", "card_opportunist"}
     berserker = registry.require("berserker")
     assert isinstance(berserker, Persona)
     assert berserker.display_name == "Berserker"

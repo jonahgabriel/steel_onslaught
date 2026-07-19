@@ -1,0 +1,80 @@
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/live_glm/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/live_glm/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/live_glm/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/live_glm/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/live_glm/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/live_glm/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots
+  arena_id: foundry
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_id: deck.standard.v1
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.glm.card_opportunist
+      - side: blue
+        pilot_spec_id: pilot.glm.card_opportunist
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: glm-5.2
+      endpoint_url: https://api.z.ai/api/coding/paas/v4/chat/completions
+      model: glm-5.2
+      secret_ref:
+        kind: opaque
+        ref: secret://llm/glm
+      timeout_seconds: 120.0
+      max_tokens: 4096
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.glm
+      display_name: GLM 5.2
+      provider_binding_id: glm-5.2
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500
