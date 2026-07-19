@@ -21,6 +21,7 @@ from steel_onslaught.cli.play import (
     BrowserPlayServer,
     BrowserPlaySession,
     _configured_browser_server,
+    _InjectedSecretResolver,
     _load_yaml_model,
     _loopback_origin_aliases,
     launch_browser_play_session,
@@ -36,6 +37,7 @@ from steel_onslaught.commands.browser_gateway import (
     ModelSOBrowserStartMatchRequest,
 )
 from steel_onslaught.commands.live_provider import ProcessLocalOneShotLiveProviderCapability
+from steel_onslaught.contracts.application import ModelSOSecretRef
 from steel_onslaught.contracts.commands import (
     ModelSOStartMatchCommand,
     ModelSOStartMatchSeatSelection,
@@ -239,6 +241,47 @@ def test_play_cli_requires_explicit_contract_inputs() -> None:
     result = CliRunner().invoke(main, ["play"])
     assert result.exit_code != 0
     assert "Missing option '--overlay'" in result.stderr
+
+
+@pytest.mark.unit
+def test_live_secret_resolver_maps_explicit_provider_credentials() -> None:
+    resolver = _InjectedSecretResolver.from_cli(
+        glm_api_key="glm-secret",
+        openrouter_api_key="openrouter-secret",
+        gemini_api_key="gemini-secret",
+    )
+
+    assert resolver.resolve(ModelSOSecretRef(kind="opaque", ref="secret://llm/glm")) == (
+        "glm-secret"
+    )
+    assert resolver.resolve(ModelSOSecretRef(kind="opaque", ref="secret://llm/openrouter")) == (
+        "openrouter-secret"
+    )
+    assert resolver.resolve(ModelSOSecretRef(kind="opaque", ref="secret://llm/gemini")) == (
+        "gemini-secret"
+    )
+
+
+@pytest.mark.unit
+def test_live_secret_resolver_rejects_unknown_provider_reference() -> None:
+    resolver = _InjectedSecretResolver.from_cli(
+        glm_api_key=None,
+        openrouter_api_key="openrouter-secret",
+        gemini_api_key=None,
+    )
+
+    with pytest.raises(ValueError, match="no live secret mapping"):
+        resolver.resolve(ModelSOSecretRef(kind="opaque", ref="secret://llm/unknown"))
+
+
+@pytest.mark.unit
+def test_play_live_help_exposes_supported_provider_credentials() -> None:
+    result = CliRunner().invoke(main, ["play-live", "--help"])
+
+    assert result.exit_code == 0
+    assert "--glm-api-key" in result.output
+    assert "--openrouter-api-key" in result.output
+    assert "--gemini-api-key" in result.output
 
 
 @pytest.mark.unit
