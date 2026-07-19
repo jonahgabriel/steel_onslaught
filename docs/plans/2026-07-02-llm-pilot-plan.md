@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-18, `origin/main` 3d63d2c).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` 6e616af).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -122,6 +122,27 @@
 >   root across ticks and exposes a `cancelled` flag; the existing atomic cadence
 >   remains the default. This slice does not change provider endpoints, UI,
 >   deployment, or OCC.
+> - [PR #47](https://github.com/jonahgabriel/steel_onslaught/pull/47),
+>   commit `8a0b603`, refreshes the plan after the explicit card-programmer
+>   composition landed and keeps paced cadence plus the telemetry observer
+>   explicitly deferred as separate follow-up slices.
+> - [PR #48](https://github.com/jonahgabriel/steel_onslaught/pull/48),
+>   commit `01784e7`, reconciles the shipped paced cadence and makes the
+>   browser-started live loop the next product gate while retaining the
+>   telemetry deferral.
+> - [PR #49](https://github.com/jonahgabriel/steel_onslaught/pull/49),
+>   commit `3a292b8`, carries the selected atomic/paced card cadence through
+>   the closed application overlay and runtime DI; paced cadence is rejected
+>   unless card mode is explicitly enabled.
+> - [PR #50](https://github.com/jonahgabriel/steel_onslaught/pull/50),
+>   commit `6e616af`, composes the live browser server only through explicit
+>   capability injection. `configured_live_browser_server` mints a fresh
+>   per-start grant with a bounded multi-completion budget, and exact provider
+>   and pilot IDs flow through selected runtime DI without ambient key or
+>   endpoint discovery. The packaged/default path remains stub-safe and fails
+>   closed when the live secret resolver and HTTP transport are not both
+>   supplied. This slice does not change provider endpoints, UI, deployment, or
+>   OCC.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
@@ -205,7 +226,7 @@ genuine strategic rationale stored in the ledger.
   — **UI-workflow-owned** (not part of this backend integration gate;
   `frontend/` changes are staged/committed by that workflow separately).
 
-## Next — Gate 1 browser loop; telemetry observer remains deferred
+## Next — Gate 1 manual live browser proof; telemetry observer remains deferred
 
 Paced card cadence is now shipped as an explicit runtime mode rather than a
 plan item. The atomic cadence remains the default for callers that do not opt
@@ -225,13 +246,18 @@ invariants:
 - distinguish committed discards from cancellation evidence in replay, so an
   incomplete round cannot be mistaken for a deck commit.
 
-The next remaining product gate is **Gate 1: a browser-started live loop**.
-Prove one admitted `MatchSetup`/`BrowserPlayServer` launch receives the
-authoritative event stream through the browser transport, advances through a
-long enough real selected-model match (including the LLM-vs-LLM default lane),
-and reaches a terminal projection with a Playwright/browser proof. This is a
-live-loop/UI integration gate, not permission to broaden the dashboard, change
-provider endpoints, or mutate deployment/runtime infrastructure.
+The next remaining product gate is **Gate 1: a manual browser-started live
+loop against an actually injected real provider**. The shipped
+`configured_live_browser_server` path is intentionally explicit and
+stub-safe: a packaged/default launch without the live secret resolver and HTTP
+transport is not evidence of a real-provider match. Use an admitted
+`MatchSetup`/`BrowserPlayServer` launch with both capabilities injected, then
+prove through a Playwright/browser run that the authoritative event stream
+arrives through the browser transport, advances through a long enough real
+selected-model match (including the LLM-vs-LLM default lane), and reaches a
+terminal projection. This is a live-loop/UI integration proof, not permission
+to broaden the dashboard, change provider endpoints, or mutate
+deployment/runtime infrastructure.
 
 The telemetry observer remains deferred and independent of both the PR #45
 composition seam and the shipped paced-cadence runtime. Its eventual contract
