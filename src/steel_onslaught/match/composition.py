@@ -315,6 +315,11 @@ class RuntimeDependencies:
     # absent the card adapter uses its deterministic priority programmer;
     # ordinary decide-only pilots are never used as a fallback.
     card_programmers: Mapping[str, ProgrammingPilot] | None = None
+    # Explicit overlay bindings retain their provider/spec resolution in a
+    # match-scoped factory.  The raw mapping above remains available for
+    # compatibility and injected test graphs, while live composition clones
+    # observed programmers per match instead of mutating this dependency.
+    card_programmer_factory: CardProgrammerFactory | None = None
     # Card cadence is contract-selected at the application overlay.  Atomic
     # remains the safe default; paced requires an enabled card adapter.
     card_cadence: Literal["atomic", "paced"] = "atomic"
@@ -764,6 +769,8 @@ def build_card_programmers(
     *,
     registry: PilotSpecRegistry,
     llm: LlmDependencies,
+    observer: ProtocolLlmCompletionObserver | None = None,
+    correlation_id: UUID | None = None,
 ) -> Mapping[str, ProgrammingPilot]:
     """Resolve explicit card seat bindings into fail-closed LLM programmers.
 
@@ -774,6 +781,9 @@ def build_card_programmers(
     represented by an absent mapping entry; the card adapter then retains its
     deterministic priority programmer for that seat.
     """
+
+    if observer is not None and correlation_id is None:
+        raise ValueError("observed card programmers require a match correlation_id")
 
     programmers: dict[str, ProgrammingPilot] = {}
     for binding in bindings:
@@ -791,15 +801,59 @@ def build_card_programmers(
             )
         if not isinstance(spec.parameters, ModelSOLlmPilotParams):
             raise TypeError(f"llm card programmer spec {spec.id!r} has invalid parameters")
-        client = llm.client_factory.client_for(spec.parameters.provider)
+        provider_id = spec.parameters.provider
+        if observer is not None:
+            observed_factory = llm.pilot_factory.with_observer(observer)
+            observed_pilot = observed_factory.llm_pilot(
+                ModelSOLlmPilotSelection(
+                    provider_id=provider_id,
+                    persona_id=spec.parameters.persona,
+                    opponent_trace=None,
+                )
+            )
+            client = cast(Any, observed_pilot).client
+        else:
+            client = llm.client_factory.client_for(provider_id)
         persona = llm.persona_registry.require(spec.parameters.persona)
         programmers[binding.side] = LLMProgrammingPilot(
             client=client,
             persona=persona,
             # Card programming never inherits decide-only/browser fallback.
             failure_policy="raise",
+            correlation_id=correlation_id,
         )
     return MappingProxyType(programmers)
+
+
+@dataclass(frozen=True, slots=True)
+class CardProgrammerFactory:
+    """Clone explicitly bound card programmers for one match identity.
+
+    Provider clients and persona/spec resolution belong to the shared runtime
+    dependency graph, but completion evidence is match-scoped.  This factory
+    therefore creates fresh ``LLMProgrammingPilot`` instances and wraps each
+    selected client with its own observed effect only after the match's
+    identity, event factory, and bus are available.  The shared
+    ``RuntimeDependencies`` and card adapter are never mutated.
+    """
+
+    bindings: tuple[ModelSOCardProgrammerBinding, ...]
+    registry: PilotSpecRegistry
+    llm: LlmDependencies
+
+    def for_match(
+        self,
+        *,
+        identity: MatchIdentity,
+        observer: ProtocolLlmCompletionObserver,
+    ) -> Mapping[str, ProgrammingPilot]:
+        return build_card_programmers(
+            self.bindings,
+            registry=self.registry,
+            llm=self.llm,
+            observer=observer,
+            correlation_id=identity.correlation_id,
+        )
 
 
 def load_loadout(path: Path) -> ModelSOLoadout:
@@ -1053,12 +1107,18 @@ def build_runtime_dependencies(
             selected_pilot_spec_ids=selected_pilot_spec_ids,
         )
         resolved_card_programmers = card_programmers
+        card_programmer_factory: CardProgrammerFactory | None = None
         if card_binding is not None and card_binding.programmers:
             if card_programmers is not None:
                 raise ValueError(
                     "explicit overlay card programmer bindings cannot be combined with "
                     "injected card_programmers"
                 )
+            card_programmer_factory = CardProgrammerFactory(
+                bindings=card_binding.programmers,
+                registry=pilot_registry,
+                llm=llm,
+            )
             resolved_card_programmers = build_card_programmers(
                 card_binding.programmers,
                 registry=pilot_registry,
@@ -1096,6 +1156,7 @@ def build_runtime_dependencies(
             card_runtime_snapshot=card_runtime_snapshot,
             card_adapter=card_adapter,
             card_programmers=resolved_card_programmers,
+            card_programmer_factory=card_programmer_factory,
             card_cadence=card_cadence,
         )
     except Exception:
@@ -1457,14 +1518,13 @@ def assemble_match_with_dependencies(
             f"pilots_override keys must be a subset of {sorted(required)}; "
             f"got unexpected {sorted(unexpected)}"
         )
+    match_observer = LedgerLlmCompletionObserver(
+        correlation_id=identity.correlation_id,
+        event_factory=dependencies.event_factory,
+        emit=dependencies.bus.publish,
+    )
     if required - set(pilots):
-        bound_pilot_factory = dependencies.pilot_factory.with_observer(
-            LedgerLlmCompletionObserver(
-                correlation_id=identity.correlation_id,
-                event_factory=dependencies.event_factory,
-                emit=dependencies.bus.publish,
-            )
-        )
+        bound_pilot_factory = dependencies.pilot_factory.with_observer(match_observer)
         match_dependencies = replace(dependencies, pilot_factory=bound_pilot_factory)
         if mech_a not in pilots:
             pilots[mech_a] = _resolved_pilot(
@@ -1474,6 +1534,18 @@ def assemble_match_with_dependencies(
             pilots[mech_b] = _resolved_pilot(
                 blue, loadout_path=blue_loadout_path, dependencies=match_dependencies
             )
+    # Card programmers are an explicit overlay capability, but their
+    # completion evidence is match-scoped.  Clone the adapter with observed
+    # pilots after identity/factory/bus construction; keep the shared runtime
+    # dependency graph untouched for subsequent matches.
+    card_adapter = dependencies.card_adapter
+    if dependencies.card_programmer_factory is not None:
+        match_card_programmers = dependencies.card_programmer_factory.for_match(
+            identity=identity,
+            observer=match_observer,
+        )
+        if card_adapter is not None:
+            card_adapter = replace(card_adapter, programmers=match_card_programmers)
     dependencies.bus.subscribe(dependencies.ledger.append)
     resolved_progress_gate = progress_gate or dependencies.progress_gate or ConditionProgressGate()
     runner = MatchRunner(
@@ -1491,7 +1563,7 @@ def assemble_match_with_dependencies(
         side_b=side_b,
         launch_provenance=launch_provenance,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
-        card_adapter=dependencies.card_adapter,
+        card_adapter=card_adapter,
         card_cadence=dependencies.card_cadence,
         progress_gate=resolved_progress_gate,
     )
@@ -1508,10 +1580,7 @@ def assemble_match_with_dependencies(
             event_factory=dependencies.event_factory,
             card_catalog=dependencies.card_catalog,
             card_runtime_snapshot=dependencies.card_runtime_snapshot,
-            validate_card_events=(
-                dependencies.card_adapter is not None
-                and dependencies.card_adapter.registers_enabled
-            ),
+            validate_card_events=(card_adapter is not None and card_adapter.registers_enabled),
         ),
     )
     dependencies.bus.subscribe(scoring.handle)
@@ -1562,7 +1631,7 @@ def assemble_match_with_dependencies(
         closer=dependencies.closer,
         card_catalog=dependencies.card_catalog,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
-        card_adapter=dependencies.card_adapter,
+        card_adapter=card_adapter,
     )
 
 
@@ -1785,6 +1854,7 @@ def run_composed_match(
 __all__ = [
     "AdaptationDependencies",
     "ApplicationPilotFactory",
+    "CardProgrammerFactory",
     "IdempotentResourceCloser",
     "LearningDependencies",
     "LiveMatchStack",

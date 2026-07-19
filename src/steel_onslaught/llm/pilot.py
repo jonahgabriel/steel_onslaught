@@ -180,6 +180,12 @@ class LLMPilot:
         self._last_hp_percent_by_mech: dict[str, float] = {}
         self._hp_loss_streak_by_mech: dict[str, int] = {}
 
+    @property
+    def client(self) -> ProtocolLlmClient:
+        """Return the injected client for composition-only adapter seams."""
+
+        return self._client
+
     def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
         """Consult the LLM and return a validated decision, or REMAIN on failure."""
         user_prompt = self._serialize_observation_with_memory(observation)
