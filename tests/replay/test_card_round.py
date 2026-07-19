@@ -150,6 +150,101 @@ def _events() -> list[ModelSOEventEnvelope]:
     return events
 
 
+def _two_seat_events(priority_ranks: tuple[int, int]) -> list[ModelSOEventEnvelope]:
+    """Build one-register events with caller-controlled resolution ranks."""
+    hands = (
+        ModelSOHandDealtPayload(
+            seat="a",
+            deck_id="deck.test.replay",
+            card_ids=("card.test.advance", "card.test.attack"),
+            hand_size=2,
+            deck_remaining=0,
+            reshuffled=False,
+        ),
+        ModelSOHandDealtPayload(
+            seat="b",
+            deck_id="deck.test.replay",
+            card_ids=("card.test.advance", "card.test.attack"),
+            hand_size=2,
+            deck_remaining=0,
+            reshuffled=False,
+        ),
+    )
+    plans = tuple(
+        ModelSOPlanCommittedPayload(
+            seat=hand.seat,
+            registers=(ModelSOPlanRegister(register_index=0, card_id="card.test.advance"),),
+            rationale="advance",
+            confidence=1.0,
+        )
+        for hand in hands
+    )
+    # The producer emits rows in priority order.  The exact rank values are
+    # intentionally injectable so malformed skipped/duplicate streams can be
+    # exercised without bypassing the canonical payload models.
+    resolutions = (
+        ModelSORegisterResolvedPayload(
+            seat="b",
+            register_index=0,
+            card_id="card.test.advance",
+            action="move",
+            outcome=SORegisterOutcome.RESOLVED,
+            priority=10,
+            priority_rank=priority_ranks[0],
+            fill_reason=None,
+        ),
+        ModelSORegisterResolvedPayload(
+            seat="a",
+            register_index=0,
+            card_id="card.test.advance",
+            action="move",
+            outcome=SORegisterOutcome.RESOLVED,
+            priority=10,
+            priority_rank=priority_ranks[1],
+            fill_reason=None,
+        ),
+    )
+    discarded = tuple(
+        ModelSOCardsDiscardedPayload(
+            seat=hand.seat,
+            card_ids=hand.card_ids,
+            reason="end_of_round",
+        )
+        for hand in hands
+    )
+    payloads = (*hands, *plans, *resolutions, *discarded)
+    types = (
+        SOEventType.HAND_DEALT,
+        SOEventType.HAND_DEALT,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.PLAN_COMMITTED,
+        SOEventType.REGISTER_RESOLVED,
+        SOEventType.REGISTER_RESOLVED,
+        SOEventType.CARDS_DISCARDED,
+        SOEventType.CARDS_DISCARDED,
+    )
+    events = []
+    previous: UUID | None = None
+    for index, (event_type, payload) in enumerate(zip(types, payloads, strict=True), start=1):
+        event = make_event(
+            match_id=_MATCH_ID,
+            tick=1,
+            sequence_in_tick=index,
+            event_type=event_type,
+            producer_node="node.test.card-replay",
+            subject=_SUBJECT,
+            payload=payload.model_dump(mode="json"),
+            correlation_id=_CORRELATION,
+            causation_id=previous,
+            event_id=f"01JTEST{index:019d}",
+            message_id=UUID(int=index),
+            emitted_at=_NOW,
+        )
+        events.append(event)
+        previous = event.envelope.message_id
+    return events
+
+
 def _swap(events: list[ModelSOEventEnvelope]) -> list[ModelSOEventEnvelope]:
     return [events[1], events[0], events[2], events[3]]
 
@@ -221,3 +316,24 @@ def test_parser_rejects_unknown_deck_and_provenance_mismatch() -> None:
     )
     with pytest.raises(CardRoundReplayError, match="provenance"):
         parse_card_round_events(_events(), snapshot=snapshot, expected_provenance=bad_provenance)
+
+
+@pytest.mark.parametrize(
+    "priority_ranks",
+    [
+        (0, 2),
+        (0, 0),
+    ],
+    ids=("skipped", "duplicate"),
+)
+def test_parser_rejects_skipped_or_duplicate_priority_ranks(
+    priority_ranks: tuple[int, int],
+) -> None:
+    """Each register's ranks must match the producer's ``enumerate`` output."""
+    with pytest.raises(CardRoundReplayError, match="priority_rank") as exc_info:
+        parse_card_round_events(
+            _two_seat_events(priority_ranks),
+            snapshot=_snapshot(),
+            expected_match_id=_MATCH_ID,
+        )
+    assert f"got {list(priority_ranks)!r}" in str(exc_info.value)
