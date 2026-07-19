@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from steel_onslaught.contracts.application import ModelSOOpenAICompatibleProviderBinding
+from steel_onslaught.contracts.pilot import ModelSOLlmPilotParams
 from steel_onslaught.match.composition import (
     load_application_overlay,
     load_card_runtime_snapshot,
@@ -33,6 +35,7 @@ def test_tactical_qwen27_overlay_binds_exact_lab_provider_and_model() -> None:
     )
 
     provider = overlay.llm.providers[0]
+    assert isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
     assert provider.provider_id == "qwen27"
     assert provider.model == "Qwen3.6-27B-MTP-IQ4_XS.gguf"
     assert provider.endpoint_url == (
@@ -50,6 +53,7 @@ def test_tactical_qwen27_overlay_resolves_full_pilot_registry_and_deck() -> None
     spec = registry.get("pilot.llm.qwen27")
 
     assert spec is not None
+    assert isinstance(spec.parameters, ModelSOLlmPilotParams)
     assert spec.parameters.provider == "qwen27"
     assert spec.parameters.persona == "sniper"
 
