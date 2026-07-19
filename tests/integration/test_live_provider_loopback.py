@@ -430,7 +430,12 @@ def _roster(red_pilot_id: str) -> ModelSOPlayerRosterBinding:
     )
 
 
-def _response() -> ModelSOOpenAIChatResponse:
+def _response(
+    *,
+    action: str = "remain",
+    action_params: dict[str, str] | None = None,
+    rationale: str = "fixture accepted",
+) -> ModelSOOpenAIChatResponse:
     return ModelSOOpenAIChatResponse.model_validate(
         {
             "id": "raw-provider-id-must-not-be-emitted",
@@ -440,10 +445,10 @@ def _response() -> ModelSOOpenAIChatResponse:
                         "role": "assistant",
                         "content": json.dumps(
                             {
-                                "action": "remain",
-                                "action_params": {},
+                                "action": action,
+                                "action_params": action_params or {},
                                 "confidence": 1.0,
-                                "rationale": "fixture accepted",
+                                "rationale": rationale,
                             }
                         ),
                     },
@@ -454,6 +459,36 @@ def _response() -> ModelSOOpenAIChatResponse:
             "model": "served-live-model",
         }
     )
+
+
+class _VariedGlmTransport(_Transport):
+    """Persona-keyed provider fixture that proves the default duel is asymmetric."""
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def post_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        request: ModelSOOpenAIChatRequest,
+        timeout_seconds: float,
+    ) -> ModelSOOpenAIChatResponse:
+        self.calls.append((url, headers, request, timeout_seconds))
+        system_prompt = request.messages[0].content
+        if "METHODICAL SNIPER" in system_prompt:
+            return _response(
+                action="move",
+                action_params={"direction": "defensive"},
+                rationale="sniper holds standoff and breaks the firing line",
+            )
+        if "OPPORTUNIST" in system_prompt:
+            return _response(
+                action="remain",
+                rationale="opportunist waits for an overextension before counter-punching",
+            )
+        raise AssertionError("live GLM fixture received an unknown persona prompt")
 
 
 @pytest.mark.integration
@@ -645,7 +680,7 @@ def test_browser_live_start_defaults_to_glm_vs_glm_and_replays_terminal_match(
         )
     )
     resolver = _Resolver("fixture-glm-secret")
-    transport = _Transport(_response())
+    transport = _VariedGlmTransport()
     factory = CliApplicationFactory.live(
         secret_resolver=resolver,
         http_transport=transport,
@@ -686,7 +721,7 @@ def test_browser_live_start_defaults_to_glm_vs_glm_and_replays_terminal_match(
         live_provider_capability=capability,
         live_runtime_factory=live_runtime_factory,  # type: ignore[arg-type]
         seed=7,
-        max_ticks=4,
+        max_ticks=8,
         allowed_origins=("http://localhost:5173", "http://127.0.0.1:5173"),
     )
     try:
@@ -720,6 +755,35 @@ def test_browser_live_start_defaults_to_glm_vs_glm_and_replays_terminal_match(
             thaw_json_mapping(event.payload)["provider_id"] == "glm-5.2"
             for event in (*requested, *resolved)
         )
+        decision_events = [
+            event for event in events if event.event_type is SOEventType.PILOT_DECISION_MADE
+        ]
+        decisions_by_player = {
+            player_id: [
+                thaw_json_mapping(event.payload)
+                for event in decision_events
+                if event.subject.player_id == player_id
+            ]
+            for player_id in ("player.red", "player.blue")
+        }
+        assert all(len(decisions) >= 2 for decisions in decisions_by_player.values())
+        red_decisions = decisions_by_player["player.red"]
+        blue_decisions = decisions_by_player["player.blue"]
+        assert all(decision["action"] == "move" for decision in red_decisions)
+        assert all(
+            decision["action_params"] == {"direction": "defensive"} for decision in red_decisions
+        )
+        assert all(
+            decision["rationale"] == ("sniper holds standoff and breaks the firing line")
+            for decision in red_decisions
+        )
+        assert all(decision["action"] == "remain" for decision in blue_decisions)
+        assert all(
+            decision["rationale"]
+            == ("opportunist waits for an overextension before counter-punching")
+            for decision in blue_decisions
+        )
+        assert red_decisions[0]["rationale"] != blue_decisions[0]["rationale"]
         assert final.status.value == "ended"
         replayed = ReplayEngine(
             session.stack.ledger,
