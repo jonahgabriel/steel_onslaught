@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from steel_onslaught.contracts.card_learning import (
+    ModelSOCardLearningMetric,
+    aggregate_card_learning_metrics,
+)
 from steel_onslaught.contracts.lineage import ParamDict, spec_hash
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
@@ -12,6 +16,7 @@ from steel_onslaught.learning.artifacts import (
     LearningArtifactStore,
     MaterializedLoadout,
 )
+from steel_onslaught.learning.post_match import project_card_learning_metrics
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import spec_from_params
 from steel_onslaught.match.duel import DuelExecutor, ModelSOEvaluationStorageKey
@@ -83,14 +88,14 @@ class DuelEvaluator:
         outcomes: list[ModelSOSeedOutcome] = []
         for seed in seed_list:
             # Side-swapped pair (Decision #2): candidate fields red, then blue.
-            first, cand_first, par_first = self._duel(
+            first, cand_first, par_first, cand_metrics_first, par_metrics_first = self._duel(
                 workspace,
                 seed=seed,
                 loadout_red=candidate_loadout,
                 loadout_blue=parent_loadout,
                 candidate_side=_SIDE_RED,
             )
-            second, cand_second, par_second = self._duel(
+            second, cand_second, par_second, cand_metrics_second, par_metrics_second = self._duel(
                 workspace,
                 seed=seed,
                 loadout_red=parent_loadout,
@@ -103,6 +108,12 @@ class DuelEvaluator:
                     winner=aggregate_pair(first, second),
                     candidate_overloads=cand_first + cand_second,
                     parent_overloads=par_first + par_second,
+                    candidate_card_learning_metrics=aggregate_card_learning_metrics(
+                        (cand_metrics_first, cand_metrics_second)
+                    ),
+                    parent_card_learning_metrics=aggregate_card_learning_metrics(
+                        (par_metrics_first, par_metrics_second)
+                    ),
                 )
             )
         return outcomes
@@ -161,7 +172,13 @@ class DuelEvaluator:
         loadout_red: MaterializedLoadout,
         loadout_blue: MaterializedLoadout,
         candidate_side: str,
-    ) -> tuple[SOSeedWinner, int, int]:
+    ) -> tuple[
+        SOSeedWinner,
+        int,
+        int,
+        tuple[ModelSOCardLearningMetric, ...],
+        tuple[ModelSOCardLearningMetric, ...],
+    ]:
         """Run one duel; return (side-normalized winner, candidate_overloads,
         parent_overloads) for this duel alone."""
         parent_side = _SIDE_BLUE if candidate_side == _SIDE_RED else _SIDE_RED
@@ -195,7 +212,13 @@ class DuelEvaluator:
             result.events, mech_id=f"mech.{candidate_side}.01"
         )
         parent_overloads = self._count_overloads(result.events, mech_id=f"mech.{parent_side}.01")
-        return winner, candidate_overloads, parent_overloads
+        candidate_metrics = project_card_learning_metrics(
+            result.events, mech_id=f"mech.{candidate_side}.01"
+        )
+        parent_metrics = project_card_learning_metrics(
+            result.events, mech_id=f"mech.{parent_side}.01"
+        )
+        return winner, candidate_overloads, parent_overloads, candidate_metrics, parent_metrics
 
     @staticmethod
     def _count_overloads(events: tuple[ModelSOEventEnvelope, ...], *, mech_id: str) -> int:

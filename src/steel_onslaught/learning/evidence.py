@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
+from steel_onslaught.contracts.card_learning import ModelSOCardLearningMetric
 from steel_onslaught.events.payloads import ModelSOPlayerScore
 from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 
@@ -45,6 +46,7 @@ class ModelSOAfterMatchLearningEvidence(BaseModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    card_learning_metrics: tuple[ModelSOCardLearningMetric, ...] = ()
 
 
 __all__ = ["ModelSOAfterMatchLearningEvidence"]

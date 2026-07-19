@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from steel_onslaught.contracts.card_learning import aggregate_card_learning_metrics
 from steel_onslaught.contracts.lineage import (
     ModelSOLineageEvidence,
     ModelSOLineageGenerator,
@@ -241,6 +242,18 @@ def evaluate_promotion(
     evidence = ModelSOLineageEvidence(
         search_seeds=tuple(o.seed for o in search_outcomes),
         holdout_seeds=tuple(o.seed for o in holdout_outcomes),
+        candidate_card_learning_metrics=aggregate_card_learning_metrics(
+            tuple(
+                outcome.candidate_card_learning_metrics
+                for outcome in (*search_outcomes, *holdout_outcomes)
+            )
+        ),
+        parent_card_learning_metrics=aggregate_card_learning_metrics(
+            tuple(
+                outcome.parent_card_learning_metrics
+                for outcome in (*search_outcomes, *holdout_outcomes)
+            )
+        ),
     )
 
     performance = ModelSOLineagePerformance(

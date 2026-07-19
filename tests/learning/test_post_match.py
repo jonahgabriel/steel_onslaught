@@ -10,13 +10,17 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from steel_onslaught.contracts.card_learning import ModelSOCardLearningMetric
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.payloads import CURRENT_CONSUMED_PAYLOAD_MODELS
 from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
     YamlFilesystemLearningArtifactStore,
 )
-from steel_onslaught.learning.post_match import project_match_learning_evidence
+from steel_onslaught.learning.post_match import (
+    project_card_learning_metrics,
+    project_match_learning_evidence,
+)
 from steel_onslaught.match.composition import assemble_match_live
 from tests.fixtures.event_samples import build_sample_envelopes
 from tests.overlay import complete_test_overlay
@@ -43,6 +47,80 @@ def test_projection_counts_canonical_events_and_pilot_decisions() -> None:
     assert sum(evidence.event_counts.values()) == len(_complete_fixture_stream())
     assert evidence.decision_action_counts["fire_weapon"] == 1
     assert evidence.decision_reason_counts["target_in_range"] == 1
+    assert tuple(metric.card_id for metric in evidence.card_learning_metrics) == (
+        "card.attack.fire_primary",
+        "card.movement.advance",
+        "card.vent.emergency_vent",
+    )
+    movement = evidence.card_learning_metrics[1]
+    assert movement.dealt_count == 1
+    assert movement.planned_count == 1
+    assert movement.resolved_count == 1
+    assert dict(movement.outcome_counts) == {"resolved": 1}
+    assert dict(movement.action_counts) == {"move": 1}
+
+
+@pytest.mark.unit
+def test_card_metrics_only_use_canonical_card_lifecycle_events() -> None:
+    stream = _complete_fixture_stream()
+
+    metrics = project_card_learning_metrics(stream)
+
+    assert {str(metric.card_id) for metric in metrics} == {
+        "card.attack.fire_primary",
+        "card.movement.advance",
+        "card.vent.emergency_vent",
+    }
+    # CARDS_DISCARDED contains all three ids but is deliberately not a usage
+    # event, and must not change any metric.
+    without_discard = tuple(
+        event for event in stream if event.event_type is not SOEventType.CARDS_DISCARDED
+    )
+    assert project_card_learning_metrics(without_discard) == metrics
+
+
+@pytest.mark.unit
+def test_card_metrics_reject_unknown_fields_in_canonical_payload() -> None:
+    samples = build_sample_envelopes()
+    hand = samples[SOEventType.HAND_DEALT]
+    invalid = hand.model_copy(update={"payload": {**hand.payload, "untrusted": True}})
+    stream = [
+        invalid if event.event_type is SOEventType.HAND_DEALT else event
+        for event in _complete_fixture_stream()
+    ]
+
+    with pytest.raises(ValidationError, match="untrusted"):
+        project_match_learning_evidence(stream)
+
+
+@pytest.mark.unit
+def test_card_metrics_allow_heat_locked_reuse_without_new_plan_assignment() -> None:
+    samples = build_sample_envelopes()
+    resolved = samples[SOEventType.REGISTER_RESOLVED]
+    heat_locked = resolved.model_copy(
+        update={
+            "payload": {
+                **resolved.payload,
+                "card_id": "card.attack.heat_locked_reuse",
+                "action": "fire_primary",
+                "outcome": "heat_locked",
+                "fill_reason": None,
+            }
+        }
+    )
+
+    metrics = project_card_learning_metrics([heat_locked])
+
+    assert metrics == (
+        ModelSOCardLearningMetric(
+            card_id="card.attack.heat_locked_reuse",
+            dealt_count=0,
+            planned_count=0,
+            resolved_count=1,
+            outcome_counts={"heat_locked": 1},
+            action_counts={"fire_primary": 1},
+        ),
+    )
 
 
 @pytest.mark.unit
