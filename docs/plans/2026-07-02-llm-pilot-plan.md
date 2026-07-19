@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` 3e2a200).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` 1abc5a6).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -203,6 +203,22 @@
 >   and the browser gateway loopback tests prove both invariants. The focused
 >   browser-gateway integration suite passes; this is transport-ordering
 >   hardening only and does not satisfy the manual real-provider/browser Gate 1.
+> - [PR #63](https://github.com/jonahgabriel/steel_onslaught/pull/63),
+>   commit `ab0884a`, proves role-varied decisions for the contract-declared
+>   default GLM-vs-GLM duel. Persona-keyed injected clients produce distinct
+>   legal actions and rationales for the sniper and opportunist seats, with at
+>   least two decisions per seat and terminal `ReplayEngine` equality. This is
+>   hermetic behavioral variation evidence; it does not satisfy the manual
+>   real-provider/browser Gate 1.
+> - [PR #64](https://github.com/jonahgabriel/steel_onslaught/pull/64),
+>   commit `1abc5a6`, makes model-roster composition fail closed when a selected
+>   option's pilot spec is unknown, non-LLM, or mismatched on provider or
+>   persona. Authority and match-launch coordinator paths now receive the pilot
+>   registry through explicit DI, and the shipped `live_glm_varied` roster proves
+>   the canonical pilot-spec → provider → persona binding chain. This is contract
+>   validation and DI hardening only; it does not change UI, provider endpoints,
+>   deployment, or OCC and does not satisfy the manual real-provider/browser
+>   Gate 1.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
