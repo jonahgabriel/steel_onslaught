@@ -65,12 +65,12 @@ from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import Clock, EventFactory, IdentityProvider
 from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
+from steel_onslaught.learning.after_match import AfterMatchLearningHandler
 from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
     YamlFilesystemLearningArtifactStore,
 )
-from steel_onslaught.learning.post_match import project_match_learning_evidence
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.llm.client_http import (
@@ -1642,18 +1642,12 @@ def assemble_match_with_dependencies(
 
     learning_artifacts = dependencies.learning_artifacts
     if learning_artifacts is not None:
-
-        def _on_match_learning_evidence(_event: ModelSOEventEnvelope) -> None:
-            # MATCH_SCORED is published only after the ledger subscriber has
-            # durably appended the terminal event.  Re-project the complete
-            # canonical stream so no UI/pilot-local state enters evidence.
-            evidence = project_match_learning_evidence(
-                dependencies.ledger.read_all(identity.match_id)
-            )
-            learning_artifacts.write_after_match_evidence(evidence)
-
+        learning_handler = AfterMatchLearningHandler(
+            ledger=dependencies.ledger,
+            artifacts=learning_artifacts,
+        )
         dependencies.bus.subscribe(
-            _on_match_learning_evidence,
+            learning_handler.handle,
             event_types=[SOEventType.MATCH_SCORED],
         )
     return LiveMatchStack(
