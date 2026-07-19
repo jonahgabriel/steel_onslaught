@@ -72,6 +72,7 @@ from steel_onslaught.events.payloads import (
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.state import ModelSOMatchState
+from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.replay.engine import ReplayEngine
 
@@ -154,6 +155,7 @@ def verify_replay_validity(
     event_factory: EventFactory,
     card_catalog: ModelSOCardCatalog | None = None,
     card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
+    card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None,
     validate_card_events: bool = False,
 ) -> bool:
     """Return True when the replay engine reproduces *live_state* exactly.
@@ -168,6 +170,7 @@ def verify_replay_validity(
         event_factory=event_factory,
         card_catalog=card_catalog,
         card_runtime_snapshot=card_runtime_snapshot,
+        card_rule_pack_provenance=card_rule_pack_provenance,
         validate_card_events=validate_card_events,
     )
     return engine.reconstruct_at_tick(live_state.tick) == live_state

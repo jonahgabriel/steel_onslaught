@@ -20,6 +20,7 @@ from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.cards.dealer import DealerCompute
 from steel_onslaught.cards.registers import RegisterExecutionReducer
 from steel_onslaught.cards.round import CardRoundRuntime
+from steel_onslaught.cards.rules import CardProgrammingRuleRegistry, default_rule_registry
 from steel_onslaught.commands.authority import (
     AuthenticatedSessionCapability,
     ModelSOStartMatchAuthorityContext,
@@ -130,7 +131,10 @@ from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.defensive import DefensivePilot
 from steel_onslaught.pilots.human import HumanPilot
 from steel_onslaught.pilots.predictive import PredictivePilot
-from steel_onslaught.pilots.programming import ProgrammingPilot
+from steel_onslaught.pilots.programming import (
+    ModelSOCardRulePackProvenance,
+    ProgrammingPilot,
+)
 from steel_onslaught.pilots.schemas import PilotProtocol
 from steel_onslaught.projections.leaderboard.handler import (
     LeaderboardHandler,
@@ -323,6 +327,8 @@ class RuntimeDependencies:
     # Card cadence is contract-selected at the application overlay.  Atomic
     # remains the safe default; paced requires an enabled card adapter.
     card_cadence: Literal["atomic", "paced"] = "atomic"
+    # Content-addressed selected rule pack copied into MATCH_STARTED.
+    card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None
 
     def __post_init__(self) -> None:
         if self.card_cadence not in {"atomic", "paced"}:
@@ -331,6 +337,12 @@ class RuntimeDependencies:
             self.card_adapter is None or not self.card_adapter.registers_enabled
         ):
             raise ValueError("paced card cadence requires enabled card mode")
+        if self.card_rule_pack_provenance is not None and not isinstance(
+            self.card_rule_pack_provenance, ModelSOCardRulePackProvenance
+        ):
+            raise TypeError(
+                "card_rule_pack_provenance must be ModelSOCardRulePackProvenance when supplied"
+            )
         snapshot = self.card_runtime_snapshot
         if snapshot is None:
             return
@@ -432,6 +444,7 @@ class LiveMatchStack:
     closer: ProtocolResourceCloser
     card_catalog: ModelSOCardCatalog | None = None
     card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None
+    card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None
     card_adapter: CardRunnerAdapter | None = None
     _launch_provenance: ModelSOMatchLaunchProvenance | None = None
     _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
@@ -660,6 +673,8 @@ def build_card_runner_adapter(
     *,
     snapshot: ModelSOCardRuntimeSnapshot,
     programmers: Mapping[str, ProgrammingPilot] | None = None,
+    rule_registry: CardProgrammingRuleRegistry | None = None,
+    rule_handler_ids: tuple[str, ...] = (),
 ) -> CardRunnerAdapter:
     """Compose the explicit card runtime graph for an enabled overlay.
 
@@ -685,6 +700,8 @@ def build_card_runner_adapter(
         dealer=dealer,
         reducer=reducer,
         programmers=programmers,
+        rule_registry=rule_registry,
+        rule_handler_ids=rule_handler_ids,
     )
 
 
@@ -1108,6 +1125,21 @@ def build_runtime_dependencies(
         )
         resolved_card_programmers = card_programmers
         card_programmer_factory: CardProgrammerFactory | None = None
+        rule_binding = overlay.contracts.balance_rule_pack
+        rule_registry: CardProgrammingRuleRegistry | None = None
+        rule_handler_ids: tuple[str, ...] = ()
+        if rule_binding is not None:
+            if card_binding is None or not card_binding.card_mode_enabled:
+                raise ValueError(
+                    "balance_rule_pack requires an explicitly enabled card catalog"
+                )
+            rule_registry = default_rule_registry()
+            if rule_binding.pack_id != rule_registry.pack_id:
+                raise ValueError(
+                    f"unknown balance rule pack {rule_binding.pack_id!r}; "
+                    f"available pack is {rule_registry.pack_id!r}"
+                )
+            rule_handler_ids = tuple(rule_binding.handler_ids)
         if card_binding is not None and card_binding.programmers:
             if card_programmers is not None:
                 raise ValueError(
@@ -1130,6 +1162,8 @@ def build_runtime_dependencies(
             card_adapter = build_card_runner_adapter(
                 snapshot=card_runtime_snapshot,
                 programmers=resolved_card_programmers,
+                rule_registry=rule_registry,
+                rule_handler_ids=rule_handler_ids,
             )
         else:
             card_adapter = None
@@ -1158,6 +1192,9 @@ def build_runtime_dependencies(
             card_programmers=resolved_card_programmers,
             card_programmer_factory=card_programmer_factory,
             card_cadence=card_cadence,
+            card_rule_pack_provenance=(
+                card_adapter.rule_provenance if card_adapter is not None else None
+            ),
         )
     except Exception:
         if owns_llm:
@@ -1563,6 +1600,7 @@ def assemble_match_with_dependencies(
         side_b=side_b,
         launch_provenance=launch_provenance,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
+        card_rule_pack_provenance=dependencies.card_rule_pack_provenance,
         card_adapter=card_adapter,
         card_cadence=dependencies.card_cadence,
         progress_gate=resolved_progress_gate,
@@ -1580,6 +1618,7 @@ def assemble_match_with_dependencies(
             event_factory=dependencies.event_factory,
             card_catalog=dependencies.card_catalog,
             card_runtime_snapshot=dependencies.card_runtime_snapshot,
+            card_rule_pack_provenance=dependencies.card_rule_pack_provenance,
             validate_card_events=(card_adapter is not None and card_adapter.registers_enabled),
         ),
     )
@@ -1631,6 +1670,7 @@ def assemble_match_with_dependencies(
         closer=dependencies.closer,
         card_catalog=dependencies.card_catalog,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
+        card_rule_pack_provenance=dependencies.card_rule_pack_provenance,
         card_adapter=card_adapter,
     )
 

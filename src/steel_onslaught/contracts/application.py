@@ -115,6 +115,25 @@ class ModelSOCardCatalogBinding(_ClosedBinding):
         return self
 
 
+class ModelSOBalanceRulePackBinding(_ClosedBinding):
+    """Explicit allowlisted card-programming rule pack selection."""
+
+    kind: Literal["card_programming_rules"]
+    pack_id: StrictStr = Field(
+        min_length=1,
+        max_length=96,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    # Order is semantic: handlers are applied in this declared sequence.
+    handler_ids: tuple[StrictStr, ...] = ()
+
+    @model_validator(mode="after")
+    def _handler_ids_are_unique(self) -> Self:
+        if len(self.handler_ids) != len(set(self.handler_ids)):
+            raise ValueError("balance rule handler_ids must be unique")
+        return self
+
+
 class ModelSOContractBindings(_ClosedBinding):
     """Filesystem contract roots owned by the application overlay.
 
@@ -128,6 +147,10 @@ class ModelSOContractBindings(_ClosedBinding):
     pilot_registry_dir: Path
     arena_id: StrictStr = Field(pattern=r"^[a-z][a-z0-9_]*$")
     card_catalog: ModelSOCardCatalogBinding | None = None
+    balance_rule_pack: ModelSOBalanceRulePackBinding | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class ModelSOSystemClockBinding(_ClosedBinding):
@@ -357,6 +380,7 @@ class ModelSOFrontendBootstrap(_ClosedBinding):
 
 __all__ = [
     "ModelSOApplicationOverlay",
+    "ModelSOBalanceRulePackBinding",
     "ModelSOCardCatalogBinding",
     "ModelSOCardProgrammerBinding",
     "ModelSOContractBindings",

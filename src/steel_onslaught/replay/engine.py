@@ -38,6 +38,7 @@ from steel_onslaught.events.payloads import ModelSOMatchStartedPayload
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.state import ModelSOMatchState
+from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.replay.card_round import (
     ModelSOCardRoundReplay,
     validate_card_event_stream,
@@ -80,6 +81,7 @@ class ReplayEngine:
         event_factory: EventFactory,
         card_catalog: ModelSOCardCatalog | None = None,
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
+        card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None,
         historical_arena_migration: ModelSOCurrentLiveArenaSnapshot | None = None,
         card_round_validator: CardRoundEventValidator | None = None,
         validate_card_events: bool = False,
@@ -97,6 +99,13 @@ class ReplayEngine:
             else None
         )
         self._card_runtime_snapshot = card_runtime_snapshot
+        if card_rule_pack_provenance is not None and not isinstance(
+            card_rule_pack_provenance, ModelSOCardRulePackProvenance
+        ):
+            raise TypeError(
+                "card_rule_pack_provenance must be ModelSOCardRulePackProvenance when supplied"
+            )
+        self._card_rule_pack_provenance = card_rule_pack_provenance
         if card_runtime_snapshot is not None and card_catalog is not None:
             if card_runtime_snapshot.card_catalog is not card_catalog:
                 raise ValueError("card_catalog and card_runtime_snapshot must share identity")
@@ -254,6 +263,7 @@ class ReplayEngine:
                     arena=self._historical_arena_migration,
                 )
             self._validate_card_runtime_provenance(event)
+            self._validate_card_rule_pack_provenance(event)
             fold.apply(event)
         return fold.state
 
@@ -276,3 +286,20 @@ class ReplayEngine:
             return
         if expected is None or recorded is None or recorded != expected:
             raise ValueError("card runtime provenance does not match the replay snapshot")
+
+    def _validate_card_rule_pack_provenance(self, event: ModelSOEventEnvelope) -> None:
+        """Reject replay when the selected card-rule pack is absent or drifts."""
+
+        if event.event_type is not SOEventType.MATCH_STARTED:
+            return
+        payload = ModelSOMatchStartedPayload.model_validate(event.payload)
+        recorded = payload.card_rule_pack_provenance
+        expected = self._card_rule_pack_provenance
+        if expected is None and recorded is None:
+            return
+        if expected is None:
+            raise ValueError(
+                "MATCH_STARTED carries card rule-pack provenance but replay has no pack"
+            )
+        if recorded is None or recorded != expected:
+            raise ValueError("card rule-pack provenance does not match the replay pack")

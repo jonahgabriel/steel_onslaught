@@ -82,6 +82,7 @@ from steel_onslaught.match.state import (
     SOMatchEndReason,
     SOMatchStatus,
 )
+from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
 from steel_onslaught.reducers.damage import (
     compute_armor_reduction,
@@ -179,6 +180,7 @@ class MatchRunner:
         facing_b: int = _FACING_B,
         launch_provenance: ModelSOMatchLaunchProvenance | None = None,
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
+        card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None,
         card_adapter: CardRunnerAdapter | None = None,
         card_cadence: Literal["atomic", "paced"] = "atomic",
         progress_gate: ProgressGate | None = None,
@@ -225,6 +227,13 @@ class MatchRunner:
                 "card_runtime_snapshot and card_adapter must share the exact snapshot object"
             )
         self._card_runtime_snapshot = card_runtime_snapshot or adapter_snapshot
+        if card_rule_pack_provenance is not None and not isinstance(
+            card_rule_pack_provenance, ModelSOCardRulePackProvenance
+        ):
+            raise TypeError(
+                "card_rule_pack_provenance must be ModelSOCardRulePackProvenance when supplied"
+            )
+        self._card_rule_pack_provenance = card_rule_pack_provenance
         self._card_adapter = card_adapter
         if card_cadence not in {"atomic", "paced"}:
             raise ValueError("card_cadence must be 'atomic' or 'paced'")
@@ -314,6 +323,10 @@ class MatchRunner:
         )
         if card_provenance is not None:
             started_payload["card_runtime_provenance"] = card_provenance.model_dump(mode="json")
+        if self._card_rule_pack_provenance is not None:
+            started_payload["card_rule_pack_provenance"] = (
+                self._card_rule_pack_provenance.model_dump(mode="json")
+            )
         self._bus.publish(
             self._make_match_event(
                 SOEventType.MATCH_STARTED,
