@@ -67,7 +67,7 @@
 >    remaining work including the operator's new experiment directions
 >    from `HANDOFF.md` (cross-adaptation, eval-framework reuse).
 
-> **Current reconciliation (2026-07-19, `origin/main` 7a03ca8).** The Rev 5
+> **Current reconciliation (2026-07-19, `origin/main` bdd9b33).** The Rev 5
 > history below is retained as historical evidence. The following follow-up
 > PRs are now landed and are the current implementation baseline:
 >
@@ -227,6 +227,22 @@
 >   not expand registry/archetype/input-source validation, change UI,
 >   provider endpoints, deployment, or OCC, and does not satisfy the manual
 >   real-provider/browser Gate 1.
+
+> - [PR #68](https://github.com/jonahgabriel/steel_onslaught/pull/68),
+>   commit `3bccfb6`, makes the in-process bus reject repeated or backward
+>   `MATCH_TICK` boundaries before subscriber delivery or sequence-state
+>   mutation. Forward jumps remain compatible with the existing bus contract;
+>   lifecycle validation still owns exact per-match tick increments. This is
+>   event-ordering hardening only and does not change the UI, provider
+>   endpoints, deployment, OCC, Kafka lane, or the manual real-provider/browser
+>   Gate 1.
+> - [PR #69](https://github.com/jonahgabriel/steel_onslaught/pull/69),
+>   commit `bdd9b33`, corrects learning context-arm projection to retain
+>   candidate-winner (parent-lost) duels regardless of whether the candidate is
+>   red or blue. Regression coverage exercises both orientations and keeps
+>   parent-winner duels excluded. This is learning-artifact projection only;
+>   it does not change match truth, replay semantics, UI, provider endpoints,
+>   deployment, OCC, Kafka, or the manual real-provider/browser Gate 1.
 
 ## Rev 5 — state reconciliation (2026-07-02, post-implementation)
 
