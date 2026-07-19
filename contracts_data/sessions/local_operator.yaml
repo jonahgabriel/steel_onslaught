@@ -4,3 +4,4 @@ human_identity_id: human_identity.local_operator
 permissions:
   - match:create
   - seat:red
+  - seat:blue
