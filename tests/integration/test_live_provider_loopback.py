@@ -360,6 +360,53 @@ def test_selected_runtime_builds_only_explicit_provider_and_pilot(tmp_path: Path
 
 
 @pytest.mark.integration
+def test_selected_runtime_keyless_qwen_overlay_does_not_inject_secret_resolver(
+    tmp_path: Path,
+) -> None:
+    """The configured Qwen live lane is keyless and must compose successfully."""
+
+    source = load_application_overlay(_ROOT / "contracts_data/overlays/tactical_v1_qwen.yaml")
+    overlay = source.model_copy(
+        update={
+            "event_ledger": source.event_ledger.model_copy(
+                update={"path": tmp_path / "events.sqlite3"}
+            ),
+            "leaderboard": source.leaderboard.model_copy(
+                update={"path": tmp_path / "leaderboard.sqlite3"}
+            ),
+            "learning_artifacts": source.learning_artifacts.model_copy(
+                update={
+                    "evaluation_root": tmp_path / "evaluations",
+                    "lineage_root": tmp_path / "lineage",
+                    "experiment_root": tmp_path / "experiments",
+                }
+            ),
+            "evaluation_storage": source.evaluation_storage.model_copy(
+                update={"root": tmp_path / "evaluation_storage"}
+            ),
+        }
+    )
+    resolver = _Resolver("must-not-be-used")
+    factory = CliApplicationFactory.live(
+        secret_resolver=resolver,
+        http_transport=_Transport(),
+        sleeper=_Sleeper(),
+    )
+
+    dependencies = factory.selected_runtime(
+        overlay,
+        "qwen35",
+        ("pilot.llm.qwen35", "pilot.llm.qwen35_sniper"),
+    )
+    try:
+        assert overlay.llm.secret_resolver.kind == "none"
+    finally:
+        dependencies.close()
+
+    assert resolver.references == []
+
+
+@pytest.mark.integration
 def test_selected_runtime_closes_root_owned_http_client_exactly_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
