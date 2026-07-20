@@ -12,7 +12,15 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from steel_onslaught.contracts.deck import DeckId
 from steel_onslaught.contracts.player_selection import Side
@@ -70,6 +78,13 @@ class ModelSOCardDeckPolicy(_ClosedSplitDeckModel):
     schema_version: Literal["0.1.0"] = Field(...)
     kind: Literal["steel_onslaught.card_deck_policy"] = Field(...)
     seats: tuple[ModelSOSeatDeckPolicy, ...] = Field(min_length=2)
+
+    @field_validator("seats", mode="before")
+    @classmethod
+    def _normalize_yaml_sequence(cls, value: object) -> object:
+        """Accept YAML's list representation while retaining tuple authority."""
+
+        return tuple(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def _contains_exactly_one_policy_per_side(self) -> Self:

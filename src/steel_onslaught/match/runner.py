@@ -63,6 +63,7 @@ from steel_onslaught.events.payloads import (
 from steel_onslaught.match.card_adapter import (
     CardRunnerAdapter,
     ModelSOCardRoundEmission,
+    ModelSOCardRoundSeatSplitState,
     ModelSOCardSeatRequest,
 )
 from steel_onslaught.match.card_event_specs import (
@@ -242,6 +243,7 @@ class MatchRunner:
         self._card_cadence = card_cadence
         self._card_round_index = 0
         self._card_deck_state: ModelSODeckState | None = None
+        self._card_split_deck_states: tuple[ModelSOCardRoundSeatSplitState, ...] = ()
         self._card_previous_plans: dict[str, ModelSOPlanCommittedPayload] = {}
         self._card_active_round: _ActiveCardRound | None = None
         self._pilots = dict(pilots)
@@ -474,6 +476,7 @@ class MatchRunner:
             seats.append(
                 ModelSOCardSeatRequest(
                     seat=seat,
+                    side=cast(Side, mech.side),
                     dealer_scope=ModelSODealerScope(
                         match_id=self._match_id,
                         match_seed=self._seed,
@@ -497,7 +500,10 @@ class MatchRunner:
             round_index=self._card_round_index,
             tick=tick,
             causation_id=str(tick_event.envelope.message_id),
-            starting_deck_state=self._card_deck_state,
+            starting_deck_state=(
+                None if adapter.split_deck_adapter is not None else self._card_deck_state
+            ),
+            starting_split_deck_states=self._card_split_deck_states,
         )
         if emission.suppressed_reason is not None:
             return
@@ -531,9 +537,12 @@ class MatchRunner:
             if spec.stage == "INTENT" and self.fold.state.status is SOMatchStatus.RUNNING:
                 self._resolve_intent(event)
 
-        if emission.sequence is None or emission.deck_state is None:
+        if emission.sequence is None or (
+            emission.deck_state is None and not emission.split_deck_states
+        ):
             raise RuntimeError("enabled card emission must carry sequence and deck state")
         self._card_deck_state = emission.deck_state
+        self._card_split_deck_states = emission.split_deck_states
         self._card_previous_plans = {plan.seat: plan for plan in emission.sequence.plan_committed}
         self._card_round_index += 1
 
@@ -573,6 +582,7 @@ class MatchRunner:
                 seats.append(
                     ModelSOCardSeatRequest(
                         seat=seat,
+                        side=cast(Side, mech.side),
                         dealer_scope=ModelSODealerScope(
                             match_id=self._match_id,
                             match_seed=self._seed,
@@ -596,7 +606,10 @@ class MatchRunner:
                 round_index=self._card_round_index,
                 tick=tick,
                 causation_id=str(tick_event.envelope.message_id),
-                starting_deck_state=self._card_deck_state,
+                starting_deck_state=(
+                    None if adapter.split_deck_adapter is not None else self._card_deck_state
+                ),
+                starting_split_deck_states=self._card_split_deck_states,
             )
             if emission.suppressed_reason is not None:
                 return
@@ -618,13 +631,16 @@ class MatchRunner:
 
         assert active is not None
         sequence = active.emission.sequence
-        if sequence is None or active.emission.deck_state is None:
+        if sequence is None or (
+            active.emission.deck_state is None and not active.emission.split_deck_states
+        ):
             raise RuntimeError("enabled paced card emission must carry sequence and deck state")
-        register_count = (
-            self._card_runtime_snapshot.selected_deck.register_count
-            if (self._card_runtime_snapshot is not None)
-            else 0
-        )
+        if active.emission.split_policy is not None:
+            register_count = max(seat.register_count for seat in active.emission.split_policy.seats)
+        elif self._card_runtime_snapshot is not None:
+            register_count = self._card_runtime_snapshot.selected_deck.register_count
+        else:
+            register_count = 0
         if register_count <= 0:
             raise RuntimeError("enabled paced card emission requires a positive register count")
         register_index = active.next_register_index
@@ -687,6 +703,7 @@ class MatchRunner:
 
         if final_register:
             self._card_deck_state = active.emission.deck_state
+            self._card_split_deck_states = active.emission.split_deck_states
             self._card_previous_plans = {plan.seat: plan for plan in sequence.plan_committed}
             self._card_round_index += 1
             self._card_active_round = None

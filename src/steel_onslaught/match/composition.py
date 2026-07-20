@@ -22,6 +22,7 @@ from steel_onslaught.cards.dealer import DealerCompute
 from steel_onslaught.cards.registers import RegisterExecutionReducer
 from steel_onslaught.cards.round import CardRoundRuntime
 from steel_onslaught.cards.rules import CardProgrammingRuleRegistry, default_rule_registry
+from steel_onslaught.cards.split_deck import SplitDeckDealerAdapter
 from steel_onslaught.commands.authority import (
     AuthenticatedSessionCapability,
     ModelSOStartMatchAuthorityContext,
@@ -897,6 +898,7 @@ def build_card_runner_adapter(
     programmers: Mapping[str, ProgrammingPilot] | None = None,
     rule_registry: CardProgrammingRuleRegistry | None = None,
     rule_handler_ids: tuple[str, ...] = (),
+    split_policy: ModelSOCardDeckPolicy | None = None,
 ) -> CardRunnerAdapter:
     """Compose the explicit card runtime graph for an enabled overlay.
 
@@ -910,17 +912,28 @@ def build_card_runner_adapter(
         raise TypeError("card runtime requires ModelSOCardRuntimeSnapshot")
     dealer = DealerCompute()
     reducer = RegisterExecutionReducer(snapshot.card_catalog)
+    split_deck_adapter = (
+        SplitDeckDealerAdapter(snapshot=snapshot, policy=split_policy, dealer=dealer)
+        if split_policy is not None
+        else None
+    )
     runtime = CardRoundRuntime(
         card_runtime_snapshot=snapshot,
         dealer=dealer,
         reducer=reducer,
-        round_length=snapshot.selected_deck.register_count,
+        round_length=(
+            snapshot.selected_deck.register_count
+            if split_policy is None
+            else max(seat.register_count for seat in split_policy.seats)
+        ),
+        split_deck_adapter=split_deck_adapter,
     )
     return CardRunnerAdapter(
         registers_enabled=True,
         card_round_runtime=runtime,
         dealer=dealer,
         reducer=reducer,
+        split_deck_adapter=split_deck_adapter,
         programmers=programmers,
         rule_registry=rule_registry,
         rule_handler_ids=rule_handler_ids,
@@ -1398,6 +1411,7 @@ def build_runtime_dependencies(
                 programmers=resolved_card_programmers,
                 rule_registry=rule_registry,
                 rule_handler_ids=rule_handler_ids,
+                split_policy=card_binding.deck_policy,
             )
         else:
             card_adapter = None
