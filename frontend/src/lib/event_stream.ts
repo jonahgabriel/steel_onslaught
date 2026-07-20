@@ -84,6 +84,10 @@ export class EventStream {
     };
     socket.onerror = handleDisconnect;
     socket.onclose = handleDisconnect;
+    // A socket can already be CLOSED if the bridge failed between the factory
+    // call and lifecycle-handler installation. Do not wait for an event that
+    // has already fired.
+    if (socket.readyState === 3) handleDisconnect();
   }
 
   private scheduleReconnect(): void {

@@ -174,6 +174,19 @@ describe("EventStream", () => {
     stream.close();
   });
 
+  it("reconnects when a socket is already closed before handlers attach", () => {
+    vi.useFakeTimers();
+    const first = new FakeSocket();
+    first.readyState = 3;
+    const second = new FakeSocket();
+    const sockets = [first, second];
+    const stream = new EventStream(() => sockets.shift() ?? second);
+
+    vi.advanceTimersByTime(25);
+    second.emit(fixtureText("match_tick"));
+    stream.close();
+  });
+
   it("does not reconnect after close cancels a pending retry", () => {
     vi.useFakeTimers();
     const first = new FakeSocket();
