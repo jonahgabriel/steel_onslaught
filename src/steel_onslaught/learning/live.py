@@ -1,0 +1,166 @@
+"""After-match promotion boundary for live learning.
+
+This module is intentionally a small orchestration seam around the existing
+pure learning loop.  The evaluator is injected, so no provider or filesystem
+I/O is hidden here.  A match receives an immutable policy snapshot at
+``begin_match``.  ``handle_after_match`` may publish a promoted policy for
+future matches, but it cannot mutate any snapshot already admitted.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from threading import RLock
+from typing import Protocol
+
+from steel_onslaught.contracts.lineage import ModelSOLineageRecord, SOPromotionStatus
+from steel_onslaught.contracts.live_learning import (
+    ModelSOLiveLearningOutcome,
+    ModelSOLiveLearningPolicy,
+    ModelSOLiveMatchPolicySnapshot,
+)
+from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
+from steel_onslaught.learning.lineage_store import record_digest
+
+
+class LiveLearningEvaluator(Protocol):
+    """Evaluate one completed match without owning runtime state."""
+
+    def evaluate(
+        self,
+        *,
+        evidence: ModelSOAfterMatchLearningEvidence,
+        policy: ModelSOLiveLearningPolicy,
+    ) -> ModelSOLineageRecord | None: ...
+
+
+class LiveLearningPromotionPort(Protocol):
+    """Port consumed by the after-match evidence handler."""
+
+    def handle_after_match(
+        self, evidence: ModelSOAfterMatchLearningEvidence
+    ) -> ModelSOLiveLearningOutcome: ...
+
+
+def _policy_from_record(
+    record: ModelSOLineageRecord,
+    *,
+    generation: int,
+) -> ModelSOLiveLearningPolicy:
+    """Turn a *promoted* lineage record into the next-match policy contract."""
+
+    if record.promotion.status is not SOPromotionStatus.PROMOTED:
+        raise ValueError("only promoted lineage records can be fielded")
+    return ModelSOLiveLearningPolicy(
+        policy_id=f"policy.{record.archetype}.{record.spec_hash[:16]}",
+        archetype=record.archetype,
+        parameters=record.parameters,
+        spec_hash=record.spec_hash,
+        generation=generation,
+        source_lineage_digest=record_digest(record),
+    )
+
+
+@dataclass
+class LiveLearningCoordinator:
+    """Coordinate terminal evaluation and next-match policy fielding.
+
+    ``current_policy`` is the only mutable value.  Match snapshots are
+    immutable and retained until their terminal evidence is accepted.  If two
+    matches overlap and the older one finishes after a newer promotion, its
+    candidate is marked ``stale`` instead of rolling the newer policy back.
+    """
+
+    current_policy: ModelSOLiveLearningPolicy
+    evaluator: LiveLearningEvaluator
+    _active: dict[str, ModelSOLiveMatchPolicySnapshot] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _completed: set[str] = field(default_factory=set, init=False, repr=False)
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False)
+
+    def begin_match(self, match_id: str) -> ModelSOLiveMatchPolicySnapshot:
+        """Capture the policy for one match admission."""
+
+        if not match_id:
+            raise ValueError("match_id must not be empty")
+        with self._lock:
+            if match_id in self._active or match_id in self._completed:
+                raise ValueError(f"match {match_id!r} has already been admitted")
+            snapshot = ModelSOLiveMatchPolicySnapshot(
+                match_id=match_id,
+                policy=self.current_policy,
+            )
+            self._active[match_id] = snapshot
+            return snapshot
+
+    def handle_after_match(
+        self, evidence: ModelSOAfterMatchLearningEvidence
+    ) -> ModelSOLiveLearningOutcome:
+        """Evaluate terminal evidence and, only on promotion, field next policy."""
+
+        with self._lock:
+            snapshot = self._active.get(evidence.match_id)
+            if snapshot is None:
+                if evidence.match_id in self._completed:
+                    raise ValueError(f"match {evidence.match_id!r} was already completed")
+                raise ValueError(
+                    f"match {evidence.match_id!r} must be admitted before terminal evidence"
+                )
+
+            # Keep the snapshot active until evaluation and publication succeed;
+            # a failed evaluator/store call can therefore be retried safely.
+            record = self.evaluator.evaluate(evidence=evidence, policy=snapshot.policy)
+
+            if record is None:
+                outcome = ModelSOLiveLearningOutcome(
+                    match_id=evidence.match_id,
+                    status="rejected",
+                    policy_before=snapshot.policy,
+                    reason="evaluator_returned_no_candidate",
+                )
+            elif record.promotion.status is not SOPromotionStatus.PROMOTED:
+                outcome = ModelSOLiveLearningOutcome(
+                    match_id=evidence.match_id,
+                    status="rejected",
+                    policy_before=snapshot.policy,
+                    reason="candidate_failed_promotion_gate",
+                )
+            elif record.archetype != snapshot.policy.archetype:
+                raise ValueError(
+                    "promoted candidate archetype does not match admitted policy: "
+                    f"{record.archetype!r} != {snapshot.policy.archetype!r}"
+                )
+            # A concurrent match may have promoted from a newer policy while
+            # this snapshot was active.  Never roll that policy backwards.
+            elif self.current_policy.spec_hash != snapshot.policy.spec_hash:
+                outcome = ModelSOLiveLearningOutcome(
+                    match_id=evidence.match_id,
+                    status="stale",
+                    policy_before=snapshot.policy,
+                    reason="admitted_policy_is_no_longer_current",
+                )
+            else:
+                next_policy = _policy_from_record(
+                    record,
+                    generation=snapshot.policy.generation + 1,
+                )
+                outcome = ModelSOLiveLearningOutcome(
+                    match_id=evidence.match_id,
+                    status="promoted",
+                    policy_before=snapshot.policy,
+                    policy_after=next_policy,
+                    reason="candidate_passed_promotion_gate",
+                )
+                self.current_policy = next_policy
+
+            self._active.pop(evidence.match_id)
+            self._completed.add(evidence.match_id)
+            return outcome
+
+
+__all__ = [
+    "LiveLearningCoordinator",
+    "LiveLearningEvaluator",
+    "LiveLearningPromotionPort",
+]

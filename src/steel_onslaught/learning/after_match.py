@@ -20,6 +20,7 @@ from threading import Lock
 
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.learning.artifacts import LearningArtifactStore
+from steel_onslaught.learning.live import LiveLearningPromotionPort
 from steel_onslaught.learning.post_match import project_match_learning_evidence
 from steel_onslaught.ledger.protocol import EventLedger
 
@@ -38,6 +39,7 @@ class AfterMatchLearningHandler:
 
     ledger: EventLedger
     artifacts: LearningArtifactStore
+    promotion: LiveLearningPromotionPort | None = None
     _processed_match_ids: set[str] = field(default_factory=set, init=False, repr=False)
     _lock: Lock = field(default_factory=Lock, init=False, repr=False)
 
@@ -56,6 +58,8 @@ class AfterMatchLearningHandler:
                 return
             evidence = project_match_learning_evidence(tuple(self.ledger.read_all(event.match_id)))
             self.artifacts.write_after_match_evidence(evidence)
+            if self.promotion is not None:
+                self.promotion.handle_after_match(evidence)
             self._processed_match_ids.add(event.match_id)
 
 
