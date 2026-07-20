@@ -42,6 +42,10 @@ export interface MatchSetupProps {
   readonly bootstrap: FrontendBootstrap;
   readonly capability?: MatchStartIntentCapability;
   readonly humanPrompt?: BrowserHumanTurnPrompt | null;
+  /** Canonical MATCH_STARTED has arrived; hide only the launch form. */
+  readonly matchStarted?: boolean;
+  /** Optional subscribed status snapshot used to invalidate the launch form. */
+  readonly gatewayStatus?: MatchStartIntentCapability["status"];
 }
 
 function optionsFor(
@@ -121,6 +125,8 @@ export default function MatchSetup({
   bootstrap,
   capability,
   humanPrompt,
+  matchStarted = false,
+  gatewayStatus,
 }: MatchSetupProps): React.JSX.Element {
   const roster = bootstrap.player_roster;
   const catalog = bootstrap.model_catalog;
@@ -146,7 +152,8 @@ export default function MatchSetup({
   const rosterId = roster.roster_id;
   const rosterSha256 = roster.roster_sha256;
   const gatewayEnabled = capability?.enabled !== false;
-  const pending = capability?.status === "pending";
+  const status = gatewayStatus ?? capability?.status;
+  const starting = status === "pending" || status === "accepted";
   const ready =
     redSelectionAllowed && blueSelectionAllowed && capability !== undefined && gatewayEnabled;
 
@@ -166,33 +173,37 @@ export default function MatchSetup({
 
   return (
     <>
-      <form className="so-match-setup pd-panel" aria-label="Match setup" onSubmit={submit}>
-        <div className="so-setup-heading">
-          <h2>PLAYER SELECT</h2>
-          <span>{roster.roster_id}</span>
-        </div>
-        <div className="so-setup-seats">
-          <PlayerSelect
-            side="red"
-            options={redOptions}
-            value={redOptionId}
-            onChange={setRedOptionId}
-          />
-          <PlayerSelect
-            side="blue"
-            options={blueOptions}
-            value={blueOptionId}
-            onChange={setBlueOptionId}
-          />
-        </div>
-        <button type="submit" disabled={!ready || pending}>
-          {capability === undefined || !gatewayEnabled
-            ? "START DISABLED"
-            : pending
-              ? "START PENDING"
-              : "START MATCH"}
-        </button>
-      </form>
+      {!matchStarted ? (
+        <form className="so-match-setup pd-panel" aria-label="Match setup" onSubmit={submit}>
+          <div className="so-setup-heading">
+            <h2>PLAYER SELECT</h2>
+            <span>{roster.roster_id}</span>
+          </div>
+          <div className="so-setup-seats">
+            <PlayerSelect
+              side="red"
+              options={redOptions}
+              value={redOptionId}
+              onChange={setRedOptionId}
+            />
+            <PlayerSelect
+              side="blue"
+              options={blueOptions}
+              value={blueOptionId}
+              onChange={setBlueOptionId}
+            />
+          </div>
+          <button type="submit" disabled={!ready || starting}>
+            {capability === undefined || !gatewayEnabled
+              ? "START DISABLED"
+              : status === "accepted"
+                ? "START ACCEPTED"
+                : status === "pending"
+                  ? "START PENDING"
+                  : "START MATCH"}
+          </button>
+        </form>
+      ) : null}
       {humanPrompt !== null &&
       humanPrompt !== undefined &&
       capability?.submitAction !== undefined ? (

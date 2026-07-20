@@ -306,6 +306,7 @@ export class BrowserCommandGateway {
   private readonly statusListener: ((status: GatewayStatus) => void) | undefined;
   private readonly promptListener: ((prompt: BrowserHumanTurnPrompt) => void) | undefined;
   private currentPrompt: BrowserHumanTurnPrompt | null = null;
+  private readonly statusListeners = new Set<(status: GatewayStatus) => void>();
   private readonly promptListeners = new Set<(prompt: BrowserHumanTurnPrompt | null) => void>();
   private socket: CommandSocketLike | null = null;
   private socketOpen = false;
@@ -332,6 +333,13 @@ export class BrowserCommandGateway {
 
   get prompt(): BrowserHumanTurnPrompt | null {
     return this.currentPrompt;
+  }
+
+  /** Subscribe to mutable gateway state so React views can re-render on receipts. */
+  subscribeStatus(listener: (status: GatewayStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    listener(this.currentStatus);
+    return () => this.statusListeners.delete(listener);
   }
 
   clearPrompt(): void {
@@ -416,6 +424,14 @@ export class BrowserCommandGateway {
     this.closeAfterOpen = false;
   }
 
+  /** Retire the completed match and make the gateway ready for another start. */
+  resetForNextMatch(): void {
+    this.activeRequestId = null;
+    this.clearPrompt();
+    this.close();
+    this.setStatus("idle");
+  }
+
   private send(frame: RequestFrame | RuntimeCommand): void {
     if (this.socket === null) {
       const socket = this.socketFactory.open(this.binding?.websocket_url ?? "");
@@ -429,6 +445,7 @@ export class BrowserCommandGateway {
         }
       });
       socket.addEventListener("message", (event) => {
+        if (this.socket !== socket) return;
         const payload = object(
           typeof event.data === "string" ? JSON.parse(event.data) : event.data,
         );
@@ -449,6 +466,7 @@ export class BrowserCommandGateway {
         }
       });
       socket.addEventListener("close", () => {
+        if (this.socket !== socket) return;
         this.socketOpen = false;
         this.queuedFrames.length = 0;
         this.closeAfterOpen = false;
@@ -467,5 +485,6 @@ export class BrowserCommandGateway {
   private setStatus(status: GatewayStatus): void {
     this.currentStatus = status;
     this.statusListener?.(status);
+    for (const listener of this.statusListeners) listener(status);
   }
 }

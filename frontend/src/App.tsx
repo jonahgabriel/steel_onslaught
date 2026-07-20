@@ -25,8 +25,12 @@ export default function App({
   const [humanPrompt, setHumanPrompt] = useState<BrowserHumanTurnPrompt | null>(
     application.commandGateway.prompt,
   );
+  const [gatewayStatus, setGatewayStatus] = useState(application.commandGateway.status);
   useEffect(() => {
     return application.commandGateway.subscribePrompt(setHumanPrompt);
+  }, [application.commandGateway]);
+  useEffect(() => {
+    return application.commandGateway.subscribeStatus(setGatewayStatus);
   }, [application.commandGateway]);
   const { subscribe, snapshot, controls } = useTransport({
     transport: application.transport,
@@ -34,12 +38,21 @@ export default function App({
     scheduler: application.scheduler,
     clock: application.clock,
   });
+  useEffect(() => {
+    if (snapshot.matchComplete) application.commandGateway.resetForNextMatch();
+  }, [application.commandGateway, snapshot.matchComplete]);
+  // A receipt only proves command acceptance. The canonical event stream is
+  // the lifecycle authority: hide launch controls once MATCH_STARTED arrives,
+  // then re-arm them after the active match reaches MATCH_ENDED.
+  const matchStarted = snapshot.activeMatchId !== null && !snapshot.matchComplete;
   return (
     <>
       <MatchSetup
         bootstrap={application.bootstrap}
         capability={application.commandGateway}
         humanPrompt={humanPrompt}
+        matchStarted={matchStarted}
+        gatewayStatus={gatewayStatus}
       />
       <PressureDeck
         subscribe={subscribe}

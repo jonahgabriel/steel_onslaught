@@ -99,6 +99,28 @@ describe("MatchTransport — buffering", () => {
     expect(bravo?.tickCount).toBe(5);
     expect(snap.activeMatchId).toBe("match.alpha"); // first seen is active
   });
+
+  it("promotes a new MATCH_STARTED after terminal retirement without refresh", () => {
+    const t = new MatchTransport({ msPerTick: 100 });
+    for (const event of completeMatch("match.first", 3)) t.ingest(event);
+    const rec = recordingSink();
+    t.setSink(rec.sink);
+    t.frame(0);
+    expect(t.snapshot().activeMatchId).toBe("match.first");
+    expect(t.snapshot().matchComplete).toBe(true);
+
+    const next = tickStream("match.second", 2)[0];
+    if (next === undefined) throw new Error("missing second match_started fixture");
+    t.ingest(next);
+
+    expect(t.snapshot().activeMatchId).toBe("match.second");
+    expect(t.snapshot().matchComplete).toBe(false);
+    expect(t.snapshot().cursorTick).toBe(-1);
+    t.frame(1);
+    expect(rec.resets).toBe(1);
+    expect(rec.released[0]?.match_id).toBe("match.second");
+    expect(rec.released[0]?.event_type).toBe("match_started");
+  });
 });
 
 describe("MatchTransport — runtime lifecycle projection", () => {
