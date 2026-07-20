@@ -471,6 +471,34 @@ def test_catalog_runtime_overlay_selects_source_card_programmers_per_seat() -> N
         binding.pilot_spec_id for binding in selected_overlay.contracts.card_catalog.programmers
     } == {"pilot.llm.qwen35", "pilot.llm.qwen27"}
 
+    differentiated_request = request.model_copy(
+        update={
+            "command": request.command.model_copy(
+                update={
+                    "selections": (
+                        ModelSOStartMatchSeatSelection(
+                            side="red", option_id="player_option.qwen35_sniper"
+                        ),
+                        ModelSOStartMatchSeatSelection(
+                            side="blue", option_id="player_option.qwen27_opportunist"
+                        ),
+                    )
+                }
+            )
+        }
+    )
+    differentiated_overlay = _catalog_selection_overlay(
+        overlay=merged_overlay,
+        catalog=catalog,
+        source_overlays=source_overlays,
+        request=differentiated_request,
+    )
+    assert differentiated_overlay.contracts.card_catalog is not None
+    assert {
+        binding.pilot_spec_id
+        for binding in differentiated_overlay.contracts.card_catalog.programmers
+    } == {"pilot.llm.qwen35_sniper", "pilot.llm.qwen27_opportunist"}
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio

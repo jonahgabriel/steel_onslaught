@@ -4,10 +4,17 @@ roster_id: roster.canonical_qwen35
 options:
   - kind: model
     option_id: player_option.qwen35_model
-    display_name: Qwen3.6-35B-A3B (AI PC 5090)
+    display_name: Qwen3.6-35B-A3B Berserker (AI PC 5090)
     model_identity_id: model_identity.qwen35
     pilot_spec_id: pilot.llm.qwen35
     persona_id: berserker
+    input_source: llm_completion
+  - kind: model
+    option_id: player_option.qwen35_sniper
+    display_name: Qwen3.6-35B-A3B Sniper (AI PC 5090)
+    model_identity_id: model_identity.qwen35
+    pilot_spec_id: pilot.llm.qwen35_sniper
+    persona_id: sniper
     input_source: llm_completion
 seats:
   - side: red
@@ -15,8 +22,20 @@ seats:
     default_option_id: player_option.qwen35_model
     allowed_option_ids:
       - player_option.qwen35_model
+      - player_option.qwen35_sniper
+    option_loadouts:
+      - option_id: player_option.qwen35_model
+        loadout_id: loadout.llm.qwen35_berserker
+      - option_id: player_option.qwen35_sniper
+        loadout_id: loadout.llm.qwen35_sniper_ironclad
   - side: blue
-    loadout_id: loadout.llm.qwen35_berserker
-    default_option_id: player_option.qwen35_model
+    loadout_id: loadout.llm.qwen35_sniper_ironclad
+    default_option_id: player_option.qwen35_sniper
     allowed_option_ids:
       - player_option.qwen35_model
+      - player_option.qwen35_sniper
+    option_loadouts:
+      - option_id: player_option.qwen35_model
+        loadout_id: loadout.llm.qwen35_berserker
+      - option_id: player_option.qwen35_sniper
+        loadout_id: loadout.llm.qwen35_sniper_ironclad

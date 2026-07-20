@@ -676,8 +676,14 @@ def model_catalog_source_from_roster(
 
     catalog_options: list[CatalogOptionBinding] = []
     roster_sha256 = roster.canonical_sha256()
+    # Preserve seat-specific option loadout mappings when a source roster
+    # differentiates the two roles.  Falling back through ``loadout_for_option``
+    # keeps legacy one-loadout rosters compatible while ensuring the catalog
+    # cannot silently collapse distinct source options onto one loadout.
     seat_loadouts = {
-        seat.side: {option_id: seat.loadout_id for option_id in seat.allowed_option_ids}
+        seat.side: {
+            option_id: seat.loadout_for_option(option_id) for option_id in seat.allowed_option_ids
+        }
         for seat in roster.seats
     }
     for option in roster.options:

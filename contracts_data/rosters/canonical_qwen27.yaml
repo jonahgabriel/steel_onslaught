@@ -4,10 +4,17 @@ roster_id: roster.canonical_qwen27
 options:
   - kind: model
     option_id: player_option.qwen27_model
-    display_name: Qwen3.6-27B-MTP (AI PC 4090)
+    display_name: Qwen3.6-27B-MTP Sniper (AI PC 4090)
     model_identity_id: model_identity.qwen27
     pilot_spec_id: pilot.llm.qwen27
     persona_id: sniper
+    input_source: llm_completion
+  - kind: model
+    option_id: player_option.qwen27_opportunist
+    display_name: Qwen3.6-27B-MTP Opportunist (AI PC 4090)
+    model_identity_id: model_identity.qwen27
+    pilot_spec_id: pilot.llm.qwen27_opportunist
+    persona_id: opportunist
     input_source: llm_completion
 seats:
   - side: red
@@ -15,8 +22,20 @@ seats:
     default_option_id: player_option.qwen27_model
     allowed_option_ids:
       - player_option.qwen27_model
+      - player_option.qwen27_opportunist
+    option_loadouts:
+      - option_id: player_option.qwen27_model
+        loadout_id: loadout.llm.qwen27_sniper
+      - option_id: player_option.qwen27_opportunist
+        loadout_id: loadout.llm.qwen27_opportunist_hunter
   - side: blue
-    loadout_id: loadout.llm.qwen27_sniper
-    default_option_id: player_option.qwen27_model
+    loadout_id: loadout.llm.qwen27_opportunist_hunter
+    default_option_id: player_option.qwen27_opportunist
     allowed_option_ids:
       - player_option.qwen27_model
+      - player_option.qwen27_opportunist
+    option_loadouts:
+      - option_id: player_option.qwen27_model
+        loadout_id: loadout.llm.qwen27_sniper
+      - option_id: player_option.qwen27_opportunist
+        loadout_id: loadout.llm.qwen27_opportunist_hunter

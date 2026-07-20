@@ -13,20 +13,24 @@ sources:
     roster_path: ../rosters/canonical_qwen35.yaml
     loadout_paths:
       - ../loadouts/llm_qwen35_berserker.yaml
-      - ../loadouts/llm_qwen35_berserker.yaml
+      - ../loadouts/qwen35/sniper_ironclad.yaml
     option_id_map:
       - source_option_id: player_option.qwen35_model
         catalog_option_id: player_option.qwen35_model
+      - source_option_id: player_option.qwen35_sniper
+        catalog_option_id: player_option.qwen35_sniper
   - source_id: catalog_source.qwen27
     source_overlay_id: overlay.tactical_v1_qwen27
     overlay_path: ../overlays/tactical_v1_qwen27.yaml
     roster_path: ../rosters/canonical_qwen27.yaml
     loadout_paths:
       - ../loadouts/llm_qwen27_sniper.yaml
-      - ../loadouts/llm_qwen27_sniper.yaml
+      - ../loadouts/qwen27/opportunist_hunter.yaml
     option_id_map:
       - source_option_id: player_option.qwen27_model
         catalog_option_id: player_option.qwen27_model
+      - source_option_id: player_option.qwen27_opportunist
+        catalog_option_id: player_option.qwen27_opportunist
   - source_id: catalog_source.glm
     source_overlay_id: overlay.live_glm_cards
     overlay_path: ../overlays/live_glm_cards.yaml
@@ -80,7 +84,9 @@ seats:
     allowed_option_ids:
       - player_option.human_operator
       - player_option.qwen35_model
+      - player_option.qwen35_sniper
       - player_option.qwen27_model
+      - player_option.qwen27_opportunist
       - player_option.glm_sniper
       - player_option.openrouter_human_sniper
       - player_option.openrouter_sniper
@@ -92,7 +98,9 @@ seats:
     allowed_option_ids:
       - player_option.human_operator
       - player_option.qwen35_model
+      - player_option.qwen35_sniper
       - player_option.qwen27_model
+      - player_option.qwen27_opportunist
       - player_option.glm_opportunist
       - player_option.openrouter_human_opportunist
       - player_option.openrouter_opportunist

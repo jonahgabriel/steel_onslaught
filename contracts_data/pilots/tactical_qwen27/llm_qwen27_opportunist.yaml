@@ -1,0 +1,10 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen27_opportunist
+display_name: "Qwen3.6-27B Opportunist (AI PC 4090)"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: opportunist
+  provider: qwen27
