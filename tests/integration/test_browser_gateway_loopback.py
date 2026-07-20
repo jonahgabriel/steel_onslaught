@@ -477,6 +477,102 @@ async def test_refresh_after_terminal_retirement_does_not_replay_old_match() -> 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_late_event_socket_gets_one_shot_prefix_after_admitted_fast_match() -> None:
+    """A start-before-events race remains recoverable without making refresh a launch."""
+    import asyncio
+    import json
+
+    import websockets
+
+    class Bus:
+        def subscribe(self, handler: object, **_: object) -> int:
+            del handler
+            return 1
+
+        def unsubscribe(self, token: int) -> None:
+            del token
+
+    class Gateway:
+        def start_match(self, request: ModelSOBrowserStartMatchRequest, **_: object) -> object:
+            return ModelSOBrowserStartAccepted(
+                command_id=request.command.command_id,
+                command_sha256="d" * 64,
+                match_id=request.match_id,
+                overlay_sha256="a" * 64,
+                roster_sha256="b" * 64,
+            )
+
+    fixture = Path(__file__).parents[2] / "frontend/src/__tests__/fixtures/match_started.json"
+    started = ModelSOEventEnvelope.model_validate_json(
+        fixture.read_text(encoding="utf-8")
+    ).model_copy(update={"match_id": _MATCH_ID})
+    terminal = started.model_copy(
+        update={
+            "event_id": ulid.new().str,
+            "event_type": SOEventType.MATCH_ENDED,
+            "tick": 1,
+            "sequence_in_tick": 0,
+            "payload": {"reason": "aborted", "winner_id": None},
+            "envelope": started.envelope.model_copy(update={"message_id": uuid4()}),
+        }
+    )
+    server = BrowserPlayServer(
+        bootstrap=_bootstrap(),
+        gateway=Gateway(),  # type: ignore[arg-type]
+        bus=Bus(),  # type: ignore[arg-type]
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+    )
+    await server.start()
+    server._loop = asyncio.get_running_loop()
+    request = _start_request()
+    try:
+        # No /events client is connected when the browser's Start Match intent
+        # is admitted, which is the race exercised by the live UI.
+        accepted = await server._admit_start(
+            request,
+            transport=ModelSOBrowserRequestContext(
+                origin="http://localhost:5173", host="127.0.0.1:1"
+            ),
+            principal_id=_PRINCIPAL,
+            session_id=_SESSION,
+        )
+        assert json.loads(accepted)["outcome"] == "accepted"
+        server._session = SimpleNamespace(
+            match_id=started.match_id,
+            stack=SimpleNamespace(runtime=None),
+            close=lambda: None,
+        )  # type: ignore[assignment]
+        server._on_event(started)
+        server._on_event(terminal)
+        await asyncio.sleep(0)
+        await server._retire_completed_session()
+        assert server._late_replay_pending is True
+        assert [event.event_type for event in server._event_history] == [
+            SOEventType.MATCH_STARTED,
+            SOEventType.MATCH_ENDED,
+        ]
+
+        async with websockets.connect(server.event_url) as events:
+            replayed = [
+                json.loads(await asyncio.wait_for(events.recv(), timeout=2)) for _ in range(2)
+            ]
+            assert [frame["event_type"] for frame in replayed] == [
+                "match_started",
+                "match_ended",
+            ]
+            assert server._late_replay_pending is False
+            assert server._event_history == []
+
+        async with websockets.connect(server.event_url) as refreshed:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(refreshed.recv(), timeout=0.05)
+    finally:
+        await server.stop()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_event_socket_serializes_same_tick_frames_in_canonical_order() -> None:
     """Rapid cross-thread callbacks must not invert same-tick wire frames."""
     import asyncio
