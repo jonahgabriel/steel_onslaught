@@ -162,6 +162,38 @@ describe("frontend application bootstrap", () => {
     expect(parseFrontendBootstrap({ ...binding(), player_roster: null }).player_roster).toBeNull();
   });
 
+  it("accepts the optional multi-provider catalog without changing roster authority", () => {
+    const parsed = parseFrontendBootstrap({
+      ...binding(),
+      model_catalog: {
+        schema_version: "1",
+        kind: "steel_onslaught.model_catalog_projection",
+        catalog_id: "catalog.configured_models",
+        catalog_sha256: "c".repeat(64),
+        default_option_ids: ["player_option.glm_model", "player_option.glm_model"],
+        mirror_match_mode: true,
+        options: [
+          {
+            kind: "human",
+            option_id: "player_option.browser_human",
+            display_name: "Browser Operator",
+          },
+          {
+            kind: "model",
+            option_id: "player_option.glm_model",
+            display_name: "GLM 5.2",
+            model_identity_id: "model_identity.glm",
+            provider_binding_id: "glm-5.2",
+            provider_model: "glm-5.2",
+          },
+        ],
+      },
+    });
+    expect(parsed.model_catalog?.catalog_id).toBe("catalog.configured_models");
+    expect(parsed.player_roster?.roster_id).toBe("roster.player_selector");
+    expect(parsed.model_catalog?.options.map((option) => option.kind)).toEqual(["human", "model"]);
+  });
+
   it("accepts legacy seats without defaults but never infers one", () => {
     const roster = playerRosterBinding();
     const seats = roster["seats"];

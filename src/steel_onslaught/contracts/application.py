@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from steel_onslaught.contracts.deck import DeckId
+from steel_onslaught.contracts.model_catalog import ModelSOModelCatalogProjection
 from steel_onslaught.contracts.pilot import PilotId
 from steel_onslaught.contracts.player_selection import (
     ModelSOModelIdentityBinding,
@@ -380,6 +381,13 @@ class ModelSOFrontendBootstrap(_ClosedBinding):
     frontend_transport: ModelSOFrontendTransportBinding
     player_roster: ModelSOPlayerRosterProjection | None = None
     command_gateway: ModelSOFrontendCommandGatewayBinding | None = None
+    # Optional richer metadata for model/provider pickers.  The existing
+    # player_roster remains the launch authority and is intentionally kept
+    # compatible with older browser bundles.
+    model_catalog: ModelSOModelCatalogProjection | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 __all__ = [
@@ -396,6 +404,7 @@ __all__ = [
     "ModelSOInjectedSecretResolverBinding",
     "ModelSOLlmBindings",
     "ModelSOLlmRetryBinding",
+    "ModelSOModelCatalogProjection",
     "ModelSOModelIdentityBinding",
     "ModelSONoSecretResolverBinding",
     "ModelSOOpenAICompatibleProviderBinding",

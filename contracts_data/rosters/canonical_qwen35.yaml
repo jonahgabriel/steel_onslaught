@@ -1,0 +1,22 @@
+schema_version: "1"
+kind: steel_onslaught.player_roster
+roster_id: roster.canonical_qwen35
+options:
+  - kind: model
+    option_id: player_option.qwen35_model
+    display_name: Qwen3.6-35B-A3B (AI PC 5090)
+    model_identity_id: model_identity.qwen35
+    pilot_spec_id: pilot.llm.qwen35
+    persona_id: berserker
+    input_source: llm_completion
+seats:
+  - side: red
+    loadout_id: loadout.llm.qwen35_berserker
+    default_option_id: player_option.qwen35_model
+    allowed_option_ids:
+      - player_option.qwen35_model
+  - side: blue
+    loadout_id: loadout.llm.qwen35_berserker
+    default_option_id: player_option.qwen35_model
+    allowed_option_ids:
+      - player_option.qwen35_model

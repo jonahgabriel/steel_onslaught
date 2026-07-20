@@ -56,6 +56,35 @@ export interface PlayerRosterProjection {
   readonly seats: readonly PublicSeatLaunchPolicy[];
 }
 
+export interface PublicHumanModelCatalogOption {
+  readonly kind: "human";
+  readonly option_id: string;
+  readonly display_name: string;
+}
+
+export interface PublicModelModelCatalogOption {
+  readonly kind: "model";
+  readonly option_id: string;
+  readonly display_name: string;
+  readonly model_identity_id: string;
+  readonly provider_binding_id: string;
+  readonly provider_model: string;
+}
+
+export type PublicModelCatalogOption =
+  | PublicHumanModelCatalogOption
+  | PublicModelModelCatalogOption;
+
+export interface ModelCatalogProjection {
+  readonly schema_version: "1";
+  readonly kind: "steel_onslaught.model_catalog_projection";
+  readonly catalog_id: string;
+  readonly catalog_sha256: string;
+  readonly options: readonly PublicModelCatalogOption[];
+  readonly default_option_ids: readonly [string | null, string | null];
+  readonly mirror_match_mode: boolean;
+}
+
 export interface FrontendBootstrap {
   readonly schema_version: "1";
   readonly kind: "steel_onslaught.frontend_bootstrap";
@@ -63,6 +92,7 @@ export interface FrontendBootstrap {
   readonly frontend_transport: FrontendTransportBinding;
   readonly player_roster: PlayerRosterProjection | null;
   readonly command_gateway: FrontendCommandGatewayBinding | null;
+  readonly model_catalog: ModelCatalogProjection | null;
 }
 
 export interface BootstrapHeaders {
@@ -145,6 +175,13 @@ function identifier(value: unknown, pattern: RegExp, context: string): string {
 function displayName(value: unknown, context: string): string {
   if (typeof value !== "string" || value.length < 1 || value.length > 80) {
     fail(`${context} must contain 1 to 80 characters`);
+  }
+  return value;
+}
+
+function providerModel(value: unknown, context: string): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 160) {
+    fail(`${context} must contain 1 to 160 characters`);
   }
   return value;
 }
@@ -277,6 +314,137 @@ function playerRoster(value: unknown): PlayerRosterProjection {
   };
 }
 
+function modelCatalog(value: unknown): ModelCatalogProjection {
+  const catalog = object(value, "model_catalog");
+  exactKeys(
+    catalog,
+    [
+      "schema_version",
+      "kind",
+      "catalog_id",
+      "catalog_sha256",
+      "options",
+      "default_option_ids",
+      "mirror_match_mode",
+    ],
+    "model_catalog",
+  );
+  if (catalog["schema_version"] !== "1") fail('model_catalog.schema_version must be "1"');
+  if (catalog["kind"] !== "steel_onslaught.model_catalog_projection") {
+    fail("model_catalog.kind mismatch");
+  }
+  const options: PublicModelCatalogOption[] = list(catalog["options"], "model_catalog.options").map(
+    (option, index): PublicModelCatalogOption => {
+      const candidate = object(option, `model_catalog.options[${index}]`);
+      const kind = candidate["kind"];
+      if (kind === "human") {
+        exactKeys(
+          candidate,
+          ["kind", "option_id", "display_name"],
+          `model_catalog.options[${index}]`,
+        );
+        return {
+          kind: "human",
+          option_id: identifier(
+            candidate["option_id"],
+            /^player_option\.[a-z0-9][a-z0-9_.-]*$/,
+            `model_catalog.options[${index}].option_id`,
+          ),
+          display_name: displayName(
+            candidate["display_name"],
+            `model_catalog.options[${index}].display_name`,
+          ),
+        };
+      }
+      if (kind === "model") {
+        exactKeys(
+          candidate,
+          [
+            "kind",
+            "option_id",
+            "display_name",
+            "model_identity_id",
+            "provider_binding_id",
+            "provider_model",
+          ],
+          `model_catalog.options[${index}]`,
+        );
+        return {
+          kind: "model",
+          option_id: identifier(
+            candidate["option_id"],
+            /^player_option\.[a-z0-9][a-z0-9_.-]*$/,
+            `model_catalog.options[${index}].option_id`,
+          ),
+          display_name: displayName(
+            candidate["display_name"],
+            `model_catalog.options[${index}].display_name`,
+          ),
+          model_identity_id: identifier(
+            candidate["model_identity_id"],
+            /^model_identity\.[a-z0-9][a-z0-9_.-]*$/,
+            `model_catalog.options[${index}].model_identity_id`,
+          ),
+          provider_binding_id: identifier(
+            candidate["provider_binding_id"],
+            /^[a-z][a-z0-9_.-]*$/,
+            `model_catalog.options[${index}].provider_binding_id`,
+          ),
+          provider_model: providerModel(
+            candidate["provider_model"],
+            `model_catalog.options[${index}].provider_model`,
+          ),
+        };
+      }
+      return fail(`model_catalog.options[${index}].kind must be human or model`);
+    },
+  );
+  if (options.length < 1) fail("model_catalog.options must be nonempty");
+  const optionIds = options.map((option) => option.option_id);
+  if (new Set(optionIds).size !== optionIds.length) {
+    fail("model_catalog.options must have unique option_id values");
+  }
+  const defaults = list(catalog["default_option_ids"], "model_catalog.default_option_ids");
+  if (defaults.length !== 2) fail("model_catalog.default_option_ids must contain two entries");
+  const defaultOptionIds: [string | null, string | null] = [
+    defaults[0] === null
+      ? null
+      : identifier(
+          defaults[0],
+          /^player_option\.[a-z0-9][a-z0-9_.-]*$/,
+          "model_catalog.default_option_ids[0]",
+        ),
+    defaults[1] === null
+      ? null
+      : identifier(
+          defaults[1],
+          /^player_option\.[a-z0-9][a-z0-9_.-]*$/,
+          "model_catalog.default_option_ids[1]",
+        ),
+  ];
+  const mirrorMatchMode = catalog["mirror_match_mode"];
+  if (typeof mirrorMatchMode !== "boolean") {
+    fail("model_catalog.mirror_match_mode must be boolean");
+  }
+  return {
+    schema_version: "1",
+    kind: "steel_onslaught.model_catalog_projection",
+    catalog_id: identifier(
+      catalog["catalog_id"],
+      /^catalog\.[a-z0-9][a-z0-9_.-]*$/,
+      "model_catalog.catalog_id",
+    ),
+    catalog_sha256: identifier(
+      catalog["catalog_sha256"],
+      /^[0-9a-f]{64}$/,
+      "model_catalog.catalog_sha256",
+    ),
+    options,
+    default_option_ids: defaultOptionIds,
+    mirror_match_mode: mirrorMatchMode,
+  };
+}
+
 function parseWebSocketUrl(value: unknown): string {
   if (typeof value !== "string") fail("frontend_transport.websocket_url must be a string");
   let parsed: URL;
@@ -335,6 +503,7 @@ export function parseFrontendBootstrap(value: unknown): FrontendBootstrap {
   // absence is equivalent to an explicit null capability. Unknown fields still
   // fail through the closed-key check below.
   if (!("command_gateway" in root)) root["command_gateway"] = null;
+  if (!("model_catalog" in root)) root["model_catalog"] = null;
   exactKeys(
     root,
     [
@@ -344,6 +513,7 @@ export function parseFrontendBootstrap(value: unknown): FrontendBootstrap {
       "frontend_transport",
       "player_roster",
       "command_gateway",
+      "model_catalog",
     ],
     "root",
   );
@@ -392,6 +562,7 @@ export function parseFrontendBootstrap(value: unknown): FrontendBootstrap {
     player_roster: root["player_roster"] === null ? null : playerRoster(root["player_roster"]),
     command_gateway:
       root["command_gateway"] === null ? null : commandGateway(root["command_gateway"]),
+    model_catalog: root["model_catalog"] === null ? null : modelCatalog(root["model_catalog"]),
   };
 }
 

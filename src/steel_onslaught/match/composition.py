@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ from steel_onslaught.cards.rules import CardProgrammingRuleRegistry, default_rul
 from steel_onslaught.commands.authority import (
     AuthenticatedSessionCapability,
     ModelSOStartMatchAuthorityContext,
+    canonical_overlay_sha256,
 )
 from steel_onslaught.commands.coordinator import (
     ProcessLocalHumanLoopbackCoordinator,
@@ -51,6 +53,12 @@ from steel_onslaught.contracts.deck import ModelSODeck
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeTransition
+from steel_onslaught.contracts.model_catalog import (
+    ModelSOModelCatalog,
+    ModelSOModelCatalogIndex,
+    build_model_catalog,
+    model_catalog_source_from_roster,
+)
 from steel_onslaught.contracts.pilot import ModelSOLlmPilotParams, ModelSOPilotSpec
 from steel_onslaught.contracts.pilot_registry import PilotResolutionError, PilotSpecRegistry
 from steel_onslaught.contracts.player_selection import (
@@ -59,6 +67,7 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOModelSeatAssignment,
     ModelSOPlayerRosterBinding,
     Side,
+    validate_player_roster_against_overlay,
 )
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
@@ -532,6 +541,58 @@ def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
             "evaluation_storage": evaluation_storage,
             "llm": llm,
         }
+    )
+
+
+def load_model_catalog(path: Path) -> ModelSOModelCatalog:
+    """Load an explicit multi-overlay catalog index and its source contracts.
+
+    Every source path, option alias, provider/model identity, and pilot
+    registry is declared by the index.  This loader performs no directory
+    discovery and never substitutes a missing provider or roster option.
+    """
+
+    index_path = path.resolve(strict=True)
+    index = ModelSOModelCatalogIndex.model_validate_json(
+        json.dumps(yaml.safe_load(index_path.read_text(encoding="utf-8")))
+    )
+    sources = []
+    for source_binding in index.sources:
+        overlay = load_application_overlay(
+            (index_path.parent / source_binding.overlay_path).resolve(strict=True)
+        )
+        roster_path = (index_path.parent / source_binding.roster_path).resolve(strict=True)
+        roster = ModelSOPlayerRosterBinding.model_validate_json(
+            json.dumps(yaml.safe_load(roster_path.read_text(encoding="utf-8")))
+        )
+        validate_player_roster_against_overlay(
+            roster=roster,
+            overlay=overlay,
+            pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
+        )
+        provider_models = {
+            provider.provider_id: provider.model for provider in overlay.llm.providers
+        }
+        sources.append(
+            model_catalog_source_from_roster(
+                overlay_id=source_binding.source_overlay_id,
+                overlay_sha256=canonical_overlay_sha256(overlay),
+                roster=roster,
+                model_identities=overlay.llm.model_identities,
+                provider_models=provider_models,
+                option_id_map={
+                    alias.source_option_id: alias.catalog_option_id
+                    for alias in source_binding.option_id_map
+                },
+            )
+        )
+    return build_model_catalog(
+        catalog_id=index.catalog_id,
+        roster_id=index.roster_id,
+        sources=tuple(sources),
+        seats=index.seats,
+        default_chassis_ids=(index.default_chassis_ids[0], index.default_chassis_ids[1]),
+        mirror_match_mode=index.mirror_match_mode,
     )
 
 

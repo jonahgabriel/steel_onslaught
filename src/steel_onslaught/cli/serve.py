@@ -50,6 +50,7 @@ from steel_onslaught.contracts.application import (
     ModelSOFrontendBootstrap,
     ModelSOFrontendCommandGatewayBinding,
 )
+from steel_onslaught.contracts.model_catalog import ModelSOModelCatalog
 from steel_onslaught.contracts.player_selection import ModelSOPlayerRosterBinding
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.ledger.protocol import QueryableEventLedger, ReplayEventCatalog
@@ -67,15 +68,29 @@ def build_frontend_bootstrap(
     overlay: ModelSOApplicationOverlay,
     *,
     roster: ModelSOPlayerRosterBinding | None = None,
+    model_catalog: ModelSOModelCatalog | None = None,
     command_gateway: ModelSOFrontendCommandGatewayBinding | None = None,
 ) -> ModelSOFrontendBootstrap:
-    """Project one overlay into its public, path-and-secret-free browser binding."""
+    """Project explicit launch authority and optional catalog metadata.
+
+    A catalog is never discovered from an overlay.  When supplied without a
+    roster, its deterministic roster projection is used for the existing
+    dropdown/command contract; callers may still pass a roster explicitly and
+    retain full control over the launch authority.
+    """
+    if roster is not None and model_catalog is not None:
+        projected_roster = model_catalog.to_roster_binding()
+        if roster != projected_roster:
+            raise ValueError("roster and model_catalog project different launch authorities")
+    if roster is None and model_catalog is not None:
+        roster = model_catalog.to_roster_binding()
     return ModelSOFrontendBootstrap(
         schema_version="1",
         kind="steel_onslaught.frontend_bootstrap",
         overlay_sha256=canonical_overlay_sha256(overlay),
         frontend_transport=overlay.frontend_transport,
         player_roster=roster.public_projection() if roster is not None else None,
+        model_catalog=model_catalog.public_projection() if model_catalog is not None else None,
         command_gateway=command_gateway,
     )
 
