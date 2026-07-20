@@ -27,7 +27,11 @@ from steel_onslaught.contracts.split_deck import (
     ModelSODeckHandQuota,
     ModelSOSeatDeckPolicy,
 )
-from steel_onslaught.events.card_payloads import SOCardPartition
+from steel_onslaught.events.card_payloads import (
+    ModelSOPlanCommittedPayload,
+    ModelSOPlanRegister,
+    SOCardPartition,
+)
 from steel_onslaught.match.card_adapter import CardRunnerAdapter, ModelSOCardSeatRequest
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotObservation,
@@ -36,6 +40,19 @@ from steel_onslaught.pilots.schemas import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _SideProgrammer:
+    def program(self, observation):  # type: ignore[no-untyped-def]
+        return ModelSOPlanCommittedPayload(
+            seat=observation.seat,
+            registers=tuple(
+                ModelSOPlanRegister(register_index=index, card_id=card_id)
+                for index, card_id in zip(observation.free_indices, observation.hand, strict=True)
+            ),
+            rationale="side programmer",
+            confidence=1.0,
+        )
 
 
 def _card(card_id: str, category: SOCardCategory, effect: ModelSOCardEffect) -> ModelSOCard:
@@ -203,7 +220,7 @@ def _request(seat: str, side: Side) -> ModelSOCardSeatRequest:
     )
 
 
-def _adapter() -> CardRunnerAdapter:
+def _adapter(programmers=None) -> CardRunnerAdapter:  # type: ignore[no-untyped-def]
     snapshot = _snapshot()
     dealer = DealerCompute()
     split = SplitDeckDealerAdapter(snapshot=snapshot, policy=_policy(), dealer=dealer)
@@ -221,6 +238,7 @@ def _adapter() -> CardRunnerAdapter:
         dealer=dealer,
         reducer=reducer,
         split_deck_adapter=split,
+        programmers=programmers,
     )
 
 
@@ -264,3 +282,17 @@ def test_split_runtime_emits_typed_quotas_and_independent_state() -> None:
             causation_id="split-round-0",
             starting_deck_state=ModelSODeckState(draw_pile=(), discard_pile=()),
         )
+
+
+def test_split_runtime_resolves_programmers_by_configured_side() -> None:
+    adapter = _adapter({"red": _SideProgrammer()})
+    emission = adapter.produce(
+        seats=(_request("mech.blue", "blue"), _request("mech.red", "red")),
+        round_index=0,
+        tick=0,
+        causation_id="split-round-programmer",
+    )
+    assert emission.sequence is not None
+    plans = {plan.seat: plan for plan in emission.sequence.plan_committed}
+    assert plans["mech.red"].rationale == "side programmer"
+    assert plans["mech.blue"].rationale is None

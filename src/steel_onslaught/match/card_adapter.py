@@ -245,7 +245,8 @@ class CardRunnerAdapter:
     caller supplies the current tick, round index, terminal boundary, and a
     causation key.  That leaves max-ticks/progress-gate authority with the
     existing lifecycle composition while making card
-    rounds deterministic and independently testable.
+    rounds deterministic and independently testable.  Split-deck programmers
+    are resolved by configured side when seat ids are transport-local labels.
     """
 
     registers_enabled: bool = False
