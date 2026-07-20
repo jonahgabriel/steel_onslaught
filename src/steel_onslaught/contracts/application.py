@@ -26,6 +26,7 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOPlayerRosterProjection,
     Side,
 )
+from steel_onslaught.contracts.split_deck import ModelSOCardDeckPolicy
 
 
 class _ClosedBinding(BaseModel):
@@ -95,6 +96,13 @@ class ModelSOCardCatalogBinding(_ClosedBinding):
     # may infer the first or a package-default deck.
     card_mode_enabled: StrictBool = False
     deck_id: DeckId | None = None
+    # Optional split-deck composition.  Absence preserves the original
+    # selected-single-deck card runtime; activation is explicit and cannot be
+    # combined with the legacy ``deck_id`` selector.
+    deck_policy: ModelSOCardDeckPolicy | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     # Card rounds are atomic by default.  ``paced`` is an explicit opt-in
     # because it changes the lifecycle timeline (one register per tick).
     card_cadence: Literal["atomic", "paced"] = "atomic"
@@ -106,10 +114,14 @@ class ModelSOCardCatalogBinding(_ClosedBinding):
 
     @model_validator(mode="after")
     def _card_mode_requires_explicit_deck(self) -> Self:
-        if self.card_mode_enabled and self.deck_id is None:
+        if self.card_mode_enabled and self.deck_id is None and self.deck_policy is None:
             raise ValueError("card_mode_enabled requires an explicit deck_id")
-        if not self.card_mode_enabled and self.deck_id is not None:
+        if not self.card_mode_enabled and (
+            self.deck_id is not None or self.deck_policy is not None
+        ):
             raise ValueError("deck_id requires card_mode_enabled")
+        if self.deck_policy is not None and self.deck_id is not None:
+            raise ValueError("deck_policy cannot be combined with the selected deck_id")
         if not self.card_mode_enabled and self.programmers:
             raise ValueError("card programmer bindings require card_mode_enabled")
         if not self.card_mode_enabled and self.card_cadence != "atomic":
@@ -394,6 +406,7 @@ __all__ = [
     "ModelSOApplicationOverlay",
     "ModelSOBalanceRulePackBinding",
     "ModelSOCardCatalogBinding",
+    "ModelSOCardDeckPolicy",
     "ModelSOCardProgrammerBinding",
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
