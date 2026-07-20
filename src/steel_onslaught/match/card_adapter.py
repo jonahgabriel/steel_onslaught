@@ -477,7 +477,11 @@ class CardRunnerAdapter:
                 register_count=register_count,
                 hand_deck_ids=hand_deck_ids,
             )
-            programmer = None if self.programmers is None else self.programmers.get(request.seat)
+            programmer = None
+            if self.programmers is not None:
+                programmer = self.programmers.get(request.seat)
+                if programmer is None and request.side is not None:
+                    programmer = self.programmers.get(request.side)
             plan = program_for_seat(programmer, observation, rule_handlers=rule_handlers)
             plans[request.seat] = plan
             contexts.append(
