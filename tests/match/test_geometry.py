@@ -60,3 +60,15 @@ def test_blocked_directions_and_sidestep_use_fixed_priority() -> None:
         )
         == first
     )
+
+
+@pytest.mark.unit
+def test_blocked_directions_accepts_foundry_scale_without_grid_assumptions() -> None:
+    """Geometry remains parameterized for the 60x60 Foundry contract."""
+    assert blocked_directions(ModelSOPosition(x=59, y=59), size=60, obstacles=frozenset()) == (
+        SOCompassDirection.NE,
+        SOCompassDirection.E,
+        SOCompassDirection.SE,
+        SOCompassDirection.S,
+        SOCompassDirection.SW,
+    )

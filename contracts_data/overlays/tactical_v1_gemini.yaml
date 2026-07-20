@@ -31,7 +31,7 @@ evaluation_storage:
 contracts:
   catalog_dir: ..
   pilot_registry_dir: ../pilots/tactical_gemini
-  arena_id: foundry
+  arena_id: foundry_60
   card_catalog:
     kind: filesystem_yaml
     cards_dir: ../cards
