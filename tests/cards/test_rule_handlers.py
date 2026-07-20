@@ -7,6 +7,7 @@ import pytest
 from steel_onslaught.cards.rules import (
     CardProgrammingRuleError,
     CardProgrammingRuleRegistry,
+    EnsureMovementCardRuleHandler,
     PreferAttackCardsRuleHandler,
 )
 from steel_onslaught.contracts.card import (
@@ -129,6 +130,48 @@ def test_prefer_attack_handler_replaces_only_available_non_attack_slots() -> Non
         "card.test.vent",
         "card.test.advance_alt",
     )
+
+
+def test_ensure_movement_handler_replaces_only_the_last_slot_when_missing() -> None:
+    observation = _observation(
+        _fire_snapshot(),
+        hand=("card.test.fire", "card.test.vent", "card.test.advance", "card.test.advance_alt"),
+    )
+    proposed = ModelSOPlanCommittedPayload(
+        seat="red",
+        registers=(
+            ModelSOPlanRegister(register_index=0, card_id="card.test.fire"),
+            ModelSOPlanRegister(register_index=1, card_id="card.test.vent"),
+        ),
+        rationale="llm",
+        confidence=0.7,
+    )
+
+    result = EnsureMovementCardRuleHandler().apply(observation, proposed)
+
+    assert tuple(register.card_id for register in result.registers) == (
+        "card.test.fire",
+        "card.test.advance",
+    )
+    assert result.rationale == "llm; rule:ensure_movement_card"
+
+
+def test_ensure_movement_handler_is_a_noop_when_plan_already_moves() -> None:
+    observation = _observation(
+        _fire_snapshot(),
+        hand=("card.test.fire", "card.test.advance", "card.test.vent"),
+    )
+    proposed = ModelSOPlanCommittedPayload(
+        seat="red",
+        registers=(
+            ModelSOPlanRegister(register_index=0, card_id="card.test.advance"),
+            ModelSOPlanRegister(register_index=1, card_id="card.test.fire"),
+        ),
+        rationale="llm",
+        confidence=0.7,
+    )
+
+    assert EnsureMovementCardRuleHandler().apply(observation, proposed) == proposed
 
 
 def test_rule_registry_is_allowlisted_and_content_addressed() -> None:

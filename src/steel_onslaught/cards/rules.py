@@ -168,18 +168,86 @@ class PreferAttackCardsRuleHandler:
         )
 
 
+class EnsureMovementCardRuleHandler:
+    """Ensure each programmed round retains one movement card.
+
+    LLM card programmers are free to choose a coherent plan, but a perfectly
+    valid response can fill every register with mode/attack cards.  That
+    makes a match collapse into a stationary exchange even when the selected
+    deck contains flank and reposition options.  This opt-in rule preserves
+    the programmer's plan whenever it already contains movement; otherwise
+    it replaces only the lowest-priority register with the highest-priority
+    unused movement card from the dealt hand.
+
+    The transform is pure, deterministic, and bounded to the immutable hand
+    snapshot.  It does not alter card definitions or movement physics.
+    """
+
+    metadata: ModelSOCardRuleHandlerMetadata = ModelSOCardRuleHandlerMetadata(
+        handler_id="ensure_movement_card",
+        version="v1.0.0",
+        implementation_sha256=hashlib.sha256(
+            b"steel_onslaught.cards.rules.EnsureMovementCardRuleHandler:v1.0.0"
+        ).hexdigest(),
+    )
+
+    def apply(
+        self,
+        observation: ModelSOProgrammingObservation,
+        proposed_plan: ModelSOPlanCommittedPayload,
+    ) -> ModelSOPlanCommittedPayload:
+        hand_cards = {card.id: card for card in observation.hand_cards}
+        if any(
+            hand_cards[register.card_id].category is SOCardCategory.MOVEMENT
+            for register in proposed_plan.registers
+        ):
+            return proposed_plan
+
+        used = {register.card_id for register in proposed_plan.registers}
+        movement_cards = sorted(
+            (
+                card
+                for card in hand_cards.values()
+                if card.category is SOCardCategory.MOVEMENT and card.id not in used
+            ),
+            key=lambda card: (-card.priority, str(card.id)),
+        )
+        if not movement_cards or not proposed_plan.registers:
+            return proposed_plan
+
+        replacement_index = len(proposed_plan.registers) - 1
+        replacement_id = movement_cards[0].id
+        registers = tuple(
+            ModelSOPlanRegister(
+                register_index=register.register_index,
+                card_id=replacement_id if index == replacement_index else register.card_id,
+            )
+            for index, register in enumerate(proposed_plan.registers)
+        )
+        rule_note = f"rule:{self.metadata.handler_id}"
+        rationale = proposed_plan.rationale
+        rationale = rule_note if not rationale else f"{rationale}; {rule_note}"
+        return ModelSOPlanCommittedPayload(
+            seat=proposed_plan.seat,
+            registers=registers,
+            rationale=rationale,
+            confidence=proposed_plan.confidence,
+        )
+
+
 def default_rule_registry() -> CardProgrammingRuleRegistry:
     """Build the application allowlist without enabling any rule by default."""
 
     return CardProgrammingRuleRegistry(
         pack_id="rules.card_programming_v1",
-        handlers=(PreferAttackCardsRuleHandler(),),
+        handlers=(PreferAttackCardsRuleHandler(), EnsureMovementCardRuleHandler()),
     )
 
 
 __all__ = [
     "CardProgrammingRuleError",
     "CardProgrammingRuleRegistry",
+    "EnsureMovementCardRuleHandler",
     "PreferAttackCardsRuleHandler",
     "default_rule_registry",
 ]

@@ -49,7 +49,8 @@ contracts:
   balance_rule_pack:
     kind: card_programming_rules
     pack_id: rules.card_programming_v1
-    handler_ids: []
+    handler_ids:
+      - ensure_movement_card
 llm:
   providers:
     - kind: openai_compatible
