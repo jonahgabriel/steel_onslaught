@@ -60,6 +60,7 @@ from steel_onslaught.events.payloads import (
     ModelSOWeaponFireRejectedPayload,
     WeaponFireRejectionReason,
 )
+from steel_onslaught.llm.schemas import LlmCompletionBoundaryError
 from steel_onslaught.match.card_adapter import (
     CardRunnerAdapter,
     ModelSOCardRoundEmission,
@@ -386,21 +387,30 @@ class MatchRunner:
                 event_factory=self._events,
             ).apply(tick_event)
 
-            if self._card_adapter is not None and self._card_adapter.registers_enabled:
-                self._run_card_round(next_tick, tick_event)
-            else:
-                ReducerPilotTick(
-                    self._match_id,
-                    self.fold.state,
-                    self._pilots,
-                    sensor_events=list(self._sensor_buffer),
-                    emit=self._bus.publish,
-                    weapon_specs=self._catalog.weapons,
-                    correlation_id=self._correlation_id,
-                    event_factory=self._events,
-                    obstacles=self._obstacles,
-                    arena_size=self._arena_size,
-                ).apply(tick_event)
+            try:
+                if self._card_adapter is not None and self._card_adapter.registers_enabled:
+                    self._run_card_round(next_tick, tick_event)
+                else:
+                    ReducerPilotTick(
+                        self._match_id,
+                        self.fold.state,
+                        self._pilots,
+                        sensor_events=list(self._sensor_buffer),
+                        emit=self._bus.publish,
+                        weapon_specs=self._catalog.weapons,
+                        correlation_id=self._correlation_id,
+                        event_factory=self._events,
+                        obstacles=self._obstacles,
+                        arena_size=self._arena_size,
+                    ).apply(tick_event)
+            except LlmCompletionBoundaryError:
+                # A live provider that exhausts its output budget or typed
+                # timeout boundary must end the match at this tick. The
+                # completion effect has already emitted its sanitized failed
+                # terminal; this lifecycle event makes the match itself
+                # durably terminal and prevents a pre-hand-dealt freeze.
+                self._terminate_for_llm_boundary(tick=next_tick)
+                break
 
             # Resolve intents in initiative order. Initiative is a real combat
             # mechanic (match/initiative.py): lighter chassis and well-managed
@@ -440,6 +450,24 @@ class MatchRunner:
                 )
             )
         return self.fold.state
+
+    def _terminate_for_llm_boundary(self, *, tick: int) -> None:
+        """Record an aborted terminal when a live provider cannot complete."""
+
+        if self.fold.state.status is not SOMatchStatus.RUNNING:
+            return
+        if self._card_cadence == "paced":
+            self._cancel_active_card_round(tick=tick, reason="llm_boundary")
+        self._bus.publish(
+            self._make_match_event(
+                SOEventType.MATCH_ENDED,
+                tick=tick,
+                payload={
+                    "reason": SOMatchEndReason.ABORTED.value,
+                    "winner_id": None,
+                },
+            )
+        )
 
     def _run_card_round(self, tick: int, tick_event: ModelSOEventEnvelope) -> None:
         """Publish one explicit card round and resolve its typed intents.

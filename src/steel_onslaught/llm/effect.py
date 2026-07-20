@@ -22,6 +22,7 @@ from steel_onslaught.events.payloads import (
     ModelSOLlmCompletionResolvedPayload,
 )
 from steel_onslaught.llm.schemas import (
+    LlmCompletionBoundaryError,
     LlmCompletionFailureReason,
     LlmResponse,
     LlmSemanticFailureCode,
@@ -81,6 +82,10 @@ class _ObservedLlmAttempt:
         self._requested = self._observer.requested(self._provider_id, self._request)
         try:
             self._response = self._base.complete(self._request)
+        except LlmCompletionBoundaryError as exc:
+            self._response = exc.response
+            self.fail(exc.reason_code)
+            raise
         except BaseException:
             self.fail("provider_error")
             raise
@@ -174,11 +179,24 @@ def consume_llm_completion[T](
     client: ProtocolLlmClient,
     request: ModelSOLlmCompletionRequest,
     consumer: Callable[[LlmResponse], T],
+    allow_length_finish_reason: bool = False,
 ) -> T:
-    """Finalize observed evidence only after strict consumer acceptance."""
+    """Finalize observed evidence only after strict consumer acceptance.
+
+    Live match consumers leave ``allow_length_finish_reason`` false so a
+    provider-truncated completion is terminal. Offline learning/tuning may
+    opt into parsing the response as an ordinary consumer error while still
+    retaining the requested/failed evidence pair.
+    """
     if not isinstance(client, ProtocolLlmAttemptClient) or not client.observes_attempts:
-        return consumer(client.complete(request))
+        response = client.complete(request)
+        if response.finish_reason == "length" and not allow_length_finish_reason:
+            raise LlmCompletionBoundaryError("length", response=response)
+        return consumer(response)
     with client.begin_attempt(request) as attempt:
+        if attempt.response.finish_reason == "length" and not allow_length_finish_reason:
+            attempt.fail("length")
+            raise LlmCompletionBoundaryError("length", response=attempt.response)
         try:
             result = consumer(attempt.response)
         except LlmSemanticError as exc:

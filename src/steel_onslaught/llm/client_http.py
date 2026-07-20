@@ -19,6 +19,7 @@ from steel_onslaught.contracts.application import (
     ModelSOStubLlmProviderBinding,
 )
 from steel_onslaught.llm.schemas import (
+    LlmCompletionBoundaryError,
     LlmResponse,
     LlmTransportError,
     LlmUsage,
@@ -136,7 +137,7 @@ class HttpxJsonTransport:
             )
             response.raise_for_status()
         except httpx.TimeoutException:
-            raise LlmTransportError("LLM request timed out", retryable=True) from None
+            raise LlmCompletionBoundaryError("timeout", retryable=True) from None
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             raise LlmTransportError(
@@ -211,6 +212,8 @@ class OpenAICompatibleClient:
                     timeout_seconds=self._config.timeout_seconds,
                 )
                 break
+            except TimeoutError:
+                raise LlmCompletionBoundaryError("timeout", retryable=True) from None
             except LlmTransportError as exc:
                 if not exc.retryable or attempt == self._config.retry.max_attempts:
                     raise

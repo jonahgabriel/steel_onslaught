@@ -360,6 +360,8 @@ class ModelSOLlmCompletionFailedPayload(_ClosedPayload):
         "invalid_response",
         "consumer_error",
         "abandoned",
+        "length",
+        "timeout",
     ]
     semantic_failure_code: LlmSemanticFailureCode | None
     model: str | None
