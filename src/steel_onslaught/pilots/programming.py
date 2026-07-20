@@ -108,8 +108,8 @@ class ModelSOProgrammingObservation(_ClosedProgrammingModel):
         except ValueError as exc:
             if self.register_count is None or not self.hand_deck_ids:
                 raise ValueError(
-                    "programming observation requires a selected deck or explicit split "
-                    "register/deck inputs"
+                    "programming observation requires an explicitly selected deck or "
+                    "explicit split register/deck inputs"
                 ) from exc
             register_count = self.register_count
             for card_id in self.hand:
