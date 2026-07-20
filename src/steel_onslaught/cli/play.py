@@ -294,6 +294,7 @@ class _PreadmittedStartCoordinator:
 def launch_browser_play_session(
     *,
     overlay: ModelSOApplicationOverlay,
+    canonical_overlay: ModelSOApplicationOverlay | None = None,
     roster: ModelSOPlayerRosterBinding,
     pilot_registry: PilotSpecRegistry | None = None,
     sessions: AuthenticatedSessionCapability,
@@ -329,6 +330,7 @@ def launch_browser_play_session(
 
     stack = assemble_selected_match_live(
         overlay=overlay,
+        canonical_overlay=canonical_overlay,
         roster=roster,
         pilot_registry=pilot_registry,
         sessions=sessions,
@@ -1359,6 +1361,7 @@ def _loopback_origin_aliases(origin: str) -> tuple[str, ...]:
 def _injected_live_provider_capability_factory(
     *,
     max_completions: int,
+    canonical_overlay: ModelSOApplicationOverlay | None = None,
 ) -> BrowserLiveProviderCapabilityFactory:
     """Bind a fresh, bounded launch grant for each browser start.
 
@@ -1398,7 +1401,7 @@ def _injected_live_provider_capability_factory(
                     creator_session_id=context.creator_session_id,
                     launch_command_id=request.command.command_id,
                     launch_command_sha256=canonical_command_sha256(request.command),
-                    overlay_sha256=canonical_overlay_sha256(overlay),
+                    overlay_sha256=canonical_overlay_sha256(canonical_overlay or overlay),
                     roster_sha256=roster.canonical_sha256(),
                     model_identity_id=option.model_identity_id,
                     provider_id=provider.provider_id,
@@ -1488,22 +1491,23 @@ def _configured_browser_server(
         raise ValueError("fixed and per-start live provider capabilities cannot be combined")
     factory = application_factory or CliApplicationFactory.packaged()
     if bool(getattr(factory, "live_enabled", False)):
-        live_provider_capability_factory = _injected_live_provider_capability_factory(
-            max_completions=live_max_completions,
-        )
         live_runtime_factory = factory.selected_runtime
     elif application_factory is not None:
         raise ValueError(
             "application_factory requires both injected secret and HTTP capabilities for live play"
         )
+    # A live application factory mints the per-start capability after the
+    # canonical overlay is loaded; count that deferred authority here so
+    # malformed injection combinations still fail before filesystem reads.
     has_live_authority = (
-        live_provider_capability is not None or live_provider_capability_factory is not None
+        live_provider_capability is not None
+        or live_provider_capability_factory is not None
+        or bool(getattr(factory, "live_enabled", False))
     )
     if has_live_authority != (live_runtime_factory is not None):
         raise ValueError(
             "live provider authority and live_runtime_factory must be supplied together"
         )
-
     if (roster_path is None) == (catalog_index_path is None):
         raise ValueError("exactly one of roster_path or catalog_index_path is required")
     overlay = load_application_overlay(overlay_path)
@@ -1520,6 +1524,18 @@ def _configured_browser_server(
     else:
         assert roster_path is not None
         roster = _load_yaml_model(roster_path, ModelSOPlayerRosterBinding)
+    if bool(getattr(factory, "live_enabled", False)):
+        live_provider_capability_factory = _injected_live_provider_capability_factory(
+            max_completions=live_max_completions,
+            canonical_overlay=overlay,
+        )
+    has_live_authority = (
+        live_provider_capability is not None or live_provider_capability_factory is not None
+    )
+    if has_live_authority != (live_runtime_factory is not None):
+        raise ValueError(
+            "live provider authority and live_runtime_factory must be supplied together"
+        )
     session = _load_yaml_model(session_path, ModelSOAuthenticatedSession)
     red_loadout = load_loadout(red_loadout_path)
     blue_loadout = load_loadout(blue_loadout_path)
@@ -1610,6 +1626,7 @@ def _configured_browser_server(
 
         return launch_browser_play_session(
             overlay=selected_overlay,
+            canonical_overlay=overlay,
             roster=roster,
             sessions=sessions,
             request=request,

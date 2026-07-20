@@ -60,9 +60,15 @@ from steel_onslaught.llm.schemas import (
     ModelSOOpenAIChatResponse,
 )
 from steel_onslaught.match.composition import (
+    RuntimeDependencies,
     assemble_selected_match_live,
     build_selected_runtime_dependencies,
+    load_application_overlay,
     load_loadout,
+    load_model_catalog_loadouts,
+    load_model_catalog_pilot_registry,
+    load_model_catalog_runtime_overlay,
+    load_model_catalog_runtime_sources,
 )
 from steel_onslaught.match.runner import MatchIdentity
 from steel_onslaught.replay.engine import ReplayEngine
@@ -71,6 +77,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 _MATCH_ID = "match.01JABCDE0123456789ABCDEFGX"
 _FAILURE_MATCH_ID = "match.01JABCDE0123456789ABCDEFGY"
 _GLM_MATCH_ID = "match.01JABCDE0123456789ABCDEFGW"
+_QWEN_CATALOG_MATCH_ID = "match.01JABCDE0123456789ABCDEFGV"
 _RED_PATH = _ROOT / "contracts_data/loadouts/example_aggressive_light.yaml"
 _BLUE_PATH = _ROOT / "contracts_data/loadouts/example_llm_berserker_light.yaml"
 
@@ -628,6 +635,154 @@ def test_browser_live_start_mints_one_exact_capability_and_replay_does_not_remin
     assert grant.provider_id == "selected"
     assert grant.max_completions == 8
     assert callable(launch_calls[0]["live_runtime_factory"])
+
+
+@pytest.mark.integration
+def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path) -> None:
+    """A selected catalog overlay must not make a browser start hash stale."""
+
+    catalog_path = _ROOT / "contracts_data/model_catalogs/configured_v1.yaml"
+    base_overlay = load_application_overlay(_ROOT / "contracts_data/overlays/live_glm_cards.yaml")
+    catalog, source_overlays = load_model_catalog_runtime_sources(catalog_path)
+    _catalog, canonical_overlay = load_model_catalog_runtime_overlay(catalog_path, base_overlay)
+
+    # Keep this proof hermetic while retaining the production composition graph.
+    canonical_overlay = canonical_overlay.model_copy(
+        update={
+            "event_ledger": canonical_overlay.event_ledger.model_copy(
+                update={"path": tmp_path / "events.sqlite3"}
+            ),
+            "leaderboard": canonical_overlay.leaderboard.model_copy(
+                update={"path": tmp_path / "leaderboard.sqlite3"}
+            ),
+            "learning_artifacts": canonical_overlay.learning_artifacts.model_copy(
+                update={
+                    "evaluation_root": tmp_path / "evaluations",
+                    "lineage_root": tmp_path / "lineage",
+                    "experiment_root": tmp_path / "experiments",
+                }
+            ),
+            "evaluation_storage": canonical_overlay.evaluation_storage.model_copy(
+                update={"root": tmp_path / "evaluation_storage"}
+            ),
+        }
+    )
+    selected_overlay = play_cli._catalog_selection_overlay(
+        overlay=canonical_overlay,
+        catalog=catalog,
+        source_overlays=source_overlays,
+        request=ModelSOBrowserStartMatchRequest(
+            match_id=_QWEN_CATALOG_MATCH_ID,
+            command=ModelSOStartMatchCommand(
+                schema_version="1",
+                kind="steel_onslaught.start_match",
+                command_id=UUID("66666666-6666-4666-8666-666666666666"),
+                expected_overlay_sha256="0" * 64,
+                expected_roster_sha256="1" * 64,
+                selections=(
+                    ModelSOStartMatchSeatSelection(
+                        side="red", option_id="player_option.qwen35_model"
+                    ),
+                    ModelSOStartMatchSeatSelection(
+                        side="blue", option_id="player_option.qwen35_sniper"
+                    ),
+                ),
+            ),
+        ),
+    )
+    roster = catalog.to_roster_binding()
+    command = ModelSOStartMatchCommand(
+        schema_version="1",
+        kind="steel_onslaught.start_match",
+        command_id=UUID("66666666-6666-4666-8666-666666666666"),
+        expected_overlay_sha256=canonical_overlay_sha256(canonical_overlay),
+        expected_roster_sha256=roster.canonical_sha256(),
+        selections=(
+            ModelSOStartMatchSeatSelection(side="red", option_id="player_option.qwen35_model"),
+            ModelSOStartMatchSeatSelection(side="blue", option_id="player_option.qwen35_sniper"),
+        ),
+    )
+    request = ModelSOBrowserStartMatchRequest(
+        match_id=_QWEN_CATALOG_MATCH_ID,
+        command=command,
+    )
+    context = ModelSOStartMatchAuthorityContext(
+        creator_principal_id="principal.local_operator",
+        creator_session_id="session.local_operator",
+        human_seats=(),
+    )
+    registry = load_model_catalog_pilot_registry(catalog_path)
+    factory = CliApplicationFactory.live(
+        secret_resolver=_Resolver("unused-test-secret"),
+        http_transport=_Transport(),
+        sleeper=_Sleeper(),
+    )
+
+    def runtime_factory(candidate: ModelSOApplicationOverlay) -> RuntimeDependencies:
+        return factory.runtime(candidate, pilot_registry=registry)
+
+    def selected_runtime_factory(
+        candidate: ModelSOApplicationOverlay,
+        provider_selection: str | tuple[str, ...],
+        pilot_spec_ids: tuple[str, ...],
+    ) -> RuntimeDependencies:
+        return factory.selected_runtime(
+            candidate,
+            provider_selection,
+            pilot_spec_ids,
+            pilot_registry=registry,
+        )
+
+    capability = play_cli._injected_live_provider_capability_factory(
+        max_completions=8,
+        canonical_overlay=canonical_overlay,
+    )(
+        request,
+        context,
+        selected_overlay,
+        roster,
+    )
+    assert isinstance(capability, ProcessLocalOneShotLiveProviderCapability)
+
+    assert canonical_overlay_sha256(selected_overlay) != canonical_overlay_sha256(canonical_overlay)
+    session = play_cli.launch_browser_play_session(
+        overlay=selected_overlay,
+        canonical_overlay=canonical_overlay,
+        roster=roster,
+        pilot_registry=registry,
+        sessions=_Sessions(),
+        request=request,
+        transport=ModelSOBrowserRequestContext(
+            origin="http://localhost:5173",
+            host="127.0.0.1:8765",
+        ),
+        principal_id=context.creator_principal_id,
+        session_id=context.creator_session_id,
+        context=context,
+        identity=MatchIdentity(
+            match_id=_QWEN_CATALOG_MATCH_ID,
+            correlation_id=command.command_id,
+        ),
+        loadouts=load_model_catalog_loadouts(catalog_path),
+        runtime_factory=runtime_factory,
+        live_provider_capability=capability,
+        live_runtime_factory=selected_runtime_factory,
+        seed=7,
+        max_ticks=2,
+        allowed_origins=("http://localhost:5173", "http://127.0.0.1:5173"),
+    )
+    try:
+        assert session.start_result.overlay_sha256 == canonical_overlay_sha256(canonical_overlay)
+        assert session.launch_provenance.overlay_sha256 == canonical_overlay_sha256(
+            canonical_overlay
+        )
+        assignments = {
+            assignment.side: assignment for assignment in session.launch_provenance.seat_assignments
+        }
+        assert assignments["red"].pilot_spec_id == "pilot.llm.qwen35"
+        assert assignments["blue"].pilot_spec_id == "pilot.llm.qwen35_sniper"
+    finally:
+        session.close()
 
 
 @pytest.mark.integration

@@ -265,6 +265,7 @@ class ProcessLocalMatchLaunchCoordinator:
         roster: ModelSOPlayerRosterBinding,
         sessions: AuthenticatedSessionCapability,
         pilot_registry: PilotSpecRegistry,
+        canonical_overlay: ModelSOApplicationOverlay | None = None,
         live_provider_capability: (
             ProcessLocalOneShotLiveProviderCapability
             | Mapping[str, ProcessLocalOneShotLiveProviderCapability]
@@ -279,6 +280,7 @@ class ProcessLocalMatchLaunchCoordinator:
             roster=roster,
             sessions=sessions,
             pilot_registry=pilot_registry,
+            canonical_overlay=canonical_overlay,
         )
         self._options = {option.option_id: option for option in roster.options}
         self._seat_policies = {seat.side: seat for seat in roster.seats}
@@ -286,6 +288,7 @@ class ProcessLocalMatchLaunchCoordinator:
             identity.model_identity_id: identity for identity in overlay.llm.model_identities
         }
         self._providers = {provider.provider_id: provider for provider in overlay.llm.providers}
+        self._canonical_overlay = canonical_overlay or overlay
         self._records: dict[UUID, ModelSOMatchLaunchProvenance] = {}
         self._lock = Lock()
 
@@ -314,7 +317,7 @@ class ProcessLocalMatchLaunchCoordinator:
             match_id=match_id,
             launch_command_id=command.command_id,
             launch_command_sha256=admission.command_sha256,
-            overlay_sha256=canonical_overlay_sha256(self._overlay),
+            overlay_sha256=canonical_overlay_sha256(self._canonical_overlay),
             roster_id=self._roster.roster_id,
             roster_sha256=self._roster.canonical_sha256(),
             seat_assignments=(
@@ -391,7 +394,7 @@ class ProcessLocalMatchLaunchCoordinator:
                     creator_session_id=context.creator_session_id,
                     launch_command_id=command.command_id,
                     launch_command_sha256=command_sha256,
-                    overlay_sha256=canonical_overlay_sha256(self._overlay),
+                    overlay_sha256=canonical_overlay_sha256(self._canonical_overlay),
                     roster_sha256=self._roster.canonical_sha256(),
                     model_identity_id=model_identity_id,
                     provider_id=provider_id,
@@ -413,7 +416,7 @@ class ProcessLocalMatchLaunchCoordinator:
             creator_session_id=context.creator_session_id,
             launch_command_id=command.command_id,
             launch_command_sha256=command_sha256,
-            overlay_sha256=canonical_overlay_sha256(self._overlay),
+            overlay_sha256=canonical_overlay_sha256(self._canonical_overlay),
             roster_sha256=self._roster.canonical_sha256(),
             model_identity_id=model_identity_id,
             provider_id=provider_id,
