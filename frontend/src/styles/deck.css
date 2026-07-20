@@ -1259,16 +1259,31 @@ body {
   padding: 0.35rem 0;
 }
 .pd-cards {
-  display: flex;
+  /* Keep every authoritative hand card in the projection.  The gauge rail is
+     intentionally narrow at operator-sized viewports; a fixed 46px card
+     width made the fifth card fall outside the clipped flex strip while the
+     hand counter still reported 5/5.  Five responsive grid tracks preserve
+     the full hand and let each face shrink only as much as the rail requires.
+     Hands larger than five wrap to another row instead of being discarded. */
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0.2rem;
-  overflow: hidden;
+  overflow: visible;
   padding-top: 0.25rem;
 }
 .pd-card {
   position: relative;
   flex: 0 0 auto;
+  min-width: 0;
   color: var(--phosphor);
   font-family: var(--font-mono);
+}
+.pd-card-fluid {
+  width: 100%;
+  max-width: 46px;
+  height: auto;
+  aspect-ratio: 40 / 54;
+  justify-self: stretch;
 }
 .pd-card-plate {
   position: absolute;
