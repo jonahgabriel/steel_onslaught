@@ -56,6 +56,7 @@ from steel_onslaught.contracts.mode import ModeId, ModelSOModeTransition
 from steel_onslaught.contracts.model_catalog import (
     ModelSOModelCatalog,
     ModelSOModelCatalogIndex,
+    ModelSOModelCatalogSource,
     build_model_catalog,
     model_catalog_source_from_roster,
 )
@@ -544,6 +545,23 @@ def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
     )
 
 
+def _load_model_catalog_inputs(
+    path: Path,
+) -> tuple[ModelSOModelCatalogIndex, tuple[ModelSOApplicationOverlay, ...]]:
+    """Load an index and its explicitly declared source overlays."""
+    index_path = path.resolve(strict=True)
+    index = ModelSOModelCatalogIndex.model_validate_json(
+        json.dumps(yaml.safe_load(index_path.read_text(encoding="utf-8")))
+    )
+    overlays: list[ModelSOApplicationOverlay] = []
+    for source_binding in index.sources:
+        overlay = load_application_overlay(
+            (index_path.parent / source_binding.overlay_path).resolve(strict=True)
+        )
+        overlays.append(overlay)
+    return index, tuple(overlays)
+
+
 def load_model_catalog(path: Path) -> ModelSOModelCatalog:
     """Load an explicit multi-overlay catalog index and its source contracts.
 
@@ -552,15 +570,10 @@ def load_model_catalog(path: Path) -> ModelSOModelCatalog:
     discovery and never substitutes a missing provider or roster option.
     """
 
+    index, overlays = _load_model_catalog_inputs(path)
+    sources: list[ModelSOModelCatalogSource] = []
     index_path = path.resolve(strict=True)
-    index = ModelSOModelCatalogIndex.model_validate_json(
-        json.dumps(yaml.safe_load(index_path.read_text(encoding="utf-8")))
-    )
-    sources = []
-    for source_binding in index.sources:
-        overlay = load_application_overlay(
-            (index_path.parent / source_binding.overlay_path).resolve(strict=True)
-        )
+    for source_binding, overlay in zip(index.sources, overlays, strict=True):
         roster_path = (index_path.parent / source_binding.roster_path).resolve(strict=True)
         roster = ModelSOPlayerRosterBinding.model_validate_json(
             json.dumps(yaml.safe_load(roster_path.read_text(encoding="utf-8")))
@@ -570,16 +583,15 @@ def load_model_catalog(path: Path) -> ModelSOModelCatalog:
             overlay=overlay,
             pilot_registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
         )
-        provider_models = {
-            provider.provider_id: provider.model for provider in overlay.llm.providers
-        }
         sources.append(
             model_catalog_source_from_roster(
                 overlay_id=source_binding.source_overlay_id,
                 overlay_sha256=canonical_overlay_sha256(overlay),
                 roster=roster,
                 model_identities=overlay.llm.model_identities,
-                provider_models=provider_models,
+                provider_models={
+                    provider.provider_id: provider.model for provider in overlay.llm.providers
+                },
                 option_id_map={
                     alias.source_option_id: alias.catalog_option_id
                     for alias in source_binding.option_id_map
@@ -593,7 +605,105 @@ def load_model_catalog(path: Path) -> ModelSOModelCatalog:
         seats=index.seats,
         default_chassis_ids=(index.default_chassis_ids[0], index.default_chassis_ids[1]),
         mirror_match_mode=index.mirror_match_mode,
+        resolve_option_loadouts=True,
     )
+
+
+def load_model_catalog_runtime_sources(
+    path: Path,
+) -> tuple[ModelSOModelCatalog, Mapping[str, ModelSOApplicationOverlay]]:
+    """Return the catalog and its explicitly named source overlays."""
+
+    index, overlays = _load_model_catalog_inputs(path)
+    catalog = load_model_catalog(path)
+    return catalog, MappingProxyType(
+        {
+            binding.source_overlay_id: overlay
+            for binding, overlay in zip(index.sources, overlays, strict=True)
+        }
+    )
+
+
+def load_model_catalog_runtime_overlay(
+    path: Path,
+    overlay: ModelSOApplicationOverlay,
+) -> tuple[ModelSOModelCatalog, ModelSOApplicationOverlay]:
+    """Project catalog source provider bindings into the live overlay.
+
+    The catalog remains the authority for options and provenance, while the
+    supplied application overlay remains the authority for storage, cards,
+    transport, and injected capabilities. Source overlays contribute only
+    their explicitly declared provider/model bindings, allowing a selected
+    Qwen, GLM, OpenRouter, or Gemini option to resolve through the same DI
+    graph instead of silently falling back to the launch overlay's provider.
+    """
+
+    catalog, source_overlay_map = load_model_catalog_runtime_sources(path)
+    providers: dict[str, Any] = {
+        provider.provider_id: provider for provider in overlay.llm.providers
+    }
+    identities: dict[str, Any] = {
+        identity.model_identity_id: identity for identity in overlay.llm.model_identities
+    }
+    for source_overlay in source_overlay_map.values():
+        for provider in source_overlay.llm.providers:
+            existing = providers.get(provider.provider_id)
+            if existing is not None and existing != provider:
+                raise ValueError(
+                    "catalog source provider binding conflicts with launch overlay: "
+                    f"{provider.provider_id!r}"
+                )
+            providers[provider.provider_id] = provider
+        for identity in source_overlay.llm.model_identities:
+            existing_identity = identities.get(identity.model_identity_id)
+            if existing_identity is not None and existing_identity != identity:
+                raise ValueError(
+                    "catalog source model identity conflicts with launch overlay: "
+                    f"{identity.model_identity_id!r}"
+                )
+            identities[identity.model_identity_id] = identity
+    merged_llm = overlay.llm.model_copy(
+        update={
+            "providers": tuple(providers.values()),
+            "model_identities": tuple(identities.values()),
+        }
+    )
+    return catalog, overlay.model_copy(update={"llm": merged_llm})
+
+
+def load_model_catalog_loadouts(path: Path) -> Mapping[str, ModelSOLoadout]:
+    """Load only the loadouts explicitly named by a catalog source index."""
+
+    index_path = path.resolve(strict=True)
+    index = ModelSOModelCatalogIndex.model_validate_json(
+        json.dumps(yaml.safe_load(index_path.read_text(encoding="utf-8")))
+    )
+    loadouts: dict[str, ModelSOLoadout] = {}
+    for source in index.sources:
+        if source.loadout_paths is None:
+            continue
+        for raw_path in source.loadout_paths:
+            loadout_path = (index_path.parent / raw_path).resolve(strict=True)
+            loadout = load_loadout(loadout_path)
+            existing = loadouts.get(loadout.id)
+            if existing is not None and existing != loadout:
+                raise ValueError(f"catalog loadout id has conflicting definitions: {loadout.id!r}")
+            loadouts[loadout.id] = loadout
+    return MappingProxyType(loadouts)
+
+
+def load_model_catalog_pilot_registry(path: Path) -> PilotSpecRegistry:
+    """Merge the exact pilot registries declared by catalog source overlays."""
+
+    _index, source_overlays = _load_model_catalog_inputs(path)
+    directories = tuple(
+        dict.fromkeys(
+            source_overlay.contracts.pilot_registry_dir for source_overlay in source_overlays
+        )
+    )
+    if not directories:
+        raise ValueError("catalog source overlays must declare pilot registries")
+    return load_pilot_registry(directories[0], additional_directories=directories[1:])
 
 
 def _load_specs[ModelT: BaseModel](directory: Path, model: type[ModelT]) -> dict[str, ModelT]:
@@ -810,8 +920,18 @@ def load_pilot_spec(path: Path) -> ModelSOPilotSpec:
     return ModelSOPilotSpec.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
 
 
-def load_pilot_registry(directory: Path) -> PilotSpecRegistry:
+def load_pilot_registry(
+    directory: Path,
+    *,
+    additional_directories: tuple[Path, ...] = (),
+) -> PilotSpecRegistry:
     specs = _load_specs(directory, ModelSOPilotSpec)
+    for additional_directory in additional_directories:
+        for pilot_id, spec in _load_specs(additional_directory, ModelSOPilotSpec).items():
+            existing = specs.get(pilot_id)
+            if existing is not None and existing != spec:
+                raise ValueError(f"pilot id has conflicting definitions: {pilot_id!r}")
+            specs[pilot_id] = spec
     return PilotSpecRegistry(specs)
 
 
@@ -1093,6 +1213,7 @@ def build_selected_llm_dependencies(
 def build_runtime_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
+    pilot_registry: PilotSpecRegistry | None = None,
     llm_dependencies: LlmDependencies | None = None,
     selected_provider_id: str | None = None,
     selected_provider_ids: tuple[str, ...] | None = None,
@@ -1179,9 +1300,11 @@ def build_runtime_dependencies(
                 experiment_root=overlay.learning_artifacts.experiment_root,
             )
         )
-        pilot_registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
+        resolved_pilot_registry = pilot_registry or load_pilot_registry(
+            overlay.contracts.pilot_registry_dir
+        )
         _validate_llm_pilot_bindings(
-            pilot_registry,
+            resolved_pilot_registry,
             llm,
             selected_pilot_spec_ids=selected_pilot_spec_ids,
         )
@@ -1208,12 +1331,12 @@ def build_runtime_dependencies(
                 )
             card_programmer_factory = CardProgrammerFactory(
                 bindings=card_binding.programmers,
-                registry=pilot_registry,
+                registry=resolved_pilot_registry,
                 llm=llm,
             )
             resolved_card_programmers = build_card_programmers(
                 card_binding.programmers,
-                registry=pilot_registry,
+                registry=resolved_pilot_registry,
                 llm=llm,
             )
         if card_binding is not None and card_binding.card_mode_enabled:
@@ -1242,7 +1365,7 @@ def build_runtime_dependencies(
             event_factory=event_factory,
             catalog=catalog,
             arena=arena,
-            pilot_registry=pilot_registry,
+            pilot_registry=resolved_pilot_registry,
             pilot_factory=llm.pilot_factory,
             closer=llm.closer if owns_llm else NoopResourceCloser(),
             learning_artifacts=learning_artifacts,
@@ -1265,6 +1388,7 @@ def build_runtime_dependencies(
 def build_selected_runtime_dependencies(
     overlay: ModelSOApplicationOverlay,
     *,
+    pilot_registry: PilotSpecRegistry | None = None,
     selected_provider_id: str | None = None,
     selected_provider_ids: tuple[str, ...] | None = None,
     selected_pilot_spec_ids: tuple[str, ...],
@@ -1279,6 +1403,7 @@ def build_selected_runtime_dependencies(
         raise ValueError("a selected provider id is required")
     return build_runtime_dependencies(
         overlay,
+        pilot_registry=pilot_registry,
         selected_provider_id=selected_provider_id,
         selected_provider_ids=selected_provider_ids,
         selected_pilot_spec_ids=selected_pilot_spec_ids,
@@ -1733,6 +1858,7 @@ def assemble_selected_match_live(
     *,
     overlay: ModelSOApplicationOverlay,
     roster: ModelSOPlayerRosterBinding,
+    pilot_registry: PilotSpecRegistry | None = None,
     sessions: AuthenticatedSessionCapability,
     command: ModelSOStartMatchCommand,
     context: ModelSOStartMatchAuthorityContext,
@@ -1755,12 +1881,14 @@ def assemble_selected_match_live(
             "live_provider_capability and live_runtime_factory must be supplied together"
         )
 
-    pilot_registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
+    resolved_pilot_registry = pilot_registry or load_pilot_registry(
+        overlay.contracts.pilot_registry_dir
+    )
     provenance = ProcessLocalMatchLaunchCoordinator(
         overlay=overlay,
         roster=roster,
         sessions=sessions,
-        pilot_registry=pilot_registry,
+        pilot_registry=resolved_pilot_registry,
         live_provider_capability=live_provider_capability,
     ).admit_start_match(
         command,
@@ -1978,6 +2106,11 @@ __all__ = [
     "load_deck_catalog",
     "load_loadout",
     "load_match_contract_catalog",
+    "load_model_catalog",
+    "load_model_catalog_loadouts",
+    "load_model_catalog_pilot_registry",
+    "load_model_catalog_runtime_overlay",
+    "load_model_catalog_runtime_sources",
     "load_pilot_registry",
     "load_pilot_spec",
     "run_composed_match",

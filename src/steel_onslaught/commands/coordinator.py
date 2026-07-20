@@ -422,6 +422,7 @@ class ProcessLocalMatchLaunchCoordinator:
     def _assignment_for(self, side: Side, option_id: str) -> SeatAssignment:
         option: PlayerOptionBinding = self._options[option_id]
         policy = self._seat_policies[side]
+        loadout_id = policy.loadout_for_option(option_id)
         option_sha256 = _canonical_model_sha256(option)
         if isinstance(option, ModelSOHumanPlayerOptionBinding):
             return ModelSOHumanSeatAssignment(
@@ -429,7 +430,7 @@ class ProcessLocalMatchLaunchCoordinator:
                 side=side,
                 player_id=f"player.{side}",
                 option_id=option.option_id,
-                loadout_id=policy.loadout_id,
+                loadout_id=loadout_id,
                 pilot_spec_id=option.pilot_spec_id,
                 option_sha256=option_sha256,
                 human_identity_id=option.human_identity_id,
@@ -440,7 +441,7 @@ class ProcessLocalMatchLaunchCoordinator:
             side=side,
             player_id=f"player.{side}",
             option_id=option.option_id,
-            loadout_id=policy.loadout_id,
+            loadout_id=loadout_id,
             pilot_spec_id=option.pilot_spec_id,
             option_sha256=option_sha256,
             model_identity_id=option.model_identity_id,

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ModelCatalogProjection } from "../lib/application";
 import { parseFrontendBootstrap } from "../lib/application";
 import MatchSetup from "../views/MatchSetup";
 
@@ -67,6 +68,51 @@ describe("MatchSetup safe player intent", () => {
       "player_option.glm_model",
     );
     expect(screen.getByRole("button", { name: "START MATCH" })).toBeEnabled();
+  });
+
+  it("uses the canonical catalog projection for provider labels and differentiated defaults", () => {
+    const initial = bootstrap();
+    if (initial.player_roster === null) throw new Error("fixture roster must be available");
+    const providerByIdentity: Record<string, { binding: string; model: string }> = {
+      "model_identity.local": { binding: "qwen35", model: "Qwen3.6-35B-A3B" },
+      "model_identity.openrouter": { binding: "openrouter", model: "openrouter/free" },
+      "model_identity.glm": { binding: "glm-5.2", model: "glm-5.2" },
+      "model_identity.gemini": { binding: "gemini", model: "gemini-2.5-flash" },
+    };
+    const modelCatalog: ModelCatalogProjection = {
+      schema_version: "1",
+      kind: "steel_onslaught.model_catalog_projection",
+      catalog_id: "catalog.configured_models",
+      catalog_sha256: "c".repeat(64),
+      options: initial.player_roster.options.map((option) => {
+        if (option.kind === "human") return option;
+        const provider = providerByIdentity[option.model_identity_id];
+        if (provider === undefined) throw new Error("fixture identity missing provider binding");
+        return {
+          ...option,
+          provider_binding_id: provider.binding,
+          provider_model: provider.model,
+        };
+      }),
+      default_option_ids: ["player_option.glm_model", "player_option.openrouter_model"],
+      mirror_match_mode: false,
+    };
+
+    render(
+      <MatchSetup
+        bootstrap={{ ...initial, model_catalog: modelCatalog }}
+        capability={{ requestStart: vi.fn() }}
+      />,
+    );
+
+    expect((screen.getByLabelText("red pilot") as HTMLSelectElement).value).toBe(
+      "player_option.glm_model",
+    );
+    expect((screen.getByLabelText("blue pilot") as HTMLSelectElement).value).toBe(
+      "player_option.openrouter_model",
+    );
+    expect(screen.getByLabelText("red pilot")).toHaveTextContent("glm-5.2/glm-5.2");
+    expect(screen.getByLabelText("blue pilot")).toHaveTextContent("openrouter/openrouter/free");
   });
 
   it("uses explicit seat defaults instead of option names or ordering", () => {

@@ -12,8 +12,10 @@ import type React from "react";
 import { useState } from "react";
 import type {
   FrontendBootstrap,
+  ModelCatalogProjection,
   PlayerRosterProjection,
   PlayerSide,
+  PublicModelCatalogOption,
   PublicPlayerOption,
 } from "../lib/application";
 import type { BrowserActionIntent, BrowserHumanTurnPrompt } from "../lib/command_gateway";
@@ -45,23 +47,39 @@ export interface MatchSetupProps {
 function optionsFor(
   roster: PlayerRosterProjection,
   side: PlayerSide,
-): readonly PublicPlayerOption[] {
+  catalog: ModelCatalogProjection | null,
+): readonly PickerOption[] {
   const policy = roster.seats.find((seat) => seat.side === side);
   if (policy === undefined) return [];
   const allowed = new Set(policy.allowed_option_ids);
-  return roster.options.filter((option) => allowed.has(option.option_id));
+  const rosterOptions = roster.options.filter((option) => allowed.has(option.option_id));
+  if (catalog === null) return rosterOptions;
+  const catalogOptions = new Map(catalog.options.map((option) => [option.option_id, option]));
+  return rosterOptions.map((option) => catalogOptions.get(option.option_id) ?? option);
 }
 
-function defaultOptionId(roster: PlayerRosterProjection | null, side: PlayerSide): string {
+function defaultOptionId(
+  roster: PlayerRosterProjection | null,
+  side: PlayerSide,
+  catalog: ModelCatalogProjection | null,
+): string {
   if (roster === null) return "";
   const policy = roster.seats.find((seat) => seat.side === side);
-  if (policy === undefined || policy.default_option_id === null) return "";
-  const allowed = new Set(optionsFor(roster, side).map((option) => option.option_id));
-  return allowed.has(policy.default_option_id) ? policy.default_option_id : "";
+  if (policy === undefined) return "";
+  const catalogDefault = catalog?.default_option_ids[side === "red" ? 0 : 1] ?? null;
+  const candidate = catalogDefault ?? policy.default_option_id;
+  if (candidate === null) return "";
+  const allowed = new Set(optionsFor(roster, side, catalog).map((option) => option.option_id));
+  return allowed.has(candidate) ? candidate : "";
 }
 
-function optionLabel(option: PublicPlayerOption): string {
+type PickerOption = PublicPlayerOption | PublicModelCatalogOption;
+
+function optionLabel(option: PickerOption): string {
   if (option.kind === "human") return `${option.display_name} · HUMAN`;
+  if ("provider_binding_id" in option) {
+    return `${option.display_name} · ${option.provider_binding_id}/${option.provider_model}`;
+  }
   return `${option.display_name} · ${option.model_identity_id}`;
 }
 
@@ -72,7 +90,7 @@ function PlayerSelect({
   onChange,
 }: {
   readonly side: PlayerSide;
-  readonly options: readonly PublicPlayerOption[];
+  readonly options: readonly PickerOption[];
   readonly value: string;
   readonly onChange: (optionId: string) => void;
 }): React.JSX.Element {
@@ -105,8 +123,9 @@ export default function MatchSetup({
   humanPrompt,
 }: MatchSetupProps): React.JSX.Element {
   const roster = bootstrap.player_roster;
-  const [redOptionId, setRedOptionId] = useState(() => defaultOptionId(roster, "red"));
-  const [blueOptionId, setBlueOptionId] = useState(() => defaultOptionId(roster, "blue"));
+  const catalog = bootstrap.model_catalog;
+  const [redOptionId, setRedOptionId] = useState(() => defaultOptionId(roster, "red", catalog));
+  const [blueOptionId, setBlueOptionId] = useState(() => defaultOptionId(roster, "blue", catalog));
 
   if (roster === null) {
     return (
@@ -120,8 +139,8 @@ export default function MatchSetup({
     );
   }
 
-  const redOptions = optionsFor(roster, "red");
-  const blueOptions = optionsFor(roster, "blue");
+  const redOptions = optionsFor(roster, "red", catalog);
+  const blueOptions = optionsFor(roster, "blue", catalog);
   const redSelectionAllowed = redOptions.some((option) => option.option_id === redOptionId);
   const blueSelectionAllowed = blueOptions.some((option) => option.option_id === blueOptionId);
   const rosterId = roster.roster_id;

@@ -11,6 +11,9 @@ sources:
     source_overlay_id: overlay.standard_v1_qwen
     overlay_path: ../overlays/standard_v1_qwen.yaml
     roster_path: ../rosters/canonical_qwen35.yaml
+    loadout_paths:
+      - ../loadouts/llm_qwen35_berserker.yaml
+      - ../loadouts/llm_qwen35_berserker.yaml
     option_id_map:
       - source_option_id: player_option.qwen35_model
         catalog_option_id: player_option.qwen35_model
@@ -18,6 +21,9 @@ sources:
     source_overlay_id: overlay.tactical_v1_qwen27
     overlay_path: ../overlays/tactical_v1_qwen27.yaml
     roster_path: ../rosters/canonical_qwen27.yaml
+    loadout_paths:
+      - ../loadouts/llm_qwen27_sniper.yaml
+      - ../loadouts/llm_qwen27_sniper.yaml
     option_id_map:
       - source_option_id: player_option.qwen27_model
         catalog_option_id: player_option.qwen27_model
@@ -25,6 +31,9 @@ sources:
     source_overlay_id: overlay.live_glm_cards
     overlay_path: ../overlays/live_glm_cards.yaml
     roster_path: ../rosters/live_glm_varied.yaml
+    loadout_paths:
+      - ../loadouts/live_glm_sniper_ironclad.yaml
+      - ../loadouts/live_glm_opportunist_hunter.yaml
     option_id_map:
       - source_option_id: player_option.local_human
         catalog_option_id: player_option.human_operator
@@ -36,6 +45,9 @@ sources:
     source_overlay_id: overlay.tactical_v1_openrouter
     overlay_path: ../overlays/tactical_v1_openrouter.yaml
     roster_path: ../rosters/tactical_v1_openrouter.yaml
+    loadout_paths:
+      - ../loadouts/tactical_openrouter/sniper_ironclad.yaml
+      - ../loadouts/tactical_openrouter/opportunist_hunter.yaml
     option_id_map:
       - source_option_id: player_option.local_human_sniper
         catalog_option_id: player_option.openrouter_human_sniper
@@ -49,6 +61,9 @@ sources:
     source_overlay_id: overlay.tactical_v1_gemini
     overlay_path: ../overlays/tactical_v1_gemini.yaml
     roster_path: ../rosters/tactical_v1_gemini.yaml
+    loadout_paths:
+      - ../loadouts/tactical_gemini/sniper_ironclad.yaml
+      - ../loadouts/tactical_gemini/opportunist_hunter.yaml
     option_id_map:
       - source_option_id: player_option.local_human_sniper
         catalog_option_id: player_option.gemini_human_sniper
@@ -67,15 +82,10 @@ seats:
       - player_option.qwen35_model
       - player_option.qwen27_model
       - player_option.glm_sniper
-      - player_option.glm_opportunist
       - player_option.openrouter_human_sniper
-      - player_option.openrouter_human_opportunist
       - player_option.openrouter_sniper
-      - player_option.openrouter_opportunist
       - player_option.gemini_human_sniper
-      - player_option.gemini_human_opportunist
       - player_option.gemini_sniper
-      - player_option.gemini_opportunist
   - side: blue
     loadout_id: loadout.live.glm_opportunist_hunter
     default_option_id: player_option.glm_opportunist
@@ -83,13 +93,8 @@ seats:
       - player_option.human_operator
       - player_option.qwen35_model
       - player_option.qwen27_model
-      - player_option.glm_sniper
       - player_option.glm_opportunist
-      - player_option.openrouter_human_sniper
       - player_option.openrouter_human_opportunist
-      - player_option.openrouter_sniper
       - player_option.openrouter_opportunist
-      - player_option.gemini_human_sniper
       - player_option.gemini_human_opportunist
-      - player_option.gemini_sniper
       - player_option.gemini_opportunist

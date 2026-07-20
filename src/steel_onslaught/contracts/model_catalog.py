@@ -17,12 +17,14 @@ from typing import Annotated, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, StringConstraints, model_validator
 
 from steel_onslaught.contracts.player_selection import (
+    LoadoutId,
     ModelIdentityId,
     ModelSOHumanPlayerOptionBinding,
     ModelSOModelIdentityBinding,
     ModelSOModelPlayerOptionBinding,
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
+    ModelSOSeatOptionLoadoutBinding,
     PersonaId,
     PlayerOptionBinding,
     PlayerOptionId,
@@ -66,6 +68,8 @@ class ModelSOModelCatalogHumanOption(_ClosedCatalogModel):
     source_overlay_sha256: Sha256Digest
     source_roster_id: RosterId
     source_roster_sha256: Sha256Digest
+    red_loadout_id: LoadoutId | None = None
+    blue_loadout_id: LoadoutId | None = None
 
 
 class ModelSOModelCatalogModelOption(_ClosedCatalogModel):
@@ -88,6 +92,8 @@ class ModelSOModelCatalogModelOption(_ClosedCatalogModel):
     source_overlay_sha256: Sha256Digest
     source_roster_id: RosterId
     source_roster_sha256: Sha256Digest
+    red_loadout_id: LoadoutId | None = None
+    blue_loadout_id: LoadoutId | None = None
 
 
 CatalogOptionBinding = Annotated[
@@ -294,6 +300,7 @@ class ModelSOModelCatalogSourceBinding(_ClosedCatalogModel):
     source_overlay_id: OverlayId
     overlay_path: StrictStr = Field(min_length=1, max_length=512)
     roster_path: StrictStr = Field(min_length=1, max_length=512)
+    loadout_paths: tuple[StrictStr, StrictStr] | None = None
     option_id_map: tuple[ModelSOModelCatalogOptionAlias, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -327,6 +334,9 @@ class ModelSOModelCatalogIndex(_ClosedCatalogModel):
         source_ids = [source.source_id for source in self.sources]
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("catalog sources must declare unique source_id values")
+        overlay_ids = [source.source_overlay_id for source in self.sources]
+        if len(overlay_ids) != len(set(overlay_ids)):
+            raise ValueError("catalog sources must declare unique source_overlay_id values")
         catalog_option_ids = [
             alias.catalog_option_id for source in self.sources for alias in source.option_id_map
         ]
@@ -385,7 +395,11 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             )
             if roles[0] == roles[1]:
                 raise ValueError("duplicate default role requires mirror_match_mode")
-            if self.seats[0].loadout_id == self.seats[1].loadout_id:
+            default_loadouts = (
+                self.seats[0].loadout_for_option(defaults[0]),
+                self.seats[1].loadout_for_option(defaults[1]),
+            )
+            if default_loadouts[0] == default_loadouts[1]:
                 raise ValueError("duplicate default loadout requires mirror_match_mode")
             if self.default_chassis_ids[0] == self.default_chassis_ids[1]:
                 raise ValueError("duplicate default chassis requires mirror_match_mode")
@@ -416,6 +430,8 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             raise ValueError(f"option {blue_option_id!r} is not allowed for blue seat")
         red_role = self._role_for_option(self._option_for_id(red_option_id))
         blue_role = self._role_for_option(self._option_for_id(blue_option_id))
+        red_loadout_id = red_seat.loadout_for_option(red_option_id)
+        blue_loadout_id = blue_seat.loadout_for_option(blue_option_id)
         pairing_fields = {
             "schema_version": "1",
             "kind": "steel_onslaught.model_catalog_pairing",
@@ -425,8 +441,8 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             "blue_option_id": blue_option_id,
             "red_role_id": red_role,
             "blue_role_id": blue_role,
-            "red_loadout_id": red_seat.loadout_id,
-            "blue_loadout_id": blue_seat.loadout_id,
+            "red_loadout_id": red_loadout_id,
+            "blue_loadout_id": blue_loadout_id,
             "red_chassis_id": self.default_chassis_ids[0],
             "blue_chassis_id": self.default_chassis_ids[1],
             "mirror_match_mode": self.mirror_match_mode,
@@ -436,7 +452,7 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
                 raise ValueError("duplicate selected option requires mirror_match_mode")
             if red_role == blue_role:
                 raise ValueError("duplicate selected role requires mirror_match_mode")
-            if red_seat.loadout_id == blue_seat.loadout_id:
+            if red_loadout_id == blue_loadout_id:
                 raise ValueError("duplicate selected loadout requires mirror_match_mode")
             if self.default_chassis_ids[0] == self.default_chassis_ids[1]:
                 raise ValueError("duplicate selected chassis requires mirror_match_mode")
@@ -452,8 +468,8 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             blue_option_id=blue_option_id,
             red_role_id=red_role,
             blue_role_id=blue_role,
-            red_loadout_id=red_seat.loadout_id,
-            blue_loadout_id=blue_seat.loadout_id,
+            red_loadout_id=red_loadout_id,
+            blue_loadout_id=blue_loadout_id,
             red_chassis_id=self.default_chassis_ids[0],
             blue_chassis_id=self.default_chassis_ids[1],
             mirror_match_mode=self.mirror_match_mode,
@@ -496,12 +512,26 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
                         input_source=option.input_source,
                     )
                 )
+        policies: list[ModelSOSeatLaunchPolicy] = []
+        for seat in self.seats:
+            option_loadouts: list[ModelSOSeatOptionLoadoutBinding] = []
+            for option_id in seat.allowed_option_ids:
+                option = self._option_for_id(option_id)
+                loadout_id = option.red_loadout_id if seat.side == "red" else option.blue_loadout_id
+                if loadout_id is not None:
+                    option_loadouts.append(
+                        ModelSOSeatOptionLoadoutBinding(
+                            option_id=option_id,
+                            loadout_id=loadout_id,
+                        )
+                    )
+            policies.append(seat.model_copy(update={"option_loadouts": tuple(option_loadouts)}))
         return ModelSOPlayerRosterBinding(
             schema_version="1",
             kind="steel_onslaught.player_roster",
             roster_id=self.roster_id,
             options=tuple(options),
-            seats=self.seats,
+            seats=(policies[0], policies[1]),
         )
 
     def public_projection(self) -> ModelSOModelCatalogProjection:
@@ -570,6 +600,7 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
                 blue_option_id=option_id,
             )
         )
+        loadout_id = seat.loadout_for_option(option_id)
         if isinstance(option, ModelSOModelCatalogHumanOption):
             return ModelSOModelCatalogSelectionProvenance(
                 schema_version="1",
@@ -579,7 +610,7 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
                 catalog_sha256=self.canonical_sha256(),
                 side=side,
                 option_id=option.option_id,
-                loadout_id=seat.loadout_id,
+                loadout_id=loadout_id,
                 display_name=option.display_name,
                 source_overlay_id=option.source_overlay_id,
                 source_overlay_sha256=option.source_overlay_sha256,
@@ -598,7 +629,7 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             catalog_sha256=self.canonical_sha256(),
             side=side,
             option_id=option.option_id,
-            loadout_id=seat.loadout_id,
+            loadout_id=loadout_id,
             display_name=option.display_name,
             source_overlay_id=option.source_overlay_id,
             source_overlay_sha256=option.source_overlay_sha256,
@@ -645,6 +676,10 @@ def model_catalog_source_from_roster(
 
     catalog_options: list[CatalogOptionBinding] = []
     roster_sha256 = roster.canonical_sha256()
+    seat_loadouts = {
+        seat.side: {option_id: seat.loadout_id for option_id in seat.allowed_option_ids}
+        for seat in roster.seats
+    }
     for option in roster.options:
         catalog_option_id = mapping[option.option_id]
         if isinstance(option, ModelSOHumanPlayerOptionBinding):
@@ -660,6 +695,8 @@ def model_catalog_source_from_roster(
                     source_overlay_sha256=overlay_sha256,
                     source_roster_id=roster.roster_id,
                     source_roster_sha256=roster_sha256,
+                    red_loadout_id=seat_loadouts["red"].get(option.option_id),
+                    blue_loadout_id=seat_loadouts["blue"].get(option.option_id),
                 )
             )
             continue
@@ -689,6 +726,8 @@ def model_catalog_source_from_roster(
                 source_overlay_sha256=overlay_sha256,
                 source_roster_id=roster.roster_id,
                 source_roster_sha256=roster_sha256,
+                red_loadout_id=seat_loadouts["red"].get(option.option_id),
+                blue_loadout_id=seat_loadouts["blue"].get(option.option_id),
             )
         )
     return ModelSOModelCatalogSource(
@@ -708,19 +747,44 @@ def build_model_catalog(
     seats: tuple[ModelSOSeatLaunchPolicy, ModelSOSeatLaunchPolicy],
     default_chassis_ids: tuple[str, str],
     mirror_match_mode: bool = False,
+    resolve_option_loadouts: bool = False,
 ) -> ModelSOModelCatalog:
     """Merge explicitly declared sources into one canonical catalog."""
 
     if not sources:
         raise ValueError("model catalog requires at least one explicit source")
     options = tuple(option for source in sources for option in source.options)
+    option_by_id = {option.option_id: option for option in options}
+    resolved_seats: list[ModelSOSeatLaunchPolicy] = []
+    for seat in seats:
+        if not resolve_option_loadouts:
+            resolved_seats.append(seat)
+            continue
+        option_loadouts: list[ModelSOSeatOptionLoadoutBinding] = []
+        for option_id in seat.allowed_option_ids:
+            option = option_by_id[option_id]
+            loadout_id = option.red_loadout_id if seat.side == "red" else option.blue_loadout_id
+            if loadout_id is None:
+                break
+            option_loadouts.append(
+                ModelSOSeatOptionLoadoutBinding(
+                    option_id=option_id,
+                    loadout_id=loadout_id,
+                )
+            )
+        if len(option_loadouts) == len(seat.allowed_option_ids):
+            resolved_seats.append(
+                seat.model_copy(update={"option_loadouts": tuple(option_loadouts)})
+            )
+        else:
+            resolved_seats.append(seat)
     return ModelSOModelCatalog(
         schema_version="1",
         kind="steel_onslaught.model_catalog",
         catalog_id=catalog_id,
         roster_id=roster_id,
         options=options,
-        seats=seats,
+        seats=(resolved_seats[0], resolved_seats[1]),
         default_chassis_ids=default_chassis_ids,
         mirror_match_mode=mirror_match_mode,
     )

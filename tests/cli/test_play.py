@@ -20,6 +20,7 @@ from steel_onslaught.cli.play import (
     BrowserLiveProviderCapabilityFactory,
     BrowserPlayServer,
     BrowserPlaySession,
+    _catalog_selection_overlay,
     _configured_browser_server,
     _InjectedSecretResolver,
     _load_yaml_model,
@@ -59,6 +60,12 @@ from steel_onslaught.match.composition import (
     RuntimeDependencies,
     SystemClock,
     SystemIdentityProvider,
+    load_application_overlay,
+    load_model_catalog,
+    load_model_catalog_loadouts,
+    load_model_catalog_pilot_registry,
+    load_model_catalog_runtime_overlay,
+    load_model_catalog_runtime_sources,
 )
 from steel_onslaught.match.runner import MatchIdentity
 
@@ -349,6 +356,120 @@ def test_configured_model_loader_parses_json_arrays_as_wire_tuples(tmp_path: Pat
 @pytest.mark.unit
 def test_browser_play_server_exports_ephemeral_loopback_contract() -> None:
     assert BrowserPlayServer.__name__ == "BrowserPlayServer"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_catalog_index_is_the_browser_bootstrap_roster_authority() -> None:
+    root = Path(__file__).parents[2]
+    server = _configured_browser_server(
+        overlay_path=root / "contracts_data/overlays/live_glm_cards.yaml",
+        catalog_index_path=root / "contracts_data/model_catalogs/configured_v1.yaml",
+        session_path=root / "contracts_data/sessions/local_operator.yaml",
+        red_loadout_path=root / "contracts_data/loadouts/live_glm_sniper_ironclad.yaml",
+        blue_loadout_path=root / "contracts_data/loadouts/live_glm_opportunist_hunter.yaml",
+        seed=7,
+        max_ticks=2,
+        origin="http://localhost:5173",
+        host="127.0.0.1",
+        port=0,
+    )
+
+    await server.start()
+    try:
+        bootstrap = server.bootstrap
+        assert bootstrap.model_catalog is not None
+        assert bootstrap.player_roster is not None
+        assert bootstrap.model_catalog.default_option_ids == (
+            "player_option.glm_sniper",
+            "player_option.glm_opportunist",
+        )
+        assert bootstrap.model_catalog.mirror_match_mode is False
+        model_options = {
+            option.option_id: (option.provider_binding_id, option.provider_model)
+            for option in bootstrap.model_catalog.options
+            if option.kind == "model"
+        }
+        assert {
+            "qwen35",
+            "qwen27",
+            "glm-5.2",
+            "openrouter",
+            "gemini",
+        } <= set(provider for provider, _model in model_options.values())
+        assert any(option.kind == "human" for option in bootstrap.model_catalog.options)
+        assert {option.option_id for option in bootstrap.player_roster.options} == {
+            option.option_id for option in bootstrap.model_catalog.options
+        }
+        loaded_catalog = load_model_catalog(
+            root / "contracts_data/model_catalogs/configured_v1.yaml"
+        )
+        catalog_roster = loaded_catalog.to_roster_binding()
+        red_loadouts = {
+            binding.option_id: binding.loadout_id
+            for binding in catalog_roster.seats[0].option_loadouts
+        }
+        blue_loadouts = {
+            binding.option_id: binding.loadout_id
+            for binding in catalog_roster.seats[1].option_loadouts
+        }
+        assert red_loadouts["player_option.qwen35_model"] == "loadout.llm.qwen35_berserker"
+        assert blue_loadouts["player_option.qwen27_model"] == "loadout.llm.qwen27_sniper"
+        pairing = loaded_catalog.pairing_provenance(
+            red_option_id="player_option.qwen35_model",
+            blue_option_id="player_option.qwen27_model",
+        )
+        assert pairing.red_loadout_id == "loadout.llm.qwen35_berserker"
+        assert pairing.blue_loadout_id == "loadout.llm.qwen27_sniper"
+        assert set(
+            load_model_catalog_loadouts(root / "contracts_data/model_catalogs/configured_v1.yaml")
+        ) >= {
+            "loadout.llm.qwen35_berserker",
+            "loadout.llm.qwen27_sniper",
+            "loadout.tactical.openrouter_sniper_ironclad",
+            "loadout.tactical.gemini_opportunist_hunter",
+        }
+        catalog_pilots = load_model_catalog_pilot_registry(
+            root / "contracts_data/model_catalogs/configured_v1.yaml"
+        )
+        assert catalog_pilots.get("pilot.openrouter.sniper") is not None
+        assert catalog_pilots.get("pilot.gemini.opportunist") is not None
+    finally:
+        await server.stop()
+
+
+@pytest.mark.unit
+def test_catalog_runtime_overlay_selects_source_card_programmers_per_seat() -> None:
+    root = Path(__file__).parents[2]
+    catalog_path = root / "contracts_data/model_catalogs/configured_v1.yaml"
+    base_overlay = load_application_overlay(root / "contracts_data/overlays/live_glm_cards.yaml")
+    catalog, source_overlays = load_model_catalog_runtime_sources(catalog_path)
+    _, merged_overlay = load_model_catalog_runtime_overlay(catalog_path, base_overlay)
+    request = ModelSOBrowserStartMatchRequest(
+        match_id=_MATCH_ID,
+        command=ModelSOStartMatchCommand(
+            schema_version="1",
+            kind="steel_onslaught.start_match",
+            command_id=_COMMAND_ID,
+            expected_overlay_sha256="1" * 64,
+            expected_roster_sha256="2" * 64,
+            selections=(
+                ModelSOStartMatchSeatSelection(side="red", option_id="player_option.qwen35_model"),
+                ModelSOStartMatchSeatSelection(side="blue", option_id="player_option.qwen27_model"),
+            ),
+        ),
+    )
+
+    selected_overlay = _catalog_selection_overlay(
+        overlay=merged_overlay,
+        catalog=catalog,
+        source_overlays=source_overlays,
+        request=request,
+    )
+    assert selected_overlay.contracts.card_catalog is not None
+    assert {
+        binding.pilot_spec_id for binding in selected_overlay.contracts.card_catalog.programmers
+    } == {"pilot.llm.qwen35", "pilot.llm.qwen27"}
 
 
 @pytest.mark.unit

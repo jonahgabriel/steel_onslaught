@@ -67,6 +67,8 @@ from steel_onslaught.contracts.commands import (
     canonical_command_sha256,
 )
 from steel_onslaught.contracts.loadout import ModelSOLoadout
+from steel_onslaught.contracts.model_catalog import ModelSOModelCatalog
+from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
 from steel_onslaught.contracts.player_selection import (
     ModelSOMatchLaunchProvenance,
     ModelSOModelPlayerOptionBinding,
@@ -97,6 +99,10 @@ from steel_onslaught.match.composition import (
     assemble_selected_match_live,
     load_application_overlay,
     load_loadout,
+    load_model_catalog_loadouts,
+    load_model_catalog_pilot_registry,
+    load_model_catalog_runtime_overlay,
+    load_model_catalog_runtime_sources,
 )
 from steel_onslaught.match.runner import MatchIdentity
 from steel_onslaught.match.state import ModelSOMatchState
@@ -289,6 +295,7 @@ def launch_browser_play_session(
     *,
     overlay: ModelSOApplicationOverlay,
     roster: ModelSOPlayerRosterBinding,
+    pilot_registry: PilotSpecRegistry | None = None,
     sessions: AuthenticatedSessionCapability,
     request: ModelSOBrowserStartMatchRequest,
     transport: ModelSOBrowserRequestContext,
@@ -323,6 +330,7 @@ def launch_browser_play_session(
     stack = assemble_selected_match_live(
         overlay=overlay,
         roster=roster,
+        pilot_registry=pilot_registry,
         sessions=sessions,
         command=request.command,
         context=context,
@@ -1406,10 +1414,46 @@ def _injected_live_provider_capability_factory(
     return build_capability
 
 
+def _catalog_selection_overlay(
+    *,
+    overlay: ModelSOApplicationOverlay,
+    catalog: ModelSOModelCatalog,
+    source_overlays: Mapping[str, ModelSOApplicationOverlay],
+    request: ModelSOBrowserStartMatchRequest,
+) -> ModelSOApplicationOverlay:
+    """Select only the card-programmer bindings for the admitted catalog seats."""
+
+    options = {option.option_id: option for option in catalog.options}
+    card_bindings = []
+    for selection in request.command.selections:
+        option = options.get(selection.option_id)
+        if option is None or option.kind != "model":
+            continue
+        source_overlay = source_overlays.get(option.source_overlay_id)
+        if source_overlay is None or source_overlay.contracts.card_catalog is None:
+            continue
+        source_programmers = source_overlay.contracts.card_catalog.programmers
+        if source_programmers is None:
+            continue
+        binding = next(
+            (programmer for programmer in source_programmers if programmer.side == selection.side),
+            None,
+        )
+        if binding is not None:
+            card_bindings.append(binding)
+    card_catalog = overlay.contracts.card_catalog
+    if card_catalog is None:
+        return overlay
+    selected_card_catalog = card_catalog.model_copy(update={"programmers": tuple(card_bindings)})
+    contracts = overlay.contracts.model_copy(update={"card_catalog": selected_card_catalog})
+    return overlay.model_copy(update={"contracts": contracts})
+
+
 def _configured_browser_server(
     *,
     overlay_path: Path,
-    roster_path: Path,
+    roster_path: Path | None = None,
+    catalog_index_path: Path | None = None,
     session_path: Path,
     red_loadout_path: Path,
     blue_loadout_path: Path,
@@ -1455,12 +1499,62 @@ def _configured_browser_server(
             "live provider authority and live_runtime_factory must be supplied together"
         )
 
+    if (roster_path is None) == (catalog_index_path is None):
+        raise ValueError("exactly one of roster_path or catalog_index_path is required")
     overlay = load_application_overlay(overlay_path)
-    roster = _load_yaml_model(roster_path, ModelSOPlayerRosterBinding)
+    model_catalog = None
+    catalog_pilot_registry = None
+    catalog_source_overlays: Mapping[str, ModelSOApplicationOverlay] = {}
+    if catalog_index_path is not None:
+        model_catalog, catalog_source_overlays = load_model_catalog_runtime_sources(
+            catalog_index_path
+        )
+        _, overlay = load_model_catalog_runtime_overlay(catalog_index_path, overlay)
+        catalog_pilot_registry = load_model_catalog_pilot_registry(catalog_index_path)
+        roster = model_catalog.to_roster_binding()
+    else:
+        assert roster_path is not None
+        roster = _load_yaml_model(roster_path, ModelSOPlayerRosterBinding)
     session = _load_yaml_model(session_path, ModelSOAuthenticatedSession)
     red_loadout = load_loadout(red_loadout_path)
     blue_loadout = load_loadout(blue_loadout_path)
     loadouts = {red_loadout.id: red_loadout, blue_loadout.id: blue_loadout}
+    if catalog_index_path is not None:
+        for loadout_id, catalog_loadout in load_model_catalog_loadouts(catalog_index_path).items():
+            existing = loadouts.get(loadout_id)
+            if existing is not None and existing != catalog_loadout:
+                raise ValueError(
+                    f"catalog loadout conflicts with explicit launch loadout: {loadout_id!r}"
+                )
+            loadouts[loadout_id] = catalog_loadout
+
+    runtime_factory: Callable[[ModelSOApplicationOverlay], RuntimeDependencies]
+    selected_runtime_factory: (
+        Callable[
+            [ModelSOApplicationOverlay, str | tuple[str, ...], tuple[str, ...]], RuntimeDependencies
+        ]
+        | None
+    ) = live_runtime_factory
+    if catalog_pilot_registry is not None:
+
+        def runtime_factory(runtime_overlay: ModelSOApplicationOverlay) -> RuntimeDependencies:
+            return factory.runtime(runtime_overlay, pilot_registry=catalog_pilot_registry)
+
+        if live_runtime_factory is not None:
+
+            def selected_runtime_factory(
+                runtime_overlay: ModelSOApplicationOverlay,
+                provider_selection: str | tuple[str, ...],
+                pilot_spec_ids: tuple[str, ...],
+            ) -> RuntimeDependencies:
+                return factory.selected_runtime(
+                    runtime_overlay,
+                    provider_selection,
+                    pilot_spec_ids,
+                    pilot_registry=catalog_pilot_registry,
+                )
+    else:
+        runtime_factory = factory.runtime
     sessions = _ConfiguredSessionCapability(session)
     allowed_origins = _loopback_origin_aliases(origin)
 
@@ -1490,21 +1584,27 @@ def _configured_browser_server(
             creator_session_id=session_id,
             human_seats=claims,
         )
+        selected_overlay = overlay
+        if model_catalog is not None:
+            selected_overlay = _catalog_selection_overlay(
+                overlay=overlay,
+                catalog=model_catalog,
+                source_overlays=catalog_source_overlays,
+                request=request,
+            )
         selected_live_capability: BrowserLiveProviderCapability | None = None
-        selected_live_runtime_factory = None
         if _selects_non_stub_provider(request, overlay=overlay, roster=roster):
             selected_live_capability = live_provider_capability
             if live_provider_capability_factory is not None:
                 selected_live_capability = live_provider_capability_factory(
                     request,
                     context,
-                    overlay,
+                    selected_overlay,
                     roster,
                 )
-            selected_live_runtime_factory = live_runtime_factory
 
         return launch_browser_play_session(
-            overlay=overlay,
+            overlay=selected_overlay,
             roster=roster,
             sessions=sessions,
             request=request,
@@ -1517,16 +1617,21 @@ def _configured_browser_server(
                 correlation_id=request.command.command_id,
             ),
             loadouts=loadouts,
-            runtime_factory=factory.runtime,
+            runtime_factory=runtime_factory,
+            pilot_registry=catalog_pilot_registry,
             live_provider_capability=selected_live_capability,
-            live_runtime_factory=selected_live_runtime_factory,
+            live_runtime_factory=selected_runtime_factory,
             seed=seed,
             max_ticks=max_ticks,
             allowed_origins=allowed_origins,
         )
 
     return BrowserPlayServer(
-        bootstrap=build_frontend_bootstrap(overlay, roster=roster),
+        bootstrap=build_frontend_bootstrap(
+            overlay,
+            roster=roster,
+            model_catalog=model_catalog,
+        ),
         gateway=None,
         bus=None,
         authenticate=authenticate,
@@ -1539,7 +1644,8 @@ def _configured_browser_server(
 def configured_live_browser_server(
     *,
     overlay_path: Path,
-    roster_path: Path,
+    roster_path: Path | None = None,
+    catalog_index_path: Path | None = None,
     session_path: Path,
     red_loadout_path: Path,
     blue_loadout_path: Path,
@@ -1563,6 +1669,7 @@ def configured_live_browser_server(
     return _configured_browser_server(
         overlay_path=overlay_path,
         roster_path=roster_path,
+        catalog_index_path=catalog_index_path,
         session_path=session_path,
         red_loadout_path=red_loadout_path,
         blue_loadout_path=blue_loadout_path,
@@ -1605,7 +1712,15 @@ async def _serve_browser_play(server: BrowserPlayServer, *, bootstrap_output: Pa
     "--roster",
     "roster_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
+    required=False,
+    help="Explicit player roster; mutually exclusive with --catalog-index.",
+)
+@click.option(
+    "--catalog-index",
+    "catalog_index_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=False,
+    help="Explicit multi-provider catalog source index; mutually exclusive with --roster.",
 )
 @click.option(
     "--session",
@@ -1638,7 +1753,8 @@ async def _serve_browser_play(server: BrowserPlayServer, *, bootstrap_output: Pa
 @click.option("--bootstrap-output", type=click.Path(dir_okay=False, path_type=Path), default=None)
 def play_command(
     overlay_path: Path,
-    roster_path: Path,
+    roster_path: Path | None,
+    catalog_index_path: Path | None,
     session_path: Path,
     red_loadout_path: Path,
     blue_loadout_path: Path,
@@ -1654,6 +1770,7 @@ def play_command(
     server = _configured_browser_server(
         overlay_path=overlay_path,
         roster_path=roster_path,
+        catalog_index_path=catalog_index_path,
         session_path=session_path,
         red_loadout_path=red_loadout_path,
         blue_loadout_path=blue_loadout_path,
@@ -1680,7 +1797,15 @@ def play_command(
     "--roster",
     "roster_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
+    required=False,
+    help="Explicit player roster; mutually exclusive with --catalog-index.",
+)
+@click.option(
+    "--catalog-index",
+    "catalog_index_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=False,
+    help="Explicit multi-provider catalog source index; mutually exclusive with --roster.",
 )
 @click.option(
     "--session",
@@ -1734,7 +1859,8 @@ def play_command(
 )
 def play_live_command(
     overlay_path: Path,
-    roster_path: Path,
+    roster_path: Path | None,
+    catalog_index_path: Path | None,
     session_path: Path,
     red_loadout_path: Path,
     blue_loadout_path: Path,
@@ -1787,6 +1913,7 @@ def play_live_command(
         server = configured_live_browser_server(
             overlay_path=overlay_path,
             roster_path=roster_path,
+            catalog_index_path=catalog_index_path,
             session_path=session_path,
             red_loadout_path=red_loadout_path,
             blue_loadout_path=blue_loadout_path,

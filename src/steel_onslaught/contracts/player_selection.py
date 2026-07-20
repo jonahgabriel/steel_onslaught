@@ -86,6 +86,13 @@ PlayerOptionBinding = Annotated[
 ]
 
 
+class ModelSOSeatOptionLoadoutBinding(_ClosedStrictModel):
+    """Explicit loadout selected when a seat chooses one roster option."""
+
+    option_id: PlayerOptionId
+    loadout_id: LoadoutId
+
+
 class ModelSOSeatLaunchPolicy(_ClosedStrictModel):
     side: Side
     loadout_id: LoadoutId
@@ -98,6 +105,7 @@ class ModelSOSeatLaunchPolicy(_ClosedStrictModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    option_loadouts: tuple[ModelSOSeatOptionLoadoutBinding, ...] = ()
 
     @model_validator(mode="after")
     def _allowed_options_are_unique(self) -> Self:
@@ -108,7 +116,22 @@ class ModelSOSeatLaunchPolicy(_ClosedStrictModel):
             and self.default_option_id not in self.allowed_option_ids
         ):
             raise ValueError("default_option_id must be one of allowed_option_ids")
+        mapped_options = [binding.option_id for binding in self.option_loadouts]
+        if len(mapped_options) != len(set(mapped_options)):
+            raise ValueError("option_loadouts must declare unique option_id values")
+        if self.option_loadouts and set(mapped_options) != set(self.allowed_option_ids):
+            raise ValueError("option_loadouts must cover allowed_option_ids exactly")
         return self
+
+    def loadout_for_option(self, option_id: PlayerOptionId) -> LoadoutId:
+        """Resolve an explicit option-specific loadout, or the legacy default."""
+
+        for binding in self.option_loadouts:
+            if binding.option_id == option_id:
+                return binding.loadout_id
+        if option_id not in self.allowed_option_ids:
+            raise ValueError(f"option {option_id!r} is not allowed for {self.side} seat")
+        return self.loadout_id
 
 
 class ModelSOPublicHumanPlayerOption(_ClosedStrictModel):
@@ -457,6 +480,7 @@ __all__ = [
     "ModelSOPlayerRosterBinding",
     "ModelSOPlayerRosterProjection",
     "ModelSOSeatLaunchPolicy",
+    "ModelSOSeatOptionLoadoutBinding",
     "PersonaId",
     "PlayerId",
     "PlayerOptionBinding",
