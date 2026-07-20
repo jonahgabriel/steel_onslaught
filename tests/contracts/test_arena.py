@@ -16,14 +16,77 @@ from steel_onslaught.match.composition import load_match_contract_catalog
 def test_shipped_arena_catalog_is_typed_and_snapshot_is_canonical() -> None:
     catalog = load_match_contract_catalog(Path("contracts_data"))
 
-    assert set(catalog.arenas) == {"foundry", "open_field"}
+    assert set(catalog.arenas) == {"foundry", "foundry_60", "open_field"}
     foundry = catalog.arenas["foundry"]
     snapshot = foundry.to_snapshot()
     assert snapshot.arena_id == "foundry"
     assert snapshot.size == 40
+    assert snapshot.spawn_a.model_dump() == {"x": 3, "y": 3}
+    assert snapshot.spawn_b.model_dump() == {"x": 36, "y": 36}
     assert snapshot.obstacles
     assert [(cell.x, cell.y) for cell in snapshot.obstacles] == sorted(foundry.obstacle_cells)
     assert snapshot.obstacle_cells == foundry.obstacle_cells
+
+
+@pytest.mark.unit
+def test_legacy_foundry_snapshot_round_trips_for_replay() -> None:
+    """The 40x40 arena id remains stable for existing event ledgers."""
+    legacy = load_match_contract_catalog(Path("contracts_data")).arenas["foundry"]
+    snapshot = ModelSOCurrentLiveArenaSnapshot.model_validate(
+        legacy.to_snapshot().model_dump(mode="json")
+    )
+    assert snapshot == legacy.to_snapshot()
+
+
+@pytest.mark.unit
+def test_foundry_60_layout_is_sparse_symmetric_and_spawn_safe() -> None:
+    """The shipped Foundry data is an auditable 60x60 terrain contract.
+
+    Rects remain obstacle cells under the current wall/blocking runtime. This
+    test pins the authored data's scale and fairness without opting the engine
+    into the deferred cover-penalty rules.
+    """
+    catalog = load_match_contract_catalog(Path("contracts_data"))
+    arena = catalog.arenas["foundry_60"]
+    cells = arena.obstacle_cells
+    assert arena.size == 60
+    assert (arena.spawn_a.x, arena.spawn_a.y) == (4, 4)
+    assert (arena.spawn_b.x, arena.spawn_b.y) == (55, 55)
+    assert arena.sudden_death_start_tick == 100
+    assert max(abs(arena.spawn_b.x - arena.spawn_a.x), abs(arena.spawn_b.y - arena.spawn_a.y)) == 51
+    assert 0.08 <= len(cells) / (arena.size * arena.size) <= 0.12
+    assert all((y, x) in cells for x, y in cells)
+    assert all((arena.size - 1 - x, arena.size - 1 - y) in cells for x, y in cells)
+    for spawn in (arena.spawn_a, arena.spawn_b):
+        assert all(max(abs(spawn.x - x), abs(spawn.y - y)) > 4 for x, y in cells)
+
+
+@pytest.mark.unit
+def test_foundry_60_rects_are_small_disconnected_clusters() -> None:
+    """The map contains sparse 2-4-cell clusters rather than a wall corridor."""
+    arena = load_match_contract_catalog(Path("contracts_data")).arenas["foundry_60"]
+    cells = set(arena.obstacle_cells)
+    seen: set[tuple[int, int]] = set()
+    components: list[int] = []
+    for start in cells:
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        count = 0
+        while stack:
+            x, y = stack.pop()
+            count += 1
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbor = (x + dx, y + dy)
+                    if neighbor in cells and neighbor not in seen:
+                        seen.add(neighbor)
+                        stack.append(neighbor)
+        components.append(count)
+    assert components
+    assert min(components) >= 2
+    assert max(components) <= 4
 
 
 @pytest.mark.unit

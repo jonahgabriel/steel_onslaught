@@ -111,6 +111,7 @@ def test_tactical_cards_compile_to_distinct_canonical_effect_parameters() -> Non
 def test_tactical_overlay_selects_isolated_deck_and_qwen_provider() -> None:
     overlay_path = _ROOT / "contracts_data/overlays/tactical_v1_qwen.yaml"
     overlay = load_application_overlay(overlay_path)
+    assert overlay.contracts.arena_id == "foundry_60"
     binding = overlay.contracts.card_catalog
     assert binding is not None
     assert binding.card_mode_enabled is True
