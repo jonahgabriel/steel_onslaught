@@ -31,7 +31,12 @@ from steel_onslaught.cards.actions import (
     ModelSOCardVentParameters,
     compile_card_action,
 )
-from steel_onslaught.cards.dealer import DealerCompute, ModelSODealerScope, ModelSODeckState
+from steel_onslaught.cards.dealer import (
+    DealerCompute,
+    ModelSODealerScope,
+    ModelSODeckState,
+    ModelSOSplitDeckState,
+)
 from steel_onslaught.cards.registers import (
     ModelSOSeatResolutionContext,
     RegisterExecutionReducer,
@@ -43,14 +48,21 @@ from steel_onslaught.cards.round import (
     ModelSOCardRoundSequence,
 )
 from steel_onslaught.cards.rules import CardProgrammingRuleRegistry
+from steel_onslaught.cards.split_deck import SplitDeckDealerAdapter
 from steel_onslaught.contracts.card import CardId
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
+from steel_onslaught.contracts.player_selection import Side
+from steel_onslaught.contracts.split_deck import ModelSOCardDeckPolicy
 from steel_onslaught.events.card_payloads import (
+    SPLIT_DECK_MARKER,
     ModelSOCardsDiscardedPayload,
     ModelSOHandDealtPayload,
+    ModelSOHandPartitionPayload,
+    ModelSOHandPartitionsPayload,
     ModelSOPlanCommittedPayload,
     ModelSORegisterResolvedPayload,
+    SOCardPartition,
     SORegisterOutcome,
 )
 from steel_onslaught.events.envelope import SOEventType
@@ -84,6 +96,7 @@ class ModelSOCardSeatRequest(_ClosedCardAdapterModel):
     """All per-seat inputs required at one deterministic programming boundary."""
 
     seat: StrictStr = Field(min_length=1)
+    side: Side | None = None
     dealer_scope: ModelSODealerScope
     pilot_observation: ModelSOPilotObservation
     initiative: StrictInt = Field(ge=0)
@@ -175,6 +188,13 @@ class ModelSOCardRoundValue(_ClosedCardAdapterModel):
     )
 
 
+class ModelSOCardRoundSeatSplitState(_ClosedCardAdapterModel):
+    """Durable per-seat split draw/discard state for the next round."""
+
+    seat: StrictStr = Field(min_length=1)
+    state: ModelSOSplitDeckState
+
+
 class ModelSOCardRoundEmission(_ClosedCardAdapterModel):
     """Pure producer output; no bus publication is implied by this value."""
 
@@ -188,6 +208,8 @@ class ModelSOCardRoundEmission(_ClosedCardAdapterModel):
     actions: tuple[ModelSOCardIntentProjection, ...] = ()
     sequence: ModelSOCardRoundSequence | None = None
     deck_state: ModelSODeckState | None = None
+    split_deck_states: tuple[ModelSOCardRoundSeatSplitState, ...] = ()
+    split_policy: ModelSOCardDeckPolicy | None = None
     suppressed_reason: Literal["registers_disabled", "match_ended"] | None = None
 
     @model_validator(mode="after")
@@ -199,6 +221,8 @@ class ModelSOCardRoundEmission(_ClosedCardAdapterModel):
                 or self.actions
                 or self.sequence is not None
                 or self.deck_state is not None
+                or self.split_deck_states
+                or self.split_policy is not None
             ):
                 raise CardRunnerAdapterError("suppressed card rounds must emit no card values")
             if self.registers_enabled and self.suppressed_reason == "registers_disabled":
@@ -206,7 +230,9 @@ class ModelSOCardRoundEmission(_ClosedCardAdapterModel):
             return self
         if not self.registers_enabled:
             raise CardRunnerAdapterError("disabled card rounds require suppression metadata")
-        if self.sequence is None or self.deck_state is None:
+        if self.sequence is None or (
+            self.deck_state is None and (self.split_policy is None or not self.split_deck_states)
+        ):
             raise CardRunnerAdapterError("enabled card rounds require sequence and deck state")
         return self
 
@@ -219,13 +245,15 @@ class CardRunnerAdapter:
     caller supplies the current tick, round index, terminal boundary, and a
     causation key.  That leaves max-ticks/progress-gate authority with the
     existing lifecycle composition while making card
-    rounds deterministic and independently testable.
+    rounds deterministic and independently testable.  Split-deck programmers
+    are resolved by configured side when seat ids are transport-local labels.
     """
 
     registers_enabled: bool = False
     card_round_runtime: CardRoundRuntime | None = None
     dealer: DealerCompute | None = None
     reducer: RegisterExecutionReducer | None = None
+    split_deck_adapter: SplitDeckDealerAdapter | None = None
     programmers: Mapping[str, ProgrammingPilot] | None = None
     rule_registry: CardProgrammingRuleRegistry | None = None
     rule_handler_ids: tuple[str, ...] = ()
@@ -237,6 +265,7 @@ class CardRunnerAdapter:
             ("card_round_runtime", self.card_round_runtime, CardRoundRuntime),
             ("dealer", self.dealer, DealerCompute),
             ("reducer", self.reducer, RegisterExecutionReducer),
+            ("split_deck_adapter", self.split_deck_adapter, SplitDeckDealerAdapter),
         ):
             if value is not None and not isinstance(value, expected):
                 raise TypeError(f"{name} must be {expected.__name__} when supplied")
@@ -260,6 +289,15 @@ class CardRunnerAdapter:
             raise CardRunnerAdapterError("dealer must be the exact CardRoundRuntime dependency")
         if self.card_round_runtime.reducer is not self.reducer:
             raise CardRunnerAdapterError("reducer must be the exact CardRoundRuntime dependency")
+        if self.split_deck_adapter is not None:
+            if self.split_deck_adapter.snapshot is not self.card_round_runtime.snapshot:
+                raise CardRunnerAdapterError(
+                    "split_deck_adapter and card_round_runtime must share snapshot identity"
+                )
+            if self.split_deck_adapter.dealer is not self.dealer:
+                raise CardRunnerAdapterError(
+                    "split_deck_adapter must use the exact injected dealer"
+                )
 
     @property
     def snapshot(self) -> ModelSOCardRuntimeSnapshot | None:
@@ -284,6 +322,7 @@ class CardRunnerAdapter:
         causation_id: str,
         terminated: bool = False,
         starting_deck_state: ModelSODeckState | None = None,
+        starting_split_deck_states: tuple[ModelSOCardRoundSeatSplitState, ...] = (),
     ) -> ModelSOCardRoundEmission:
         """Derive one deterministic four-stage round or an empty boundary result."""
 
@@ -316,23 +355,96 @@ class CardRunnerAdapter:
         seat_ids = tuple(request.seat for request in canonical_seats)
         if len(seat_ids) != len(set(seat_ids)):
             raise CardRunnerAdapterError("card round seat ids must be unique")
+        if self.split_deck_adapter is not None:
+            if starting_deck_state is not None:
+                raise CardRunnerAdapterError(
+                    "split-deck card rounds require starting_split_deck_states, "
+                    "not a single starting_deck_state"
+                )
+            if any(request.side is None for request in canonical_seats):
+                raise CardRunnerAdapterError(
+                    "split-deck card rounds require an explicit side on every seat request"
+                )
+            split_state_by_seat = {item.seat: item.state for item in starting_split_deck_states}
+            if len(split_state_by_seat) != len(starting_split_deck_states):
+                raise CardRunnerAdapterError("split-deck starting states must have unique seats")
+            unknown_state_seats = set(split_state_by_seat) - set(seat_ids)
+            if unknown_state_seats:
+                raise CardRunnerAdapterError(
+                    "split-deck starting states contain unknown seats: "
+                    f"{sorted(unknown_state_seats)}"
+                )
+        else:
+            if starting_split_deck_states:
+                raise CardRunnerAdapterError(
+                    "starting_split_deck_states require an injected split_deck_adapter"
+                )
+            split_state_by_seat = {}
 
         deals: list[ModelSOCardRoundDeal] = []
         current_state = starting_deck_state
         for request in canonical_seats:
-            deal = self.card_round_runtime.deal(
-                scope=request.dealer_scope,
-                state=current_state,
-            )
+            if self.split_deck_adapter is not None:
+                assert request.side is not None
+                seat_policy = self.split_deck_adapter.policy.for_side(request.side)
+                split_result = self.split_deck_adapter.deal_for_side(
+                    side=request.side,
+                    scope=request.dealer_scope,
+                    state=split_state_by_seat.get(request.seat),
+                )
+                if split_result.exhausted:
+                    raise CardRunnerAdapterError(
+                        f"split-deck dealer could not fill the configured hand for seat "
+                        f"{request.seat!r}"
+                    )
+                partitions = ModelSOHandPartitionsPayload(
+                    movement=ModelSOHandPartitionPayload(
+                        partition=SOCardPartition.MOVEMENT,
+                        deck_id=seat_policy.movement_deck_id,
+                        card_ids=split_result.movement_hand,
+                        requested_count=seat_policy.hand_quota.movement,
+                        deck_remaining=len(split_result.state.movement.draw_pile),
+                        reshuffled=split_result.movement_reshuffled,
+                    ),
+                    weapon=ModelSOHandPartitionPayload(
+                        partition=SOCardPartition.WEAPON,
+                        deck_id=seat_policy.weapon_deck_id,
+                        card_ids=split_result.weapon_hand,
+                        requested_count=seat_policy.hand_quota.weapon,
+                        deck_remaining=len(split_result.state.weapon.draw_pile),
+                        reshuffled=split_result.weapon_reshuffled,
+                    ),
+                )
+                payload = ModelSOHandDealtPayload(
+                    seat=request.seat,
+                    deck_id=SPLIT_DECK_MARKER,
+                    card_ids=split_result.hand,
+                    hand_size=len(split_result.hand),
+                    deck_remaining=(
+                        len(split_result.state.movement.draw_pile)
+                        + len(split_result.state.weapon.draw_pile)
+                    ),
+                    reshuffled=(split_result.movement_reshuffled or split_result.weapon_reshuffled),
+                    partitions=partitions,
+                    register_count=seat_policy.register_count,
+                )
+                deal = ModelSOCardRoundDeal(
+                    seat=request.seat,
+                    deck_id=SPLIT_DECK_MARKER,
+                    payload=payload,
+                    split_state=split_result.state,
+                )
+            else:
+                deal = self.card_round_runtime.deal(
+                    scope=request.dealer_scope,
+                    state=current_state,
+                )
+                assert deal.state is not None
+                current_state = ModelSODeckState(
+                    draw_pile=deal.state.draw_pile,
+                    discard_pile=deal.state.discard_pile + deal.hand,
+                )
             deals.append(deal)
-            # Keep a shared explicit deck state while preserving the pure
-            # per-deal conservation proof: a hand becomes discard input for
-            # the next seat, and the final state therefore accounts for every
-            # dealt physical card exactly once.
-            current_state = ModelSODeckState(
-                draw_pile=deal.state.draw_pile,
-                discard_pile=deal.state.discard_pile + deal.hand,
-            )
 
         contexts: list[ModelSOSeatResolutionContext] = []
         plans: dict[str, ModelSOPlanCommittedPayload] = {}
@@ -340,25 +452,43 @@ class CardRunnerAdapter:
             () if self.rule_registry is None else self.rule_registry.select(self.rule_handler_ids)
         )
         for request, deal in zip(canonical_seats, deals, strict=True):
-            deck = self.card_round_runtime.snapshot.selected_deck
-            locked = heat_locked_indices(request.lock_depth, deck.register_count)
-            free_indices = tuple(
-                index for index in range(deck.register_count) if index not in locked
-            )
+            if self.split_deck_adapter is not None:
+                split_side = request.side
+                if split_side is None:
+                    raise CardRunnerAdapterError(
+                        "split-deck card rounds require an explicit side on every seat request"
+                    )
+                register_count = self.split_deck_adapter.policy.for_side(split_side).register_count
+                seat_policy = self.split_deck_adapter.policy.for_side(split_side)
+                hand_deck_ids: tuple[str, ...] = (
+                    seat_policy.movement_deck_id,
+                    seat_policy.weapon_deck_id,
+                )
+            else:
+                register_count = self.card_round_runtime.snapshot.selected_deck.register_count
+                hand_deck_ids = ()
+            locked = heat_locked_indices(request.lock_depth, register_count)
+            free_indices = tuple(index for index in range(register_count) if index not in locked)
             observation = ModelSOProgrammingObservation(
                 pilot_observation=request.pilot_observation,
                 card_runtime_snapshot=self.card_round_runtime.snapshot,
                 seat=request.seat,
                 hand=deal.hand,
                 free_indices=free_indices,
+                register_count=register_count,
+                hand_deck_ids=hand_deck_ids,
             )
-            programmer = None if self.programmers is None else self.programmers.get(request.seat)
+            programmer = None
+            if self.programmers is not None:
+                programmer = self.programmers.get(request.seat)
+                if programmer is None and request.side is not None:
+                    programmer = self.programmers.get(request.side)
             plan = program_for_seat(programmer, observation, rule_handlers=rule_handlers)
             plans[request.seat] = plan
             contexts.append(
                 ModelSOSeatResolutionContext(
                     seat=request.seat,
-                    register_count=deck.register_count,
+                    register_count=register_count,
                     initiative=request.initiative,
                     lock_depth=request.lock_depth,
                     plan=plan,
@@ -378,7 +508,6 @@ class CardRunnerAdapter:
             sequence=sequence,
             causation_id=causation_id,
         )
-        assert current_state is not None
         return ModelSOCardRoundEmission(
             registers_enabled=True,
             round_index=round_number,
@@ -387,7 +516,22 @@ class CardRunnerAdapter:
             values=values,
             actions=actions,
             sequence=sequence,
-            deck_state=current_state,
+            deck_state=current_state if self.split_deck_adapter is None else None,
+            split_deck_states=(
+                tuple(
+                    ModelSOCardRoundSeatSplitState(
+                        seat=deal.seat,
+                        state=deal.split_state,
+                    )
+                    for deal in deals
+                    if deal.split_state is not None
+                )
+                if self.split_deck_adapter is not None
+                else ()
+            ),
+            split_policy=(
+                self.split_deck_adapter.policy if self.split_deck_adapter is not None else None
+            ),
         )
 
     def _compile_projection(

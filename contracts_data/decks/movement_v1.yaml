@@ -1,0 +1,15 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.deck"
+id: "deck.movement.v1"
+display_name: "Movement Deck v1"
+hand_size: 3
+register_count: 3
+cards:
+  - card_id: "card.movement.advance"
+    count: 8
+  - card_id: "card.movement.flank_left"
+    count: 4
+  - card_id: "card.movement.flank_right"
+    count: 4
+  - card_id: "card.movement.reposition"
+    count: 4

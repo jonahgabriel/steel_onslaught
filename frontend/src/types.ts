@@ -534,6 +534,15 @@ export interface MatchScoredPayload {
 export type SORegisterOutcome = "resolved" | "auto_remain" | "heat_locked";
 export type SORegisterFillReason = "short_deck";
 
+export interface HandPartitionPayload {
+  partition: "movement" | "weapon";
+  deck_id: string;
+  card_ids: string[];
+  requested_count: number;
+  deck_remaining: number;
+  reshuffled: boolean;
+}
+
 /** Mirror of ModelSOHandDealtPayload. */
 export interface HandDealtPayload {
   seat: string;
@@ -542,6 +551,11 @@ export interface HandDealtPayload {
   hand_size: number;
   deck_remaining: number;
   reshuffled: boolean;
+  partitions?: {
+    movement: HandPartitionPayload;
+    weapon: HandPartitionPayload;
+  };
+  register_count?: number;
 }
 
 /** Mirror of ModelSOPlanRegister. */
@@ -1883,7 +1897,16 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(
       record,
-      ["seat", "deck_id", "card_ids", "hand_size", "deck_remaining", "reshuffled"],
+      [
+        "seat",
+        "deck_id",
+        "card_ids",
+        "hand_size",
+        "deck_remaining",
+        "reshuffled",
+        "partitions",
+        "register_count",
+      ],
       context,
     );
     const card_ids = cardIdArray(record["card_ids"], `${context}.card_ids`);
@@ -1894,6 +1917,58 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     if (hand_size !== card_ids.length) {
       fail(context, 'field "hand_size" must equal card_ids.length');
     }
+    const rawPartitions = record["partitions"];
+    let partitions: HandDealtPayload["partitions"];
+    if (rawPartitions !== undefined) {
+      const partitionRecord = asRecord(rawPartitions, `${context}.partitions`);
+      rejectUnknown(partitionRecord, ["movement", "weapon"], `${context}.partitions`);
+      const parsePartition = (
+        value: unknown,
+        partition: "movement" | "weapon",
+      ): HandPartitionPayload => {
+        const itemContext = `${context}.partitions.${partition}`;
+        const item = asRecord(value, itemContext);
+        rejectUnknown(
+          item,
+          ["partition", "deck_id", "card_ids", "requested_count", "deck_remaining", "reshuffled"],
+          itemContext,
+        );
+        const cardIds = cardIdArray(item["card_ids"], `${itemContext}.card_ids`);
+        const requestedCount = nonNegativeInt(item, "requested_count", itemContext);
+        if (requestedCount !== cardIds.length) {
+          fail(itemContext, "requested_count must equal card_ids.length");
+        }
+        if (item["partition"] !== partition) {
+          fail(itemContext, `partition must be ${partition}`);
+        }
+        return {
+          partition,
+          deck_id: nonEmptyString(item["deck_id"], `${itemContext}.deck_id`),
+          card_ids: cardIds,
+          requested_count: requestedCount,
+          deck_remaining: nonNegativeInt(item, "deck_remaining", itemContext),
+          reshuffled: bool(item, "reshuffled", itemContext),
+        };
+      };
+      partitions = {
+        movement: parsePartition(partitionRecord["movement"], "movement"),
+        weapon: parsePartition(partitionRecord["weapon"], "weapon"),
+      };
+      if (partitions.movement.requested_count + partitions.weapon.requested_count !== hand_size) {
+        fail(context, "partition counts must equal hand_size");
+      }
+      const partitionIds = [...partitions.movement.card_ids, ...partitions.weapon.card_ids];
+      if (partitionIds.join("\u0000") !== card_ids.join("\u0000")) {
+        fail(context, "partitions must preserve card_ids order");
+      }
+    }
+    const registerCount =
+      record["register_count"] === undefined
+        ? undefined
+        : positiveInt(record, "register_count", context);
+    if (partitions !== undefined && registerCount === undefined) {
+      fail(context, "split hands require register_count");
+    }
     return {
       seat: nonEmptyString(record["seat"], `${context}.seat`),
       deck_id: nonEmptyString(record["deck_id"], `${context}.deck_id`),
@@ -1901,6 +1976,8 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       hand_size,
       deck_remaining: nonNegativeInt(record, "deck_remaining", context),
       reshuffled: bool(record, "reshuffled", context),
+      ...(partitions === undefined ? {} : { partitions }),
+      ...(registerCount === undefined ? {} : { register_count: registerCount }),
     };
   },
   plan_committed: (value, context) => {

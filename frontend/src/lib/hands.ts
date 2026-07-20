@@ -8,6 +8,8 @@ export interface HandState {
   readonly handSize: number;
   readonly deckRemaining: number;
   readonly reshuffled: boolean;
+  readonly movementCardIds?: readonly string[];
+  readonly weaponCardIds?: readonly string[];
 }
 
 export type Hands = Readonly<Record<string, HandState>>;
@@ -34,6 +36,8 @@ export function applyHandEvent(hands: Hands, env: SOEventEnvelope): Hands {
       handSize: payload.hand_size,
       deckRemaining: payload.deck_remaining,
       reshuffled: payload.reshuffled,
+      movementCardIds: payload.partitions?.movement.card_ids ?? [],
+      weaponCardIds: payload.partitions?.weapon.card_ids ?? [],
     },
   };
 }

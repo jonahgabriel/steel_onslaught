@@ -33,6 +33,11 @@ export default function HandStrip({
             <span className="pd-hand-count">
               {cardIds.length}/{hand.handSize}
             </span>
+            {(hand.movementCardIds?.length ?? 0) + (hand.weaponCardIds?.length ?? 0) > 0 ? (
+              <span className="pd-hand-partitions" data-testid={`hand-partitions-${mechId}`}>
+                · M{hand.movementCardIds?.length ?? 0}/W{hand.weaponCardIds?.length ?? 0}
+              </span>
+            ) : null}
             <span className="pd-hand-deck">· deck {hand.deckRemaining}</span>
             {hand.reshuffled ? <span> ⟳</span> : null}
           </span>

@@ -48,4 +48,35 @@ describe("HandStrip — authoritative hand projection", () => {
       "card.special.reposition",
     ]);
   });
+
+  it("renders split-deck movement and weapon counts from authoritative partitions", () => {
+    render(
+      <HandStrip
+        mechId="mech.red.01"
+        side="red"
+        hand={{
+          mechId: "mech.red.01",
+          seat: "red",
+          deckId: "deck.split",
+          cardIds: [
+            "card.movement.advance",
+            "card.movement.flank_left",
+            "card.movement.flank_right",
+            "card.attack.fire_primary",
+            "card.attack.fire_secondary",
+          ],
+          handSize: 5,
+          deckRemaining: 19,
+          reshuffled: false,
+          movementCardIds: [
+            "card.movement.advance",
+            "card.movement.flank_left",
+            "card.movement.flank_right",
+          ],
+          weaponCardIds: ["card.attack.fire_primary", "card.attack.fire_secondary"],
+        }}
+      />,
+    );
+    expect(screen.getByTestId("hand-partitions-mech.red.01")).toHaveTextContent("M3/W2");
+  });
 });

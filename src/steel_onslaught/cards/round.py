@@ -26,6 +26,7 @@ from steel_onslaught.cards.dealer import (
     DealerCompute,
     ModelSODealerScope,
     ModelSODeckState,
+    ModelSOSplitDeckState,
 )
 from steel_onslaught.cards.registers import (
     ModelSOSeatResolutionContext,
@@ -33,6 +34,7 @@ from steel_onslaught.cards.registers import (
     RegisterPlanError,
     RegisterReplayDriftError,
 )
+from steel_onslaught.cards.split_deck import SplitDeckDealerAdapter
 from steel_onslaught.contracts.card import CardId
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.events.card_payloads import (
@@ -67,7 +69,8 @@ class ModelSOCardRoundDeal(_ClosedRoundModel):
     seat: StrictStr = Field(min_length=1)
     deck_id: StrictStr = Field(min_length=1)
     payload: ModelSOHandDealtPayload
-    state: ModelSODeckState
+    state: ModelSODeckState | None = None
+    split_state: ModelSOSplitDeckState | None = None
 
     @model_validator(mode="after")
     def _payload_matches_result(self) -> Self:
@@ -80,10 +83,19 @@ class ModelSOCardRoundDeal(_ClosedRoundModel):
                 f"HAND_DEALT deck {self.payload.deck_id!r} does not match deal deck "
                 f"{self.deck_id!r}"
             )
-        if self.payload.deck_remaining != len(self.state.draw_pile):
-            raise CardRoundValidationError(
-                "HAND_DEALT deck_remaining must equal the resulting draw-pile length"
-            )
+        if self.payload.partitions is None:
+            if self.state is None or self.split_state is not None:
+                raise CardRoundValidationError(
+                    "single-deck HAND_DEALT values require one deck state"
+                )
+            if self.payload.deck_remaining != len(self.state.draw_pile):
+                raise CardRoundValidationError(
+                    "HAND_DEALT deck_remaining must equal the resulting draw-pile length"
+                )
+        elif self.state is not None:
+            raise CardRoundValidationError("split HAND_DEALT values cannot carry single deck state")
+        elif self.split_state is None:
+            raise CardRoundValidationError("split HAND_DEALT values require split deck state")
         if tuple(self.payload.card_ids) and len(self.payload.card_ids) != self.payload.hand_size:
             raise CardRoundValidationError("HAND_DEALT hand_size must equal card_ids length")
         return self
@@ -193,12 +205,47 @@ def _validate_deck_multiset(
         snapshot.card_catalog.require(card_id)
 
 
+def _validate_split_deck_multisets(
+    snapshot: ModelSOCardRuntimeSnapshot,
+    deal: ModelSOCardRoundDeal,
+) -> None:
+    """Prove both independent piles and their partition metadata."""
+
+    payload = deal.payload
+    partitions = payload.partitions
+    split_state = deal.split_state
+    if partitions is None or split_state is None:
+        raise CardRoundValidationError(
+            "split hand validation requires partition metadata and state"
+        )
+    assert split_state is not None
+    for partition, state in (
+        (partitions.movement, split_state.movement),
+        (partitions.weapon, split_state.weapon),
+    ):
+        _validate_deck_multiset(
+            snapshot,
+            deck_id=partition.deck_id,
+            hand=partition.card_ids,
+            state=state,
+        )
+        if partition.deck_remaining != len(state.draw_pile):
+            raise CardRoundValidationError(
+                f"{partition.partition.value} partition deck_remaining does not match state"
+            )
+
+
 def validate_hand_dealt(
     snapshot: ModelSOCardRuntimeSnapshot,
     deal: ModelSOCardRoundDeal,
 ) -> ModelSOHandDealtPayload:
     """Validate one ``HAND_DEALT`` value against explicit snapshot content."""
 
+    if deal.payload.partitions is not None:
+        _validate_split_deck_multisets(snapshot, deal)
+        return deal.payload
+    if deal.state is None:
+        raise CardRoundValidationError("single-deck HAND_DEALT values require deck state")
     if deal.deck_id not in {str(deck.id) for deck in snapshot.decks}:
         raise CardRoundValidationError(f"unknown card-round deck {deal.deck_id!r}")
     deck = snapshot.require_deck(deal.deck_id)
@@ -258,14 +305,20 @@ def validate_plan_for_hand(
         raise CardRoundValidationError(
             f"PLAN_COMMITTED seat {plan.seat!r} does not match HAND_DEALT seat {hand.seat!r}"
         )
-    try:
-        deck = snapshot.require_deck(hand.deck_id)
-    except KeyError as exc:
-        raise CardRoundValidationError(f"unknown card-round deck {hand.deck_id!r}") from exc
-    if register_count != deck.register_count:
+    if hand.partitions is None:
+        try:
+            deck = snapshot.require_deck(hand.deck_id)
+        except KeyError as exc:
+            raise CardRoundValidationError(f"unknown card-round deck {hand.deck_id!r}") from exc
+        if register_count != deck.register_count:
+            raise CardRoundValidationError(
+                f"register_count {register_count} does not match deck {deck.id!r} "
+                f"register_count {deck.register_count}"
+            )
+    elif hand.register_count != register_count:
         raise CardRoundValidationError(
-            f"register_count {register_count} does not match deck {deck.id!r} "
-            f"register_count {deck.register_count}"
+            f"register_count {register_count} does not match split hand register_count "
+            f"{hand.register_count}"
         )
     available = Counter(str(card_id) for card_id in hand.card_ids)
     chosen = Counter(str(register.card_id) for register in plan.registers)
@@ -337,6 +390,16 @@ def validate_card_round(
     # that do not require hidden state here; callers using ``CardRoundRuntime``
     # get the stronger multiset/state proof from the deal objects it retains.
     for payload in sequence.hand_dealt:
+        if payload.partitions is not None:
+            if payload.register_count is None:
+                raise CardRoundValidationError(
+                    f"split HAND_DEALT for seat {payload.seat!r} requires register_count"
+                )
+            for partition in (payload.partitions.movement, payload.partitions.weapon):
+                snapshot.require_deck(partition.deck_id)
+                for card_id in partition.card_ids:
+                    snapshot.card_catalog.require(card_id)
+            continue
         try:
             deck = snapshot.require_deck(payload.deck_id)
         except KeyError as exc:
@@ -354,14 +417,24 @@ def validate_card_round(
             raise CardRoundValidationError(
                 f"context plan for seat {context.seat!r} differs from PLAN_COMMITTED value"
             )
-        try:
-            deck = snapshot.require_deck(hand.deck_id)
-        except KeyError as exc:
-            raise CardRoundValidationError(f"unknown card-round deck {hand.deck_id!r}") from exc
-        if context.register_count != deck.register_count:
-            raise CardRoundValidationError(
-                f"context register_count for seat {context.seat!r} does not match deck"
-            )
+        if hand.partitions is not None:
+            if hand.register_count is None:
+                raise CardRoundValidationError(
+                    f"split HAND_DEALT for seat {context.seat!r} requires register_count"
+                )
+            if context.register_count != hand.register_count:
+                raise CardRoundValidationError(
+                    f"context register_count for split seat {context.seat!r} does not match hand"
+                )
+        else:
+            try:
+                deck = snapshot.require_deck(hand.deck_id)
+            except KeyError as exc:
+                raise CardRoundValidationError(f"unknown card-round deck {hand.deck_id!r}") from exc
+            if context.register_count != deck.register_count:
+                raise CardRoundValidationError(
+                    f"context register_count for seat {context.seat!r} does not match deck"
+                )
         available = Counter(str(card_id) for card_id in hand.card_ids)
         chosen = Counter(str(register.card_id) for register in plan.registers)
         if chosen - available:
@@ -416,6 +489,7 @@ class CardRoundRuntime:
     dealer: DealerCompute
     reducer: RegisterExecutionReducer
     round_length: int
+    split_deck_adapter: SplitDeckDealerAdapter | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.card_runtime_snapshot, ModelSOCardRuntimeSnapshot):
@@ -434,8 +508,15 @@ class CardRoundRuntime:
             raise ValueError("round_length must be >= 1")
         # A runtime activation must be explicit; passive snapshots cannot be
         # accidentally turned into card gameplay by this pure helper.
-        if self.card_runtime_snapshot.selected_deck_id is None:
+        if self.card_runtime_snapshot.selected_deck_id is None and self.split_deck_adapter is None:
             raise CardRoundValidationError("card round requires an explicitly selected deck")
+        if self.split_deck_adapter is not None:
+            if self.split_deck_adapter.snapshot is not self.card_runtime_snapshot:
+                raise CardRoundValidationError(
+                    "split-deck runtime and snapshot must share identity"
+                )
+            if self.split_deck_adapter.dealer is not self.dealer:
+                raise CardRoundValidationError("split-deck runtime and dealer must share identity")
 
     @property
     def deck_id(self) -> str:

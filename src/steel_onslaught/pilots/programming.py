@@ -98,39 +98,50 @@ class ModelSOProgrammingObservation(_ClosedProgrammingModel):
     seat: StrictStr = Field(min_length=1)
     hand: tuple[CardId, ...] = Field(default=())
     free_indices: tuple[_RegisterIndex, ...] = Field(default=())
+    register_count: StrictInt | None = Field(default=None, ge=1)
+    hand_deck_ids: tuple[StrictStr, ...] = ()
 
     @model_validator(mode="after")
     def _validate_hand_and_registers(self) -> ModelSOProgrammingObservation:
         try:
             deck = self.card_runtime_snapshot.selected_deck
         except ValueError as exc:
-            raise ValueError(
-                "programming observation requires a card runtime snapshot with "
-                "an explicitly selected deck"
-            ) from exc
+            if self.register_count is None or not self.hand_deck_ids:
+                raise ValueError(
+                    "programming observation requires an explicitly selected deck or "
+                    "explicit split register/deck inputs"
+                ) from exc
+            register_count = self.register_count
+            for card_id in self.hand:
+                self.card_runtime_snapshot.card_catalog.require(card_id)
+        else:
+            register_count = deck.register_count
+            if self.register_count is not None and self.register_count != register_count:
+                raise ValueError("register_count differs from selected deck")
+            if self.hand_deck_ids and tuple(self.hand_deck_ids) != (str(deck.id),):
+                raise ValueError("hand_deck_ids differs from selected deck")
 
         indices = self.free_indices
         if indices != tuple(sorted(indices)):
             raise ValueError("free_indices must be in ascending canonical order")
         if len(indices) != len(set(indices)):
             raise ValueError("free_indices must be unique")
-        if any(index >= deck.register_count for index in indices):
-            raise ValueError(
-                f"free_indices must be below deck register_count {deck.register_count}"
-            )
+        if any(index >= register_count for index in indices):
+            raise ValueError(f"free_indices must be below deck register_count {register_count}")
         if len(indices) > len(self.hand):
             raise ValueError(
                 f"hand contains {len(self.hand)} cards but {len(indices)} free registers "
                 "must be programmed"
             )
 
-        deck_counts = Counter(str(card_id) for card_id in deck.card_multiset())
-        hand_counts = Counter(str(card_id) for card_id in self.hand)
-        missing = hand_counts - deck_counts
-        if missing:
-            raise ValueError(
-                f"hand contains card ids not available in selected deck: {sorted(missing)}"
-            )
+        if self.card_runtime_snapshot.selected_deck_id is not None:
+            deck_counts = Counter(str(card_id) for card_id in deck.card_multiset())
+            hand_counts = Counter(str(card_id) for card_id in self.hand)
+            missing = hand_counts - deck_counts
+            if missing:
+                raise ValueError(
+                    f"hand contains card ids not available in selected deck: {sorted(missing)}"
+                )
         return self
 
     @property

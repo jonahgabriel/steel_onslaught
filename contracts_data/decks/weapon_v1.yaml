@@ -1,0 +1,17 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.deck"
+id: "deck.weapon.v1"
+display_name: "Weapon Deck v1"
+hand_size: 3
+register_count: 3
+cards:
+  - card_id: "card.attack.fire_primary"
+    count: 8
+  - card_id: "card.attack.fire_secondary"
+    count: 6
+  - card_id: "card.vent.emergency_vent"
+    count: 4
+  - card_id: "card.special.mode_assault"
+    count: 2
+  - card_id: "card.special.mode_evasion"
+    count: 2
