@@ -78,6 +78,24 @@ class CliApplicationFactory:
             and self._capabilities.http_transport is not None
         )
 
+    def _secret_resolver_for(
+        self, overlay: ModelSOApplicationOverlay
+    ) -> ProtocolSecretResolver | None:
+        """Bind the injected secret capability only when the overlay asks for it.
+
+        A live factory owns the capability graph, but an overlay with
+        ``secret_resolver.kind: none`` is an explicit declaration that its
+        selected providers are keyless.  Passing the capability through in
+        that case violates the composition contract before a provider client
+        can be built.  Keeping this decision at the CLI composition root
+        preserves the strict guard in ``build_llm_dependencies`` while still
+        allowing credential-bearing overlays to use the injected resolver.
+        """
+
+        if overlay.llm.secret_resolver.kind == "none":
+            return None
+        return self._capabilities.secret_resolver
+
     def runtime(
         self,
         overlay: ModelSOApplicationOverlay,
@@ -87,7 +105,7 @@ class CliApplicationFactory:
         return build_runtime_dependencies(
             overlay,
             pilot_registry=pilot_registry,
-            secret_resolver=self._capabilities.secret_resolver,
+            secret_resolver=self._secret_resolver_for(overlay),
             http_transport=self._capabilities.http_transport,
             sleeper=self._capabilities.sleeper,
         )
@@ -104,13 +122,14 @@ class CliApplicationFactory:
 
         if not self.live_enabled:
             raise ValueError("live CLI composition requires injected secret and HTTP capabilities")
+        secret_resolver = self._secret_resolver_for(overlay)
         if isinstance(provider_selection, tuple):
             if pilot_registry is None:
                 return build_selected_runtime_dependencies(
                     overlay,
                     selected_provider_ids=provider_selection,
                     selected_pilot_spec_ids=pilot_spec_ids,
-                    secret_resolver=self._capabilities.secret_resolver,
+                    secret_resolver=secret_resolver,
                     http_transport=self._capabilities.http_transport,
                     sleeper=self._capabilities.sleeper,
                 )
@@ -119,7 +138,7 @@ class CliApplicationFactory:
                 pilot_registry=pilot_registry,
                 selected_provider_ids=provider_selection,
                 selected_pilot_spec_ids=pilot_spec_ids,
-                secret_resolver=self._capabilities.secret_resolver,
+                secret_resolver=secret_resolver,
                 http_transport=self._capabilities.http_transport,
                 sleeper=self._capabilities.sleeper,
             )
@@ -128,7 +147,7 @@ class CliApplicationFactory:
                 overlay,
                 selected_provider_id=provider_selection,
                 selected_pilot_spec_ids=pilot_spec_ids,
-                secret_resolver=self._capabilities.secret_resolver,
+                secret_resolver=secret_resolver,
                 http_transport=self._capabilities.http_transport,
                 sleeper=self._capabilities.sleeper,
             )
@@ -137,7 +156,7 @@ class CliApplicationFactory:
             pilot_registry=pilot_registry,
             selected_provider_id=provider_selection,
             selected_pilot_spec_ids=pilot_spec_ids,
-            secret_resolver=self._capabilities.secret_resolver,
+            secret_resolver=secret_resolver,
             http_transport=self._capabilities.http_transport,
             sleeper=self._capabilities.sleeper,
         )
@@ -157,7 +176,7 @@ class CliApplicationFactory:
             blue_loadout_path=blue_loadout_path,
             seed=seed,
             max_ticks=max_ticks,
-            secret_resolver=self._capabilities.secret_resolver,
+            secret_resolver=self._secret_resolver_for(overlay),
             http_transport=self._capabilities.http_transport,
             sleeper=self._capabilities.sleeper,
         )
@@ -165,7 +184,7 @@ class CliApplicationFactory:
     def learning(self, overlay: ModelSOApplicationOverlay) -> LearningDependencies:
         return build_learning_dependencies(
             overlay,
-            secret_resolver=self._capabilities.secret_resolver,
+            secret_resolver=self._secret_resolver_for(overlay),
             http_transport=self._capabilities.http_transport,
             sleeper=self._capabilities.sleeper,
         )
@@ -173,7 +192,7 @@ class CliApplicationFactory:
     def duel(self, overlay: ModelSOApplicationOverlay) -> ManagedDuelExecutor:
         return build_duel_executor(
             overlay,
-            secret_resolver=self._capabilities.secret_resolver,
+            secret_resolver=self._secret_resolver_for(overlay),
             http_transport=self._capabilities.http_transport,
             sleeper=self._capabilities.sleeper,
         )
@@ -181,7 +200,7 @@ class CliApplicationFactory:
     def adaptation(self, overlay: ModelSOApplicationOverlay) -> AdaptationDependencies:
         return build_adaptation_dependencies(
             overlay,
-            secret_resolver=self._capabilities.secret_resolver,
+            secret_resolver=self._secret_resolver_for(overlay),
             http_transport=self._capabilities.http_transport,
             sleeper=self._capabilities.sleeper,
         )

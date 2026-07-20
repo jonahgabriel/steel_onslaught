@@ -316,8 +316,9 @@ def test_live_cli_factory_passes_exact_selected_provider_and_pilots(
     resolver = cast(Any, object())
     transport = cast(Any, object())
     factory = CliApplicationFactory.live(secret_resolver=resolver, http_transport=transport)
+    overlay = SimpleNamespace(llm=SimpleNamespace(secret_resolver=SimpleNamespace(kind="injected")))
     result = factory.selected_runtime(
-        cast(Any, object()),
+        cast(Any, overlay),
         ("provider.red", "provider.blue"),
         ("pilot.red", "pilot.blue"),
     )
@@ -327,6 +328,45 @@ def test_live_cli_factory_passes_exact_selected_provider_and_pilots(
             "selected_provider_ids": ("provider.red", "provider.blue"),
             "selected_pilot_spec_ids": ("pilot.red", "pilot.blue"),
             "secret_resolver": resolver,
+            "http_transport": transport,
+            "sleeper": None,
+        }
+    ]
+
+
+@pytest.mark.unit
+def test_live_cli_factory_omits_resolver_for_keyless_selected_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keyless live providers must not receive the injected secret capability."""
+
+    calls: list[dict[str, object]] = []
+
+    def build_selected(_overlay: object, **kwargs: object) -> object:
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "steel_onslaught.cli.application.build_selected_runtime_dependencies",
+        build_selected,
+    )
+    resolver = cast(Any, object())
+    transport = cast(Any, object())
+    factory = CliApplicationFactory.live(secret_resolver=resolver, http_transport=transport)
+    overlay = SimpleNamespace(llm=SimpleNamespace(secret_resolver=SimpleNamespace(kind="none")))
+
+    result = factory.selected_runtime(
+        cast(Any, overlay),
+        "qwen35",
+        ("pilot.llm.qwen35",),
+    )
+
+    assert result is not None
+    assert calls == [
+        {
+            "selected_provider_id": "qwen35",
+            "selected_pilot_spec_ids": ("pilot.llm.qwen35",),
+            "secret_resolver": None,
             "http_transport": transport,
             "sleeper": None,
         }
