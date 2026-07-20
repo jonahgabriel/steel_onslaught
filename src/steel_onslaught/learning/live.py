@@ -131,6 +131,13 @@ class LiveLearningCoordinator:
                     "promoted candidate archetype does not match admitted policy: "
                     f"{record.archetype!r} != {snapshot.policy.archetype!r}"
                 )
+            elif record.parent_hash != snapshot.policy.spec_hash:
+                raise ValueError(
+                    "promoted candidate parent does not match admitted policy: "
+                    f"{record.parent_hash!r} != {snapshot.policy.spec_hash!r}"
+                )
+            elif record.spec_hash == snapshot.policy.spec_hash:
+                raise ValueError("promoted candidate must change the admitted policy")
             # A concurrent match may have promoted from a newer policy while
             # this snapshot was active.  Never roll that policy backwards.
             elif self.current_policy.spec_hash != snapshot.policy.spec_hash:
