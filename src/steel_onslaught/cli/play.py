@@ -415,13 +415,18 @@ class BrowserPlayServer:
     ) -> None:
         if host not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("browser play server must bind a loopback host")
+        if session is not None:
+            raise ValueError(
+                "browser play server must start with no admitted match; "
+                "the Start Match command is the sole launch authority"
+            )
         self._bootstrap_template = bootstrap
         self._gateway = gateway
         self._bus = bus
         self._authenticate = authenticate
         self._host = host
         self._port = port
-        self._session = session
+        self._session: BrowserPlaySession | None = None
         self._session_factory = session_factory
         self._match_id_factory = match_id_factory
         self._server: Server | None = None
@@ -432,6 +437,10 @@ class BrowserPlayServer:
         # still receives MATCH_STARTED before any tick events.
         self._event_history: list[ModelSOEventEnvelope] = []
         self._event_history_ids: set[str] = set()
+        # Match ids retired after MATCH_ENDED are quarantined from late
+        # cross-thread callbacks. A browser refresh after retirement must not
+        # resurrect the completed prefix as a fresh-looking match.
+        self._retired_match_ids: set[str] = set()
         self._pending_events: dict[str, list[ModelSOEventEnvelope]] = {}
         self._pending_ticks: dict[str, int] = {}
         self._pending_event_ids: set[str] = set()
@@ -520,9 +529,6 @@ class BrowserPlayServer:
         )
         if self._bus is not None:
             self._token = self._bus.subscribe(self._on_event)
-        if self._session is not None:
-            self._start_run_task()
-            self._start_prompt_watchers()
 
     async def stop(self) -> None:
         if self._token is not None and self._bus is not None:
@@ -669,9 +675,6 @@ class BrowserPlayServer:
         principal_id, session_id = authority
         self._command_clients.add(connection)
         self._command_authorities[connection] = authority
-        if self._session is not None and self._session_owner is None:
-            self._session_owner = authority
-            self._start_prompt_watchers()
         await self._flush_pending_prompts(connection, authority)
         try:
             async for frame in connection:
@@ -796,6 +799,7 @@ class BrowserPlayServer:
             # late subscribers should receive only this match's prefix.
             self._event_history.clear()
             self._event_history_ids.clear()
+            self._retired_match_ids.discard(request.match_id)
             self._pending_events.clear()
             self._pending_ticks.clear()
             self._pending_event_ids.clear()
@@ -1020,6 +1024,7 @@ class BrowserPlayServer:
         session = self._session
         if session is None:
             return
+        retired_match_id = session.match_id
         session.close()
         if self._token is not None and self._bus is not None:
             self._bus.unsubscribe(self._token)
@@ -1029,6 +1034,14 @@ class BrowserPlayServer:
         self._bus = None
         self._session_owner = None
         self._pending_prompts.clear()
+        self._retired_match_ids.add(retired_match_id)
+        self._event_history.clear()
+        self._event_history_ids.clear()
+        self._pending_events.clear()
+        self._pending_ticks.clear()
+        self._pending_event_ids.clear()
+        self._quarantined_event_ids.clear()
+        self._runtime_status_event_ids.clear()
         watchers = tuple(self._prompt_watch_tasks)
         for watcher in watchers:
             if not watcher.done():
@@ -1176,6 +1189,8 @@ class BrowserPlayServer:
         # A completed run may still have a queued cross-thread callback when
         # the next admission clears the prefix. Never let that stale match
         # contaminate the new browser stream.
+        if event.match_id in self._retired_match_ids:
+            return
         if self._session is not None and event.match_id != self._session.match_id:
             return
         if (

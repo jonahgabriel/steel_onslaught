@@ -147,6 +147,19 @@ def _action_request() -> ModelSOBrowserActionRequest:
     return ModelSOBrowserActionRequest(side="red", command=command)
 
 
+@pytest.mark.unit
+def test_browser_server_rejects_pre_admitted_session_startup() -> None:
+    """A pre-admitted session would let refresh launch without Start Match."""
+    with pytest.raises(ValueError, match="sole launch authority"):
+        BrowserPlayServer(
+            bootstrap=_bootstrap(),
+            gateway=None,
+            bus=None,
+            authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+            session=cast(BrowserPlaySession, object()),
+        )
+
+
 @pytest.mark.integration
 def test_local_stub_gateway_session_has_one_start_action_replay_and_close() -> None:
     sessions = _Sessions()
@@ -398,6 +411,66 @@ async def test_event_socket_replays_match_started_when_opened_after_emission() -
             assert replayed["event_type"] == "match_started"
             assert replayed["tick"] == 0
             assert replayed["sequence_in_tick"] == 0
+    finally:
+        await server.stop()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refresh_after_terminal_retirement_does_not_replay_old_match() -> None:
+    """Server readiness is empty; refresh must not look like a new launch."""
+    import asyncio
+
+    import websockets
+
+    class Bus:
+        def subscribe(self, handler: object, **_: object) -> int:
+            del handler
+            return 1
+
+        def unsubscribe(self, token: int) -> None:
+            del token
+
+    fixture = Path(__file__).parents[2] / "frontend/src/__tests__/fixtures/match_started.json"
+    started = ModelSOEventEnvelope.model_validate_json(fixture.read_text(encoding="utf-8"))
+    terminal = started.model_copy(
+        update={
+            "event_id": ulid.new().str,
+            "event_type": SOEventType.MATCH_ENDED,
+            "tick": 1,
+            "sequence_in_tick": 0,
+            "payload": {"reason": "aborted", "winner_id": None},
+            "envelope": started.envelope.model_copy(update={"message_id": uuid4()}),
+        }
+    )
+    server = BrowserPlayServer(
+        bootstrap=_bootstrap(),
+        gateway=None,
+        bus=Bus(),  # type: ignore[arg-type]
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+    )
+    await server.start()
+    server._session = SimpleNamespace(
+        match_id=started.match_id,
+        stack=SimpleNamespace(runtime=None),
+        close=lambda: None,
+    )  # type: ignore[assignment]
+    server._loop = asyncio.get_running_loop()
+    try:
+        server._on_event(started)
+        server._on_event(terminal)
+        await asyncio.sleep(0)
+        assert [event.event_type for event in server._event_history] == [
+            SOEventType.MATCH_STARTED,
+            SOEventType.MATCH_ENDED,
+        ]
+
+        await server._retire_completed_session()
+        assert server._event_history == []
+        async with websockets.connect(server.event_url) as events:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(events.recv(), timeout=0.05)
     finally:
         await server.stop()
 
