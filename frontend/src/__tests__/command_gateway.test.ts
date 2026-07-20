@@ -85,6 +85,38 @@ describe("BrowserCommandGateway", () => {
     expect(gateway.status).toBe("pending");
   });
 
+  it("notifies status subscribers for accepted receipts and rearms after retirement", () => {
+    const socket = new FakeSocket();
+    const statuses: string[] = [];
+    const gateway = new BrowserCommandGateway({
+      binding,
+      socketFactory: factory(socket),
+      requestId: () => "request.start.lifecycle",
+    });
+    const unsubscribe = gateway.subscribeStatus((status) => statuses.push(status));
+    gateway.requestStart(intent);
+    socket.emitOpen();
+    socket.receive({
+      schema_version: "1",
+      kind: "steel_onslaught.browser_start_accepted",
+      authority_scope: "process_lifetime",
+      outcome: "accepted",
+      command_id: "11111111-1111-4111-8111-111111111111",
+      command_sha256: "c".repeat(64),
+      match_id: "match.01JABCDE0123456789ABCDEFGX",
+      overlay_sha256: "a".repeat(64),
+      roster_sha256: "b".repeat(64),
+    });
+    expect(statuses).toEqual(["idle", "pending", "accepted"]);
+
+    gateway.resetForNextMatch();
+    expect(gateway.status).toBe("idle");
+    expect(gateway.requestStart(intent)).toBe("pending");
+    expect(statuses.at(-2)).toBe("idle");
+    expect(statuses.at(-1)).toBe("pending");
+    unsubscribe();
+  });
+
   it("accepts a closed result and keeps event ingress receive-only", () => {
     const socket = new FakeSocket();
     const gateway = new BrowserCommandGateway({

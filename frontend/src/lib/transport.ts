@@ -242,8 +242,19 @@ export class MatchTransport {
       };
       this.buffers.set(matchId, buf);
       this.order.push(matchId);
-      // Default selection = the FIRST match to arrive.
-      if (this.activeMatchId === null) this.activeMatchId = matchId;
+      // Default selection = the FIRST match to arrive. Once that match has
+      // reached its canonical terminal, a subsequent MATCH_STARTED is the
+      // next live match and must become active without a page refresh.
+      if (this.activeMatchId === null) {
+        this.activeMatchId = matchId;
+      } else if (this.activeBuffer()?.complete === true) {
+        this.activeMatchId = matchId;
+        this.releasedCount = 0;
+        this.status = "playing";
+        this.pendingReset = true;
+        this.pendingStepForward = false;
+        this.primeImmediate = true;
+      }
     }
     // Dedup a StrictMode / reconnect re-stream: the same envelope must never land
     // in the buffer twice (it would duplicate rows and corrupt tick boundaries).

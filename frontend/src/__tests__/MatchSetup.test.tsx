@@ -182,6 +182,30 @@ describe("MatchSetup safe player intent", () => {
     });
   });
 
+  it("keeps launch disabled after receipt acceptance and hides it on MATCH_STARTED", () => {
+    const requestStart = vi.fn();
+    const { rerender } = render(
+      <MatchSetup
+        bootstrap={bootstrap()}
+        capability={{ requestStart, status: "accepted" }}
+        gatewayStatus="accepted"
+      />,
+    );
+
+    expect(screen.getByRole("form", { name: "Match setup" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "START ACCEPTED" })).toBeDisabled();
+
+    rerender(
+      <MatchSetup
+        bootstrap={bootstrap()}
+        capability={{ requestStart, status: "accepted" }}
+        gatewayStatus="accepted"
+        matchStarted
+      />,
+    );
+    expect(screen.queryByRole("form", { name: "Match setup" })).not.toBeInTheDocument();
+  });
+
   it("fail-closes a retained selection when replacement authority disallows it", () => {
     const requestStart = vi.fn();
     const initial = bootstrap();
