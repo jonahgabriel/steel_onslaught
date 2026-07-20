@@ -347,6 +347,11 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
             "new_mode": "assault",
             "mode_lock_until": 12,
         },
+        SOEventType.WEAPON_FIRE_REJECTED: {
+            "weapon_id": "module.weapon.machine_gun",
+            "target_id": "mech.b.01",
+            "reason": "target_out_of_range",
+        },
         SOEventType.WEAPON_FIRED: {
             "weapon_id": "module.weapon.machine_gun",
             "target_id": "mech.b.01",

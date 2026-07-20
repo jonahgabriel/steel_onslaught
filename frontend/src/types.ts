@@ -46,6 +46,7 @@ export const SO_EVENT_TYPES = [
   "boiler_ruptured",
   "mode_transition_started",
   "mode_transition_completed",
+  "weapon_fire_rejected",
   "weapon_fired",
   "hit_resolved",
   "armor_absorbed",
@@ -436,6 +437,19 @@ export interface WeaponFiredPayload {
   heat_generated: number;
 }
 
+export type WeaponFireRejectionReason =
+  | "insufficient_pressure"
+  | "weapon_on_cooldown"
+  | "target_out_of_range"
+  | "target_not_alive"
+  | "target_not_found";
+
+export interface WeaponFireRejectedPayload {
+  weapon_id: string;
+  target_id: string | null;
+  reason: WeaponFireRejectionReason;
+}
+
 export interface HitResult {
   hit: boolean;
   damage_after_armor: number;
@@ -589,6 +603,7 @@ export interface PayloadMap {
   boiler_ruptured: BoilerRupturedPayload;
   mode_transition_started: ModeTransitionStartedPayload;
   mode_transition_completed: ModeTransitionCompletedPayload;
+  weapon_fire_rejected: WeaponFireRejectedPayload;
   weapon_fired: WeaponFiredPayload;
   hit_resolved: HitResolvedPayload;
   armor_absorbed: ArmorAbsorbedPayload;
@@ -2220,6 +2235,25 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       from_mode: parseModeId(record["from_mode"], `${context}.from_mode`),
       new_mode: parseModeId(record["new_mode"], `${context}.new_mode`),
       mode_lock_until: nonNegativeInt(record, "mode_lock_until", context),
+    };
+  },
+  weapon_fire_rejected: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, ["weapon_id", "target_id", "reason"], context);
+    const reason = str(record, "reason", context);
+    if (
+      reason !== "insufficient_pressure" &&
+      reason !== "weapon_on_cooldown" &&
+      reason !== "target_out_of_range" &&
+      reason !== "target_not_alive" &&
+      reason !== "target_not_found"
+    ) {
+      fail(context, `field "reason" has an unknown value ${JSON.stringify(reason)}`);
+    }
+    return {
+      weapon_id: str(record, "weapon_id", context),
+      target_id: optionalNullableStr(record, "target_id", context) ?? null,
+      reason,
     };
   },
   weapon_fired: (value, context) => {

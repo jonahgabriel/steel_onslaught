@@ -53,6 +53,14 @@ from steel_onslaught.pilots.schemas import (
     SOPilotReasonCode,
 )
 
+WeaponFireRejectionReason = Literal[
+    "insufficient_pressure",
+    "weapon_on_cooldown",
+    "target_out_of_range",
+    "target_not_alive",
+    "target_not_found",
+]
+
 
 class _ClosedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -388,6 +396,19 @@ class ModelSOWeaponFireIntentPayload(_ClosedPayload):
     target_mech_id: str | None = None
 
 
+class ModelSOWeaponFireRejectedPayload(_ClosedPayload):
+    """A typed, non-state-changing record of a rejected fire intent.
+
+    The runner keeps validation in :func:`validate_weapon_fire_intent`; this
+    payload makes that validation outcome observable without teaching the
+    canonical fold about live-only rejection handling.
+    """
+
+    weapon_id: StrictStr
+    target_id: StrictStr | None = None
+    reason: WeaponFireRejectionReason
+
+
 class ModelSOPilotKilledPayload(_ClosedPayload):
     mech_id: str
     survival_probability: StrictFloat = Field(ge=0.0, le=1.0)
@@ -502,6 +523,7 @@ CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = Mapping
         SOEventType.BOILER_OVERLOADED: ModelSOBoilerOverloadedPayload,
         SOEventType.BOILER_RUPTURED: ModelSOBoilerRupturedPayload,
         SOEventType.MODE_TRANSITION_STARTED: ModelSOModeTransitionStartedPayload,
+        SOEventType.WEAPON_FIRE_REJECTED: ModelSOWeaponFireRejectedPayload,
         SOEventType.WEAPON_FIRED: ModelSOWeaponFiredPayload,
         SOEventType.HIT_RESOLVED: ModelSOHitResolvedPayload,
         SOEventType.ARMOR_ABSORBED: ModelSOArmorAbsorbedPayload,
@@ -553,5 +575,7 @@ __all__ = [
     "ModelSOSensorObservationPayload",
     "ModelSOVictoryDeclaredPayload",
     "ModelSOWeaponFireIntentPayload",
+    "ModelSOWeaponFireRejectedPayload",
     "ModelSOWeaponFiredPayload",
+    "WeaponFireRejectionReason",
 ]

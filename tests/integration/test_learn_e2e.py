@@ -148,6 +148,7 @@ _PINNED_EVENT_TYPES = frozenset(
         "boiler_ruptured",
         "mode_transition_started",
         "mode_transition_completed",
+        "weapon_fire_rejected",
         "weapon_fired",
         "hit_resolved",
         "armor_absorbed",
