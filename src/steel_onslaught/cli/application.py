@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from steel_onslaught.contracts.pilot_registry import PilotSpecRegistry
 from steel_onslaught.llm.schemas import (
     ProtocolHttpTransport,
     ProtocolSecretResolver,
@@ -77,9 +78,15 @@ class CliApplicationFactory:
             and self._capabilities.http_transport is not None
         )
 
-    def runtime(self, overlay: ModelSOApplicationOverlay) -> RuntimeDependencies:
+    def runtime(
+        self,
+        overlay: ModelSOApplicationOverlay,
+        *,
+        pilot_registry: PilotSpecRegistry | None = None,
+    ) -> RuntimeDependencies:
         return build_runtime_dependencies(
             overlay,
+            pilot_registry=pilot_registry,
             secret_resolver=self._capabilities.secret_resolver,
             http_transport=self._capabilities.http_transport,
             sleeper=self._capabilities.sleeper,
@@ -90,15 +97,36 @@ class CliApplicationFactory:
         overlay: ModelSOApplicationOverlay,
         provider_selection: str | tuple[str, ...],
         pilot_spec_ids: tuple[str, ...],
+        *,
+        pilot_registry: PilotSpecRegistry | None = None,
     ) -> RuntimeDependencies:
         """Compose exactly the selected provider and pilot lanes for one launch."""
 
         if not self.live_enabled:
             raise ValueError("live CLI composition requires injected secret and HTTP capabilities")
         if isinstance(provider_selection, tuple):
+            if pilot_registry is None:
+                return build_selected_runtime_dependencies(
+                    overlay,
+                    selected_provider_ids=provider_selection,
+                    selected_pilot_spec_ids=pilot_spec_ids,
+                    secret_resolver=self._capabilities.secret_resolver,
+                    http_transport=self._capabilities.http_transport,
+                    sleeper=self._capabilities.sleeper,
+                )
             return build_selected_runtime_dependencies(
                 overlay,
+                pilot_registry=pilot_registry,
                 selected_provider_ids=provider_selection,
+                selected_pilot_spec_ids=pilot_spec_ids,
+                secret_resolver=self._capabilities.secret_resolver,
+                http_transport=self._capabilities.http_transport,
+                sleeper=self._capabilities.sleeper,
+            )
+        if pilot_registry is None:
+            return build_selected_runtime_dependencies(
+                overlay,
+                selected_provider_id=provider_selection,
                 selected_pilot_spec_ids=pilot_spec_ids,
                 secret_resolver=self._capabilities.secret_resolver,
                 http_transport=self._capabilities.http_transport,
@@ -106,6 +134,7 @@ class CliApplicationFactory:
             )
         return build_selected_runtime_dependencies(
             overlay,
+            pilot_registry=pilot_registry,
             selected_provider_id=provider_selection,
             selected_pilot_spec_ids=pilot_spec_ids,
             secret_resolver=self._capabilities.secret_resolver,
