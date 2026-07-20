@@ -605,7 +605,9 @@ export function createFrontendApplication(
     bootstrap,
     transport,
     makeStream: () =>
-      new EventStream(capabilities.socketFactory.open(bootstrap.frontend_transport.websocket_url)),
+      new EventStream(() =>
+        capabilities.socketFactory.open(bootstrap.frontend_transport.websocket_url),
+      ),
     scheduler: capabilities.scheduler,
     clock: capabilities.clock,
     commandGateway: new BrowserCommandGateway({
