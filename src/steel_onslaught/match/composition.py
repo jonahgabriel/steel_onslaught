@@ -42,7 +42,12 @@ from steel_onslaught.contracts.application import (
 )
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
-from steel_onslaught.contracts.card import CardCatalogError, ModelSOCard, ModelSOCardCatalog
+from steel_onslaught.contracts.card import (
+    CardCatalogError,
+    ModelSOCard,
+    ModelSOCardCatalog,
+    SOCardCategory,
+)
 from steel_onslaught.contracts.card_runtime import (
     ModelSOCardRuntimeSnapshot,
     canonical_card_runtime_sha256,
@@ -71,6 +76,7 @@ from steel_onslaught.contracts.player_selection import (
     validate_player_roster_against_overlay,
 )
 from steel_onslaught.contracts.sensor import ModelSOSensorSpec
+from steel_onslaught.contracts.split_deck import ModelSOCardDeckPolicy
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import Clock, EventFactory, IdentityProvider
@@ -808,10 +814,18 @@ def load_card_runtime_snapshot(
         raise ValueError(
             f"conflicting explicit deck ids: binding={binding.deck_id!r}, argument={deck_id!r}"
         )
-    if binding.card_mode_enabled and selected_deck_id is None:
+    if binding.deck_policy is not None and deck_id is not None:
+        raise ValueError("split-deck policy cannot be combined with an explicit deck_id argument")
+    if binding.card_mode_enabled and selected_deck_id is None and binding.deck_policy is None:
         raise ValueError("card mode requires an explicit deck_id")
     if selected_deck_id is not None and selected_deck_id not in {deck.id for deck in decks}:
         raise ValueError(f"unknown selected deck_id {selected_deck_id!r}")
+    if binding.deck_policy is not None:
+        _validate_split_deck_policy(
+            binding.deck_policy,
+            decks=decks,
+            card_catalog=card_catalog,
+        )
     return ModelSOCardRuntimeSnapshot(
         schema_version="0.1.0",
         kind="steel_onslaught.card_runtime_snapshot",
@@ -820,6 +834,43 @@ def load_card_runtime_snapshot(
         selected_deck_id=selected_deck_id,
         content_sha256=canonical_card_runtime_sha256(card_catalog, decks),
     )
+
+
+def _validate_split_deck_policy(
+    policy: ModelSOCardDeckPolicy,
+    *,
+    decks: tuple[ModelSODeck, ...],
+    card_catalog: ModelSOCardCatalog,
+) -> None:
+    """Validate policy deck references and category partitions at load time."""
+
+    decks_by_id = {str(deck.id): deck for deck in decks}
+    for seat in policy.seats:
+        for deck_id, categories, label in (
+            (
+                seat.movement_deck_id,
+                frozenset({SOCardCategory.MOVEMENT, SOCardCategory.ROTATE}),
+                "movement",
+            ),
+            (
+                seat.weapon_deck_id,
+                frozenset({SOCardCategory.ATTACK, SOCardCategory.VENT, SOCardCategory.SPECIAL}),
+                "weapon",
+            ),
+        ):
+            deck = decks_by_id.get(str(deck_id))
+            if deck is None:
+                raise ValueError(
+                    f"split-deck policy side {seat.side!r} references unknown {label} deck "
+                    f"{deck_id!r}"
+                )
+            for entry in deck.cards:
+                card = card_catalog.require(entry.card_id)
+                if card.category not in categories:
+                    raise ValueError(
+                        f"split-deck policy {label} deck {deck.id!r} contains "
+                        f"card {card.id!r} from category {card.category.value!r}"
+                    )
 
 
 def build_register_execution_reducer(

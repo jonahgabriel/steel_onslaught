@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, Strict
 
 from steel_onslaught.contracts.card import CardId
 from steel_onslaught.contracts.deck import ModelSODeck
+from steel_onslaught.contracts.split_deck import ModelSODeckHandQuota
 from steel_onslaught.match.rng import MatchRng
 
 _OPEN_SHUFFLE_KIND = "card_open_shuffle"
@@ -49,6 +50,37 @@ class ModelSODealResult(_ClosedDealerModel):
     exhausted: StrictBool = Field(
         ..., description="True when fewer cards existed than the requested draw count."
     )
+
+
+class ModelSOSplitDeckState(_ClosedDealerModel):
+    """Independent draw/discard state for one seat's two card partitions."""
+
+    movement: ModelSODeckState
+    weapon: ModelSODeckState
+
+
+class ModelSOSplitDealResult(_ClosedDealerModel):
+    """One seat's quota-sized movement and weapon deals."""
+
+    movement_hand: tuple[CardId, ...] = Field(...)
+    weapon_hand: tuple[CardId, ...] = Field(...)
+    state: ModelSOSplitDeckState
+    movement_reshuffled: StrictBool = Field(...)
+    weapon_reshuffled: StrictBool = Field(...)
+    movement_exhausted: StrictBool = Field(...)
+    weapon_exhausted: StrictBool = Field(...)
+
+    @property
+    def hand(self) -> tuple[CardId, ...]:
+        """Return a stable partition order for adapter consumers."""
+
+        return self.movement_hand + self.weapon_hand
+
+    @property
+    def exhausted(self) -> bool:
+        """Whether either explicitly requested partition could not be filled."""
+
+        return self.movement_exhausted or self.weapon_exhausted
 
 
 def _fisher_yates(cards: tuple[CardId, ...], rng: Random) -> tuple[CardId, ...]:
@@ -135,6 +167,69 @@ class DealerCompute:
             scope=scope,
         )
 
+    def spawn_split_deal_for_seat(
+        self,
+        *,
+        movement_deck: ModelSODeck,
+        weapon_deck: ModelSODeck,
+        hand_quota: ModelSODeckHandQuota,
+        scope: ModelSODealerScope,
+    ) -> ModelSOSplitDealResult:
+        """Deal two independent piles without sharing mutable dealer state.
+
+        Each partition is opened and drawn through the existing explicit
+        single-deck primitive.  Since every operation derives its own RNG from
+        the immutable scope and deck value, red/blue call order cannot alter a
+        seat's deal.
+        """
+
+        if movement_deck.id == weapon_deck.id:
+            raise ValueError("split-deck deal requires distinct movement and weapon decks")
+        movement_state = self.open_deck_for_seat(
+            deck=movement_deck,
+            scope=scope.model_copy(update={"seat": f"{scope.seat}:movement"}),
+        )
+        weapon_state = self.open_deck_for_seat(
+            deck=weapon_deck,
+            scope=scope.model_copy(update={"seat": f"{scope.seat}:weapon"}),
+        )
+        return self.deal_split_hand_for_seat(
+            state=ModelSOSplitDeckState(movement=movement_state, weapon=weapon_state),
+            hand_quota=hand_quota,
+            scope=scope,
+        )
+
+    def deal_split_hand_for_seat(
+        self,
+        *,
+        state: ModelSOSplitDeckState,
+        hand_quota: ModelSODeckHandQuota,
+        scope: ModelSODealerScope,
+    ) -> ModelSOSplitDealResult:
+        """Draw each partition from its own immutable state and quota."""
+
+        movement_scope = scope.model_copy(update={"seat": f"{scope.seat}:movement"})
+        weapon_scope = scope.model_copy(update={"seat": f"{scope.seat}:weapon"})
+        movement = self.deal_hand_for_seat(
+            state=state.movement,
+            count=hand_quota.movement,
+            scope=movement_scope,
+        )
+        weapon = self.deal_hand_for_seat(
+            state=state.weapon,
+            count=hand_quota.weapon,
+            scope=weapon_scope,
+        )
+        return ModelSOSplitDealResult(
+            movement_hand=movement.hand,
+            weapon_hand=weapon.hand,
+            state=ModelSOSplitDeckState(movement=movement.state, weapon=weapon.state),
+            movement_reshuffled=movement.reshuffled,
+            weapon_reshuffled=weapon.reshuffled,
+            movement_exhausted=movement.exhausted,
+            weapon_exhausted=weapon.exhausted,
+        )
+
     @staticmethod
     def _operation_rng(
         *,
@@ -150,4 +245,11 @@ class DealerCompute:
         )
 
 
-__all__ = ["DealerCompute", "ModelSODealResult", "ModelSODealerScope", "ModelSODeckState"]
+__all__ = [
+    "DealerCompute",
+    "ModelSODealResult",
+    "ModelSODealerScope",
+    "ModelSODeckState",
+    "ModelSOSplitDealResult",
+    "ModelSOSplitDeckState",
+]

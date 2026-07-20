@@ -10,11 +10,19 @@ from pydantic import ValidationError
 
 from steel_onslaught.contracts.application import ModelSOCardCatalogBinding
 from steel_onslaught.contracts.card_runtime import canonical_card_runtime_sha256
+from steel_onslaught.contracts.player_selection import Side
+from steel_onslaught.contracts.split_deck import (
+    ModelSOCardDeckPolicy,
+    ModelSODeckHandQuota,
+    ModelSOSeatDeckPolicy,
+)
 from steel_onslaught.match.composition import (
     load_card_catalog,
     load_card_runtime_snapshot,
     load_deck_catalog,
 )
+
+_SIDES: tuple[Side, ...] = ("red", "blue")
 
 _CARD = {
     "schema_version": "0.1.0",
@@ -84,6 +92,71 @@ def test_loader_returns_sorted_immutable_snapshot_and_ignores_inert_deck_root(
     # A source-file edit cannot mutate the already validated value object.
     (cards_dir / "z.yaml").write_text(yaml.safe_dump(dict(_CARD, priority=999)), encoding="utf-8")
     assert catalog.require("card.test.advance").priority == 100
+
+
+@pytest.mark.unit
+def test_loader_validates_explicit_split_policy_and_keeps_snapshot_unselected(
+    tmp_path: Path,
+) -> None:
+    cards_dir = tmp_path / "split-cards"
+    decks_dir = tmp_path / "split-decks"
+    cards_dir.mkdir()
+    decks_dir.mkdir()
+    fire = dict(
+        _CARD,
+        id="card.test.fire",
+        display_name="Fire",
+        category="attack",
+        heat_cost=1,
+        effect={"weapon_slot": 0},
+    )
+    (cards_dir / "advance.yaml").write_text(yaml.safe_dump(_CARD), encoding="utf-8")
+    (cards_dir / "fire.yaml").write_text(yaml.safe_dump(fire), encoding="utf-8")
+    for deck_id, card_id in (
+        ("deck.movement.red", "card.test.advance"),
+        ("deck.movement.blue", "card.test.advance"),
+        ("deck.weapon.red", "card.test.fire"),
+        ("deck.weapon.blue", "card.test.fire"),
+    ):
+        (decks_dir / f"{deck_id.replace('.', '_')}.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": "0.1.0",
+                    "kind": "steel_onslaught.deck",
+                    "id": deck_id,
+                    "display_name": deck_id,
+                    "hand_size": 2,
+                    "register_count": 2,
+                    "cards": [{"card_id": card_id, "count": 2}],
+                }
+            ),
+            encoding="utf-8",
+        )
+    policy = ModelSOCardDeckPolicy(
+        schema_version="0.1.0",
+        kind="steel_onslaught.card_deck_policy",
+        seats=tuple(
+            ModelSOSeatDeckPolicy(
+                side=side,
+                archetype="berserker" if side == "red" else "sniper",
+                movement_deck_id=f"deck.movement.{side}",
+                weapon_deck_id=f"deck.weapon.{side}",
+                hand_quota=ModelSODeckHandQuota(movement=1, weapon=1),
+                register_count=2,
+            )
+            for side in _SIDES
+        ),
+    )
+    binding = ModelSOCardCatalogBinding(
+        kind="filesystem_yaml",
+        cards_dir=cards_dir,
+        decks_dir=decks_dir,
+        card_mode_enabled=True,
+        deck_policy=policy,
+    )
+    snapshot = load_card_runtime_snapshot(binding)
+    assert snapshot.selected_deck_id is None
+    assert len(snapshot.decks) == 4
 
 
 @pytest.mark.unit
