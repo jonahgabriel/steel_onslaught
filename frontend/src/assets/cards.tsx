@@ -44,21 +44,24 @@ export function CardFace({
   side,
   priority,
   size = 46,
+  fluid = false,
 }: {
   cardId: string;
   side?: Side;
   priority?: number;
   size?: number;
+  /** Let a hand grid size the face to its responsive track. */
+  fluid?: boolean;
 }): JSX.Element {
   const category = cardCategoryOf(cardId);
   const height = Math.round(size * 1.32);
   return (
     <div
-      className="pd-card"
+      className={fluid ? "pd-card pd-card-fluid" : "pd-card"}
       data-testid={`card-face-${cardId}`}
       data-card-id={cardId}
       data-category={category}
-      style={sideStyle(side, { width: size, height })}
+      style={fluid ? sideStyle(side) : sideStyle(side, { width: size, height })}
       title={cardLabelOf(cardId)}
     >
       <svg

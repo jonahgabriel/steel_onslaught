@@ -48,6 +48,7 @@ export default function HandStrip({
               cardId={cardId}
               side={accent}
               priority={priorities[cardId]}
+              fluid
             />
           ))}
         </div>
