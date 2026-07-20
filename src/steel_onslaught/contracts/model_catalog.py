@@ -358,6 +358,8 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
         sides = [seat.side for seat in self.seats]
         if set(sides) != {"red", "blue"} or len(sides) != len(set(sides)):
             raise ValueError("catalog seats must contain exactly one red and one blue policy")
+        if sides != ["red", "blue"]:
+            raise ValueError("catalog seats must be ordered red then blue")
         known = set(option_ids)
         allowed = {option_id for seat in self.seats for option_id in seat.allowed_option_ids}
         unknown = sorted(allowed - known)
