@@ -1,0 +1,27 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.qwen27_opportunist_hunter
+chassis_id: chassis.medium.hunter_mk1
+boiler_id: boiler.volatile.v1
+pilot_id: pilot.llm.qwen27_opportunist
+modules:
+  weapons:
+    - weapon.medium.steam_cannon
+    - weapon.heavy.harpoon_gun
+    - weapon.medium.heat_lance
+  sensors:
+    - sensor.long_range_radar
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.control.targeting_assist
+budgets:
+  points_used: 94
+  points_max: 100
+  mass_used: 76
+  mass_max: 100
+  slots_used: 6
+  slots_max: 6
+  expected_heat_peak: 34
+  expected_signature: 70

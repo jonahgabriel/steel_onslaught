@@ -1440,7 +1440,12 @@ def _catalog_selection_overlay(
             None,
         )
         if binding is not None:
-            card_bindings.append(binding)
+            # A source overlay supplies the seat's card-programming defaults,
+            # but the selected catalog option owns the exact pilot identity.
+            # Rebind that programmer to the admitted option so a differentiated
+            # same-provider role (for example Qwen35 sniper) cannot execute
+            # the source roster's other pilot by accident.
+            card_bindings.append(binding.model_copy(update={"pilot_spec_id": option.pilot_spec_id}))
     card_catalog = overlay.contracts.card_catalog
     if card_catalog is None:
         return overlay

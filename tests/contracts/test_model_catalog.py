@@ -196,6 +196,50 @@ def test_configured_catalog_index_loads_all_current_provider_overlays() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("red_option_id", "blue_option_id", "red_role", "blue_role"),
+    (
+        (
+            "player_option.qwen35_model",
+            "player_option.qwen35_sniper",
+            "berserker",
+            "sniper",
+        ),
+        (
+            "player_option.qwen27_model",
+            "player_option.qwen27_opportunist",
+            "sniper",
+            "opportunist",
+        ),
+    ),
+)
+def test_configured_local_qwen_pairings_are_asymmetric_without_mirror(
+    red_option_id: str,
+    blue_option_id: str,
+    red_role: str,
+    blue_role: str,
+) -> None:
+    catalog = load_model_catalog(_CONTRACTS_DATA / "model_catalogs/configured_v1.yaml")
+    red = next(option for option in catalog.options if option.option_id == red_option_id)
+    blue = next(option for option in catalog.options if option.option_id == blue_option_id)
+    assert red.kind == blue.kind == "model"
+    assert red.provider_binding_id == blue.provider_binding_id
+    assert red.model_identity_id == blue.model_identity_id
+    assert red.persona_id == red_role
+    assert blue.persona_id == blue_role
+
+    pairing = catalog.pairing_provenance(
+        red_option_id=red_option_id,
+        blue_option_id=blue_option_id,
+    )
+    assert pairing.mirror_match_mode is False
+    assert pairing.red_role_id == red_role
+    assert pairing.blue_role_id == blue_role
+    assert pairing.red_loadout_id != pairing.blue_loadout_id
+    assert pairing.red_chassis_id != pairing.blue_chassis_id
+
+
+@pytest.mark.unit
 def test_catalog_index_exports_existing_bootstrap_roster_and_metadata(tmp_path: Path) -> None:
     overlay_path = _CONTRACTS_DATA / "overlays/live_glm_cards.yaml"
     output_path = tmp_path / "frontend_bootstrap.json"
