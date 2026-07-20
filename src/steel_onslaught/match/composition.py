@@ -1857,6 +1857,7 @@ def assemble_match_with_dependencies(
 def assemble_selected_match_live(
     *,
     overlay: ModelSOApplicationOverlay,
+    canonical_overlay: ModelSOApplicationOverlay | None = None,
     roster: ModelSOPlayerRosterBinding,
     pilot_registry: PilotSpecRegistry | None = None,
     sessions: AuthenticatedSessionCapability,
@@ -1886,6 +1887,7 @@ def assemble_selected_match_live(
     )
     provenance = ProcessLocalMatchLaunchCoordinator(
         overlay=overlay,
+        canonical_overlay=canonical_overlay,
         roster=roster,
         sessions=sessions,
         pilot_registry=resolved_pilot_registry,

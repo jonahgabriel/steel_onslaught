@@ -226,6 +226,7 @@ class ProcessLocalCommandAuthority:
         roster: ModelSOPlayerRosterBinding,
         sessions: AuthenticatedSessionCapability,
         pilot_registry: PilotSpecRegistry,
+        canonical_overlay: ModelSOApplicationOverlay | None = None,
     ) -> None:
         validate_player_roster_against_overlay(
             roster=roster,
@@ -235,7 +236,12 @@ class ProcessLocalCommandAuthority:
         self._overlay = overlay
         self._roster = roster
         self._sessions = sessions
-        self._overlay_sha256 = canonical_overlay_sha256(overlay)
+        # A selected catalog overlay may be a runtime projection of the
+        # browser's canonical launch overlay (for example, it can rebind card
+        # programmers to the selected pilot).  Authority must compare the
+        # browser's expected hash with that canonical launch contract rather
+        # than a derived runtime projection.
+        self._overlay_sha256 = canonical_overlay_sha256(canonical_overlay or overlay)
         self._roster_sha256 = roster.canonical_sha256()
         self._records: dict[UUID, _AdmissionRecord] = {}
         self._lock = Lock()
