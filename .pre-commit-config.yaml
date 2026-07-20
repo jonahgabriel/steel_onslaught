@@ -25,5 +25,8 @@ repos:
             click>=8.1,
             websockets>=12.0,
             playwright>=1.40,
+            omnibase-core>=0.46.2,
+            omnibase-spi>=0.22.0,
+            httpx>=0.27,
           ]
         args: [--strict]
