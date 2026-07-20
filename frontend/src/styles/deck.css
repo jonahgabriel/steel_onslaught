@@ -273,17 +273,18 @@ body {
 /*
  * ---- body: Rev 2 three-column layout ----
  * Holds at 1280×800 and 1920×1080 with NO horizontal page scroll:
- *   col 1  SPEC PANELS  fixed  300px  (mech readouts, RED stacked over BLUE)
+ *   col 1  SPEC PANELS  responsive 220–14vw (mech readouts, RED stacked over BLUE)
  *   col 2  ARENA        minmax(0, 1fr) — square arena, centered via cqmin
- *   col 3  EVENT RIVER  fixed  344px  (v1 river moved to the right column)
+ *   col 3  EVENT RIVER  responsive 280–18vw (v1 river moved to the right column)
  * The center track is minmax(0, 1fr) so the square arena can never force the
- * grid wider than the viewport. Fixed rails total 644px: inside 1280 that
- * leaves 636px for the arena; inside 1920, 1276px. `overflow: hidden` + the
+ * grid wider than the viewport. Compact rails give the arena visual priority
+ * at operator-sized windows (about 940px at 1440×1000), while viewport-relative
+ * caps restore wider rails on ultrawide displays. `overflow: hidden` + the
  * min-* zeros make the clamp authoritative.
  */
 .pd-body {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 344px;
+  grid-template-columns: minmax(220px, 14vw) minmax(0, 1fr) minmax(280px, 18vw);
   min-height: 0;
   min-width: 0;
   position: relative;
