@@ -437,6 +437,14 @@ class BrowserPlayServer:
         # still receives MATCH_STARTED before any tick events.
         self._event_history: list[ModelSOEventEnvelope] = []
         self._event_history_ids: set[str] = set()
+        # A browser can admit a fast match before its independent /events
+        # handshake reaches this process. Keep one completed prefix for that
+        # specific admission so the first late subscriber can recover it.
+        # This is intentionally one-shot: ordinary refreshes after a retired
+        # match must still receive an empty stream.
+        self._late_replay_match_id: str | None = None
+        self._late_replay_pending = False
+        self._event_client_seen_since_admission = False
         # Match ids retired after MATCH_ENDED are quarantined from late
         # cross-thread callbacks. A browser refresh after retirement must not
         # resurrect the completed prefix as a fresh-looking match.
@@ -611,6 +619,8 @@ class BrowserPlayServer:
         queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._event_clients.add(connection)
         self._event_queues[connection] = queue
+        if self._session is not None:
+            self._event_client_seen_since_admission = True
         sender = asyncio.create_task(self._send_event_queue(connection, queue))
         try:
             # Add before taking the snapshot. The event loop cannot run a
@@ -630,6 +640,14 @@ class BrowserPlayServer:
             )
             for event in history:
                 queue.put_nowait(event.model_dump_json())
+            # A launch may finish before this receive-only socket completes its
+            # handshake. Its retained prefix is consumed by this first late
+            # subscriber and then discarded, preserving refresh-as-readiness.
+            if self._late_replay_pending and self._session is None:
+                self._late_replay_pending = False
+                self._late_replay_match_id = None
+                self._event_history.clear()
+                self._event_history_ids.clear()
             async for _frame in connection:
                 await connection.close(code=1008, reason="event stream is receive-only")
                 break
@@ -824,6 +842,15 @@ class BrowserPlayServer:
                     session_id=session_id,
                 )
                 response = result.model_dump_json()
+                # Record whether this admitted launch had an event subscriber
+                # already attached. If not, retain one completed prefix for a
+                # late handshake; a client that connects before retirement
+                # receives the live broadcast and disables this fallback.
+                self._event_client_seen_since_admission = bool(self._event_clients)
+                self._late_replay_match_id = (
+                    None if self._event_client_seen_since_admission else request.match_id
+                )
+                self._late_replay_pending = False
                 # Admit the command before starting the runner.  A runner can
                 # publish MATCH_STARTED synchronously in its first call; if it
                 # starts before the gateway receipt, the event can race the
@@ -1035,8 +1062,15 @@ class BrowserPlayServer:
         self._session_owner = None
         self._pending_prompts.clear()
         self._retired_match_ids.add(retired_match_id)
-        self._event_history.clear()
-        self._event_history_ids.clear()
+        retain_for_late_subscriber = (
+            self._late_replay_match_id == retired_match_id
+            and not self._event_client_seen_since_admission
+        )
+        self._late_replay_pending = retain_for_late_subscriber
+        if not retain_for_late_subscriber:
+            self._late_replay_match_id = None
+            self._event_history.clear()
+            self._event_history_ids.clear()
         self._pending_events.clear()
         self._pending_ticks.clear()
         self._pending_event_ids.clear()
