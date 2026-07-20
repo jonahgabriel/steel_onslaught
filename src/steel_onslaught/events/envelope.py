@@ -41,6 +41,7 @@ class SOEventType(StrEnum):
     BOILER_RUPTURED = "boiler_ruptured"
     MODE_TRANSITION_STARTED = "mode_transition_started"
     MODE_TRANSITION_COMPLETED = "mode_transition_completed"
+    WEAPON_FIRE_REJECTED = "weapon_fire_rejected"
     WEAPON_FIRED = "weapon_fired"
     HIT_RESOLVED = "hit_resolved"
     ARMOR_ABSORBED = "armor_absorbed"

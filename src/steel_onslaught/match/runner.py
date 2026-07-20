@@ -25,7 +25,7 @@ event stream is a pure function of ``(seed, loadouts, max_ticks, geometry)``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -57,6 +57,8 @@ from steel_onslaught.events.payloads import (
     ModelSOMoveIntentPayload,
     ModelSOSensorObservationPayload,
     ModelSOWeaponFireIntentPayload,
+    ModelSOWeaponFireRejectedPayload,
+    WeaponFireRejectionReason,
 )
 from steel_onslaught.match.card_adapter import (
     CardRunnerAdapter,
@@ -1014,6 +1016,19 @@ class MatchRunner:
             else self._living_opponent(state, mech)
         )
         if target is None:
+            self._bus.publish(
+                self._make_subject_event(
+                    SOEventType.WEAPON_FIRE_REJECTED,
+                    tick=state.tick,
+                    mech=mech,
+                    payload=ModelSOWeaponFireRejectedPayload(
+                        weapon_id=weapon_id,
+                        target_id=target_param,
+                        reason="target_not_found",
+                    ).model_dump(mode="json"),
+                    caused_by_intent=intent,
+                )
+            )
             return
 
         distance = chebyshev(mech.position, target.position)
@@ -1027,8 +1042,31 @@ class MatchRunner:
                 weapon_range=spec.range,
                 target_alive=target.alive and target.pilot_alive,
             )
-        except ReducerError:
-            return  # rejected: PILOT_DECISION_MADE already records the attempt
+        except ReducerError as exc:
+            reason = str(exc).split(":", 1)[0]
+            if reason not in {
+                "insufficient_pressure",
+                "weapon_on_cooldown",
+                "target_out_of_range",
+                "target_not_alive",
+            }:
+                raise RuntimeError(
+                    f"weapon validation returned an unregistered rejection reason: {reason!r}"
+                ) from exc
+            self._bus.publish(
+                self._make_subject_event(
+                    SOEventType.WEAPON_FIRE_REJECTED,
+                    tick=state.tick,
+                    mech=mech,
+                    payload=ModelSOWeaponFireRejectedPayload(
+                        weapon_id=weapon_id,
+                        target_id=target.mech_id,
+                        reason=cast(WeaponFireRejectionReason, reason),
+                    ).model_dump(mode="json"),
+                    caused_by_intent=intent,
+                )
+            )
+            return
 
         if not line_of_sight_clear(mech.position, target.position, self._obstacles):
             self._bus.publish(

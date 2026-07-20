@@ -56,6 +56,7 @@ EXPECTED_CURRENT_CONSUMED_EVENT_TYPES = frozenset(
         SOEventType.BOILER_OVERLOADED,
         SOEventType.BOILER_RUPTURED,
         SOEventType.MODE_TRANSITION_STARTED,
+        SOEventType.WEAPON_FIRE_REJECTED,
         SOEventType.WEAPON_FIRED,
         SOEventType.HIT_RESOLVED,
         SOEventType.ARMOR_ABSORBED,
@@ -102,7 +103,7 @@ def _assert_deeply_frozen(value: object) -> None:
 
 @pytest.mark.unit
 def test_current_consumed_payload_registry_has_exact_independent_census() -> None:
-    assert len(EXPECTED_CURRENT_CONSUMED_EVENT_TYPES) == 33
+    assert len(EXPECTED_CURRENT_CONSUMED_EVENT_TYPES) == 34
     assert set(CURRENT_CONSUMED_PAYLOAD_MODELS) == EXPECTED_CURRENT_CONSUMED_EVENT_TYPES
     assert set(SOEventType) - EXPECTED_CURRENT_CONSUMED_EVENT_TYPES == {
         SOEventType.MODE_TRANSITION_COMPLETED,
