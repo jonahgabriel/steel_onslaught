@@ -24,6 +24,7 @@ from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.llm.personas import Persona, PersonaRegistry
 from steel_onslaught.llm.schemas import (
+    LlmCompletionBoundaryError,
     LlmResponse,
     LlmUsage,
     ModelSOLlmCompletionRequest,
@@ -44,6 +45,7 @@ from steel_onslaught.match.composition import (
     load_pilot_registry,
 )
 from steel_onslaught.match.runner import MatchIdentity
+from steel_onslaught.match.state import SOMatchStatus
 from steel_onslaught.projections.leaderboard.protocol import (
     LeaderboardRepository,
     ModelSOLeaderboardEntry,
@@ -135,6 +137,21 @@ class _CardProgrammingClient:
         )
 
 
+class _LengthProgrammingClient:
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        return LlmResponse(
+            text='{"registers":[]}',
+            usage=LlmUsage(prompt_tokens=5, completion_tokens=3, cost_usd=None),
+            model="card-programmer-fixture",
+            finish_reason="length",
+        )
+
+
+class _TimeoutProgrammingClient:
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        raise LlmCompletionBoundaryError("timeout", retryable=True)
+
+
 class _Clients(ProtocolLlmClientFactory):
     def __init__(self, client: ProtocolLlmClient) -> None:
         self.client = client
@@ -208,6 +225,7 @@ def _pilot_spec() -> ModelSOPilotSpec:
 def _compose(
     *,
     cadence: str,
+    client: ProtocolLlmClient | None = None,
 ) -> tuple[RuntimeDependencies, Any, _Ledger, ModelSOCardRuntimeSnapshot]:
     runtime_root = load_match_contract_catalog(_ROOT)
     full_registry = load_pilot_registry(_ROOT / "pilots")
@@ -215,8 +233,7 @@ def _compose(
         {**full_registry.as_mapping(), _pilot_spec().id: _pilot_spec()}
     )
     snapshot = _card_snapshot()
-    client = _CardProgrammingClient()
-    llm = _llm_dependencies(client)
+    llm = _llm_dependencies(client or _CardProgrammingClient())
     bindings = (
         ModelSOCardProgrammerBinding(side="red", pilot_spec_id="pilot.card.telemetry"),
         ModelSOCardProgrammerBinding(side="blue", pilot_spec_id="pilot.card.telemetry"),
@@ -314,3 +331,34 @@ def test_card_programmer_telemetry_is_match_scoped_and_replayable(cadence: str) 
         validate_card_events=True,
     )
     assert replay.reconstruct_at_tick(final.tick) == final
+
+
+@pytest.mark.parametrize(
+    ("client", "reason_code"),
+    [
+        (_LengthProgrammingClient(), "length"),
+        (_TimeoutProgrammingClient(), "timeout"),
+    ],
+)
+def test_provider_boundary_ends_match_before_hand_dealt(
+    client: ProtocolLlmClient,
+    reason_code: str,
+) -> None:
+    _dependencies, stack, ledger, _snapshot = _compose(cadence="atomic", client=client)
+
+    final = stack.runner.run()
+
+    assert final.status is SOMatchStatus.ENDED
+    assert final.end_reason.value == "aborted"
+    event_types = [event.event_type for event in ledger.events]
+    assert SOEventType.MATCH_STARTED in event_types
+    assert SOEventType.MATCH_ENDED in event_types
+    failed = [
+        event for event in ledger.events if event.event_type is SOEventType.LLM_COMPLETION_FAILED
+    ]
+    assert len(failed) == 1
+    assert failed[0].payload["reason_code"] == reason_code
+    assert SOEventType.HAND_DEALT not in event_types
+    assert event_types.index(SOEventType.LLM_COMPLETION_FAILED) < event_types.index(
+        SOEventType.MATCH_ENDED
+    )

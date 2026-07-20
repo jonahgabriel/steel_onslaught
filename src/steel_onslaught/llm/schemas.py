@@ -117,6 +117,33 @@ class LlmTransportError(RuntimeError):
         self.retryable = retryable
 
 
+class LlmCompletionBoundaryError(LlmTransportError):
+    """A provider completion crossed a fail-closed live-play boundary.
+
+    ``length`` means the provider exhausted its output budget before producing
+    an accepted completion. ``timeout`` means the typed transport timeout
+    elapsed. Both are intentionally distinct from generic provider errors so
+    the match runner can terminate a live match with durable evidence instead
+    of silently selecting a deterministic action.
+    """
+
+    def __init__(
+        self,
+        reason_code: Literal["length", "timeout"],
+        *,
+        response: LlmResponse | None = None,
+        retryable: bool = False,
+    ) -> None:
+        self.reason_code = reason_code
+        self.response = response
+        message = (
+            "LLM completion reached the configured output limit"
+            if reason_code == "length"
+            else "LLM request timed out"
+        )
+        super().__init__(message, retryable=retryable)
+
+
 @runtime_checkable
 class ProtocolSecretResolver(Protocol):
     def resolve(self, reference: ModelSOSecretRef) -> str: ...
@@ -154,6 +181,8 @@ type LlmCompletionFailureReason = Literal[
     "invalid_response",
     "consumer_error",
     "abandoned",
+    "length",
+    "timeout",
 ]
 
 type LlmSemanticFailureCode = Literal[
@@ -232,6 +261,7 @@ class ProtocolPilotFactory(Protocol):
 
 
 __all__ = [
+    "LlmCompletionBoundaryError",
     "LlmCompletionFailureReason",
     "LlmResponse",
     "LlmSemanticFailureCode",

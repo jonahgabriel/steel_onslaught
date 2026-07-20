@@ -38,6 +38,7 @@ from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, Mo
 from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
 from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.schemas import (
+    LlmCompletionBoundaryError,
     LlmResponse,
     ModelSOLlmCompletionRequest,
     ModelSOLlmEvidenceContext,
@@ -288,9 +289,15 @@ class LLMProgrammingPilot:
                     request=repair_request,
                     consumer=lambda response: self._parse_response(response, observation),
                 )
+            except LlmCompletionBoundaryError:
+                raise
             except Exception:
                 pass
             raise exc
+        except LlmCompletionBoundaryError:
+            # Provider length/timeout boundaries are terminal live-match
+            # failures. Never convert them into a deterministic card plan.
+            raise
         except Exception as exc:
             _LOG.warning("LLM programming call failed (%s)", type(exc).__name__)
             if self._failure_policy == "fallback":

@@ -535,7 +535,7 @@ def test_llm_invalid_response_requires_semantic_failure_code(
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "reason_code",
-    ["provider_error", "consumer_error", "abandoned"],
+    ["provider_error", "consumer_error", "abandoned", "length", "timeout"],
 )
 def test_llm_non_invalid_response_forbids_semantic_failure_code(reason_code: str) -> None:
     sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]

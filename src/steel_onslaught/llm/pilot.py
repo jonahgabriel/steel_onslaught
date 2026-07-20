@@ -31,6 +31,7 @@ from steel_onslaught.immutable import FrozenJSONMapping, thaw_json_mapping
 from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
 from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.schemas import (
+    LlmCompletionBoundaryError,
     LlmResponse,
     ModelSOLlmCompletionRequest,
     ModelSOLlmEvidenceContext,
@@ -208,6 +209,10 @@ class LLMPilot:
                 ),
                 consumer=lambda response: self._parse_response(response, observation),
             )
+        except LlmCompletionBoundaryError:
+            # Provider length/timeout boundaries are terminal live-match
+            # failures. Never convert them into a deterministic REMAIN action.
+            raise
         except Exception as exc:
             _LOG.warning("LLM call failed (%s)", type(exc).__name__)
             if self._failure_policy == "raise":

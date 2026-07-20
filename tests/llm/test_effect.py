@@ -14,6 +14,7 @@ from steel_onslaught.llm.effect import (
     consume_llm_completion,
 )
 from steel_onslaught.llm.schemas import (
+    LlmCompletionBoundaryError,
     LlmResponse,
     LlmUsage,
     ModelSOLlmCompletionRequest,
@@ -190,6 +191,47 @@ def test_provider_failure_emits_sanitized_failed_terminal() -> None:
     assert events[-1].payload["reason_code"] == "provider_error"
     assert events[-1].payload["model"] is None
     assert "secret transport detail" not in events[-1].model_dump_json()
+
+
+@pytest.mark.unit
+def test_length_completion_emits_typed_failed_terminal() -> None:
+    class _LengthResponseClient:
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            return LlmResponse(
+                text='{"accepted":false}',
+                usage=LlmUsage(prompt_tokens=7, completion_tokens=3, cost_usd=None),
+                model="served-model",
+                finish_reason="length",
+            )
+
+    client, events = _observed(_LengthResponseClient())
+    with pytest.raises(LlmCompletionBoundaryError) as captured:
+        consume_llm_completion(client=client, request=_request(), consumer=lambda response: None)
+
+    assert captured.value.reason_code == "length"
+    _assert_chain(events, SOEventType.LLM_COMPLETION_FAILED)
+    failed = events[-1]
+    assert failed.payload["reason_code"] == "length"
+    assert failed.payload["finish_reason"] == "length"
+    assert SOEventType.LLM_COMPLETION_RESOLVED not in {event.event_type for event in events}
+
+
+@pytest.mark.unit
+def test_timeout_boundary_emits_typed_failed_terminal() -> None:
+    class _TimeoutClient:
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            raise LlmCompletionBoundaryError("timeout", retryable=True)
+
+    client, events = _observed(_TimeoutClient())
+    with pytest.raises(LlmCompletionBoundaryError) as captured:
+        consume_llm_completion(client=client, request=_request(), consumer=lambda response: None)
+
+    assert captured.value.reason_code == "timeout"
+    _assert_chain(events, SOEventType.LLM_COMPLETION_FAILED)
+    failed = events[-1]
+    assert failed.payload["reason_code"] == "timeout"
+    assert failed.payload["model"] is None
+    assert SOEventType.LLM_COMPLETION_RESOLVED not in {event.event_type for event in events}
 
 
 @pytest.mark.unit

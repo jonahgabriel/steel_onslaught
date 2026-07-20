@@ -384,6 +384,24 @@ describe("types parity against Python-emitted fixtures", () => {
     expect(parsed.payload.finish_reason).toBeNull();
   });
 
+  it.each(["length", "timeout"])("accepts terminal provider boundary %s", (reasonCode) => {
+    const parsed = parseEnvelope(
+      corruptPayload("llm_completion_failed", (payload) => {
+        payload["reason_code"] = reasonCode;
+        payload["semantic_failure_code"] = null;
+        payload["model"] = null;
+        payload["finish_reason"] = reasonCode === "length" ? "length" : null;
+        payload["prompt_tokens"] = null;
+        payload["completion_tokens"] = null;
+        payload["cost_usd"] = null;
+      }),
+    );
+    if (parsed.event_type !== "llm_completion_failed") {
+      throw new Error("wrong LLM failure event type");
+    }
+    expect(parsed.payload.reason_code).toBe(reasonCode);
+  });
+
   it("requires a semantic failure code exactly for invalid_response", () => {
     expect(() =>
       parseEnvelope(

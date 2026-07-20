@@ -86,6 +86,7 @@ from steel_onslaught.events.envelope import (
     SOEventType,
 )
 from steel_onslaught.llm.schemas import (
+    LlmCompletionBoundaryError,
     LlmTransportError,
     ModelSOOpenAIChatRequest,
     ModelSOOpenAIChatResponse,
@@ -185,7 +186,7 @@ class _UrllibJsonTransport:
             ) as response:
                 return ModelSOOpenAIChatResponse.model_validate_json(response.read())
         except TimeoutError:
-            raise LlmTransportError("LLM request timed out", retryable=True) from None
+            raise LlmCompletionBoundaryError("timeout", retryable=True) from None
         except HTTPError as exc:
             raise LlmTransportError(
                 f"LLM provider returned HTTP {exc.code}",

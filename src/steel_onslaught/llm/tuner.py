@@ -287,6 +287,7 @@ def tune_with_usage(
             client=client,
             request=request,
             consumer=accept,
+            allow_length_finish_reason=True,
         )
     except Exception as exc:
         _LOG.warning("LLM tuner call failed (%s)", type(exc).__name__)

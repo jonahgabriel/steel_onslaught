@@ -342,7 +342,13 @@ export type LlmSemanticFailureCode =
 
 export interface LlmCompletionFailedPayload {
   provider_id: string;
-  reason_code: "provider_error" | "invalid_response" | "consumer_error" | "abandoned";
+  reason_code:
+    | "provider_error"
+    | "invalid_response"
+    | "consumer_error"
+    | "abandoned"
+    | "length"
+    | "timeout";
   semantic_failure_code: LlmSemanticFailureCode | null;
   model: string | null;
   finish_reason: string | null;
@@ -2140,7 +2146,9 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       reason_code !== "provider_error" &&
       reason_code !== "invalid_response" &&
       reason_code !== "consumer_error" &&
-      reason_code !== "abandoned"
+      reason_code !== "abandoned" &&
+      reason_code !== "length" &&
+      reason_code !== "timeout"
     ) {
       fail(context, 'field "reason_code" is not a recognized LLM failure reason');
     }
