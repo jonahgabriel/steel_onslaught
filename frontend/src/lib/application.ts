@@ -75,6 +75,8 @@ export interface PublicHumanModelCatalogOption {
   readonly kind: "human";
   readonly option_id: string;
   readonly display_name: string;
+  /** Half of this option's seat identity; a local contract id, not a secret. */
+  readonly human_identity_id: string;
 }
 
 export interface PublicModelModelCatalogOption {
@@ -84,6 +86,8 @@ export interface PublicModelModelCatalogOption {
   readonly model_identity_id: string;
   readonly provider_binding_id: string;
   readonly provider_model: string;
+  /** The persona half of this option's (provider, persona) seat identity. */
+  readonly persona_id: string;
 }
 
 export type PublicModelCatalogOption =
@@ -363,7 +367,7 @@ function modelCatalog(value: unknown): ModelCatalogProjection {
       if (kind === "human") {
         exactKeys(
           candidate,
-          ["kind", "option_id", "display_name"],
+          ["kind", "option_id", "display_name", "human_identity_id"],
           `model_catalog.options[${index}]`,
         );
         return {
@@ -377,6 +381,11 @@ function modelCatalog(value: unknown): ModelCatalogProjection {
             candidate["display_name"],
             `model_catalog.options[${index}].display_name`,
           ),
+          human_identity_id: identifier(
+            candidate["human_identity_id"],
+            /^human_identity\.[a-z0-9][a-z0-9_.-]*$/,
+            `model_catalog.options[${index}].human_identity_id`,
+          ),
         };
       }
       if (kind === "model") {
@@ -389,6 +398,7 @@ function modelCatalog(value: unknown): ModelCatalogProjection {
             "model_identity_id",
             "provider_binding_id",
             "provider_model",
+            "persona_id",
           ],
           `model_catalog.options[${index}]`,
         );
@@ -416,6 +426,11 @@ function modelCatalog(value: unknown): ModelCatalogProjection {
           provider_model: providerModel(
             candidate["provider_model"],
             `model_catalog.options[${index}].provider_model`,
+          ),
+          persona_id: identifier(
+            candidate["persona_id"],
+            /^[a-z][a-z0-9_.-]*$/,
+            `model_catalog.options[${index}].persona_id`,
           ),
         };
       }

@@ -18,6 +18,53 @@ function bootstrap() {
   return parseFrontendBootstrap(raw);
 }
 
+const PERSONA_BY_IDENTITY: Record<string, { binding: string; model: string; persona: string }> = {
+  "model_identity.local": { binding: "qwen35", model: "Qwen3.6-35B-A3B", persona: "berserker" },
+  "model_identity.openrouter": {
+    binding: "openrouter",
+    model: "openrouter/free",
+    persona: "sniper",
+  },
+  "model_identity.glm": { binding: "glm-5.2", model: "glm-5.2", persona: "opportunist" },
+  "model_identity.gemini": { binding: "gemini", model: "gemini-2.5-flash", persona: "sniper" },
+};
+
+/**
+ * Project the fixture roster into a catalog projection whose model options
+ * carry provider + persona and whose human option carries its identity, i.e.
+ * exactly the shape the server now publishes.
+ */
+function configuredCatalog(
+  defaults: readonly [string, string] = [
+    "player_option.glm_model",
+    "player_option.openrouter_model",
+  ],
+): ModelCatalogProjection {
+  const roster = bootstrap().player_roster;
+  if (roster === null) throw new Error("fixture roster must be available");
+  return {
+    schema_version: "1",
+    kind: "steel_onslaught.model_catalog_projection",
+    catalog_id: "catalog.configured_models",
+    catalog_sha256: "c".repeat(64),
+    options: roster.options.map((option) => {
+      if (option.kind === "human") {
+        return { ...option, human_identity_id: "human_identity.local_operator" };
+      }
+      const provider = PERSONA_BY_IDENTITY[option.model_identity_id];
+      if (provider === undefined) throw new Error("fixture identity missing provider binding");
+      return {
+        ...option,
+        provider_binding_id: provider.binding,
+        provider_model: provider.model,
+        persona_id: provider.persona,
+      };
+    }),
+    default_option_ids: defaults,
+    mirror_match_mode: false,
+  };
+}
+
 afterEach(cleanup);
 
 describe("MatchSetup safe player intent", () => {
@@ -71,36 +118,9 @@ describe("MatchSetup safe player intent", () => {
   });
 
   it("uses the canonical catalog projection for provider labels and differentiated defaults", () => {
-    const initial = bootstrap();
-    if (initial.player_roster === null) throw new Error("fixture roster must be available");
-    const providerByIdentity: Record<string, { binding: string; model: string }> = {
-      "model_identity.local": { binding: "qwen35", model: "Qwen3.6-35B-A3B" },
-      "model_identity.openrouter": { binding: "openrouter", model: "openrouter/free" },
-      "model_identity.glm": { binding: "glm-5.2", model: "glm-5.2" },
-      "model_identity.gemini": { binding: "gemini", model: "gemini-2.5-flash" },
-    };
-    const modelCatalog: ModelCatalogProjection = {
-      schema_version: "1",
-      kind: "steel_onslaught.model_catalog_projection",
-      catalog_id: "catalog.configured_models",
-      catalog_sha256: "c".repeat(64),
-      options: initial.player_roster.options.map((option) => {
-        if (option.kind === "human") return option;
-        const provider = providerByIdentity[option.model_identity_id];
-        if (provider === undefined) throw new Error("fixture identity missing provider binding");
-        return {
-          ...option,
-          provider_binding_id: provider.binding,
-          provider_model: provider.model,
-        };
-      }),
-      default_option_ids: ["player_option.glm_model", "player_option.openrouter_model"],
-      mirror_match_mode: false,
-    };
-
     render(
       <MatchSetup
-        bootstrap={{ ...initial, model_catalog: modelCatalog }}
+        bootstrap={{ ...bootstrap(), model_catalog: configuredCatalog() }}
         capability={{ requestStart: vi.fn() }}
       />,
     );
@@ -111,8 +131,9 @@ describe("MatchSetup safe player intent", () => {
     expect((screen.getByLabelText("blue pilot") as HTMLSelectElement).value).toBe(
       "player_option.openrouter_model",
     );
-    expect(screen.getByLabelText("red pilot")).toHaveTextContent("glm-5.2/glm-5.2");
-    expect(screen.getByLabelText("blue pilot")).toHaveTextContent("openrouter/openrouter/free");
+    // Model identity AND persona are visible, not an opaque option id.
+    expect(screen.getByLabelText("red pilot")).toHaveTextContent("glm-5.2 / opportunist");
+    expect(screen.getByLabelText("blue pilot")).toHaveTextContent("openrouter / sniper");
   });
 
   it("uses explicit seat defaults instead of option names or ordering", () => {
@@ -140,6 +161,59 @@ describe("MatchSetup safe player intent", () => {
     expect((screen.getByLabelText("blue pilot") as HTMLSelectElement).value).toBe(
       "player_option.openrouter_model",
     );
+  });
+
+  it("rejects a mirror selection with a plain-language seat-identity conflict", () => {
+    const requestStart = vi.fn();
+    render(
+      <MatchSetup
+        bootstrap={{ ...bootstrap(), model_catalog: configuredCatalog() }}
+        capability={{ requestStart }}
+      />,
+    );
+    // Same provider AND same persona on both seats is a mirror. Each fixture
+    // identity has a distinct provider, so the mirror here is the same option
+    // on both seats — GLM/opportunist twice.
+    fireEvent.change(screen.getByLabelText("red pilot"), {
+      target: { value: "player_option.glm_model" },
+    });
+    fireEvent.change(screen.getByLabelText("blue pilot"), {
+      target: { value: "player_option.glm_model" },
+    });
+
+    const conflict = screen.getByTestId("seat-identity-conflict");
+    expect(conflict).toHaveTextContent("Both seats would be the same pilot");
+    expect(conflict.textContent ?? "").not.toMatch(
+      /unauthorized|forbidden|secret|token|credential/i,
+    );
+    const start = screen.getByRole("button", { name: "START MATCH" });
+    expect(start).toBeDisabled();
+    fireEvent.submit(screen.getByRole("form", { name: "Match setup" }));
+    expect(requestStart).not.toHaveBeenCalled();
+  });
+
+  it("admits the same persona across two different models with no conflict", () => {
+    const requestStart = vi.fn();
+    render(
+      <MatchSetup
+        bootstrap={{ ...bootstrap(), model_catalog: configuredCatalog() }}
+        capability={{ requestStart }}
+      />,
+    );
+    // openrouter/sniper vs gemini/sniper: one persona, two different models —
+    // the cleanest model-vs-model contest, and explicitly legal.
+    fireEvent.change(screen.getByLabelText("red pilot"), {
+      target: { value: "player_option.openrouter_model" },
+    });
+    fireEvent.change(screen.getByLabelText("blue pilot"), {
+      target: { value: "player_option.gemini_model" },
+    });
+
+    expect(screen.queryByTestId("seat-identity-conflict")).not.toBeInTheDocument();
+    const start = screen.getByRole("button", { name: "START MATCH" });
+    expect(start).toBeEnabled();
+    fireEvent.click(start);
+    expect(requestStart).toHaveBeenCalledTimes(1);
   });
 
   it("leaves legacy projections without defaults empty and start-disabled", () => {

@@ -12,11 +12,12 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Literal, Self
+from typing import Annotated, Final, Literal, NamedTuple, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, StringConstraints, model_validator
 
 from steel_onslaught.contracts.player_selection import (
+    HumanIdentityId,
     LoadoutId,
     ModelIdentityId,
     ModelSOHumanPlayerOptionBinding,
@@ -45,6 +46,63 @@ CatalogSourceId = Annotated[
     StrictStr,
     StringConstraints(pattern=r"^catalog_source\.[a-z0-9][a-z0-9_.-]*$"),
 ]
+# A programmer source is the provider binding behind a model option or the
+# human identity behind a human option.  Both already share this shape, so one
+# constrained alias keeps the seat-identity pair closed without widening either
+# side to a free string.
+ProgrammerSourceId = Annotated[StrictStr, StringConstraints(pattern=r"^[a-z][a-z0-9_.-]*$")]
+
+HUMAN_ROLE_ID: Final = "human"
+
+
+class CatalogSeatIdentity(NamedTuple):
+    """The two facts that make one catalog option its own decision-maker.
+
+    This mirrors ``match.composition.SeatProgrammerIdentity`` — the runtime
+    check that actually fails a live mirror closed — so the catalog and the
+    runtime cannot disagree about what a mirror is.  Persona alone is *not*
+    the identity: the same persona driven by two different models is the
+    cleanest model-vs-model contest there is.  The same persona on the same
+    provider, on both seats, is a mirror.
+    """
+
+    programmer_source_id: str
+    role_id: str
+
+
+class CatalogSeatIdentityError(ValueError):
+    """Both seats resolved to one decision-maker, so the pairing is a mirror.
+
+    Kept as its own type — and carrying the same ``error_code`` the browser
+    transport reports for the runtime seat-identity failure — so a rejected
+    pairing is never surfaced to an operator as an authorization or provider
+    error.  ``ValueError`` remains the base so existing closed-contract
+    callers keep their fail-closed behaviour.
+    """
+
+    error_code: Final = "seat_identity_conflict"
+
+    def __init__(
+        self, message: str, *, red: CatalogSeatIdentity, blue: CatalogSeatIdentity
+    ) -> None:
+        super().__init__(message)
+        self.red = red
+        self.blue = blue
+
+
+def describe_seat_identity_conflict(*, red: CatalogSeatIdentity, blue: CatalogSeatIdentity) -> str:
+    """Render the mirror rejection in words an operator can act on."""
+
+    if red.role_id == HUMAN_ROLE_ID and blue.role_id == HUMAN_ROLE_ID:
+        return (
+            "Both seats are the same human operator "
+            f"({red.programmer_source_id}). Pick a model for one seat."
+        )
+    return (
+        f"Both seats would be the same pilot: {red.role_id} on {red.programmer_source_id}. "
+        "Change the model or the persona on one seat — the same persona on two "
+        "different models is allowed."
+    )
 
 
 class ModelSOModelCatalogHumanOption(_ClosedCatalogModel):
@@ -103,18 +161,35 @@ CatalogOptionBinding = Annotated[
 
 
 class ModelSOPublicModelCatalogHumanOption(_ClosedCatalogModel):
+    """Secret-free human option.
+
+    ``human_identity_id`` is published because it is half of this option's seat
+    identity: without it a browser cannot tell that two differently-named human
+    options are the same operator, and it would offer a mirror the server will
+    reject.  It is a local contract id, never a credential.
+    """
+
     kind: Literal["human"]
     option_id: PlayerOptionId
     display_name: StrictStr = Field(min_length=1, max_length=80)
+    human_identity_id: HumanIdentityId
 
 
 class ModelSOPublicModelCatalogModelOption(_ClosedCatalogModel):
+    """Secret-free model option carrying the full identity an operator picks by.
+
+    ``persona_id`` is published for the same reason as ``human_identity_id``
+    above: model identity alone cannot distinguish "Qwen35 / sniper" from
+    "Qwen35 / berserker", and it is the other half of the seat-identity pair.
+    """
+
     kind: Literal["model"]
     option_id: PlayerOptionId
     display_name: StrictStr = Field(min_length=1, max_length=80)
     model_identity_id: ModelIdentityId
     provider_binding_id: ProviderBindingId
     provider_model: StrictStr = Field(min_length=1, max_length=160)
+    persona_id: PersonaId
 
 
 PublicModelCatalogOption = Annotated[
@@ -153,6 +228,8 @@ class ModelSOModelCatalogPairingProvenance(_ClosedCatalogModel):
     blue_option_id: PlayerOptionId
     red_role_id: StrictStr = Field(min_length=1, max_length=96)
     blue_role_id: StrictStr = Field(min_length=1, max_length=96)
+    red_programmer_source_id: ProgrammerSourceId
+    blue_programmer_source_id: ProgrammerSourceId
     red_loadout_id: StrictStr = Field(
         min_length=1,
         max_length=96,
@@ -176,18 +253,38 @@ class ModelSOModelCatalogPairingProvenance(_ClosedCatalogModel):
     mirror_match_mode: bool = False
     pairing_sha256: Sha256Digest
 
+    @property
+    def red_seat_identity(self) -> CatalogSeatIdentity:
+        return CatalogSeatIdentity(self.red_programmer_source_id, self.red_role_id)
+
+    @property
+    def blue_seat_identity(self) -> CatalogSeatIdentity:
+        return CatalogSeatIdentity(self.blue_programmer_source_id, self.blue_role_id)
+
     @model_validator(mode="after")
     def _pairing_is_distinct_without_mirror_mode(self) -> Self:
+        """Reject only a true mirror: one option, or one seat identity, twice.
+
+        Role alone is deliberately NOT the rejection key.  Sniper-vs-sniper
+        across two different providers is a legal — and the most informative —
+        model-vs-model contest, so it is admitted here exactly as the runtime
+        seat-identity check admits it.
+
+        Loadout and chassis symmetry are also deliberately *not* mirror
+        conditions any more.  They were, while the catalog shipped one curated
+        pairing; with every configured option offered to both seats they reject
+        legitimate pairings (a human option and the model option that shares its
+        source loadout), and two identical mechs flown by two different models
+        is a controlled comparison rather than a mirror.  The declaration that
+        a catalog's two chassis differ is still enforced on the catalog itself.
+        """
+
         if self.mirror_match_mode:
             return self
         if self.red_option_id == self.blue_option_id:
             raise ValueError("duplicate default option requires mirror_match_mode")
-        if self.red_role_id == self.blue_role_id:
-            raise ValueError("duplicate default role requires mirror_match_mode")
-        if self.red_loadout_id == self.blue_loadout_id:
-            raise ValueError("duplicate default loadout requires mirror_match_mode")
-        if self.red_chassis_id == self.blue_chassis_id:
-            raise ValueError("duplicate default chassis requires mirror_match_mode")
+        if self.red_seat_identity == self.blue_seat_identity:
+            raise ValueError("duplicate default seat identity requires mirror_match_mode")
         return self
 
 
@@ -314,6 +411,59 @@ class ModelSOModelCatalogSourceBinding(_ClosedCatalogModel):
         return self
 
 
+class ModelSOCatalogSeatPolicy(_ClosedCatalogModel):
+    """Index-level seat policy whose allow-list defaults to every option.
+
+    ``allowed_option_ids`` is still a real, enforced mechanism — the command
+    authority rejects any selection outside the materialized list, and a
+    deployment that must fence a seat can still name a subset.  What changed is
+    the default: omitting it declares "this seat may pick any configured
+    option", which is the shipped posture.  Curating the list by hand was the
+    reason a newly configured model silently failed to appear in a seat's
+    dropdown (or made the whole catalog invalid as an unreachable option).
+    """
+
+    side: Side
+    loadout_id: LoadoutId
+    allowed_option_ids: tuple[PlayerOptionId, ...] | None = None
+    default_option_id: PlayerOptionId | None = None
+    option_loadouts: tuple[ModelSOSeatOptionLoadoutBinding, ...] = ()
+
+    @model_validator(mode="after")
+    def _declared_allow_list_is_usable(self) -> Self:
+        if self.allowed_option_ids is None:
+            return self
+        if not self.allowed_option_ids:
+            raise ValueError("an explicit allowed_option_ids must name at least one option")
+        if len(self.allowed_option_ids) != len(set(self.allowed_option_ids)):
+            raise ValueError("allowed_option_ids must be unique")
+        return self
+
+    def materialize(self, catalog_option_ids: Sequence[PlayerOptionId]) -> ModelSOSeatLaunchPolicy:
+        """Expand into the fully explicit runtime seat policy.
+
+        The runtime contract stays closed and explicit: the merged catalog and
+        its projected roster always carry a literal option list, so nothing
+        downstream has to interpret ``None``.
+        """
+
+        allowed = (
+            tuple(catalog_option_ids)
+            if self.allowed_option_ids is None
+            else self.allowed_option_ids
+        )
+        return ModelSOSeatLaunchPolicy(
+            side=self.side,
+            loadout_id=self.loadout_id,
+            allowed_option_ids=allowed,
+            default_option_id=self.default_option_id,
+            option_loadouts=self.option_loadouts,
+        )
+
+
+CatalogSeatPolicySpec = ModelSOSeatLaunchPolicy | ModelSOCatalogSeatPolicy
+
+
 class ModelSOModelCatalogIndex(_ClosedCatalogModel):
     """Declarative index of the exact overlay/roster sources to merge."""
 
@@ -322,7 +472,7 @@ class ModelSOModelCatalogIndex(_ClosedCatalogModel):
     catalog_id: CatalogId
     roster_id: RosterId
     sources: tuple[ModelSOModelCatalogSourceBinding, ...] = Field(min_length=1)
-    seats: tuple[ModelSOSeatLaunchPolicy, ModelSOSeatLaunchPolicy]
+    seats: tuple[ModelSOCatalogSeatPolicy, ModelSOCatalogSeatPolicy]
     default_chassis_ids: tuple[
         Annotated[StrictStr, StringConstraints(pattern=r"^chassis\.[a-z0-9][a-z0-9_.-]*$")],
         Annotated[StrictStr, StringConstraints(pattern=r"^chassis\.[a-z0-9][a-z0-9_.-]*$")],
@@ -387,27 +537,41 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             assert defaults[0] is not None and defaults[1] is not None
             if defaults[0] == defaults[1]:
                 raise ValueError("duplicate default option requires mirror_match_mode")
-            roles = tuple(
-                self._role_for_option(
-                    next(option for option in self.options if option.option_id == default)
-                )
-                for default in defaults
+            red_default, blue_default = defaults[0], defaults[1]
+            identities = (
+                self._seat_identity_for_option(self._option_for_id(red_default)),
+                self._seat_identity_for_option(self._option_for_id(blue_default)),
             )
-            if roles[0] == roles[1]:
-                raise ValueError("duplicate default role requires mirror_match_mode")
-            default_loadouts = (
-                self.seats[0].loadout_for_option(defaults[0]),
-                self.seats[1].loadout_for_option(defaults[1]),
-            )
-            if default_loadouts[0] == default_loadouts[1]:
-                raise ValueError("duplicate default loadout requires mirror_match_mode")
+            if identities[0] == identities[1]:
+                raise ValueError("duplicate default seat identity requires mirror_match_mode")
+            # Both defaults must resolve to a declared loadout; a catalog that
+            # cannot seat its own defaults is invalid regardless of symmetry.
+            self.seats[0].loadout_for_option(defaults[0])
+            self.seats[1].loadout_for_option(defaults[1])
             if self.default_chassis_ids[0] == self.default_chassis_ids[1]:
                 raise ValueError("duplicate default chassis requires mirror_match_mode")
         return self
 
     @staticmethod
     def _role_for_option(option: CatalogOptionBinding) -> str:
-        return "human" if isinstance(option, ModelSOModelCatalogHumanOption) else option.persona_id
+        return (
+            HUMAN_ROLE_ID
+            if isinstance(option, ModelSOModelCatalogHumanOption)
+            else option.persona_id
+        )
+
+    @staticmethod
+    def _seat_identity_for_option(option: CatalogOptionBinding) -> CatalogSeatIdentity:
+        """Return the ``(programmer source, role)`` identity of one option.
+
+        A human option's decision-maker is the human identity behind it, so two
+        differently-named options for the same operator are one identity.  A
+        model option's decision-maker is its provider binding plus its persona.
+        """
+
+        if isinstance(option, ModelSOModelCatalogHumanOption):
+            return CatalogSeatIdentity(option.human_identity_id, HUMAN_ROLE_ID)
+        return CatalogSeatIdentity(option.provider_binding_id, option.persona_id)
 
     def _option_for_id(self, option_id: PlayerOptionId) -> CatalogOptionBinding:
         option = next((option for option in self.options if option.option_id == option_id), None)
@@ -428,8 +592,10 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             raise ValueError(f"option {red_option_id!r} is not allowed for red seat")
         if blue_option_id not in blue_seat.allowed_option_ids:
             raise ValueError(f"option {blue_option_id!r} is not allowed for blue seat")
-        red_role = self._role_for_option(self._option_for_id(red_option_id))
-        blue_role = self._role_for_option(self._option_for_id(blue_option_id))
+        red_identity = self._seat_identity_for_option(self._option_for_id(red_option_id))
+        blue_identity = self._seat_identity_for_option(self._option_for_id(blue_option_id))
+        red_role = red_identity.role_id
+        blue_role = blue_identity.role_id
         red_loadout_id = red_seat.loadout_for_option(red_option_id)
         blue_loadout_id = blue_seat.loadout_for_option(blue_option_id)
         pairing_fields = {
@@ -441,21 +607,23 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             "blue_option_id": blue_option_id,
             "red_role_id": red_role,
             "blue_role_id": blue_role,
+            "red_programmer_source_id": red_identity.programmer_source_id,
+            "blue_programmer_source_id": blue_identity.programmer_source_id,
             "red_loadout_id": red_loadout_id,
             "blue_loadout_id": blue_loadout_id,
             "red_chassis_id": self.default_chassis_ids[0],
             "blue_chassis_id": self.default_chassis_ids[1],
             "mirror_match_mode": self.mirror_match_mode,
         }
-        if not self.mirror_match_mode:
-            if red_option_id == blue_option_id:
-                raise ValueError("duplicate selected option requires mirror_match_mode")
-            if red_role == blue_role:
-                raise ValueError("duplicate selected role requires mirror_match_mode")
-            if red_loadout_id == blue_loadout_id:
-                raise ValueError("duplicate selected loadout requires mirror_match_mode")
-            if self.default_chassis_ids[0] == self.default_chassis_ids[1]:
-                raise ValueError("duplicate selected chassis requires mirror_match_mode")
+        if not self.mirror_match_mode and red_identity == blue_identity:
+            # One typed failure covers both "the same option twice" and "two
+            # different options that are the same decision-maker", because the
+            # operator-visible fact is identical in both cases.
+            raise CatalogSeatIdentityError(
+                describe_seat_identity_conflict(red=red_identity, blue=blue_identity),
+                red=red_identity,
+                blue=blue_identity,
+            )
         pairing_sha256 = hashlib.sha256(
             json.dumps(pairing_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -468,6 +636,8 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
             blue_option_id=blue_option_id,
             red_role_id=red_role,
             blue_role_id=blue_role,
+            red_programmer_source_id=red_identity.programmer_source_id,
+            blue_programmer_source_id=blue_identity.programmer_source_id,
             red_loadout_id=red_loadout_id,
             blue_loadout_id=blue_loadout_id,
             red_chassis_id=self.default_chassis_ids[0],
@@ -543,6 +713,7 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
                         kind="human",
                         option_id=option.option_id,
                         display_name=option.display_name,
+                        human_identity_id=option.human_identity_id,
                     )
                 )
             else:
@@ -554,6 +725,7 @@ class ModelSOModelCatalog(_ClosedCatalogModel):
                         model_identity_id=option.model_identity_id,
                         provider_binding_id=option.provider_binding_id,
                         provider_model=option.provider_model,
+                        persona_id=option.persona_id,
                     )
                 )
         return ModelSOModelCatalogProjection(
@@ -686,7 +858,24 @@ def model_catalog_source_from_roster(
         }
         for seat in roster.seats
     }
+
+    def declared_loadouts(option_id: PlayerOptionId) -> tuple[LoadoutId | None, LoadoutId | None]:
+        """Return this option's ``(red, blue)`` loadouts from its source roster.
+
+        A source roster that binds an option to only one of its seats still
+        declares that option's loadout exactly once.  The catalog offers every
+        configured option to both seats, so that single declared loadout is the
+        one used by whichever seat selects it.  Nothing is inferred from a name
+        and no loadout is invented: if the source roster declared none for
+        either seat, both stay ``None`` and the seat's own loadout applies.
+        """
+
+        red = seat_loadouts["red"].get(option_id)
+        blue = seat_loadouts["blue"].get(option_id)
+        return (red if red is not None else blue, blue if blue is not None else red)
+
     for option in roster.options:
+        red_loadout_id, blue_loadout_id = declared_loadouts(option.option_id)
         catalog_option_id = mapping[option.option_id]
         if isinstance(option, ModelSOHumanPlayerOptionBinding):
             catalog_options.append(
@@ -701,8 +890,8 @@ def model_catalog_source_from_roster(
                     source_overlay_sha256=overlay_sha256,
                     source_roster_id=roster.roster_id,
                     source_roster_sha256=roster_sha256,
-                    red_loadout_id=seat_loadouts["red"].get(option.option_id),
-                    blue_loadout_id=seat_loadouts["blue"].get(option.option_id),
+                    red_loadout_id=red_loadout_id,
+                    blue_loadout_id=blue_loadout_id,
                 )
             )
             continue
@@ -732,8 +921,8 @@ def model_catalog_source_from_roster(
                 source_overlay_sha256=overlay_sha256,
                 source_roster_id=roster.roster_id,
                 source_roster_sha256=roster_sha256,
-                red_loadout_id=seat_loadouts["red"].get(option.option_id),
-                blue_loadout_id=seat_loadouts["blue"].get(option.option_id),
+                red_loadout_id=red_loadout_id,
+                blue_loadout_id=blue_loadout_id,
             )
         )
     return ModelSOModelCatalogSource(
@@ -750,20 +939,32 @@ def build_model_catalog(
     catalog_id: CatalogId,
     roster_id: RosterId,
     sources: Sequence[ModelSOModelCatalogSource],
-    seats: tuple[ModelSOSeatLaunchPolicy, ModelSOSeatLaunchPolicy],
+    seats: tuple[CatalogSeatPolicySpec, CatalogSeatPolicySpec],
     default_chassis_ids: tuple[str, str],
     mirror_match_mode: bool = False,
     resolve_option_loadouts: bool = False,
 ) -> ModelSOModelCatalog:
-    """Merge explicitly declared sources into one canonical catalog."""
+    """Merge explicitly declared sources into one canonical catalog.
+
+    An index seat that omits ``allowed_option_ids`` is materialized here into
+    the explicit list of every merged catalog option, in source declaration
+    order, so the built catalog is always fully explicit.
+    """
 
     if not sources:
         raise ValueError("model catalog requires at least one explicit source")
     options = tuple(option for source in sources for option in source.options)
     option_by_id = {option.option_id: option for option in options}
+    catalog_option_ids = tuple(option.option_id for option in options)
+    declared_seats = tuple(
+        seat if isinstance(seat, ModelSOSeatLaunchPolicy) else seat.materialize(catalog_option_ids)
+        for seat in seats
+    )
     resolved_seats: list[ModelSOSeatLaunchPolicy] = []
-    for seat in seats:
-        if not resolve_option_loadouts:
+    for seat in declared_seats:
+        # An index that spells its own per-option loadouts out stays
+        # authoritative; resolution only fills a seat that declared none.
+        if not resolve_option_loadouts or seat.option_loadouts:
             resolved_seats.append(seat)
             continue
         option_loadouts: list[ModelSOSeatOptionLoadoutBinding] = []
@@ -797,9 +998,14 @@ def build_model_catalog(
 
 
 __all__ = [
+    "HUMAN_ROLE_ID",
     "CatalogId",
     "CatalogOptionBinding",
+    "CatalogSeatIdentity",
+    "CatalogSeatIdentityError",
+    "CatalogSeatPolicySpec",
     "CatalogSourceId",
+    "ModelSOCatalogSeatPolicy",
     "ModelSOModelCatalog",
     "ModelSOModelCatalogHumanOption",
     "ModelSOModelCatalogIndex",
@@ -813,7 +1019,9 @@ __all__ = [
     "ModelSOPublicModelCatalogHumanOption",
     "ModelSOPublicModelCatalogModelOption",
     "OverlayId",
+    "ProgrammerSourceId",
     "PublicModelCatalogOption",
     "build_model_catalog",
+    "describe_seat_identity_conflict",
     "model_catalog_source_from_roster",
 ]

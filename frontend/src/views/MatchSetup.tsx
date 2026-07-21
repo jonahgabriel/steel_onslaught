@@ -83,10 +83,51 @@ type PickerOption = PublicPlayerOption | PublicModelCatalogOption;
 
 function optionLabel(option: PickerOption): string {
   if (option.kind === "human") return `${option.display_name} · HUMAN`;
-  if ("provider_binding_id" in option) {
-    return `${option.display_name} · ${option.provider_binding_id}/${option.provider_model}`;
+  // A catalog projection carries the persona, so an operator can tell
+  // "Qwen35 / sniper" from "Qwen35 / berserker" instead of reading an opaque
+  // option id.  The roster-only projection has no persona, so it falls back to
+  // the model identity it does carry.
+  if ("persona_id" in option) {
+    return `${option.display_name} · ${option.provider_binding_id} / ${option.persona_id}`;
   }
   return `${option.display_name} · ${option.model_identity_id}`;
+}
+
+/**
+ * The (decision-maker, role) pair the server enforces seat identity on.
+ *
+ * A model option's decision-maker is its provider binding plus its persona; a
+ * human option's is the operator behind it.  Two seats that resolve to the same
+ * pair are a mirror — the server rejects it — while the same persona on two
+ * different models is a legal, and the most informative, contest.  Only the
+ * catalog projection carries the fields to compute this; a roster-only
+ * projection falls back to option identity so the client never over-blocks a
+ * pairing the server would actually admit.
+ */
+function seatIdentity(option: PickerOption): string {
+  if (option.kind === "human") {
+    return "human_identity_id" in option
+      ? `human:${option.human_identity_id}`
+      : `option:${option.option_id}`;
+  }
+  if ("persona_id" in option) {
+    return `model:${option.provider_binding_id}:${option.persona_id}`;
+  }
+  return `option:${option.option_id}`;
+}
+
+function mirrorConflictMessage(red: PickerOption, blue: PickerOption): string | null {
+  if (seatIdentity(red) !== seatIdentity(blue)) return null;
+  if (red.kind === "human" && blue.kind === "human") {
+    return "Both seats are the same operator. Pick a model for one seat.";
+  }
+  const shared =
+    "persona_id" in red ? `${red.provider_binding_id} / ${red.persona_id}` : red.display_name;
+  return (
+    `Both seats would be the same pilot (${shared}). ` +
+    "Change the model or the persona on one seat — the same persona on two " +
+    "different models is allowed."
+  );
 }
 
 function PlayerSelect({
@@ -158,19 +199,41 @@ export default function MatchSetup({
 
   const redOptions = optionsFor(roster, "red", catalog);
   const blueOptions = optionsFor(roster, "blue", catalog);
-  const redSelectionAllowed = redOptions.some((option) => option.option_id === redOptionId);
-  const blueSelectionAllowed = blueOptions.some((option) => option.option_id === blueOptionId);
+  const redOption = redOptions.find((option) => option.option_id === redOptionId);
+  const blueOption = blueOptions.find((option) => option.option_id === blueOptionId);
+  const redSelectionAllowed = redOption !== undefined;
+  const blueSelectionAllowed = blueOption !== undefined;
+  // A mirror is the one legal-looking pairing the server still rejects, so the
+  // client explains it up front rather than surfacing the rejection as a
+  // generic failure after a round trip. This is only computed against the
+  // catalog projection, which carries the (provider, persona) identity the
+  // server enforces; a roster-only projection cannot see that identity, so the
+  // client defers to the server there rather than guessing from option ids.
+  const conflictMessage =
+    catalog !== null && redOption !== undefined && blueOption !== undefined
+      ? mirrorConflictMessage(redOption, blueOption)
+      : null;
   const rosterId = roster.roster_id;
   const rosterSha256 = roster.roster_sha256;
   const gatewayEnabled = capability?.enabled !== false;
   const status = gatewayStatus ?? capability?.status;
   const starting = status === "pending" || status === "accepted";
   const ready =
-    redSelectionAllowed && blueSelectionAllowed && capability !== undefined && gatewayEnabled;
+    redSelectionAllowed &&
+    blueSelectionAllowed &&
+    conflictMessage === null &&
+    capability !== undefined &&
+    gatewayEnabled;
 
   function submit(event: React.FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    if (!redSelectionAllowed || !blueSelectionAllowed || capability === undefined) return;
+    if (
+      !redSelectionAllowed ||
+      !blueSelectionAllowed ||
+      conflictMessage !== null ||
+      capability === undefined
+    )
+      return;
     capability.requestStart({
       expected_overlay_sha256: bootstrap.overlay_sha256,
       roster_id: rosterId,
@@ -204,6 +267,11 @@ export default function MatchSetup({
               onChange={setBlueOptionId}
             />
           </div>
+          {conflictMessage !== null ? (
+            <p className="so-setup-conflict" role="alert" data-testid="seat-identity-conflict">
+              {conflictMessage}
+            </p>
+          ) : null}
           {pendingPromptEdits.length > 0 ? (
             <p className="so-pending-prompt-edits" data-testid="pending-prompt-edits">
               {pendingPromptEdits.length} prompt edit
