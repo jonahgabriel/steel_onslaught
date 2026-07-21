@@ -639,16 +639,41 @@ class BrowserPlayServer:
                     ),
                 )
             )
-            for event in history:
-                queue.put_nowait(event.model_dump_json())
             # A launch may finish before this receive-only socket completes its
-            # handshake. Its retained prefix is consumed by this first late
-            # subscriber and then discarded, preserving refresh-as-readiness.
-            if self._late_replay_pending and self._session is None:
-                self._late_replay_pending = False
-                self._late_replay_match_id = None
-                self._event_history.clear()
-                self._event_history_ids.clear()
+            # handshake.  Do not consume the retained prefix until every frame
+            # has successfully been handed to the socket.  The previous
+            # implementation cleared the shared history immediately after
+            # queueing it; a socket that disconnected during that hand-off
+            # therefore lost MATCH_STARTED and every subsequent refresh was
+            # unrecoverable.  Late replay runs under the admission lock so a
+            # new match cannot replace the retained prefix midway through it.
+            late_replay_match_id = (
+                self._late_replay_match_id
+                if self._late_replay_pending and self._session is None
+                else None
+            )
+            if late_replay_match_id is not None:
+                async with self._start_lock:
+                    if (
+                        self._late_replay_pending
+                        and self._late_replay_match_id == late_replay_match_id
+                        and self._session is None
+                    ):
+                        try:
+                            for event in history:
+                                await connection.send(event.model_dump_json())
+                        except Exception:
+                            # Keep the one-shot token and history intact.  A
+                            # reconnect can retry the complete prefix rather
+                            # than receiving a partial, non-canonical stream.
+                            return
+                        self._late_replay_pending = False
+                        self._late_replay_match_id = None
+                        self._event_history.clear()
+                        self._event_history_ids.clear()
+            else:
+                for event in history:
+                    queue.put_nowait(event.model_dump_json())
             async for _frame in connection:
                 await connection.close(code=1008, reason="event stream is receive-only")
                 break

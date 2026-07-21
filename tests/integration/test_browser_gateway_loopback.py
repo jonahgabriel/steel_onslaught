@@ -571,6 +571,84 @@ async def test_late_event_socket_gets_one_shot_prefix_after_admitted_fast_match(
         await server.stop()
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_failed_late_event_socket_does_not_consume_retained_prefix() -> None:
+    """A failed first replay leaves MATCH_STARTED available for reconnect."""
+    import asyncio
+    import json
+
+    class FakeConnection:
+        def __init__(self, *, fail_send: bool) -> None:
+            self.fail_send = fail_send
+            self.frames: list[str] = []
+
+        async def send(self, frame: str) -> None:
+            if self.fail_send:
+                raise OSError("socket closed before replay delivery")
+            self.frames.append(frame)
+
+        async def close(self, **_: object) -> None:
+            return None
+
+        def __aiter__(self) -> FakeConnection:
+            return self
+
+        async def __anext__(self) -> str:
+            await asyncio.Future()
+            raise StopAsyncIteration
+
+    fixture = Path(__file__).parents[2] / "frontend/src/__tests__/fixtures/match_started.json"
+    started = ModelSOEventEnvelope.model_validate_json(
+        fixture.read_text(encoding="utf-8")
+    ).model_copy(update={"match_id": _MATCH_ID})
+    terminal = started.model_copy(
+        update={
+            "event_id": ulid.new().str,
+            "event_type": SOEventType.MATCH_ENDED,
+            "tick": 1,
+            "sequence_in_tick": 0,
+            "payload": {"reason": "aborted", "winner_id": None},
+            "envelope": started.envelope.model_copy(update={"message_id": uuid4()}),
+        }
+    )
+    server = BrowserPlayServer(
+        bootstrap=_bootstrap(),
+        gateway=None,
+        bus=None,
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+    )
+    server._loop = asyncio.get_running_loop()
+    server._late_replay_match_id = _MATCH_ID
+    server._late_replay_pending = True
+    server._event_history = [started, terminal]
+    server._event_history_ids = {started.event_id, terminal.event_id}
+    try:
+        failed = FakeConnection(fail_send=True)
+        await server._handle_event_client(failed)  # type: ignore[arg-type]
+        assert server._late_replay_pending is True
+        assert [event.event_type for event in server._event_history] == [
+            SOEventType.MATCH_STARTED,
+            SOEventType.MATCH_ENDED,
+        ]
+
+        recovered = FakeConnection(fail_send=False)
+        task = asyncio.create_task(server._handle_event_client(recovered))  # type: ignore[arg-type]
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert [json.loads(frame)["event_type"] for frame in recovered.frames] == [
+            "match_started",
+            "match_ended",
+        ]
+        assert server._late_replay_pending is False
+        assert server._event_history == []
+    finally:
+        server._loop = None
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_event_socket_serializes_same_tick_frames_in_canonical_order() -> None:
