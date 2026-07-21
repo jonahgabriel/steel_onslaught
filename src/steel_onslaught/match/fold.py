@@ -605,14 +605,35 @@ class MatchStateFold:
         *,
         field: Literal["alive", "pilot_alive"],
     ) -> None:
-        """Fold MECH_DESTROYED / PILOT_KILLED; declare victory on the 2->1 transition.
+        """Fold MECH_DESTROYED / PILOT_KILLED and declare the resulting terminal.
 
-        Defense-in-depth: the failure cascade (``ReducerFailureCascade._maybe_declare_victory``
-        in ``reducers/failure.py``) declares victory on the same transition.  This
-        fold-level declaration is the backstop that fires even on a MECH_DESTROYED
-        emitted outside the cascade (e.g. a direct weapon kill).  Both are guarded
-        to the >1 -> ==1 transition so they don't duplicate.  The paired
-        redundancy is intentional — see ``tests/match/test_fold_victory_backstop.py``.
+        Two survivor transitions are terminal, not one:
+          - ``>1 -> ==1``: ``VICTORY_DECLARED`` for the last player standing;
+          - ``>=1 -> ==0``: ``MATCH_ENDED(draw_mutual_destruction)``.  Without
+            the second branch a tick that kills every remaining mech left the
+            match RUNNING with zero survivors, and the runner published empty
+            ticks until an external guard aborted it.
+
+        A simultaneous kill reaches the fold as two ORDERED ``MECH_DESTROYED``
+        events, so the survivor count walks ``2 -> 1 -> 0`` rather than
+        jumping straight to zero — which is why the draw branch keys on the
+        resulting empty set, not on a ``>1`` predecessor.  For the same reason
+        the ``==1`` branch would otherwise declare a false victory for a mech
+        whose own destruction is still in flight; ``hp == 0`` is the
+        un-forgeable marker of that in-flight destruction (every
+        ``DAMAGE_APPLIED`` that zeroes hp is always followed by the matching
+        ``MECH_DESTROYED``), so a lone "survivor" at zero hp defers the
+        declaration to its own destruction event, which then takes the
+        ``==0`` branch.
+
+        Defense-in-depth: the failure cascade
+        (``ReducerFailureCascade._maybe_declare_terminal`` in
+        ``reducers/failure.py``) declares the same terminals on the same
+        transitions.  This fold-level declaration is the backstop that fires
+        even on a ``MECH_DESTROYED`` emitted outside the cascade (e.g. a direct
+        weapon kill).  Both are guarded to the transition so they don't
+        duplicate.  The paired redundancy is intentional — see
+        ``tests/match/test_fold_victory_backstop.py``.
         """
         mech = self._mech_states.get(event.subject.mech_id)
         if mech is None:
@@ -626,25 +647,52 @@ class MatchStateFold:
             **self._mech_states,
             mech.mech_id: mech.model_copy(update={field: False}),
         }
-        survivors_after = self.state.surviving_player_ids()
+        composite = self.state
+        survivors_after = composite.surviving_player_ids()
 
-        if len(survivors_before) > 1 and len(survivors_after) == 1:
-            winner = next(iter(survivors_after))
+        if self._lifecycle.state.status is not SOMatchStatus.RUNNING:
+            return  # a terminal is already recorded; never re-declare one
+        if not survivors_before:
+            return
+        if not survivors_after:
             self._emit(
                 self._events.make(
                     match_id=self._match_id,
                     correlation_id=self._correlation_id,
                     tick=event.tick,
                     sequence_in_tick=0,  # bus re-stamps
-                    event_type=SOEventType.VICTORY_DECLARED,
+                    event_type=SOEventType.MATCH_ENDED,
                     producer_node=_PRODUCER_NODE,
                     subject=_MATCH_SUBJECT,
                     payload={
-                        "winner_player_id": winner,
-                        "reason": SOMatchEndReason.LAST_MECH_STANDING.value,
+                        "reason": SOMatchEndReason.DRAW_MUTUAL_DESTRUCTION.value,
+                        "winner_id": None,
                     },
                 )
             )
+            return
+        if len(survivors_before) <= 1 or len(survivors_after) > 1:
+            return
+        if all(survivor.hp == 0 for survivor in composite.living_mechs()):
+            # Its own MECH_DESTROYED is still in flight: this is a mutual kill,
+            # not a victory. The pending event takes the ``==0`` branch above.
+            return
+        winner = next(iter(survivors_after))
+        self._emit(
+            self._events.make(
+                match_id=self._match_id,
+                correlation_id=self._correlation_id,
+                tick=event.tick,
+                sequence_in_tick=0,  # bus re-stamps
+                event_type=SOEventType.VICTORY_DECLARED,
+                producer_node=_PRODUCER_NODE,
+                subject=_MATCH_SUBJECT,
+                payload={
+                    "winner_player_id": winner,
+                    "reason": SOMatchEndReason.LAST_MECH_STANDING.value,
+                },
+            )
+        )
 
     # ------------------------------------------------------------------
     # Per-tick sub-steps

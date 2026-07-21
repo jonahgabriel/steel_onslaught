@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from uuid import UUID
 
 import pytest
 
@@ -29,13 +30,14 @@ from steel_onslaught.events.card_payloads import (
     ModelSOPlanRegister,
     SORegisterOutcome,
 )
-from steel_onslaught.events.envelope import SOEventType
+from steel_onslaught.events.envelope import ModelSOEventSubject, SOEventType
 from steel_onslaught.events.payloads import ModelSOMoveIntentPayload
 from steel_onslaught.match.card_adapter import (
     CardRunnerAdapter,
     CardRunnerAdapterError,
     ModelSOCardSeatRequest,
 )
+from steel_onslaught.match.card_event_specs import build_card_round_event_specs
 from steel_onslaught.pilots.programming import ModelSOProgrammingObservation, ProgrammingPilotError
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotObservation,
@@ -263,10 +265,12 @@ def test_flank_movement_cards_translate_to_perpendicular_move_intents(
         11,
         ModelSOCardEffect(direction=direction, speed="full"),
     )
-    event_type, payload = CardRunnerAdapter._intent_for_translation(
+    resolved = CardRunnerAdapter._intent_for_translation(
         compile_card_action(card),
         _request("a"),
     )
+    assert resolved is not None, "a fielded weapon slot must compile to an intent"
+    event_type, payload = resolved
 
     assert event_type is SOEventType.MOVE_INTENT
     assert isinstance(payload, ModelSOMoveIntentPayload)
@@ -413,21 +417,80 @@ def test_short_deck_and_heat_lock_remain_typed_outcomes() -> None:
     assert outcomes[1].card_id == first_sequence.plan_committed[0].registers[1].card_id
 
 
-def test_attack_card_requires_explicit_weapon_slot_binding() -> None:
+def test_unfielded_weapon_slot_is_inert_not_a_crashed_round() -> None:
+    """An attack card naming an unfielded hardpoint must not kill the round.
+
+    Regression for cards-06: ``_intent_for_translation`` raised whenever a
+    resolved attack card's ``weapon_slot`` was >= the seat's equipped weapon
+    count, and that ``CardRunnerAdapterError`` escaped ``produce`` into the
+    runner and terminated the match.  A mech that does not carry the hardpoint
+    simply cannot execute the card: the register still RESOLVED (the card was
+    played and is discarded), and only its intent is suppressed.
+    """
     base = _runtime()
     assert base.card_round_runtime is not None
-    with pytest.raises(CardRunnerAdapterError, match="absent from injected weapon_ids"):
-        CardRunnerAdapter(
-            registers_enabled=True,
-            card_round_runtime=base.card_round_runtime,
-            dealer=base.dealer,
-            reducer=base.reducer,
-        ).produce(
-            seats=(_request("a", weapon_ids=()),),
-            round_index=0,
-            tick=3,
-            causation_id="round.test.weapon-binding",
-        )
+    emission = CardRunnerAdapter(
+        registers_enabled=True,
+        card_round_runtime=base.card_round_runtime,
+        dealer=base.dealer,
+        reducer=base.reducer,
+    ).produce(
+        seats=(_request("a", weapon_ids=()),),
+        round_index=0,
+        tick=3,
+        causation_id="round.test.weapon-binding",
+    )
+
+    assert emission.sequence is not None
+    attacks = [
+        action
+        for action in emission.actions
+        if action.card_id is not None and str(action.card_id) == "card.test.attack"
+    ]
+    assert attacks, "the deterministic deal must include the attack card"
+    for action in attacks:
+        assert action.unavailable_reason == "weapon_slot_absent"
+        assert action.outcome is SORegisterOutcome.RESOLVED
+        assert action.event_type is None
+        assert action.payload is None
+    # The resolved row survives; only the intent is suppressed.
+    resolved_attacks = [
+        row
+        for row in emission.sequence.register_resolved
+        if row.card_id is not None and str(row.card_id) == "card.test.attack"
+    ]
+    assert len(resolved_attacks) == len(attacks)
+
+
+def test_unfielded_weapon_slot_publishes_no_intent_spec() -> None:
+    """The inert projection consumes no message id and produces no INTENT spec."""
+    base = _runtime()
+    assert base.card_round_runtime is not None
+    emission = CardRunnerAdapter(
+        registers_enabled=True,
+        card_round_runtime=base.card_round_runtime,
+        dealer=base.dealer,
+        reducer=base.reducer,
+    ).produce(
+        seats=(_request("a", weapon_ids=()),),
+        round_index=0,
+        tick=3,
+        causation_id="round.test.weapon-binding-specs",
+    )
+    intent_count = sum(action.event_type is not None for action in emission.actions)
+    message_ids = tuple(UUID(int=index + 1) for index in range(len(emission.values) + intent_count))
+    specs = build_card_round_event_specs(
+        emission,
+        root_causation_id=UUID(int=9999),
+        seat_subjects={"a": ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a")},
+        message_ids=message_ids,
+    )
+    fired = [
+        spec
+        for spec in specs
+        if spec.stage == "INTENT" and spec.event_type is SOEventType.WEAPON_FIRE_INTENT
+    ]
+    assert not fired
 
 
 def test_decide_only_pilot_is_never_an_implicit_programmer() -> None:
