@@ -45,15 +45,24 @@ export default function App({
   // the lifecycle authority: hide launch controls once MATCH_STARTED arrives,
   // then re-arm them after the active match reaches MATCH_ENDED.
   const matchStarted = snapshot.activeMatchId !== null && !snapshot.matchComplete;
+  // A replay-only bootstrap (`so serve`, or an exported bootstrap with no
+  // command gateway) carries no roster, so the setup view can only ever render
+  // a permanently disabled launch form — and that form ignores the lifecycle
+  // entirely, leaving a dead "START DISABLED" panel on screen while a recorded
+  // match streams itself. Mount the view only when it can carry a real launch
+  // form or a live human prompt.
+  const setupIsLive = application.bootstrap.player_roster !== null || humanPrompt !== null;
   return (
     <>
-      <MatchSetup
-        bootstrap={application.bootstrap}
-        capability={application.commandGateway}
-        humanPrompt={humanPrompt}
-        matchStarted={matchStarted}
-        gatewayStatus={gatewayStatus}
-      />
+      {setupIsLive ? (
+        <MatchSetup
+          bootstrap={application.bootstrap}
+          capability={application.commandGateway}
+          humanPrompt={humanPrompt}
+          matchStarted={matchStarted}
+          gatewayStatus={gatewayStatus}
+        />
+      ) : null}
       <PressureDeck
         subscribe={subscribe}
         transport={snapshot}

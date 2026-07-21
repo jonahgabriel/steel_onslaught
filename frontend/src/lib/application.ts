@@ -6,6 +6,15 @@ export const FRONTEND_BOOTSTRAP_PATH = "/steel-onslaught/bootstrap.json";
 export const FRONTEND_TRANSPORT_CONTRACT = "steel_onslaught.frontend_transport.v1";
 export const FRONTEND_EXPECTED_OVERLAY_HEADER = "X-Steel-Onslaught-Expected-Overlay";
 export const GENERATED_FRONTEND_BOOTSTRAP = ".steel-onslaught-bootstrap.generated.json";
+/**
+ * Dev-server proxy target used when no generated bootstrap exists yet.
+ *
+ * The generated document is gitignored, so a clean checkout has none until a
+ * match server writes one. This origin is the port every packaged overlay's
+ * `frontend_transport` binds (`so play --port` default), which lets `npm run
+ * dev` start and render before — or without — a generated bootstrap.
+ */
+export const DEFAULT_FRONTEND_BOOTSTRAP_TARGET = "http://127.0.0.1:8765";
 export const FRONTEND_COMMAND_GATEWAY_CONTRACT = "steel_onslaught.browser_command_gateway.v1";
 
 export interface FrontendTransportBinding {

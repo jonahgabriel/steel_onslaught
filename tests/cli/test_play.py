@@ -250,10 +250,66 @@ def test_launch_admits_before_runner_and_reuses_stack_human_inbox(
 
 
 @pytest.mark.unit
-def test_play_cli_requires_explicit_contract_inputs() -> None:
-    result = CliRunner().invoke(main, ["play"])
+def test_play_cli_launches_from_packaged_defaults_without_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero-config launch: ``so play`` resolves every input from the checkout.
+
+    The prior contract required an explicit ``--overlay`` (and every other
+    launch flag). The zero-config launch replaces that: bare ``so play`` must
+    resolve the packaged 60x60 split-deck overlay through the configured
+    catalog and reach the browser server without a single flag.
+    """
+    from steel_onslaught.cli import play as play_module
+
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_server(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return sentinel
+
+    served: list[object] = []
+
+    async def fake_serve(server: object, **_kwargs: object) -> None:
+        served.append(server)
+
+    monkeypatch.setattr(play_module, "configured_live_browser_server", fake_server)
+    monkeypatch.setattr(play_module, "_create_overlay_state_directories", lambda _overlay: None)
+    monkeypatch.setattr(play_module, "_serve_browser_play", fake_serve)
+    result = CliRunner().invoke(main, ["play", "--no-frontend", "--glm-api-key", "test-key"])
+
+    assert served == [sentinel]
+
+    assert result.exit_code == 0, result.output
+    assert "Missing option" not in result.output
+    overlay_path = cast(Path, captured["overlay_path"])
+    catalog_index_path = cast(Path, captured["catalog_index_path"])
+    assert overlay_path.name == "tactical_split_v1_qwen.yaml"
+    assert overlay_path.is_file()
+    assert catalog_index_path is not None and catalog_index_path.name == "configured_v1.yaml"
+    assert captured["roster_path"] is None
+    assert cast(Path, captured["session_path"]).name == "local_operator.yaml"
+    assert captured["seed"] == play_module.DEFAULT_SEED
+
+
+@pytest.mark.unit
+def test_play_cli_rejects_roster_and_catalog_together() -> None:
+    result = CliRunner().invoke(
+        main,
+        [
+            "play",
+            "--no-frontend",
+            "--glm-api-key",
+            "test-key",
+            "--roster",
+            "contracts_data/rosters/canonical_qwen35.yaml",
+            "--catalog-index",
+            "contracts_data/model_catalogs/configured_v1.yaml",
+        ],
+    )
     assert result.exit_code != 0
-    assert "Missing option '--overlay'" in result.stderr
+    assert "exactly one of roster_path or catalog_index_path" in result.output
 
 
 @pytest.mark.unit

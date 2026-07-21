@@ -90,7 +90,11 @@ llm:
       provider_binding_id: qwen35
   personas_dir: ../pilots/personas
   secret_resolver:
-    kind: none
+    # The catalog launch path merges secret-bearing providers (for example the
+    # GLM seats in contracts_data/model_catalogs/configured_v1.yaml) into this
+    # overlay's provider set.  Declaring ``none`` refused to bind them and made
+    # the default 60x60 split-deck board unlaunchable from the browser deck.
+    kind: injected
 clock:
   kind: system_utc
 identity:
