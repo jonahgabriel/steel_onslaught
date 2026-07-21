@@ -32,6 +32,7 @@ from steel_onslaught.contracts.card_runtime import (
     ModelSOCardRuntimeSnapshot,
 )
 from steel_onslaught.events.card_payloads import (
+    SPLIT_DECK_MARKER,
     ModelSOCardsDiscardedPayload,
     ModelSOHandDealtPayload,
     ModelSOPlanCommittedPayload,
@@ -176,9 +177,15 @@ def _validate_structure(
     expected_match_id: str | None,
     expected_provenance: ModelSOCardRuntimeProvenance | None,
 ) -> tuple[str, UUID]:
-    if snapshot.selected_deck_id is None:
+    expected_deck = snapshot.selected_deck if snapshot.selected_deck_id is not None else None
+    split_hands = tuple(hand.partitions is not None for hand in parsed.hand_dealt)
+    if any(split_hands) and not all(split_hands):
+        raise CardRoundReplayError(
+            "card-round replay cannot mix split and single-deck HAND_DEALT values"
+        )
+    split_runtime = bool(split_hands) and all(split_hands)
+    if expected_deck is None and not split_runtime:
         raise CardRoundReplayError("card-round replay requires an explicitly selected deck")
-    expected_deck = snapshot.selected_deck
     if expected_provenance is not None and expected_provenance != snapshot.provenance:
         raise CardRoundReplayError("card runtime provenance does not match replay snapshot")
 
@@ -215,17 +222,62 @@ def _validate_structure(
 
     assert correlation_id is not None
     for hand in parsed.hand_dealt:
-        if hand.deck_id != expected_deck.id:
-            raise CardRoundReplayError(
-                f"HAND_DEALT deck {hand.deck_id!r} differs from selected deck {expected_deck.id!r}"
+        if split_runtime:
+            if hand.deck_id != SPLIT_DECK_MARKER or hand.partitions is None:
+                raise CardRoundReplayError(
+                    "split HAND_DEALT values require the deck.split marker and partitions"
+                )
+            if hand.hand_size != len(hand.card_ids):
+                raise CardRoundReplayError("split HAND_DEALT hand_size differs from card_ids")
+            partition_cards = (
+                (hand.partitions.movement, "movement"),
+                (hand.partitions.weapon, "weapon"),
             )
-        if hand.hand_size != expected_deck.hand_size:
-            raise CardRoundReplayError("HAND_DEALT hand_size differs from selected deck")
-        for card_id in hand.card_ids:
-            try:
-                snapshot.card_catalog.require(card_id)
-            except CardCatalogError as exc:
-                raise CardRoundReplayError(f"HAND_DEALT names an unknown card {card_id!r}") from exc
+            if sum(len(partition.card_ids) for partition, _ in partition_cards) != hand.hand_size:
+                raise CardRoundReplayError(
+                    "split HAND_DEALT partitions do not account for the complete hand"
+                )
+            for partition, partition_name in partition_cards:
+                try:
+                    deck = snapshot.require_deck(partition.deck_id)
+                except (KeyError, ValueError) as exc:
+                    raise CardRoundReplayError(
+                        f"split HAND_DEALT names unknown {partition_name} deck "
+                        f"{partition.deck_id!r}"
+                    ) from exc
+                if len(partition.card_ids) != partition.requested_count:
+                    raise CardRoundReplayError(
+                        f"split HAND_DEALT {partition_name} partition count differs from request"
+                    )
+                declared = Counter(str(card_id) for card_id in deck.card_multiset())
+                dealt = Counter(str(card_id) for card_id in partition.card_ids)
+                if dealt - declared:
+                    raise CardRoundReplayError(
+                        f"split HAND_DEALT values exceed {partition_name} deck multiset"
+                    )
+                for card_id in partition.card_ids:
+                    try:
+                        snapshot.card_catalog.require(card_id)
+                    except CardCatalogError as exc:
+                        raise CardRoundReplayError(
+                            f"HAND_DEALT names an unknown card {card_id!r}"
+                        ) from exc
+        else:
+            assert expected_deck is not None
+            if hand.deck_id != expected_deck.id:
+                raise CardRoundReplayError(
+                    f"HAND_DEALT deck {hand.deck_id!r} differs from selected deck "
+                    f"{expected_deck.id!r}"
+                )
+            if hand.hand_size != expected_deck.hand_size:
+                raise CardRoundReplayError("HAND_DEALT hand_size differs from selected deck")
+            for card_id in hand.card_ids:
+                try:
+                    snapshot.card_catalog.require(card_id)
+                except CardCatalogError as exc:
+                    raise CardRoundReplayError(
+                        f"HAND_DEALT names an unknown card {card_id!r}"
+                    ) from exc
 
     seats = tuple(hand.seat for hand in parsed.hand_dealt)
     if seats != tuple(sorted(seats)) or len(seats) != len(set(seats)):
@@ -235,10 +287,12 @@ def _validate_structure(
     if tuple(discard.seat for discard in parsed.cards_discarded) != seats:
         raise CardRoundReplayError("CARDS_DISCARDED seats must match HAND_DEALT order")
 
-    declared = Counter(str(card_id) for card_id in expected_deck.card_multiset())
-    dealt = Counter(str(card_id) for hand in parsed.hand_dealt for card_id in hand.card_ids)
-    if dealt - declared:
-        raise CardRoundReplayError("HAND_DEALT values exceed the selected deck card multiset")
+    if not split_runtime:
+        assert expected_deck is not None
+        declared = Counter(str(card_id) for card_id in expected_deck.card_multiset())
+        dealt = Counter(str(card_id) for hand in parsed.hand_dealt for card_id in hand.card_ids)
+        if dealt - declared:
+            raise CardRoundReplayError("HAND_DEALT values exceed the selected deck card multiset")
     hands = {
         hand.seat: Counter(str(card_id) for card_id in hand.card_ids) for hand in parsed.hand_dealt
     }
@@ -349,7 +403,11 @@ def validate_card_round_events(
     return ModelSOCardRoundReplay(
         match_id=match_id,
         correlation_id=correlation_id,
-        deck_id=snapshot.selected_deck.id,
+        deck_id=(
+            snapshot.selected_deck.id
+            if snapshot.selected_deck_id is not None
+            else SPLIT_DECK_MARKER
+        ),
         events=parsed.events,
         hand_dealt=parsed.hand_dealt,
         plan_committed=parsed.plan_committed,
