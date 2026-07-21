@@ -74,7 +74,18 @@ class ModelSOPersonaPromptOverride(_ClosedPromptModel):
 
 
 class ModelSOEffectivePromptProvenance(_ClosedPromptModel):
-    """The exact prompt one persona flew with, and where it came from."""
+    """The prompt one persona flew with, identified by an un-forgeable hash.
+
+    ``prompt_sha256`` is the always-present *binding hash* recorded in the
+    event ledger; it is what a match records and replay compares.
+    ``prompt_text`` is optional and deliberately absent from the browser-facing
+    event stream: a raw system prompt must never be broadcast (the
+    sanitization gate forbids it), so the runtime/ledger form carries only the
+    hash, while an operator inspection surface (``so prompts show --full``, the
+    workbench) reads the full text back from the overlay.  When the text *is*
+    present it must match the hash, so an inspection projection cannot show a
+    prompt that differs from the one the hash binds.
+    """
 
     schema_version: Literal["0.1.0"] = "0.1.0"
     kind: Literal["steel_onslaught.effective_prompt"] = "steel_onslaught.effective_prompt"
@@ -83,13 +94,15 @@ class ModelSOEffectivePromptProvenance(_ClosedPromptModel):
     source: Literal["contract", "operator_override"]
     temperature: StrictFloat = Field(ge=0.0, le=2.0)
     prompt_sha256: StrictStr = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
-    # The text itself is retained, not just its digest: a digest alone proves
-    # drift but cannot reconstruct what the operator actually ran.
-    prompt_text: StrictStr = Field(min_length=1)
+    prompt_text: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _digest_matches_text(self) -> ModelSOEffectivePromptProvenance:
-        if prompt_sha256(self.prompt_text) != self.prompt_sha256:
+        if self.prompt_text is not None and prompt_sha256(self.prompt_text) != self.prompt_sha256:
             raise ValueError("effective prompt digest does not match its recorded text")
         return self
 
@@ -205,8 +218,18 @@ def build_match_prompt_provenance(
     *,
     overridden_persona_ids: frozenset[str] = frozenset(),
     programming_instructions_sha256: str,
+    include_text: bool = True,
 ) -> ModelSOMatchPromptProvenance:
-    """Record every effective prompt in one deterministic, closed projection."""
+    """Record every effective prompt in one deterministic, closed projection.
+
+    ``include_text`` is ``False`` for the runtime/ledger form written into
+    MATCH_STARTED and broadcast to the browser: only the binding hash travels,
+    keeping the sanitization guarantee that raw prompts never leave the server.
+    An operator inspection projection passes ``True`` to reconstruct the exact
+    text from the overlay.  The two forms have distinct ``content_sha256``
+    values, so the runner and its replay-validity check must use the same form
+    (both use the redacted one).
+    """
 
     prompts = tuple(
         ModelSOEffectivePromptProvenance(
@@ -217,7 +240,7 @@ def build_match_prompt_provenance(
             ),
             temperature=float(persona.temperature),
             prompt_sha256=prompt_sha256(persona.system_prompt),
-            prompt_text=persona.system_prompt,
+            prompt_text=persona.system_prompt if include_text else None,
         )
         for _persona_id, persona in sorted(personas.items())
     )

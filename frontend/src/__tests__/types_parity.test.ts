@@ -962,6 +962,8 @@ describe("types parity against Python-emitted fixtures", () => {
         ],
         content_sha256: "8".repeat(64),
       };
+      // The broadcast ledger form is redacted: only the binding hash per
+      // persona travels, never the raw prompt text (sanitization gate).
       payload["prompt_provenance"] = {
         schema_version: "0.1.0",
         kind: "steel_onslaught.match_prompt_provenance",
@@ -974,7 +976,6 @@ describe("types parity against Python-emitted fixtures", () => {
             source: "operator_override",
             temperature: 0.2,
             prompt_sha256: "9".repeat(64),
-            prompt_text: "CHARGE and never disengage.",
           },
         ],
         programming_instructions_sha256: "a".repeat(64),

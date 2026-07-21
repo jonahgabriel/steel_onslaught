@@ -88,12 +88,16 @@ def prompts_show(overlay_path: Path, as_json: bool, full: bool) -> None:
         click.echo(f"=== {prompt.persona_id} ({prompt.display_name}) [{marker}] ===")
         click.echo(f"temperature: {prompt.temperature}")
         click.echo(f"sha256:      {prompt.prompt_sha256}")
-        if full:
-            click.echo(prompt.prompt_text)
+        # The inspection projection always carries text; guard defensively so a
+        # redacted (ledger) provenance would degrade to hash-only, not crash.
+        text = prompt.prompt_text
+        if text is None:
+            click.echo("prompt:      (redacted; hash only)")
+        elif full:
+            click.echo(text)
         else:
-            preview = prompt.prompt_text.strip().splitlines()
-            head = " ".join(line.strip() for line in preview)[:240]
-            click.echo(f"preview:     {head}...")
+            preview = " ".join(line.strip() for line in text.strip().splitlines())[:240]
+            click.echo(f"preview:     {preview}...")
         click.echo("")
 
 

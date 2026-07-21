@@ -77,6 +77,7 @@ def test_prompts_set_writes_a_valid_overlay_that_records_the_edit(tmp_path: Path
     edited = project_effective_prompt_provenance(load_application_overlay(out))
     edited_prompt = edited.require(persona_id)
     assert edited_prompt.source == "operator_override"
+    assert edited_prompt.prompt_text is not None
     assert edited_prompt.prompt_text.startswith("CHARGE and never disengage.")
 
 

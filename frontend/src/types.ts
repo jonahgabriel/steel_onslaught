@@ -258,7 +258,8 @@ export interface SOEffectivePromptProvenance {
   source: "contract" | "operator_override";
   temperature: number;
   prompt_sha256: string;
-  prompt_text: string;
+  /** Absent in the browser-broadcast ledger form; only the binding hash travels. */
+  prompt_text?: string;
 }
 
 export interface SOMatchPromptProvenance {
@@ -1448,6 +1449,7 @@ function parsePromptProvenance(value: unknown, context: string): SOMatchPromptPr
       if (source !== "contract" && source !== "operator_override") {
         fail(promptContext, 'field "source" must be contract or operator_override');
       }
+      const hasText = "prompt_text" in promptRecord;
       return {
         schema_version: exactString(
           promptRecord["schema_version"],
@@ -1469,7 +1471,16 @@ function parsePromptProvenance(value: unknown, context: string): SOMatchPromptPr
           "a lowercase SHA-256 digest",
           `${promptContext}.prompt_sha256`,
         ),
-        prompt_text: nonEmptyString(promptRecord["prompt_text"], `${promptContext}.prompt_text`),
+        // The ledger form is redacted (hash only); accept and preserve text
+        // only when an inspection projection includes it.
+        ...(hasText
+          ? {
+              prompt_text: nonEmptyString(
+                promptRecord["prompt_text"],
+                `${promptContext}.prompt_text`,
+              ),
+            }
+          : {}),
       };
     }),
     programming_instructions_sha256: patternString(

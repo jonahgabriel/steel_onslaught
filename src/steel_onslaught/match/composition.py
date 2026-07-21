@@ -517,11 +517,13 @@ def project_effective_prompt_provenance(
 ) -> ModelSOMatchPromptProvenance:
     """Return the effective, post-override prompt identity for one overlay.
 
-    This is the read-only projection an operator inspection surface renders.
-    It is confined to the composition root because loading the persona
-    contract directory (``PersonaRegistry.load``) is filesystem I/O; the
-    result is byte-identical to what the runner records in MATCH_STARTED for
-    the same overlay, so what an operator inspects is what a match proves.
+    This is the read-only projection an operator inspection surface renders,
+    and it carries the full prompt *text* (unlike the redacted ledger form the
+    runner broadcasts).  Each persona's ``prompt_sha256`` here equals the hash
+    the runner records in MATCH_STARTED for the same overlay, so an operator
+    can read the exact text a match's recorded hash binds.  It is confined to
+    the composition root because loading the persona contract directory
+    (``PersonaRegistry.load``) is filesystem I/O.
     """
 
     authored = PersonaRegistry.load(overlay.llm.personas_dir)
@@ -1339,10 +1341,14 @@ def build_llm_dependencies(
         overlay.llm.persona_overrides,
     )
     persona_registry = PersonaRegistry(effective_personas)
+    # Ledger/broadcast form: only the binding hash per persona travels into
+    # MATCH_STARTED, never the raw prompt text (sanitization gate). The full
+    # text is reconstructable from the overlay via project_effective_prompt_*.
     prompt_provenance = build_match_prompt_provenance(
         effective_personas,
         overridden_persona_ids=overridden_persona_ids,
         programming_instructions_sha256=PROGRAMMING_INSTRUCTIONS_SHA256,
+        include_text=False,
     )
     http_providers = tuple(
         provider

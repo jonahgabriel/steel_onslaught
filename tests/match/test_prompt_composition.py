@@ -14,7 +14,11 @@ from pathlib import Path
 import pytest
 
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
-from steel_onslaught.match.composition import build_llm_dependencies
+from steel_onslaught.match.composition import (
+    build_llm_dependencies,
+    project_effective_prompt_provenance,
+)
+from steel_onslaught.pilots.persona_prompts import prompt_sha256
 from tests.overlay import complete_test_overlay
 
 pytestmark = pytest.mark.unit
@@ -96,13 +100,21 @@ def test_overlay_persona_override_reaches_recorded_prompt_provenance(tmp_path: P
         sniper = provenance.require("sniper")
         assert sniper.source == "operator_override"
         assert sniper.temperature == 0.1
-        assert sniper.prompt_text.startswith("Hold the ridge and never advance past cover.")
+        # Ledger/broadcast form is redacted: the binding hash travels, not text.
+        assert sniper.prompt_text is None
+        edited_prompt = llm.persona_registry.require("sniper").system_prompt
+        assert edited_prompt.startswith("Hold the ridge and never advance past cover.")
+        assert sniper.prompt_sha256 == prompt_sha256(edited_prompt)
         # A different, untouched persona stays contract-sourced.
         assert provenance.require("berserker").source == "contract"
-        # The persona registry the pilots fly with carries the edited prompt.
-        assert llm.persona_registry.require("sniper").system_prompt.startswith(
-            "Hold the ridge and never advance past cover."
-        )
+
+    # The operator inspection projection reconstructs the full edited text,
+    # and its per-persona hash equals the redacted ledger hash above.
+    inspected = project_effective_prompt_provenance(overlay)
+    inspected_sniper = inspected.require("sniper")
+    assert inspected_sniper.prompt_text is not None
+    assert inspected_sniper.prompt_text.startswith("Hold the ridge and never advance past cover.")
+    assert inspected_sniper.prompt_sha256 == sniper.prompt_sha256
 
 
 def test_overlay_without_override_records_all_contract_prompts(tmp_path: Path) -> None:
