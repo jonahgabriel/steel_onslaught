@@ -490,3 +490,70 @@ def test_non_converging_match_hits_the_runaway_failsafe_with_its_own_reason() ->
     assert {mech.hp for mech in live.mech_states.values()} == {
         mech.hp_max for mech in live.mech_states.values()
     }
+
+
+@pytest.mark.integration
+def test_explicit_cap_above_the_failsafe_is_honoured_not_preempted() -> None:
+    """An explicit ``max_ticks`` above the failsafe must still reach its cap.
+
+    The failsafe exists to diagnose a NON-converging *unbounded* match.  A
+    caller who deliberately asks for more ticks than the guard has not hit a
+    bug: ``--max-ticks`` is ``IntRange(min=1)`` with no upper bound, so a
+    2000-tick match is a legitimate request.  Preempting it at tick 1000 with
+    ``aborted_runaway`` would report an engine defect for a correct run and
+    silently truncate the match a caller paid for.
+    """
+    cap = RUNAWAY_TICK_LIMIT + 1000
+    bus = InProcessEventBus()
+    runner, _runtime = match_runner(
+        bus=bus,
+        match_id="match.runaway.explicit-cap",
+        seed=17,
+        loadout_a=load_loadout(_RED_PASSIVE),
+        loadout_b=load_loadout(_BLUE_PASSIVE),
+        max_ticks=cap,
+    )
+
+    live = runner.run()
+
+    assert live.status is SOMatchStatus.ENDED
+    assert live.tick == cap
+    assert live.end_reason is SOMatchEndReason.DRAW_MAX_TICKS
+    assert live.winner_id is None
+
+
+@pytest.mark.integration
+def test_no_mech_destroyed_row_follows_the_mutual_destruction_terminal() -> None:
+    """Nothing may be published after the terminal on the simultaneous pulse.
+
+    The pulse resolves every destruction in one loop, so the terminal fires
+    from inside that loop.  In a duel it always coincides with the LAST
+    destruction (see ``_apply_sudden_death``), but that is a property of
+    one-mech-per-player, not of the loop — and a trailing ``mech_destroyed``
+    would be rejected outright by the browser transport as a post-terminal
+    frame.  This pins the duel ordering so it cannot regress silently.
+    """
+    bus = InProcessEventBus()
+    captured: list[ModelSOEventEnvelope] = []
+    bus.subscribe(captured.append)
+    runner, _runtime = match_runner(
+        bus=bus,
+        match_id="match.sudden-death.post-terminal",
+        seed=17,
+        loadout_a=load_loadout(_RED_PASSIVE),
+        loadout_b=load_loadout(_BLUE_PASSIVE),
+        max_ticks=None,
+    )
+
+    live = runner.run()
+
+    assert live.end_reason is SOMatchEndReason.DRAW_MUTUAL_DESTRUCTION
+    terminal_index = next(
+        index for index, event in enumerate(captured) if event.event_type is SOEventType.MATCH_ENDED
+    )
+    after_terminal = [event.event_type for event in captured[terminal_index + 1 :]]
+    assert SOEventType.MECH_DESTROYED not in after_terminal
+    assert SOEventType.DAMAGE_APPLIED not in after_terminal
+    # Both mechs are durably recorded destroyed, so nothing was dropped either.
+    assert [event.event_type for event in captured].count(SOEventType.MECH_DESTROYED) == 2
+    assert all(not mech.alive for mech in live.mech_states.values())

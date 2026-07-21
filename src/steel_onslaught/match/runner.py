@@ -120,7 +120,32 @@ converging, which is a bug in the pressure/terminal path rather than a
 gameplay outcome — so it terminates with its own ``ABORTED_RUNAWAY`` reason
 that no draw or victory path can produce.  Never widen this into a draw, and
 never lower it to bound tactics.
+
+It is also NOT an upper bound on ``max_ticks``.  ``--max-ticks`` is
+``IntRange(min=1)`` and ``ModelSOMatchStartedPayload.max_ticks`` is
+``Field(..., gt=0)`` — both unbounded above — so a caller may legitimately ask
+for more ticks than this guard.  Such a match is converging on its own explicit
+cap and must reach it; see :func:`_effective_runaway_limit`.
 """
+
+
+def _effective_runaway_limit(max_ticks: int | None) -> int:
+    """Failsafe tick for this match, never below an explicit ``max_ticks``.
+
+    An explicit cap is an intentional terminal, so the guard must never
+    preempt it: a 2000-tick match aborted at tick 1000 would report an engine
+    defect (``aborted_runaway`` means "a bug to diagnose") for a perfectly
+    correct run, and silently truncate the match the caller asked for.
+
+    The guard is raised rather than disabled.  A capped match that somehow
+    walked PAST its own cap is exactly the non-converging failure this failsafe
+    exists to catch, so the loop stays bounded for every input.
+    """
+
+    if max_ticks is None:
+        return RUNAWAY_TICK_LIMIT
+    return max(RUNAWAY_TICK_LIMIT, max_ticks)
+
 
 # Match-scoped events have no single mech/player subject.
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
@@ -212,6 +237,7 @@ class MatchRunner:
         self._loadout_b = loadout_b
         self._bus = bus
         self._max_ticks = max_ticks
+        self._runaway_tick_limit = _effective_runaway_limit(max_ticks)
         self._side_a = side_a
         self._side_b = side_b
         self._arena = arena.to_snapshot()
@@ -356,7 +382,7 @@ class MatchRunner:
 
         while self.fold.state.status is SOMatchStatus.RUNNING:
             next_tick = self.fold.state.tick + 1
-            if next_tick > RUNAWAY_TICK_LIMIT:
+            if next_tick > self._runaway_tick_limit:
                 self._terminate_for_runaway(tick=self.fold.state.tick)
                 break
             try:
@@ -911,6 +937,34 @@ class MatchRunner:
         records ``draw_mutual_destruction``; the ``hp == 0`` deferral in
         ``MatchStateFold._on_flag_drop`` is what stops the first destruction
         event from declaring a false victory in between.
+
+        Why the destruction loop needs no post-terminal guard TODAY, and the
+        exact precondition that would change that:
+
+        The loop publishes ``MECH_DESTROYED`` only for the mechs the pulse
+        zeroed, and the fold's terminals key on surviving *player* ids.  A
+        match is duel-only — the runner builds exactly ``mech_a`` and
+        ``mech_b``, one per player — so the zeroed set is either one mech (the
+        survivor's own destruction never publishes, and the terminal lands on
+        the single destruction) or both (survivors walk ``2 -> 1 -> 0``, the
+        ``hp == 0`` deferral suppresses the intermediate victory, and the
+        terminal lands on the last destruction).  Either way the terminal
+        coincides with the FINAL publish of the pulse, so nothing is emitted
+        after ``MATCH_ENDED``.
+
+        That invariant is a consequence of one-mech-per-player, NOT of the
+        loop.  Give a player two mechs and it breaks: with ``a`` fielding
+        ``A1``/``A2`` and ``b`` fielding ``B1``, a pulse that zeroes ``A1`` and
+        ``B1`` (leaving ``A2`` healthy) declares victory for ``a`` on ``B1``'s
+        destruction whenever initiative orders ``B1`` first — and ``A1``'s
+        destruction would then publish after the terminal, which the browser
+        transport rejects outright.  A ``break`` here is deliberately NOT the
+        answer: the fold applies ``alive=False`` before its terminal guard, so
+        dropping the publish would leave ``A1`` recorded alive at zero hp.
+        Whoever adds multi-mech seats must fix the ORDER (terminal-triggering
+        destruction last), not silence the tail.  ``tests/match/
+        test_terminal_correctness.py`` pins the duel invariant so the duel case
+        cannot regress unnoticed in the meantime.
         """
         start = self._sudden_death_start_tick
         if start is None or tick < start or self._max_ticks is not None:

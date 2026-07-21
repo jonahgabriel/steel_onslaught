@@ -33,7 +33,7 @@ function tickStream(matchId: string, n: number): SOEventEnvelope[] {
 
 function runtimeStatus(
   matchId: string,
-  status: "running" | "paused" | "ended",
+  status: "running" | "paused" | "ended" | "failed",
   revision: number,
   tick: number,
   seq = 0,
@@ -265,6 +265,28 @@ describe("MatchTransport — runtime lifecycle projection", () => {
     );
     expect(() => terminal.ingest(runtimeStatus("runtime.terminal", "running", 3, 2))).toThrow(
       /after match_ended/,
+    );
+  });
+
+  it("surfaces a crashed worker's failed status as an observable terminal", () => {
+    // The client half of the FAILED seam: the server projects this frame when
+    // its match worker raises, and there is no match_ended behind it — a
+    // crash produces no canonical terminal.  The browser must therefore be
+    // able to read `failed` off the snapshot rather than watching a stream
+    // that silently stops with the projection stuck on `running`.
+    const t = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("runtime.failed", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    t.ingest(started);
+    t.ingest(runtimeStatus("runtime.failed", "running", 1, 0, 1));
+    t.ingest(runtimeStatus("runtime.failed", "failed", 2, 0, 2));
+
+    expect(t.snapshot().runtimeStatus?.status).toBe("failed");
+    // No canonical terminal was produced, so the match is NOT complete.
+    expect(t.snapshot().matchComplete).toBe(false);
+    // `failed` is terminal for the runtime projection like `ended` is.
+    expect(() => t.ingest(runtimeStatus("runtime.failed", "running", 3, 1))).toThrow(
+      /terminal runtime status/,
     );
   });
 });
