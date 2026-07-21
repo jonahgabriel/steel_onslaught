@@ -10,6 +10,12 @@ The runtime does not infer terminal state from a worker returning.  A caller
 must first observe durable ``MATCH_ENDED`` evidence and then call
 ``mark_match_ended``.  That ordering is intentional: a worker completion (or
 transport frame) is not proof that the terminal event made it to the ledger.
+
+A worker that RAISES is the other half of that rule: there is no terminal
+evidence to observe, so ``run`` commits the distinct terminal
+``SORuntimeStatus.FAILED`` rather than leaving the projection on ``RUNNING``
+forever.  ``FAILED`` is never ``ENDED`` — it is the un-fakeable record that
+this match produced no canonical terminal.
 """
 
 from __future__ import annotations
@@ -269,9 +275,26 @@ class MatchRuntime:
         try:
             return self._run_match()
         except BaseException:
-            # A failed worker must not leave a future worker able to advance.
+            # A failed worker must not leave a future worker able to advance,
+            # and must not leave the projection stuck on RUNNING.  There is no
+            # canonical terminal evidence on this path (that is exactly what
+            # went wrong), so the runtime commits its own FAILED terminal
+            # instead of ENDED.  The whole transition is taken under the lock:
+            # `_stop_requested` was previously mutated outside it, racing every
+            # concurrent `dispatch`.
             self._gate.stop()
-            self._stop_requested = True
+            with self._lock:
+                self._stop_requested = True
+                if self._status.status not in {
+                    SORuntimeStatus.ENDED,
+                    SORuntimeStatus.FAILED,
+                }:
+                    self._status = self._next_status(
+                        status=SORuntimeStatus.FAILED,
+                        mode=self._status.mode,
+                        command_id=self._status.last_command_id,
+                        match_index=self._status.match_index,
+                    )
             raise
 
     def wait_for_pause_boundary(self, command_id: UUID) -> int:

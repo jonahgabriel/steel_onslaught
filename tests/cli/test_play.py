@@ -52,9 +52,11 @@ from steel_onslaught.contracts.player_selection import (
 from steel_onslaught.contracts.runtime import (
     ModelSORuntimeCommand,
     ModelSORuntimeStatusPayload,
+    SORuntimeAction,
     SORuntimeMode,
     SORuntimeStatus,
 )
+from steel_onslaught.events.envelope import ModelSOEventEnvelope
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.composition import (
     RuntimeDependencies,
@@ -71,6 +73,7 @@ from steel_onslaught.match.composition import (
     load_pilot_registry,
 )
 from steel_onslaught.match.runner import MatchIdentity
+from steel_onslaught.match.runtime import ConditionProgressGate, MatchRuntime
 
 _PRINCIPAL = "principal.browser"
 _SESSION = "session.browser"
@@ -781,6 +784,125 @@ async def test_browser_server_projects_runtime_status_before_terminal_event() ->
         )
     finally:
         server._loop = None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_browser_server_projects_failed_runtime_status_when_the_worker_raises() -> None:
+    """A crashed worker must reach the client, not just stop the stream.
+
+    ``MatchRuntime.run`` commits the terminal ``FAILED`` status when its worker
+    raises, but that projection is worthless unless a client can observe it.
+    Without the projection the browser sees the event stream simply stop with
+    its runtime status frozen on ``running`` — indistinguishable from a slow
+    match.  The server therefore projects the committed FAILED status into the
+    browser event stream (the same surface every other runtime status uses)
+    before the failed session is torn down.
+    """
+    fixture = Path(__file__).parents[2] / "frontend/src/__tests__/fixtures/match_started.json"
+    started = ModelSOEventEnvelope.model_validate_json(fixture.read_text(encoding="utf-8"))
+
+    class Bus:
+        def subscribe(self, handler: object, **_: object) -> int:
+            del handler
+            return 1
+
+        def unsubscribe(self, token: int) -> None:
+            del token
+
+    def _explode() -> object:
+        raise RuntimeError("worker exploded mid-match")
+
+    runtime = MatchRuntime(
+        match_id=started.match_id,
+        owner_id="runtime_owner.browser",
+        run_match=_explode,
+        progress_gate=ConditionProgressGate(),
+        terminal_evidence=lambda _match_id: False,
+    )
+    runtime.dispatch(
+        ModelSORuntimeCommand(
+            schema_version="1",
+            kind="steel_onslaught.runtime_command",
+            command_id=_COMMAND_ID,
+            expected_revision=0,
+            owner_id="runtime_owner.browser",
+            action=SORuntimeAction.START,
+            mode=SORuntimeMode.ONE_GAME,
+        )
+    )
+    assert runtime.status.status is SORuntimeStatus.RUNNING
+
+    event_factory = EventFactory(clock=SystemClock(), identities=SystemIdentityProvider())
+    stack = SimpleNamespace(
+        match_id=started.match_id,
+        runtime=runtime,
+        event_factory=event_factory,
+        runner=SimpleNamespace(
+            identity=SimpleNamespace(correlation_id=started.correlation_id),
+            fold=SimpleNamespace(state=SimpleNamespace(tick=0)),
+        ),
+        close=lambda: None,
+    )
+    session = SimpleNamespace(
+        stack=stack,
+        match_id=started.match_id,
+        run=runtime.run,
+        close=lambda: None,
+    )
+    server = BrowserPlayServer(
+        bootstrap=object(),  # type: ignore[arg-type]
+        gateway=None,
+        bus=Bus(),  # type: ignore[arg-type]
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+    )
+    server._session = session  # type: ignore[assignment]
+    server._session_owner = (_PRINCIPAL, _SESSION)
+    server._loop = asyncio.get_running_loop()
+    # Stand in for a connected /events subscriber: this is the surface a real
+    # browser reads, and it survives the post-failure session retirement.
+    delivered: asyncio.Queue[str | None] = asyncio.Queue()
+    server._event_queues[cast(Any, "events-client")] = delivered
+    try:
+        server._on_event(started)
+        await asyncio.sleep(0)
+
+        server._start_run_task()
+        run_task = server._run_task
+        assert run_task is not None
+        with pytest.raises(RuntimeError, match="worker exploded"):
+            await run_task
+        # Let the done-callback (and the retirement it schedules) settle.
+        for _ in range(4):
+            await asyncio.sleep(0)
+
+        committed = runtime.status
+        assert committed.status is SORuntimeStatus.FAILED
+        frames = []
+        while not delivered.empty():
+            frame = delivered.get_nowait()
+            if frame is not None:
+                frames.append(json.loads(frame))
+        statuses = [
+            frame["payload"]["status"]
+            for frame in frames
+            if frame["event_type"] == "runtime_status_changed"
+        ]
+        assert statuses == ["running", "failed"]
+        failed_frame = next(
+            frame
+            for frame in frames
+            if frame["event_type"] == "runtime_status_changed"
+            and frame["payload"]["status"] == "failed"
+        )
+        # The projection carries the committed revision, so the frontend's
+        # strictly-monotonic runtime-status check accepts it.
+        assert failed_frame["payload"]["revision"] == committed.revision
+        assert failed_frame["match_id"] == started.match_id
+    finally:
+        server._loop = None
+        server._event_queues.clear()
 
 
 @pytest.mark.unit

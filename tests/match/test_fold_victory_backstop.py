@@ -1,7 +1,7 @@
 """Backstop test for the duplicated VICTORY_DECLARED authority.
 
 Two independent paths declare victory on the >1 -> ==1 survivor transition:
-  - ``ReducerFailureCascade._maybe_declare_victory`` (kills arriving via the
+  - ``ReducerFailureCascade._maybe_declare_terminal`` (kills arriving via the
     rupture/failure cascade), and
   - ``MatchStateFold._on_flag_drop`` (kills arriving as a direct
     MECH_DESTROYED/PILOT_KILLED, e.g. from a weapon kill).
@@ -147,7 +147,7 @@ def test_fold_declares_victory_even_with_cascade_neutered() -> None:
 
     This proves ``_on_flag_drop`` is a real backstop, not dead code: a direct
     MECH_DESTROYED (the weapon-kill path) declares victory through the fold
-    alone, with the cascade's ``_maybe_declare_victory`` monkeypatched to no-op.
+    alone, with the cascade's ``_maybe_declare_terminal`` monkeypatched to no-op.
     """
     bus = InProcessEventBus()
     captured: list[ModelSOEventEnvelope] = []
@@ -161,7 +161,7 @@ def test_fold_declares_victory_even_with_cascade_neutered() -> None:
         event_factory=runtime.event_factory,
         catalog=runtime.catalog,
     )
-    fold._failure._maybe_declare_victory = lambda *args: None  # type: ignore[method-assign]
+    fold._failure._maybe_declare_terminal = lambda *args: None  # type: ignore[method-assign]
 
     _drive_to_two_mechs(fold)
     fold.apply(

@@ -318,6 +318,15 @@ class CardRoundEventSpecBuilder:
                 if projection.event_type is not None or projection.payload is not None:
                     raise CardRoundEventSpecError("AUTO_REMAIN projection cannot become an intent")
                 continue
+            if projection.unavailable_reason is not None:
+                # A resolved-but-unfieldable card (e.g. an attack naming a
+                # hardpoint the mech does not carry) keeps its
+                # REGISTER_RESOLVED row and produces no intent.
+                if projection.event_type is not None or projection.payload is not None:
+                    raise CardRoundEventSpecError(
+                        "unavailable card projection cannot become an intent"
+                    )
+                continue
             if projection.event_type is None or projection.payload is None:
                 raise CardRoundEventSpecError(
                     "resolved card projection requires event type and payload"

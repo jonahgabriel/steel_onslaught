@@ -116,7 +116,13 @@ export type SOPilotReasonCode =
   | "human_input"
   | "llm_decision"
   | "llm_fallback";
-export type SOMatchEndReason = "last_mech_standing" | "pilot_killed" | "draw_max_ticks" | "aborted";
+export type SOMatchEndReason =
+  | "last_mech_standing"
+  | "pilot_killed"
+  | "draw_max_ticks"
+  | "draw_mutual_destruction"
+  | "aborted"
+  | "aborted_runaway";
 
 /** Mirror of steel_onslaught.contracts.boiler.ModelSOBoilerState. */
 export interface SOBoilerState {
@@ -275,7 +281,7 @@ export interface MatchStartedPayload {
   card_rule_pack_provenance?: SOCardRulePackProvenance;
 }
 
-export type SORuntimeStatus = "ready" | "running" | "paused" | "ended";
+export type SORuntimeStatus = "ready" | "running" | "paused" | "ended" | "failed";
 export type SORuntimeMode = "one_game" | "continuous";
 
 export interface RuntimeStatusChangedPayload {
@@ -982,7 +988,9 @@ function parseEndReason(value: unknown, context: string): SOMatchEndReason {
     value === "last_mech_standing" ||
     value === "pilot_killed" ||
     value === "draw_max_ticks" ||
-    value === "aborted"
+    value === "draw_mutual_destruction" ||
+    value === "aborted" ||
+    value === "aborted_runaway"
   ) {
     return value;
   }
@@ -1802,7 +1810,11 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       context,
     );
     const status = str(record, "status", context);
-    if (!(["ready", "running", "paused", "ended"] as const).includes(status as SORuntimeStatus)) {
+    if (
+      !(["ready", "running", "paused", "ended", "failed"] as const).includes(
+        status as SORuntimeStatus,
+      )
+    ) {
       fail(context, `field "status" has an unknown value ${JSON.stringify(status)}`);
     }
     if (!("mode" in record)) {

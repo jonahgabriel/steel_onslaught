@@ -33,7 +33,7 @@ function tickStream(matchId: string, n: number): SOEventEnvelope[] {
 
 function runtimeStatus(
   matchId: string,
-  status: "running" | "paused" | "ended",
+  status: "running" | "paused" | "ended" | "failed",
   revision: number,
   tick: number,
   seq = 0,
@@ -47,6 +47,47 @@ function runtimeStatus(
       owner_id: "runtime_owner.browser",
       match_index: 0,
       last_command_id: "11111111-1111-4111-8111-111111111111",
+    },
+    { matchId, tick, seq },
+  );
+}
+
+/** The canonical draw scorecard the backend emits AFTER `match_ended`. */
+function drawScorecard(matchId: string, tick: number, seq: number): SOEventEnvelope {
+  return makeEnvelope(
+    "match_scored",
+    {
+      kind: "steel_onslaught.match_scored",
+      match_id: matchId,
+      winner: null,
+      scores: {
+        "player.red": {
+          victory: 0,
+          damage_dealt: 0,
+          damage_efficiency: 0,
+          pressure_efficiency: 1,
+          overload_penalty: 0,
+          replay_validity: 1,
+          final_score: 10,
+        },
+        "player.blue": {
+          victory: 0,
+          damage_dealt: 0,
+          damage_efficiency: 0,
+          pressure_efficiency: 1,
+          overload_penalty: 0,
+          replay_validity: 1,
+          final_score: 10,
+        },
+      },
+      winner_player_id: "player.blue",
+      winner_loadout_id: "loadout.blue",
+      winner_score: 10,
+      loser_player_id: "player.red",
+      loser_score: 10,
+      duration_ticks: tick,
+      scored_at: "2026-07-21T00:00:00Z",
+      is_draw: true,
     },
     { matchId, tick, seq },
   );
@@ -224,6 +265,28 @@ describe("MatchTransport — runtime lifecycle projection", () => {
     );
     expect(() => terminal.ingest(runtimeStatus("runtime.terminal", "running", 3, 2))).toThrow(
       /after match_ended/,
+    );
+  });
+
+  it("surfaces a crashed worker's failed status as an observable terminal", () => {
+    // The client half of the FAILED seam: the server projects this frame when
+    // its match worker raises, and there is no match_ended behind it — a
+    // crash produces no canonical terminal.  The browser must therefore be
+    // able to read `failed` off the snapshot rather than watching a stream
+    // that silently stops with the projection stuck on `running`.
+    const t = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("runtime.failed", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    t.ingest(started);
+    t.ingest(runtimeStatus("runtime.failed", "running", 1, 0, 1));
+    t.ingest(runtimeStatus("runtime.failed", "failed", 2, 0, 2));
+
+    expect(t.snapshot().runtimeStatus?.status).toBe("failed");
+    // No canonical terminal was produced, so the match is NOT complete.
+    expect(t.snapshot().matchComplete).toBe(false);
+    // `failed` is terminal for the runtime projection like `ended` is.
+    expect(() => t.ingest(runtimeStatus("runtime.failed", "running", 3, 1))).toThrow(
+      /terminal runtime status/,
     );
   });
 });
@@ -758,9 +821,20 @@ describe("MatchTransport — projection integrity", () => {
     const [started] = tickStream("m", 1);
     if (started === undefined) throw new Error("missing match_started fixture");
     transport.ingest(started);
-    const request = makeLlmRequest({ matchId: "m", tick: 1, messageId: "request-1" });
+    const request = makeLlmRequest({
+      matchId: "m",
+      tick: 1,
+      messageId: "request-1",
+    });
     transport.ingest(request);
-    transport.ingest(makeLlmResolved({ matchId: "m", tick: 1, seq: 1, causationId: "request-1" }));
+    transport.ingest(
+      makeLlmResolved({
+        matchId: "m",
+        tick: 1,
+        seq: 1,
+        causationId: "request-1",
+      }),
+    );
     expect(() =>
       transport.ingest(makeLlmFailed({ matchId: "m", tick: 2, causationId: "request-1" })),
     ).toThrow(/multiple terminals/);
@@ -787,5 +861,81 @@ describe("MatchTransport — projection integrity", () => {
         ),
       ),
     ).toThrow(/unresolved LLM completion/);
+  });
+
+  /**
+   * frontend-02 — the draw path.
+   *
+   * The backend subscribes the ledger BEFORE the scoring reducer, the bus is
+   * synchronous and dispatches in subscription order, and `ReducerScoring`
+   * scores while HANDLING `match_ended`. On a draw there is no preceding
+   * `victory_declared`, so `match_scored` is legitimately published AFTER the
+   * terminal. Rejecting it killed the scorecard on every drawn match.
+   */
+  it("accepts the canonical match_scored that follows match_ended on a draw", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    transport.ingest(started);
+    transport.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "draw_mutual_destruction", winner_id: null },
+        { matchId: "m", tick: 3 },
+      ),
+    );
+    expect(transport.snapshot().matchComplete).toBe(true);
+    expect(() => transport.ingest(drawScorecard("m", 3, 1))).not.toThrow();
+    expect(transport.snapshot().matchComplete).toBe(true);
+  });
+
+  it("still rejects a repeated match_scored and any other post-terminal event", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    transport.ingest(started);
+    transport.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "draw_mutual_destruction", winner_id: null },
+        { matchId: "m", tick: 3 },
+      ),
+    );
+    transport.ingest(drawScorecard("m", 3, 1));
+    expect(() => transport.ingest(drawScorecard("m", 3, 2))).toThrow(/after match_ended/);
+
+    const other = new MatchTransport({ msPerTick: 500 });
+    other.ingest(started);
+    other.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "draw_mutual_destruction", winner_id: null },
+        { matchId: "m", tick: 3 },
+      ),
+    );
+    expect(() => other.ingest(makeEnvelope("match_tick", {}, { matchId: "m", tick: 4 }))).toThrow(
+      /after match_ended/,
+    );
+  });
+
+  it("releases the post-terminal scorecard to the fold sink", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    const recorder = recordingSink();
+    transport.setSink(recorder.sink);
+    transport.ingest(started);
+    transport.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "draw_mutual_destruction", winner_id: null },
+        { matchId: "m", tick: 3 },
+      ),
+    );
+    transport.ingest(drawScorecard("m", 3, 1));
+    transport.goLive();
+    transport.frame(0);
+    const scored = recorder.released.filter((env) => env.event_type === "match_scored");
+    expect(scored).toHaveLength(1);
   });
 });

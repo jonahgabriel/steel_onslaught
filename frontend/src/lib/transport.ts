@@ -96,6 +96,8 @@ interface MatchBuffer {
   blueLabel: string;
   /** The sole canonical terminal event (`match_ended`) has been ingested. */
   complete: boolean;
+  /** The sole `match_scored` scorecard has been ingested (before or after the terminal). */
+  scored: boolean;
   lastOrder: readonly [tick: number, sequence: number, eventId: string] | null;
   llmRequests: Map<string, boolean>;
   runtimeStatus: RuntimeStatusChangedPayload | null;
@@ -242,6 +244,7 @@ export class MatchTransport {
         redLabel: "",
         blueLabel: "",
         complete: false,
+        scored: false,
         lastOrder: null,
         llmRequests: new Map<string, boolean>(),
         runtimeStatus: null,
@@ -273,7 +276,14 @@ export class MatchTransport {
     }
     // Dedup a StrictMode / reconnect re-stream: the same envelope must never land
     // in the buffer twice (it would duplicate rows and corrupt tick boundaries).
-    if (buf.complete) {
+    // `match_scored` is the one legitimate post-terminal projection. On the
+    // draw path the backend emits it AFTER `match_ended`: the ledger
+    // subscriber is registered before the scoring reducer, the bus is
+    // synchronous and dispatches in subscription order, and the scoring
+    // reducer scores while HANDLING `match_ended`. Rejecting it killed the
+    // scorecard on every drawn match. Anything else after the terminal is
+    // still a projection defect.
+    if (buf.complete && !(env.event_type === "match_scored" && !buf.scored)) {
       throw new ProjectionIntegrityError(`event ${env.event_id} arrived after match_ended`);
     }
     const order: readonly [number, number, string] = [env.tick, env.sequence_in_tick, env.event_id];
@@ -309,9 +319,9 @@ export class MatchTransport {
         ) {
           throw new ProjectionIntegrityError("runtime status identity changed within a match");
         }
-        if (buf.runtimeStatus.status === "ended") {
+        if (buf.runtimeStatus.status === "ended" || buf.runtimeStatus.status === "failed") {
           throw new ProjectionIntegrityError(
-            "runtime ended status must be followed by match_ended",
+            "terminal runtime status must be followed by match_ended",
           );
         }
       }
@@ -336,7 +346,11 @@ export class MatchTransport {
       buf.llmRequests.set(requestId, true);
     }
     if (env.event_type === "match_ended") {
-      if (buf.runtimeStatus !== null && buf.runtimeStatus.status !== "ended") {
+      if (
+        buf.runtimeStatus !== null &&
+        buf.runtimeStatus.status !== "ended" &&
+        buf.runtimeStatus.status !== "failed"
+      ) {
         throw new ProjectionIntegrityError("runtime status must be ended before match_ended");
       }
       const unresolved = [...buf.llmRequests].filter(([, resolved]) => !resolved);
@@ -359,6 +373,12 @@ export class MatchTransport {
         .filter((mech) => mech.side === "blue")
         .map((mech) => mech.mech_id)
         .join("+");
+    }
+    if (env.event_type === "match_scored") {
+      if (buf.scored) {
+        throw new ProjectionIntegrityError(`match_scored repeated for ${matchId}`);
+      }
+      buf.scored = true;
     }
     if (env.event_type === "match_ended") {
       buf.complete = true;

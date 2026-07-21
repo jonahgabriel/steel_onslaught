@@ -1083,12 +1083,43 @@ class BrowserPlayServer:
         try:
             task.result()
         except Exception:
+            # The worker raised, so ``MatchRuntime.run`` has already committed
+            # its terminal FAILED status.  Project it into the browser event
+            # stream BEFORE reporting the failure, which closes and retires
+            # the session: a client watching only the event socket would
+            # otherwise see the stream stop with its runtime projection frozen
+            # on ``running``, indistinguishable from a slow match.  This
+            # callback runs on the event loop, so the enqueue/flush pair is
+            # thread-safe here (it is not from the worker thread).
+            self._project_failed_runtime_status()
             self._report_terminal_failure()
         # A completed match is no longer an active admission. Retire its
         # process-local stack so the next browser start command can create a
         # fresh match without restarting the server.
         if self._loop is not None:
             self._retire_task = asyncio.create_task(self._retire_completed_session())
+
+    def _project_failed_runtime_status(self) -> None:
+        """Release the runtime's committed FAILED terminal to the browser.
+
+        Only a status the runtime actually committed is projected: this never
+        manufactures a terminal the lifecycle owner did not record.  The
+        pending tick is flushed because a crash produces no subsequent
+        MATCH_TICK (and no MATCH_ENDED) to trigger the normal ordering flush,
+        so the frame would otherwise sit in the buffer until retirement
+        discarded it.
+        """
+
+        session = self._session
+        if session is None:
+            return
+        runtime = getattr(session.stack, "runtime", None)
+        if runtime is None:
+            return
+        if getattr(runtime.status, "status", None) is not SORuntimeStatus.FAILED:
+            return
+        self._enqueue_runtime_status()
+        self._flush_pending_tick(session.match_id)
 
     async def _retire_completed_session(self) -> None:
         # Drain callbacks funnelled from the worker thread before clearing the

@@ -49,6 +49,21 @@ class _MemoryLedger:
 
 @pytest.mark.integration
 def test_no_cap_uses_arena_pressure_and_replays_exactly() -> None:
+    """Symmetric passive loadouts converge to a DRAW, not to a side.
+
+    ``proof_red_defensive_passive`` and ``proof_blue_defensive_passive`` are
+    byte-for-byte identical apart from their ids: same chassis, same boiler,
+    same pilot template, no weapons, no sensors.  Neither can damage the other,
+    so the only attrition is the arena's sudden-death pulse — which hits both
+    mechs for the same amount on the same tick.  The only correct terminal is
+    ``draw_mutual_destruction``.
+
+    This assertion previously read ``LAST_MECH_STANDING``, which encoded the
+    match-runner-fold-01 side bias as an expectation: sudden death damaged and
+    destroyed mechs one at a time in ``mech_id`` order and broke on the first
+    kill, so ``mech.a.01`` always died before ``mech.b.01`` absorbed the same
+    lethal pulse and ``player.b`` always won at full HP.
+    """
     bus = InProcessEventBus()
     ledger = _MemoryLedger()
     bus.subscribe(ledger.append)
@@ -64,7 +79,10 @@ def test_no_cap_uses_arena_pressure_and_replays_exactly() -> None:
     live = runner.run()
 
     assert live.status is SOMatchStatus.ENDED
-    assert live.end_reason is SOMatchEndReason.LAST_MECH_STANDING
+    assert live.end_reason is SOMatchEndReason.DRAW_MUTUAL_DESTRUCTION
+    assert live.winner_id is None
+    assert [mech.hp for mech in live.mech_states.values()] == [0, 0]
+    assert not [mech for mech in live.mech_states.values() if mech.alive]
     assert live.max_ticks is None
     start_tick = runtime.arena.sudden_death_start_tick
     assert start_tick is not None

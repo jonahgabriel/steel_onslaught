@@ -27,9 +27,12 @@ Cascade ladder (deterministic order, per living mech per ``MATCH_TICK``):
    produced ``MECH_DESTROYED`` / ``PILOT_KILLED`` events are folded
    idempotently so the reducer's own loop-back emissions are no-ops.
 6. If exactly one player has surviving mechs after a change: emit
-   ``VICTORY_DECLARED(winner_player_id, reason="last_mech_standing")``.  Zero
-   survivors emits nothing — an explicit lifecycle ``max_ticks`` cap or
-   arena-authored convergence pressure is the terminal backstop.
+   ``VICTORY_DECLARED(winner_player_id, reason="last_mech_standing")``.  If the
+   same pass leaves ZERO survivors (a rupture always destroys its own mech and
+   its area damage can finish the last opponent in the same pass): emit
+   ``MATCH_ENDED(reason="draw_mutual_destruction")``.  Emitting nothing on the
+   zero-survivor transition used to leave the match RUNNING with an empty
+   arena.
 
 Exit rule (documented decision — the plan specifies entry thresholds only):
 dropping below the redline threshold resets the whole ladder — the redline
@@ -72,8 +75,8 @@ from steel_onslaught.pilots.schemas import ModelSOPosition
 
 _PRODUCER_NODE = "node.reducer.failure"
 
-# Match-scoped events (VICTORY_DECLARED) carry the wildcard subject,
-# mirroring the lifecycle reducer's convention.
+# Match-scoped terminals (VICTORY_DECLARED, MATCH_ENDED) carry the wildcard
+# subject, mirroring the lifecycle reducer's convention.
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
 
 # ---------------------------------------------------------------------------
@@ -228,7 +231,7 @@ class ReducerFailureCascade:
             self._cascade_mech(event, state.seed, working, mech_id)
 
         new_state = state.model_copy(update={"mech_states": working})
-        self._maybe_declare_victory(event, survivors_before, new_state)
+        self._maybe_declare_terminal(event, survivors_before, new_state)
         return new_state
 
     def _cascade_mech(
@@ -454,35 +457,57 @@ class ReducerFailureCascade:
         new_state = state.model_copy(
             update={"mech_states": {**state.mech_states, mech.mech_id: new_mech}}
         )
-        self._maybe_declare_victory(event, survivors_before, new_state)
+        self._maybe_declare_terminal(event, survivors_before, new_state)
         return new_state
 
     # ------------------------------------------------------------------
-    # Victory declaration
+    # Terminal declaration (victory OR mutual-destruction draw)
     # ------------------------------------------------------------------
 
-    def _maybe_declare_victory(
+    def _maybe_declare_terminal(
         self,
         event: ModelSOEventEnvelope,
         survivors_before: frozenset[str],
         new_state: ModelSOMatchState,
     ) -> None:
-        """Emit VICTORY_DECLARED on the transition to exactly one surviving player.
+        """Emit the terminal event for whichever survivor transition occurred.
 
-        Emitting only on the >1 -> ==1 transition keeps re-folds and
-        already-decided states from duplicating the declaration.  Zero
-        survivors emits nothing (an explicit cap or arena pressure is the
-        lifecycle backstop).
+        Two transitions are terminal:
+          - ``>1 -> ==1``: ``VICTORY_DECLARED`` for the last player standing;
+          - ``>=1 -> ==0``: ``MATCH_ENDED(draw_mutual_destruction)``.  A rupture
+            takes its own mech unconditionally AND deals area damage, so a
+            single cascade pass can go 2 -> 0.  Emitting nothing there left the
+            match RUNNING with no survivors, and the runner then published
+            empty ticks forever.
+
+        The already-RUNNING guard, not the predecessor count, is what keeps
+        re-folds and already-decided states from duplicating a declaration —
+        a per-event fold walks ``2 -> 1 -> 0`` and would otherwise skip the
+        draw entirely.
 
         Defense-in-depth: ``MatchStateFold._on_flag_drop`` (in ``match/fold.py``)
-        declares victory on the same transition.  This cascade-level declaration
-        fires when the kill arrives via the rupture chain; the fold-level one is
-        the backstop for kills arriving as direct MECH_DESTROYED events.  Both
-        are guarded to the >1 -> ==1 transition so they don't duplicate.  The
-        paired redundancy is intentional — see
+        declares the same terminals on the same transitions.  This
+        cascade-level declaration fires when the kill arrives via the rupture
+        chain; the fold-level one is the backstop for kills arriving as direct
+        MECH_DESTROYED events.  The paired redundancy is intentional — see
         ``tests/match/test_fold_victory_backstop.py``.
         """
+        if new_state.status is not SOMatchStatus.RUNNING:
+            return  # a terminal is already recorded; never re-declare one
         survivors_after = new_state.surviving_player_ids()
+        if not survivors_before:
+            return
+        if not survivors_after:
+            self._emit_event(
+                event.tick,
+                SOEventType.MATCH_ENDED,
+                subject=_MATCH_SUBJECT,
+                payload={
+                    "reason": SOMatchEndReason.DRAW_MUTUAL_DESTRUCTION.value,
+                    "winner_id": None,
+                },
+            )
+            return
         if len(survivors_before) > 1 and len(survivors_after) == 1:
             winner = next(iter(survivors_after))
             self._emit_event(
