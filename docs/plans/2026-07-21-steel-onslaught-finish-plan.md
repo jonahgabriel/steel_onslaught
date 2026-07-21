@@ -8,44 +8,207 @@ Evidence: [canonical & viral finish audit](../2026-07-21-steel-onslaught-finish-
 re-checked by an independent skeptic: 89 confirmed, 1 uncertain (`ledger-replay-03`).
 Finding ids used below (e.g. `cards-02`) index that register.
 
+**Corrected 2026-07-21** against an execution trace of every match entrypoint.
+The audit — and this plan built on it — assumed `tactical_split_v1_qwen` was
+"the live overlay" and the flagship demo. It is loaded by nothing. See
+[Demo-path correction](#demo-path-correction-2026-07-21-verified) and the
+[open decision](#open-decision--which-overlay-is-the-demo) it forces; both
+supersede any statement elsewhere in this document that names a default overlay.
+
 ## Finish line
 
-Steel Onslaught is finished when a clean browser session can start the default
-LLM-vs-LLM match, show the authoritative arena and split decks, use real
-configured providers, produce strategically different trajectories, reach a
-durable terminal result, and expose replayable evidence for the decisions and
-learning state. A deterministic fallback remains an explicit failure mode, not
-the default demo path.
+Steel Onslaught is finished when a clean browser session can start the
+**designated** demo LLM-vs-LLM match — designation is itself open, see the
+demo-path correction below — show the authoritative arena and that overlay's
+decks, use real configured providers, produce strategically different
+trajectories, reach a durable terminal result, and expose replayable evidence
+for the decisions and learning state. A deterministic fallback remains an
+explicit failure mode, not the default demo path.
 
 The finish line is evidence-based. “The UI loaded” or “a match reached a tick”
 is not sufficient; every gate below names the proof that must be retained.
 
 ## Current baseline (shipped, but not all proven)
 
+### Demo-path correction (2026-07-21, verified)
+
+An independent execution trace of every match entrypoint refutes this plan's
+central premise. The statements below are verified by running the code, not by
+reading it.
+
+- **There is no default overlay anywhere.** Every entrypoint declares
+  `--overlay` as `required=True` with no `default=`: `so run`
+  (`src/steel_onslaught/cli/main.py:49`), `so play` (`cli/play.py:1802-1807`),
+  `so play-live` (`cli/play.py:1887-1892`), `so serve` (`cli/serve.py:416-421`),
+  plus `balance` / `learn` / `learn-experiment` / `run-adaptation`. Nothing
+  selects `tactical_split_v1_qwen`. It is not "the live overlay"; it is an
+  argument no operator has ever been told to type.
+- **`so play-live` is the only working browser match command.** `so play`
+  cannot start a match on any shipped overlay: it builds through
+  `CliApplicationFactory.packaged()` (`cli/play.py:1567`,
+  `cli/application.py:43-46`, `secret_resolver=None`), so
+  `live_provider_capability` stays `None` and Start Match raises
+  `NonStubModelProviderError` (`commands/coordinator.py:409`) — all 8 shipped
+  overlays declare `kind: openai_compatible` and none declares a stub provider.
+  It also never creates the overlay's `.onex_state` directories (only
+  `play_live_command` does, `cli/play.py:1999-2007`), so it fails on
+  `sqlite3.OperationalError` first. `so serve` is replay-only
+  (`cli/serve.py:450`).
+- **A clean checkout cannot open a browser session at all.**
+  `frontend/vite.config.ts:16-17` `readFileSync`s
+  `frontend/.steel-onslaught-bootstrap.generated.json` *inside* `defineConfig`;
+  that file is gitignored (`.gitignore:22`) and absent, so `npm run dev` fails
+  at config load with `ENOENT`. No fallback, no committed bootstrap. Only
+  `so play-live --bootstrap-output` produces a usable one (`cli/play.py:1935`,
+  written at `:1790-1792`), because `BrowserPlayServer.start()` rewrites it with
+  the bound port *and* a `command_gateway` binding.
+  `scripts/export_frontend_bootstrap.py:53,63` never passes `command_gateway`
+  (`cli/serve.py:67-95`), so its bootstrap binds `NULL_COMMAND_SOCKET_FACTORY`
+  (`frontend/src/lib/application.ts:615`) and the browser cannot issue Start
+  Match — that exporter is a replay artifact, not a demo path.
+- **The reachable demo provider is GLM, not local Qwen.** With
+  `--catalog-index configured_v1.yaml` all five providers merge live
+  (`glm-5.2, qwen35, qwen27, openrouter, gemini`, verified by executing
+  `load_model_catalog_runtime_overlay`), and the catalog's *default* seat
+  options are GLM — `player_option.glm_sniper` / `player_option.glm_opportunist`
+  (`configured_v1.yaml:83,97`), sourced from `live_glm_cards.yaml`
+  (`configured_v1.yaml:34-36`). Out of the box the browser demo is GLM 5.2 over
+  `api.z.ai` (`live_glm_cards.yaml:49-61`). The dropdown can be changed per
+  seat, so the provider is an operator choice, not a property of the build.
+- **That path is a SINGLE-deck match.** `live_glm_cards.yaml` declares one
+  `deck.standard.v1`. `tactical_split_v1_qwen.yaml` is the **only** overlay of
+  the eight that declares `deck_policy` at all (verified by loading all 8).
+- **No wired path produces a split-deck match, and the split overlay is
+  unreferenced.** `grep -rn "tactical_split" tests/ frontend/ scripts/ src/
+  evidence/ .github/` returns **exit 1, zero matches** — no catalog entry, no
+  roster, no script, no test, no documented command. Its only repo-wide
+  references are this plan and the audit. The audit's own `findings.json:666`
+  already recorded that `grep -rln tactical_split_v1_qwen tests/` returns
+  nothing, so the "referenced by one test" claim contradicted the audit it came
+  from.
+
+**Consequence, stated plainly:** the split-deck, per-seat hand-quota, and
+`deck_policy.archetype` design that this plan — all of Phase 2 and Phase 2.5 —
+has been specifying applies to an overlay **nobody currently loads**. The
+overlay an operator actually reaches today is single-deck and GLM-backed.
+Either the split overlay gets wired (see the open decision below) or every
+split-deck deliverable here is being built against a file that no demo, no
+test, and no documented command touches.
+
+**Not refuted: the split overlay works.** A split-deck match *is* reachable —
+it was driven to terminal state three times, once against the live Qwen
+endpoint — but only by passing the split overlay explicitly as `--overlay`.
+`assemble_match_live` with `tactical_split_v1_qwen.yaml` (the exact `so run`
+code path, `cli/main.py:70-76`) ended on seed 7 with 2/2 live Qwen completions
+and correct 3/2 · 2/3 split hands. The same overlay under
+`so play-live --catalog-index configured_v1.yaml` ended at tick 10 with
+**differentiated personas** (`{berserker, sniper}`), because
+`_catalog_selection_overlay` (`cli/play.py:1526-1532`) rebinds each seat to the
+admitted option's `pilot_spec_id` while preserving the launch overlay's
+`deck_policy` — the catalog merge only touches `llm.providers` +
+`llm.model_identities` (`match/composition.py:634-678`), so the launch overlay
+remains the deck authority. Making the split overlay the demo is wiring plus
+one line, not a build.
+
+**The seat-identity fix survives this correction.** PR #110's
+`validate_seat_programmer_identity` enforces distinct seats **unconditionally**
+— it is no longer gated on `deck_policy` being present — and it runs inside
+`build_card_programmers`, the single chokepoint the catalog, roster, and
+injected-overlay paths all funnel through, on the post-rebind admitted runtime
+selection. So the guarantee covers the **reachable single-deck GLM path**, not
+only the split overlay. Seat identity is enforced as the pair
+`(provider, persona)`: sniper-vs-sniper across two *different* models is legal
+and stays legal, and only same-persona-on-same-provider fails closed. The
+archetype-equals-persona check remains conditional on `deck_policy`, which is
+correct — it is the split overlay's own consistency rule.
+
+### Open decision — which overlay is THE demo
+
+Unresolved; the operator picks. Costs below come from the same verified trace.
+
+- **(a) Wire `tactical_split_v1_qwen` in and make it the demo.** Mostly wiring:
+  add a `catalog_source.qwen35_split` entry to `configured_v1.yaml` pointing at
+  the split overlay plus `canonical_qwen35.yaml` and the two qwen35 loadouts,
+  and set the seat `default_option_id`s to qwen options. Neither
+  `_catalog_selection_overlay` nor `load_model_catalog_runtime_overlay` needs
+  changing. **One real one-line blocker:** `tactical_split_v1_qwen.yaml:92-93`
+  declares `secret_resolver: kind: none`, so selecting the catalog's GLM
+  defaults fails composition with `llm.secret_resolver kind 'none' cannot bind
+  secret-bearing providers: ['glm-5.2']` (`match/composition.py:1176-1181`);
+  `kind: injected` was applied in-memory and unblocked all five providers.
+  **One design defect:** the `--roster` path performs no seat→programmer rebind
+  at all (`cli/play.py:1683-1690`, `selected_overlay = overlay` unless a catalog
+  is supplied), so the overlay's own both-berserker `programmers`
+  (`tactical_split_v1_qwen.yaml:62-67`) run verbatim and the ledger contradicts
+  its own `MATCH_STARTED` — fix by binding blue to `pilot.llm.qwen35_sniper`
+  (already shipped in this overlay's declared `pilot_registry_dir`) or by
+  routing the demo through `--catalog-index`.
+- **(b) Add a `deck_policy` to the reachable overlay and keep the current launch
+  path.** Keeps GLM + `configured_v1` as the demo and leaves bootstrap/launch
+  mechanics untouched. Real work, not wiring: `live_glm_cards` ships a single
+  `deck.standard.v1`, so this means authoring split decks and quotas for an
+  overlay that has none — and it strands the split overlay a second time.
+- **(c) Consolidate the eight card overlays.** Three of the eight
+  (`tactical_v1_qwen`, `fire_dense_v1_qwen`, `tactical_split_v1_qwen`) are
+  reachable from no catalog and no roster; the first two are referenced only by
+  tests, the third by nothing. Real work with real blast radius — every
+  consolidation touches the catalog sources at `configured_v1.yaml:10-66` and
+  the tests pinned to each overlay — but it is the only option that stops the
+  overlay set from accreting further unreferenced files.
+
+**Separate decision, flagged explicitly: is the demo provider GLM or local
+Qwen?** This is not implied by the overlay choice and needs its own call. The
+catalog default is GLM 5.2 over `api.z.ai` with `secret://llm/glm` ←
+`LLM_GLM_API_KEY` (`live_glm_cards.yaml:49-61`); the local alternative is
+`Qwen3.6-35B-A3B` over Tailscale `:8000`, keyless
+(`tactical_v1_qwen.yaml:55-61`). **Only Qwen has been exercised live end to
+end**; whether GLM, Gemini, or OpenRouter completes a real match against its
+live endpoint is unverified. The two candidates also disagree on failure
+semantics — `live_glm_cards` omits `failure_policy` and therefore defaults to
+`raise`, while all six qwen/gemini/openrouter overlays set `fallback` — so
+operating rule 9 has to be applied to whichever is chosen.
+
+### Baseline inventory
+
 - Event-sourced reducer, SQLite ledger/replay, typed envelopes, and terminal
   scoring are on `main`.
-- The live overlay is `tactical_split_v1_qwen`: `foundry_60`, 60×60, 336
-  blocking/LOS terrain cells, spawns `(4,4)` and `(55,55)`, paced five-register
-  split decks (red 3 movement/2 weapon, blue 2 movement/3 weapon).
+- `tactical_split_v1_qwen` declares `foundry_60`, 60×60, 336 blocking/LOS
+  terrain cells, spawns `(4,4)` and `(55,55)`, and paced five-register split
+  decks (red 3 movement/2 weapon, blue 2 movement/3 weapon). **It is loaded by
+  nothing** — see the demo-path correction above. Every other shipped overlay is
+  single-deck.
 - The provider catalog and roster include local Qwen, GLM, Gemini, OpenRouter,
   and human options. Fresh raw matches have reached terminal state with real
-  Qwen calls, but the clean-browser external-provider gate is still unproven.
-- **Seat identity is broken, and worse than previously recorded.** The tactical
-  overlay binds both card programmers to `pilot.llm.qwen35` (persona
-  `berserker`) while labelling the blue seat `sniper`; in paced card mode the
-  **card programmer — not the loadout pilot — is the decision-maker** (`runner`
-  skips `ReducerPilotTick` when registers are enabled), so the default demo runs
-  **berserker-vs-berserker**. No validator reconciles `deck_policy.archetype`
-  with the programmer's persona (`archetype` is read by no handler), the
-  mismatch survives to the ledger (`persona_id=berserker` on blue, contradicting
+  Qwen calls, but the clean-browser external-provider gate is still unproven,
+  and no non-Qwen provider has been proven to complete a match live.
+- **Seat identity is broken on the un-rebound launch paths.** The split overlay
+  binds both card programmers to `pilot.llm.qwen35` (persona `berserker`) while
+  labelling the blue seat `sniper`; in paced card mode the **card programmer —
+  not the loadout pilot — is the decision-maker** (`runner` skips
+  `ReducerPilotTick` when registers are enabled), so a bare `--overlay` or
+  `--roster` launch runs **berserker-vs-berserker**. Scope correction: this is
+  **not** true of the `--catalog-index` path, which rebinds each seat to the
+  admitted option's `pilot_spec_id` (`cli/play.py:1526`) and was verified
+  producing `{berserker, sniper}`. No validator reconciles
+  `deck_policy.archetype` with the programmer's persona (`archetype` is read by
+  no handler — only `hand_quota` is consumed anywhere in `src/`), the mismatch
+  survives to the ledger (`persona_id=berserker` on blue, contradicting
   `MATCH_STARTED`) and to the UI (both rails render `LLM · berserker`). The
   correct `pilot.llm.qwen35_sniper` (persona `sniper`) ships unused **in the very
   directory this overlay already loads** — `contracts_data/pilots/fire_dense_qwen/`,
-  its declared `pilot_registry_dir` — alongside `llm_qwen35.yaml`, and the
-  validated roster path (`canonical_qwen35.yaml`) already binds it correctly. The
-  overlay rebind is therefore a one-line change requiring no registry move.
-  Systemic: every qwen/glm overlay
-  collapses both seats onto one persona; only gemini/openrouter differentiate.
+  its declared `pilot_registry_dir` — alongside `llm_qwen35.yaml`. The roster
+  `canonical_qwen35.yaml` *declares* the sniper binding correctly, but nothing
+  applies it: on the roster path `selected_overlay = overlay`
+  (`cli/play.py:1683-1690`), so a verified 12-tick roster run emitted all six
+  `LLM_COMPLETION_REQUESTED` with `persona_id: berserker` while
+  `MATCH_STARTED.launch_provenance` recorded blue as
+  `player_option.qwen35_sniper` / `persona_id: sniper` — one match, two
+  contradictory records. The overlay rebind is a one-line change requiring no
+  registry move. Systemic in the overlay *files*: every qwen/glm overlay authors
+  both seats onto one persona and only gemini/openrouter differentiate as
+  authored — but the catalog rebind repairs this at runtime for the catalog
+  path, including GLM (verified resolving to `pilot.glm.sniper` /
+  `pilot.glm.opportunist`).
   Differentiation is further thinned by identical decks (only `hand_quota`
   differs) and `register_count == hand_size` in every deck, so pilots reorder
   rather than select. Loci: blocking-defects table below, plus
@@ -71,10 +234,15 @@ is not sufficient; every gate below names the proof that must be retained.
 - The full Python suite is not green in this environment solely because the
   Playwright Chromium executable is not installed; the missing browser binary
   is a release-blocking environment prerequisite, not a test to skip.
-- **Deterministic fallback is currently the shipped default**, contradicting
-  both the finish line and operating rule 4. The demo overlay sets
-  `failure_policy: fallback` on both programmers (the model default is `raise`),
-  and `LLMProgrammingPilot.program` swallows `LlmSemanticError` *and* a bare
+- **Deterministic fallback is the shipped default on six of eight overlays**,
+  contradicting both the finish line and operating rule 4. All six
+  qwen/gemini/openrouter overlays — including the split overlay — set
+  `failure_policy: fallback` on both programmers (the model default is `raise`).
+  Correction: `live_glm_cards`, the overlay behind the reachable catalog
+  default, **omits** `failure_policy` and therefore already defaults to `raise`,
+  so this defect follows the demo-overlay decision rather than preceding it.
+  Independently of the overlay, `LLMProgrammingPilot.program` swallows
+  `LlmSemanticError` *and* a bare
   `except Exception` into the deterministic priority planner behind a
   `_LOG.warning`. `PLAN_COMMITTED` carries no provenance field, so a degraded
   match is indistinguishable from a real LLM match in the authoritative folded
@@ -102,8 +270,10 @@ is not sufficient; every gate below names the proof that must be retained.
   mismatch above is invisible to replay-verified truth.
   (`events-envelope-01/02`, `llm-providers-05`; `ledger-replay-03` is the
   audit's one UNCERTAIN finding — confirm it in Phase 6 before building on it)
-- **The demo path is the least-tested path.** The default overlay has zero
-  coverage and the suite actively asserts the samey seat binding as correct; the
+- **The demo path is the least-tested path.** The split overlay has zero
+  coverage because it has zero references of any kind (grep exit 1 across
+  `tests/ frontend/ scripts/ src/ evidence/ .github/`), and the suite actively
+  asserts the samey seat binding as correct; the
   no-cap test asserts only `LAST_MECH_STANDING` and never the winning side
   (masking the sudden-death bias); the only frontend "real match" test replays a
   legacy side-less heuristic ledger. (`contracts-data-05`, `projections-cli-04`,
@@ -115,9 +285,17 @@ Six blockers. **Five are the same root defect observed from five subsystems** �
 fix the seat-identity invariant once at the composition boundary and they
 collapse together. The sixth is the unwired learning loop.
 
+Scope correction (2026-07-21): the four overlay/CLI-side loci below are cited
+against `tactical_split_v1_qwen`, which **no reachable path loads**. They remain
+real defects on the `--overlay` and `--roster` launch paths, and the composition
+loci (`llm-providers-01`, `match-composition-01`) are path-independent — but
+"demo overlay" in the defect names refers to the overlay this plan *assumed* was
+the demo, not the one an operator reaches today. PR #110 lands the fix
+unconditionally, so it covers both.
+
 | id | defect | locus |
 | --- | --- | --- |
-| `contracts-data-01` | Demo overlay runs blue "sniper" on the berserker persona | `contracts_data/overlays/tactical_split_v1_qwen.yaml:65` |
+| `contracts-data-01` | Split overlay runs blue "sniper" on the berserker persona | `contracts_data/overlays/tactical_split_v1_qwen.yaml:65` |
 | `llm-providers-01` | Programmer persona resolved with no seat cross-check | `src/steel_onslaught/match/composition.py:1079` |
 | `match-composition-01` | Card-programmer identity never validated against admitted seat | `src/steel_onslaught/match/composition.py:1401` |
 | `projections-cli-01` | Seat rebind is `--catalog-index`-only; overlay/roster path unguarded | `src/steel_onslaught/cli/play.py:1684` |
@@ -235,10 +413,24 @@ or stale-match artifacts.
 - Replace the current manual bootstrap-copy step with one startup command that
   generates the catalog-merged frontend artifact and launches both services.
   Add an HTTP smoke assertion that backend and Vite bootstrap return 200 with
-  the same overlay/catalog hash before opening a browser.
-- Exercise `Start Match` through the UI against `tactical_split_v1_qwen`, with
-  two different configured Qwen seats by default (depends on the seat-identity
-  repair — immediate action 1 — landing first). Verify the setup panel
+  the same overlay/catalog hash before opening a browser. Scope, per the
+  demo-path correction: a clean checkout has **no** bootstrap and **no**
+  `node_modules`, and `vite.config.ts` throws `ENOENT` at config load, so this
+  command must cover `npm install` + bootstrap generation, not just process
+  launch. It must use `so play-live --bootstrap-output` (the only generator that
+  emits a `command_gateway` binding); `scripts/export_frontend_bootstrap.py`
+  yields a Start-Match-incapable bootstrap and is for replay only.
+- Fix or delete `so play`. It cannot start a match on any shipped overlay
+  (packaged factory ⇒ `NonStubModelProviderError`) and never creates the
+  overlay's `.onex_state` directories, so it fails on `sqlite3.OperationalError`
+  first. A documented command that cannot work is worse than no command.
+- Exercise `Start Match` through the UI against **the overlay chosen by the open
+  decision above** — this plan can no longer assume `tactical_split_v1_qwen`,
+  because nothing loads it. If the split overlay is chosen, this step also
+  requires its `secret_resolver: kind: none` → `injected` one-liner
+  (`tactical_split_v1_qwen.yaml:92-93`) or the catalog's GLM defaults fail
+  composition. Run with two distinct configured seats (depends on the
+  seat-identity repair — immediate action 1 — landing first). Verify the setup panel
   disappears after `MATCH_STARTED`, the current match ID/arena header updates,
   controls re-arm after `MATCH_ENDED`, and a new match supersedes an incomplete
   old prefix without a manual refresh.
@@ -268,22 +460,35 @@ stale-map/blank-screen/start-button defects.
 **Goal:** convert the existing split-deck model into visible tactical variety.
 
 - **Precondition — repair seat identity as one validated contract. Nothing else
-  in this phase is measurable until this lands.** Add a fail-closed
-  composition-time validator that, when `deck_policy` and `programmers` are both
-  present, requires each programmer's resolved persona to equal its seat's
-  `archetype` and requires the two seats to resolve to *distinct* personas. Apply
-  the seat→option pilot rebind on the overlay/roster path, not only the
+  in this phase is measurable until this lands.** In flight as PR #110, and its
+  shape changed after the demo-path correction: the distinctness check is now
+  **unconditional**, not gated on `deck_policy` being present, so the guarantee
+  covers the reachable single-deck catalog/roster paths and not only the split
+  overlay. Seat identity is enforced as the pair `(provider, persona)` — the
+  same persona driven by two different models is a legitimate matchup and stays
+  legal; only same-persona-on-same-provider fails closed as an unannounced
+  mirror. `validate_seat_programmer_identity` runs inside
+  `build_card_programmers`, the single chokepoint the catalog, roster, and
+  injected-overlay paths all funnel through, and it reads the **post-rebind
+  admitted runtime selection**, so a differentiated-looking overlay cannot be
+  collapsed by the selection that actually launched. The
+  archetype-equals-persona check stays conditional on `deck_policy`, which is
+  correct: it is the split overlay's own consistency rule. Also apply the
+  seat→option pilot rebind on the overlay/roster path, not only the
   `--catalog-index` path (or drive the programmer from the admitted seat
   selection so there is one path, not two). Bind blue to
   `pilot.llm.qwen35_sniper` and sweep the other qwen/glm overlays. Either make
-  `deck_policy.archetype` load-bearing or delete it. Prove it with a
-  cross-boundary regression driving overlay → `build_card_programmers` →
-  `LLM_COMPLETION_REQUESTED` that asserts blue's recorded `persona_id` is
-  `sniper` — two independent unit suites do not satisfy this.
+  `deck_policy.archetype` load-bearing or delete it — nothing in `src/` reads it
+  today. Prove it with a cross-boundary regression driving overlay →
+  `build_card_programmers` → `LLM_COMPLETION_REQUESTED` that asserts blue's
+  recorded `persona_id` is `sniper` — two independent unit suites do not satisfy
+  this.
 - Land the movement-variety guard (#81) and preferred-range handler (#100), or
   replace them with a single reviewed successor. Enable handlers explicitly in
-  `tactical_split_v1_qwen`; merging a handler PR without enabling the active
-  split overlay does not satisfy this phase. Leave the baseline overlay
+  **the overlay the open decision designates as the demo**; `handler_ids` is
+  `[]` in seven shipped overlays and unset in `live_glm_cards`, so merging a
+  handler PR without enabling it in a *reachable* overlay changes nothing an
+  operator can see. Leave the baseline overlay
   available for A/B comparison and record handler provenance in replay.
 - Finalize typed deck policies by archetype: fast/brawler mechs receive more
   movement and shorter movement steps; heavy/sniper mechs receive more weapon
@@ -293,8 +498,10 @@ stale-map/blank-screen/start-button defects.
   movement and weapon quotas independently observable in the hand/register UI.
 - Add/retain distinct archetypes and seats (for example berserker versus
   sniper/opportunist); do not default both players to the same pilot persona.
-  Give the seats genuinely different decks — today both seats draw from the same
-  `deck.movement.v1`/`deck.weapon.v1` and differ only by `hand_quota`. Break the
+  Give the seats genuinely different decks — in the split overlay both seats
+  draw from the same `deck.movement.v1`/`deck.weapon.v1` and differ only by
+  `hand_quota`, and in every reachable overlay there is a single shared deck and
+  no `deck_policy` at all. Break the
   `register_count == hand_size` identity so pilots actually *select* cards rather
   than merely reordering a forced hand; a deck that commits every dealt card
   cannot express a tactical choice. Add a distinctness guard at launch admission
@@ -506,7 +713,12 @@ work while violating the canonical architecture.
   violation in the codebase is **seat selection**, which has two parallel
   contracts — a validated roster path (`validate_player_roster_against_overlay`,
   which does check persona binding) and an un-validated overlay-`programmers`
-  path — and the demo runs the un-validated one. Collapse them to one path
+  path. Correction: it is worse than "two contracts" — there are three launch
+  paths with three different behaviors. `--catalog-index` rebinds seats
+  (`cli/play.py:1526-1532`), `--roster` validates its declaration but applies no
+  rebind (`cli/play.py:1683-1690`), and a bare `--overlay` does neither. The
+  roster path can therefore emit a ledger that contradicts its own
+  `MATCH_STARTED`, verified. Collapse them to one path
   (`contracts-data-06`). Preserve only explicitly versioned replay migrations;
   any temporary adapter needs a deletion ticket and no alternate domain
   semantics.
@@ -573,8 +785,9 @@ build`, frontend tests, typecheck/lint, and the completed UI checklist.
   integration tests (the deployment-shaped environment, not only Poetry/local
   processes).
 - Retire the green-on-surrogate tests, which are the reason these defects
-  survived a passing suite. The default demo overlay has **zero** coverage and
-  the suite asserts the samey seat binding as correct; the no-cap test asserts
+  survived a passing suite. The split overlay has **zero** coverage and **zero
+  references of any kind**, and the suite asserts the samey seat binding as
+  correct; the no-cap test asserts
   only `LAST_MECH_STANDING` and never the winning side; the rule test uses a
   hand shape no shipped deck emits; the promotion-port test passes against a
   surrogate that ignores admission; the frontend's only "real match" test
@@ -586,6 +799,16 @@ build`, frontend tests, typecheck/lint, and the completed UI checklist.
 - Run a final real-provider smoke and a multi-match variance battery. Archive
   the overlay/catalog/model hashes and match IDs.
 - Reconcile README, handoff, deep-dive, learning, terrain, and UI plan status.
+  The docs are worse than stale, they are wrong: `README.md:23-27` documents
+  **no way to start a match at all**, and every `so run`/`so serve` recipe in
+  `HANDOFF.md:163-195` is dead (`--ledger-path` does not exist — verified
+  `Error: No such option '--ledger-path'`, exit 2), while HANDOFF.md still
+  describes a `PROVIDER_ENDPOINTS` constant removed from `client_http.py` long
+  ago. `README.md:20-21` also claims the packaged path is stub-safe; it is not —
+  when `http_transport is None` and an HTTP provider is selected,
+  `match/composition.py:1197-1201` constructs a real `httpx.Client`, so a
+  packaged `so run` makes live network calls. Ship exactly one documented,
+  executed canonical command for the chosen demo overlay.
   Mark deferred Kafka delegation (R5) and omnimarket import (D3) explicitly
   optional or schedule them as separate work; neither is a hidden release gate.
 - Close/merge intentional PRs, prune only clean merged worktrees/branches, and
@@ -600,8 +823,8 @@ battery, completed acceptance matrix, clean worktree report, and ledger links.
 | Area | Must be true | Evidence |
 | --- | --- | --- |
 | Start/lifecycle | Start works once, setup hides, terminal re-arms, no refresh | Playwright trace + screenshots |
-| Identity | `foundry_60`, 60×60, match/overlay/catalog hashes agree | `MATCH_STARTED` + bootstrap + ledger |
-| Seat identity | Each seat's programmer, pilot, persona, chassis, loadout and provider agree; the two seats are distinct personas; mismatch fails closed | cross-boundary regression + per-seat `persona_id` in `LLM_COMPLETION_REQUESTED` vs `MATCH_STARTED` |
+| Identity | The designated demo overlay's arena (`foundry_60`, 60×60, if that overlay is chosen) and match/overlay/catalog hashes agree | `MATCH_STARTED` + bootstrap + ledger |
+| Seat identity | Each seat's programmer, pilot, persona, chassis, loadout and provider agree; the two seats resolve to distinct `(provider, persona)` pairs; mismatch fails closed unconditionally, on single-deck and split overlays alike | cross-boundary regression + per-seat `persona_id` in `LLM_COMPLETION_REQUESTED` vs `MATCH_STARTED` |
 | Providers | Real configured provider invoked; fallback is classified *in the ledger*, not only in logs | request/response counts + model IDs + `plan_source` |
 | Combat | Both sides draw legal move/fire cards, actually select (not merely reorder) them, and change range/position | 20-match metric report + replays + winner-side distribution |
 | Objectives | Matches end on a VP threshold from contested objective points, not a clock; Heavy/Assault keywords change resolution as declared | objective contract hash in `MATCH_STARTED` + per-round VP events + keyword handler IDs in replay + keyword fixtures |
@@ -618,12 +841,17 @@ Reordered 2026-07-21: the seat-identity repair now leads, because it clears five
 of the six audit blockers, is the precondition for every combat metric being
 meaningful, and is simultaneously the highest-value product fix.
 
+0. **Answer the open decision — which overlay is THE demo, and which provider.**
+   Every action below that names an overlay is blocked on it, and the plan can
+   no longer default to `tactical_split_v1_qwen` because nothing loads it.
 1. **Repair seat identity end-to-end and lock it with a fail-closed validator**
-   (Phase 2 precondition). Bind blue to `pilot.llm.qwen35_sniper`, collapse the
-   two seat-selection paths to one, and land the cross-boundary regression that
-   asserts the two seats record different `persona_id` values. Without this,
-   actions 5 and 7 measure a mirror match.
-2. Set `failure_policy: raise` on the demo overlay and add `plan_source` to
+   (Phase 2 precondition; PR #110). Bind blue to `pilot.llm.qwen35_sniper`,
+   collapse the two seat-selection paths to one, and land the cross-boundary
+   regression that asserts the two seats record different `persona_id` values.
+   Not blocked on action 0 — the validator is unconditional and covers the
+   reachable single-deck path either way. Without this, actions 5 and 7 measure
+   a mirror match.
+2. Set `failure_policy: raise` on the chosen demo overlay and add `plan_source` to
    `PLAN_COMMITTED`, so a provider failure can no longer masquerade as a real
    LLM match in the authoritative evidence.
 3. Make startup generate the catalog-merged bootstrap artifact and add the
@@ -632,8 +860,8 @@ meaningful, and is simultaneously the highest-value product fix.
    two-round heat lock, draw-path transport throw, runtime `FAILED` status), then
    prove the clean-browser start/terminal flow with Playwright.
 5. Review #81 and #100, land the selected handler path on top of `main`, and
-   **enable it in the active split overlay** (`handler_ids` is empty today, so
-   merging alone changes nothing).
+   **enable it in the overlay action 0 designates** (`handler_ids` is empty or
+   unset in all eight overlays today, so merging alone changes nothing).
 6. Render `plan_committed.rationale` as a decision row and surface
    `seat_assignments` in the UI — the cheapest change that makes the demo
    legible and shareable.
