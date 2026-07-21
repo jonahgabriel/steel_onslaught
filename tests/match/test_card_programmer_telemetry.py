@@ -333,6 +333,27 @@ def test_card_programmer_telemetry_is_match_scoped_and_replayable(cadence: str) 
     assert replay.reconstruct_at_tick(final.tick) == final
 
 
+def test_paced_max_tick_closes_active_round_before_scoring() -> None:
+    """A max-tick terminal must discard an in-flight paced round first."""
+
+    _dependencies, stack, ledger, _snapshot = _compose(cadence="paced")
+    # The normal fixture runs long enough to finish each two-register round.
+    # Force the lifecycle boundary while register one of the first round is
+    # still latched, matching the live split-deck overlay's five-register
+    # cadence.
+    stack.runner._max_ticks = 2
+
+    final = stack.runner.run()
+
+    assert final.status is SOMatchStatus.ENDED
+    discarded = [
+        event for event in ledger.events if event.event_type is SOEventType.CARDS_DISCARDED
+    ]
+    assert discarded
+    assert discarded[-1].payload["reason"] == "cancelled:max_ticks"
+    assert any(event.event_type is SOEventType.MATCH_SCORED for event in ledger.events)
+
+
 @pytest.mark.parametrize(
     ("client", "reason_code"),
     [

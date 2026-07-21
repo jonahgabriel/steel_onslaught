@@ -370,6 +370,22 @@ class MatchRunner:
             self._intent_buffer.clear()
 
             tick_event = self._make_match_event(SOEventType.MATCH_TICK, tick=next_tick, payload={})
+            # ``MATCH_TICK`` folds lifecycle termination synchronously and
+            # publishes its nested ``MATCH_ENDED`` before control returns to
+            # this runner.  Close an in-flight paced card round first so the
+            # scoring subscriber sees a complete replay lifecycle when a
+            # max-tick draw interrupts the round.
+            if (
+                self._card_cadence == "paced"
+                and self._card_active_round is not None
+                and self._max_ticks is not None
+                and next_tick >= self._max_ticks
+            ):
+                self._cancel_active_card_round(
+                    tick=next_tick,
+                    reason="max_ticks",
+                    emit_match_ended=False,
+                )
             self._bus.publish(tick_event)
             if self.fold.state.status is not SOMatchStatus.RUNNING:
                 if self._card_cadence == "paced":
@@ -753,13 +769,17 @@ class MatchRunner:
         """
 
         if (
-            event.event_type is SOEventType.VICTORY_DECLARED
+            event.event_type in {SOEventType.VICTORY_DECLARED, SOEventType.MATCH_ENDED}
             and self._card_cadence == "paced"
             and self._card_active_round is not None
         ):
             self._cancel_active_card_round(
                 tick=event.tick,
-                reason="decisive_death",
+                reason=(
+                    "decisive_death"
+                    if event.event_type is SOEventType.VICTORY_DECLARED
+                    else "max_ticks"
+                ),
                 emit_match_ended=False,
             )
 
