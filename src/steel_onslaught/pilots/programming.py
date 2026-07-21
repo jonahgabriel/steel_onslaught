@@ -69,6 +69,55 @@ class ModelSOCardRuleHandlerMetadata(_ClosedProgrammingModel):
     )
 
 
+class ModelSOCardRuleHandlerDescriptor(_ClosedProgrammingModel):
+    """Human-facing description of one installed rule plugin.
+
+    Identity (``metadata``) is what a match records and what replay compares;
+    the prose fields exist so an operator can *discover* what is installable
+    without reading the implementation.  They are deliberately kept out of the
+    provenance model so editing a description can never invalidate an existing
+    ledger.
+    """
+
+    schema_version: Literal["0.1.0"] = "0.1.0"
+    kind: Literal["steel_onslaught.card_rule_descriptor"] = "steel_onslaught.card_rule_descriptor"
+    metadata: ModelSOCardRuleHandlerMetadata
+    display_name: StrictStr = Field(min_length=1, max_length=96)
+    description: StrictStr = Field(min_length=1, max_length=512)
+
+    @property
+    def handler_id(self) -> str:
+        """Return the identity id this descriptor documents."""
+
+        return self.metadata.handler_id
+
+
+class ModelSOCardRuleCatalogProjection(_ClosedProgrammingModel):
+    """Enumerable, selectable installed-rule catalog for one pack.
+
+    ``enabled_handler_ids`` is the ordered selection an overlay declared, so a
+    single projection answers both "what can I turn on" and "what is on".
+    """
+
+    schema_version: Literal["0.1.0"] = "0.1.0"
+    kind: Literal["steel_onslaught.card_rule_catalog"] = "steel_onslaught.card_rule_catalog"
+    pack_id: StrictStr = Field(min_length=1, max_length=96, pattern=r"^[a-z][a-z0-9_.-]*$")
+    available: tuple[ModelSOCardRuleHandlerDescriptor, ...] = ()
+    enabled_handler_ids: tuple[StrictStr, ...] = ()
+
+    @model_validator(mode="after")
+    def _enabled_ids_are_available(self) -> ModelSOCardRuleCatalogProjection:
+        available_ids = [descriptor.handler_id for descriptor in self.available]
+        if len(available_ids) != len(set(available_ids)):
+            raise ValueError("rule catalog must not list a handler id twice")
+        unknown = sorted(set(self.enabled_handler_ids) - set(available_ids))
+        if unknown:
+            raise ValueError(f"rule catalog enables unavailable handler ids: {unknown}")
+        if len(self.enabled_handler_ids) != len(set(self.enabled_handler_ids)):
+            raise ValueError("rule catalog enabled_handler_ids must be unique")
+        return self
+
+
 class ModelSOCardRulePackProvenance(_ClosedProgrammingModel):
     """Content-addressed identity for the selected ordered rule pack."""
 
@@ -327,6 +376,8 @@ def program_for_seat(
 
 __all__ = [
     "CardProgrammingRuleHandler",
+    "ModelSOCardRuleCatalogProjection",
+    "ModelSOCardRuleHandlerDescriptor",
     "ModelSOCardRuleHandlerMetadata",
     "ModelSOCardRulePackProvenance",
     "ModelSOProgrammingObservation",

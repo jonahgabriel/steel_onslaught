@@ -89,6 +89,7 @@ from steel_onslaught.match.state import (
     SOMatchEndReason,
     SOMatchStatus,
 )
+from steel_onslaught.pilots.persona_prompts import ModelSOMatchPromptProvenance
 from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
 from steel_onslaught.reducers.damage import (
@@ -226,6 +227,7 @@ class MatchRunner:
         launch_provenance: ModelSOMatchLaunchProvenance | None = None,
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
         card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None,
+        prompt_provenance: ModelSOMatchPromptProvenance | None = None,
         card_adapter: CardRunnerAdapter | None = None,
         card_cadence: Literal["atomic", "paced"] = "atomic",
         progress_gate: ProgressGate | None = None,
@@ -280,6 +282,11 @@ class MatchRunner:
                 "card_rule_pack_provenance must be ModelSOCardRulePackProvenance when supplied"
             )
         self._card_rule_pack_provenance = card_rule_pack_provenance
+        if prompt_provenance is not None and not isinstance(
+            prompt_provenance, ModelSOMatchPromptProvenance
+        ):
+            raise TypeError("prompt_provenance must be ModelSOMatchPromptProvenance when supplied")
+        self._prompt_provenance = prompt_provenance
         self._card_adapter = card_adapter
         if card_cadence not in {"atomic", "paced"}:
             raise ValueError("card_cadence must be 'atomic' or 'paced'")
@@ -375,6 +382,8 @@ class MatchRunner:
             started_payload["card_rule_pack_provenance"] = (
                 self._card_rule_pack_provenance.model_dump(mode="json")
             )
+        if self._prompt_provenance is not None:
+            started_payload["prompt_provenance"] = self._prompt_provenance.model_dump(mode="json")
         self._bus.publish(
             self._make_match_event(
                 SOEventType.MATCH_STARTED,

@@ -33,6 +33,7 @@ evidence.  When the budget is exhausted the pilot raises
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections import Counter
@@ -119,6 +120,21 @@ assign a card to a locked register. Do not add fields, prose, markdown, or
 comments. Keep rationale to twelve words or fewer. Emit the JSON object as the
 first character of the response and stop immediately after its closing brace.
 """.strip()
+
+# The card-programming instruction block is code-owned and deliberately NOT
+# operator-editable: an operator may rewrite how a mech thinks (the persona
+# doctrine), never the wire contract the runner parses.  Its digest is still
+# part of the recorded decision inputs so a code change to it is visible in
+# the ledger alongside the human-edited prompt.
+PROGRAMMING_INSTRUCTIONS_SHA256 = hashlib.sha256(
+    _PROGRAMMING_INSTRUCTIONS.encode("utf-8")
+).hexdigest()
+
+
+def programming_system_prompt(persona: Persona) -> str:
+    """Return the exact system prompt one whole-round programmer will send."""
+
+    return f"{persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}"
 
 
 def _error_detail(exc: BaseException, *, limit: int = 240) -> str:
@@ -341,8 +357,12 @@ class LLMProgrammingPilot:
     def _build_request(
         self, observation: ModelSOProgrammingObservation
     ) -> ModelSOLlmCompletionRequest:
+        # ``programming_system_prompt`` composes the (possibly operator-edited)
+        # persona doctrine with the code-owned JSON instruction block.  Using it
+        # here keeps the human-editable/recorded effective prompt seam intact
+        # while the bounded reprompt loop above owns semantic-stall recovery.
         return ModelSOLlmCompletionRequest(
-            system_prompt=f"{self._persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}",
+            system_prompt=programming_system_prompt(self._persona),
             user_prompt=_serialize_programming_observation(observation),
             persona=self._persona.persona_id,
             # Card programming is a typed planning protocol.  Keep the
@@ -537,6 +557,8 @@ class LLMProgrammingPilot:
 
 
 __all__ = [
+    "PROGRAMMING_INSTRUCTIONS_SHA256",
     "LLMProgrammingPilot",
     "LlmProgrammingFailurePolicy",
+    "programming_system_prompt",
 ]

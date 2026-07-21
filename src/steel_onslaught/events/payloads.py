@@ -44,6 +44,7 @@ from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.immutable import FrozenJSONMapping, FrozenMapping, thaw_json_mapping
 from steel_onslaught.llm.schemas import LlmSemanticFailureCode
 from steel_onslaught.match.state import ModelSOMechRuntimeState, SOMatchEndReason
+from steel_onslaught.pilots.persona_prompts import ModelSOMatchPromptProvenance
 from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
@@ -118,6 +119,13 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    # The effective, possibly operator-edited persona prompts this match flew
+    # with.  Recorded for the same reason as persona_id and model identity:
+    # without it a replay of an edited prompt silently diverges.
+    prompt_provenance: ModelSOMatchPromptProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("launch_provenance", mode="before")
     @classmethod
@@ -148,6 +156,17 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
             handlers = normalized.get("handlers")
             if isinstance(handlers, list):
                 normalized["handlers"] = tuple(handlers)
+            return normalized
+        return value
+
+    @field_validator("prompt_provenance", mode="before")
+    @classmethod
+    def _normalize_prompt_provenance(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            normalized = thaw_json_mapping(value)
+            prompts = normalized.get("prompts")
+            if isinstance(prompts, list):
+                normalized["prompts"] = tuple(prompts)
             return normalized
         return value
 

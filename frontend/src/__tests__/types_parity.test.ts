@@ -962,6 +962,24 @@ describe("types parity against Python-emitted fixtures", () => {
         ],
         content_sha256: "8".repeat(64),
       };
+      payload["prompt_provenance"] = {
+        schema_version: "0.1.0",
+        kind: "steel_onslaught.match_prompt_provenance",
+        prompts: [
+          {
+            schema_version: "0.1.0",
+            kind: "steel_onslaught.effective_prompt",
+            persona_id: "berserker",
+            display_name: "Berserker",
+            source: "operator_override",
+            temperature: 0.2,
+            prompt_sha256: "9".repeat(64),
+            prompt_text: "CHARGE and never disengage.",
+          },
+        ],
+        programming_instructions_sha256: "a".repeat(64),
+        content_sha256: "b".repeat(64),
+      };
     });
     const decision = corruptPayload("pilot_decision_made", (payload) => {
       payload["decision_source"] = {
@@ -975,6 +993,7 @@ describe("types parity against Python-emitted fixtures", () => {
 
     expect(parseEnvelope(started).payload).toHaveProperty("launch_provenance");
     expect(parseEnvelope(started).payload).toHaveProperty("card_rule_pack_provenance");
+    expect(parseEnvelope(started).payload).toHaveProperty("prompt_provenance");
     expect(parseEnvelope(decision).payload).toHaveProperty("decision_source");
   });
 

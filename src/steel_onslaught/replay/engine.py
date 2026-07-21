@@ -38,6 +38,7 @@ from steel_onslaught.events.payloads import ModelSOMatchStartedPayload
 from steel_onslaught.ledger.protocol import EventLedger
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
 from steel_onslaught.match.state import ModelSOMatchState
+from steel_onslaught.pilots.persona_prompts import ModelSOMatchPromptProvenance
 from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.replay.card_round import (
     ModelSOCardRoundReplay,
@@ -82,6 +83,7 @@ class ReplayEngine:
         card_catalog: ModelSOCardCatalog | None = None,
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
         card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None,
+        prompt_provenance: ModelSOMatchPromptProvenance | None = None,
         historical_arena_migration: ModelSOCurrentLiveArenaSnapshot | None = None,
         card_round_validator: CardRoundEventValidator | None = None,
         validate_card_events: bool = False,
@@ -106,6 +108,11 @@ class ReplayEngine:
                 "card_rule_pack_provenance must be ModelSOCardRulePackProvenance when supplied"
             )
         self._card_rule_pack_provenance = card_rule_pack_provenance
+        if prompt_provenance is not None and not isinstance(
+            prompt_provenance, ModelSOMatchPromptProvenance
+        ):
+            raise TypeError("prompt_provenance must be ModelSOMatchPromptProvenance when supplied")
+        self._prompt_provenance = prompt_provenance
         if card_runtime_snapshot is not None and card_catalog is not None:
             if card_runtime_snapshot.card_catalog is not card_catalog:
                 raise ValueError("card_catalog and card_runtime_snapshot must share identity")
@@ -264,6 +271,7 @@ class ReplayEngine:
                 )
             self._validate_card_runtime_provenance(event)
             self._validate_card_rule_pack_provenance(event)
+            self._validate_prompt_provenance(event)
             fold.apply(event)
         return fold.state
 
@@ -286,6 +294,31 @@ class ReplayEngine:
             return
         if expected is None or recorded is None or recorded != expected:
             raise ValueError("card runtime provenance does not match the replay snapshot")
+
+    def _validate_prompt_provenance(self, event: ModelSOEventEnvelope) -> None:
+        """Reject replay when the effective pilot prompts drift.
+
+        A persona prompt is a decision input, so an edited prompt must be
+        detectable at replay.  Unlike the opt-in card rule pack, *every*
+        match records prompt provenance, so a mandatory expected value would
+        force every bare state-reconstruction caller to re-derive prompts.
+        Instead this is opt-in verification: ``model_validate`` above already
+        proves the recorded provenance is internally consistent (its digest
+        matches its own prompt text), and a strict caller — the
+        composition-driven replay-validity check run at scoring — supplies the
+        expected value so a recomposition that changed a prompt fails closed.
+        """
+
+        if event.event_type is not SOEventType.MATCH_STARTED:
+            return
+        payload = ModelSOMatchStartedPayload.model_validate(event.payload)
+        expected = self._prompt_provenance
+        if expected is None:
+            # No external expectation; the recorded value is self-validating.
+            return
+        recorded = payload.prompt_provenance
+        if recorded is None or recorded != expected:
+            raise ValueError("effective prompt provenance does not match the replay composition")
 
     def _validate_card_rule_pack_provenance(self, event: ModelSOEventEnvelope) -> None:
         """Reject replay when the selected card-rule pack is absent or drifts."""
