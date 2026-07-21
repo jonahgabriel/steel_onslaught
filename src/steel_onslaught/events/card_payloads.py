@@ -50,6 +50,20 @@ class SOCardPartition(StrEnum):
     WEAPON = "weapon"
 
 
+class SOPlanSource(StrEnum):
+    """Who actually authored one committed register plan.
+
+    A live match is LLM-driven end to end; the deterministic priority planner
+    exists only for replay and hermetic tests.  Recording the authorship on
+    the event makes a substituted plan durably classified in the ledger and
+    detectable by replay instead of silently indistinguishable from a real
+    provider decision.
+    """
+
+    LLM = "llm"
+    DETERMINISTIC_FALLBACK = "deterministic_fallback"
+
+
 SPLIT_DECK_MARKER = "deck.split"
 
 
@@ -147,6 +161,9 @@ class ModelSOPlanCommittedPayload(_ClosedCardPayload):
     registers: tuple[ModelSOPlanRegister, ...]
     rationale: StrictStr | None = Field(...)
     confidence: StrictFloat = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    # Fail-safe default: a plan is only credited to a provider when the LLM
+    # boundary explicitly says so, never by omission.
+    plan_source: SOPlanSource = SOPlanSource.DETERMINISTIC_FALLBACK
 
     @model_validator(mode="after")
     def _register_indexes_are_unique(self) -> Self:
@@ -200,6 +217,7 @@ __all__ = [
     "ModelSOPlanRegister",
     "ModelSORegisterResolvedPayload",
     "SOCardPartition",
+    "SOPlanSource",
     "SORegisterFillReason",
     "SORegisterOutcome",
 ]

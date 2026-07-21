@@ -23,12 +23,16 @@ from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.player_selection import Side
+from steel_onslaught.events.card_payloads import SOPlanSource
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.llm.effect import LedgerLlmCompletionObserver
 from steel_onslaught.llm.schemas import (
     ModelSOOpenAIChatRequest,
     ModelSOOpenAIChatResponse,
+    ModelSOOpenAIResponseChoice,
+    ModelSOOpenAIResponseMessage,
+    ModelSOOpenAIResponseUsage,
 )
 from steel_onslaught.match.composition import (
     build_card_programmers,
@@ -70,7 +74,8 @@ class _PlanTransport:
         del url, headers, timeout_seconds
         prompt = json.loads(request.messages[1].content)
         free_indices = prompt["registers"]["free_indices"]
-        hand = [entry["card_id"] for entry in prompt["legal_hand"]]
+        # ``hand`` is the dealt multiset in order; ``legal_hand`` is deduped.
+        hand = [entry["card_id"] for entry in prompt["hand"]]
         registers = [
             {"register_index": index, "card_id": card_id}
             for index, card_id in zip(free_indices, hand, strict=True)
@@ -78,12 +83,15 @@ class _PlanTransport:
         content = json.dumps(
             {"registers": registers, "confidence": 0.7, "rationale": "seat identity fixture"}
         )
-        return ModelSOOpenAIChatResponse.model_validate(
-            {
-                "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 11, "completion_tokens": 7},
-                "model": "seat-identity-fixture",
-            }
+        return ModelSOOpenAIChatResponse(
+            choices=(
+                ModelSOOpenAIResponseChoice(
+                    message=ModelSOOpenAIResponseMessage(content=content),
+                    finish_reason="stop",
+                ),
+            ),
+            usage=ModelSOOpenAIResponseUsage(prompt_tokens=11, completion_tokens=7),
+            model="seat-identity-fixture",
         )
 
 
@@ -206,6 +214,9 @@ def _requested_personas_by_seat(overlay: ModelSOApplicationOverlay) -> dict[str,
                 _split_observation(overlay=overlay, snapshot=snapshot, side=side)
             )
             assert plan.seat == side
+            # A live seat must have been decided by the provider, never by the
+            # deterministic planner standing in for it.
+            assert plan.plan_source is SOPlanSource.LLM
             requested = [
                 event
                 for event in events[before:]

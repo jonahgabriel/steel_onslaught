@@ -23,7 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_v
 from steel_onslaught.contracts.card import CardId, ModelSOCard
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.deck import ModelSODeck
-from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, ModelSOPlanRegister
+from steel_onslaught.events.card_payloads import (
+    ModelSOPlanCommittedPayload,
+    ModelSOPlanRegister,
+    SOPlanSource,
+)
 from steel_onslaught.pilots.schemas import ModelSOPilotObservation
 
 _RegisterIndex = Annotated[StrictInt, Field(ge=0)]
@@ -260,6 +264,7 @@ def _priority_plan(observation: ModelSOProgrammingObservation) -> ModelSOPlanCom
         registers=registers,
         rationale=None,
         confidence=1.0,
+        plan_source=SOPlanSource.DETERMINISTIC_FALLBACK,
     )
 
 

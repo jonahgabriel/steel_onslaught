@@ -11,9 +11,15 @@ The provider output is never trusted as a plan.  It is parsed as a closed
 Pydantic model, converted to the canonical plan payload, and passed through
 ``program_for_seat`` before being accepted.  The default failure policy is
 ``raise``: a failed or semantically invalid completion cannot silently turn
-into a different LLM or decide-only pilot.  An explicit ``fallback`` policy
-may opt into the deterministic priority planner for callers that choose that
-tradeoff deliberately.
+into a different LLM or decide-only pilot.
+
+A live match is LLM-driven end to end, so the deterministic planner is not a
+degraded mode this module may choose on its own.  Provider boundary failures
+(length/timeout) and every unclassified exception are re-raised so the runner
+can end and classify the match.  Only a *typed* ``LlmSemanticError`` on a seat
+whose overlay explicitly selected ``fallback`` may take the deterministic
+plan, and that plan is stamped ``plan_source=deterministic_fallback`` so the
+substitution is durable in the ledger and detectable by replay.
 """
 
 from __future__ import annotations
@@ -34,7 +40,11 @@ from pydantic import (
     ValidationError,
 )
 
-from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, ModelSOPlanRegister
+from steel_onslaught.events.card_payloads import (
+    ModelSOPlanCommittedPayload,
+    ModelSOPlanRegister,
+    SOPlanSource,
+)
 from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
 from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.schemas import (
@@ -287,7 +297,7 @@ class LLMProgrammingPilot:
             )
         except LlmSemanticError as exc:
             if self._failure_policy == "fallback":
-                return program_for_seat(None, observation)
+                return self._classified_fallback(observation, reason=exc.code)
             if exc.code != "malformed_json":
                 raise
             # Some reasoning providers occasionally spend the full response
@@ -318,13 +328,38 @@ class LLMProgrammingPilot:
             # Provider length/timeout boundaries are terminal live-match
             # failures. Never convert them into a deterministic card plan.
             raise
-        except Exception as exc:
-            _LOG.warning("LLM programming call failed (%s)", type(exc).__name__)
-            if self._failure_policy == "fallback":
-                # This fallback is explicit and deterministic. It never calls
-                # a decide-only pilot or another provider.
-                return program_for_seat(None, observation)
+        except Exception:
+            # A live match is LLM-driven end to end. An unclassified provider,
+            # transport, or programming failure is a match failure: it is
+            # re-raised so the runner can classify and end the match, never
+            # silently replaced by a deterministic plan behind a log line.
+            # Only the typed ``LlmSemanticError`` path above may take the
+            # explicitly opted-in recovery, and that plan is stamped
+            # ``deterministic_fallback`` in the ledger.
             raise
+
+    def _classified_fallback(
+        self,
+        observation: ModelSOProgrammingObservation,
+        *,
+        reason: str,
+    ) -> ModelSOPlanCommittedPayload:
+        """Return the deterministic plan under an explicit, recorded policy.
+
+        This is reachable only when the overlay opted a seat into ``fallback``
+        and the provider produced a *classified* semantic failure. The plan is
+        marked ``deterministic_fallback`` so the substitution is durable in the
+        ledger and detectable by replay rather than indistinguishable from a
+        real provider decision.
+        """
+
+        _LOG.warning(
+            "LLM programming fell back to the deterministic planner (%s, persona=%s)",
+            reason,
+            self._persona.persona_id,
+        )
+        plan = program_for_seat(None, observation)
+        return plan.model_copy(update={"plan_source": SOPlanSource.DETERMINISTIC_FALLBACK})
 
     def _parse_response(
         self,
@@ -360,6 +395,7 @@ class LLMProgrammingPilot:
                 ),
                 rationale=parsed.rationale,
                 confidence=parsed.confidence,
+                plan_source=SOPlanSource.LLM,
             )
             # Run the candidate through the canonical boundary here so an
             # observed completion is resolved only after hand/register checks.

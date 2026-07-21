@@ -1202,9 +1202,11 @@ def build_llm_dependencies(
                 providers=overlay.llm.providers,
                 selected_provider_ids=selected_provider_ids,
             )
-        resolved_failure_policy: LlmPilotFailurePolicy = (
-            "raise" if selected_provider_ids is not None else "fallback"
-        )
+        # Every composition path is fail-closed by default. The unselected
+        # path used to default to "fallback", which masked a provider failure
+        # behind a deterministic REMAIN instead of surfacing it. A caller that
+        # deliberately wants typed recovery passes pilot_failure_policy.
+        resolved_failure_policy: LlmPilotFailurePolicy = "raise"
     else:
         providers = (
             SelectedOnlyLlmClientBuilder().select(

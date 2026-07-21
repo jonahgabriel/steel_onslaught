@@ -539,6 +539,8 @@ export interface MatchScoredPayload {
 
 export type SORegisterOutcome = "resolved" | "auto_remain" | "heat_locked";
 export type SORegisterFillReason = "short_deck";
+/** Mirror of SOPlanSource: who actually authored a committed register plan. */
+export type SOPlanSource = "llm" | "deterministic_fallback";
 
 export interface HandPartitionPayload {
   partition: "movement" | "weapon";
@@ -576,6 +578,7 @@ export interface PlanCommittedPayload {
   registers: PlanRegister[];
   rationale: string | null;
   confidence: number;
+  plan_source: SOPlanSource;
 }
 
 /** Mirror of ModelSORegisterResolvedPayload. */
@@ -747,6 +750,11 @@ function parseRegisterOutcome(value: unknown, context: string): SORegisterOutcom
 function parseRegisterFillReason(value: unknown, context: string): SORegisterFillReason {
   if (value === "short_deck") return value;
   fail(context, `unknown register fill reason ${JSON.stringify(value)}`);
+}
+
+function parsePlanSource(value: unknown, context: string): SOPlanSource {
+  if (value === "llm" || value === "deterministic_fallback") return value;
+  fail(context, `unknown plan source ${JSON.stringify(value)}`);
 }
 
 function num(record: Record<string, unknown>, key: string, context: string): number {
@@ -1988,7 +1996,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
   },
   plan_committed: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["seat", "registers", "rationale", "confidence"], context);
+    rejectUnknown(record, ["seat", "registers", "rationale", "confidence", "plan_source"], context);
     requireFields(record, ["rationale"], context);
     const rawRegisters = record["registers"];
     if (!Array.isArray(rawRegisters)) {
@@ -2012,6 +2020,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       registers,
       rationale: nullableStr(record, "rationale", context),
       confidence: boundedNum(record, "confidence", context, 0, 1),
+      plan_source: parsePlanSource(record["plan_source"], `${context}.plan_source`),
     };
   },
   register_resolved: (value, context) => {
