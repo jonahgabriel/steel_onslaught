@@ -21,11 +21,15 @@ from steel_onslaught.contracts.card_runtime import (
 )
 from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.events.card_payloads import (
+    SPLIT_DECK_MARKER,
     ModelSOCardsDiscardedPayload,
     ModelSOHandDealtPayload,
+    ModelSOHandPartitionPayload,
+    ModelSOHandPartitionsPayload,
     ModelSOPlanCommittedPayload,
     ModelSOPlanRegister,
     ModelSORegisterResolvedPayload,
+    SOCardPartition,
     SORegisterOutcome,
 )
 from steel_onslaught.events.envelope import (
@@ -147,6 +151,66 @@ def _events() -> list[ModelSOEventEnvelope]:
         )
         events.append(event)
         previous = event.envelope.message_id
+    return events
+
+
+def _split_snapshot() -> ModelSOCardRuntimeSnapshot:
+    cards = _snapshot().card_catalog
+    movement = ModelSODeck(
+        schema_version="0.1.0",
+        kind="steel_onslaught.deck",
+        id="deck.test.movement",
+        display_name="Movement deck",
+        hand_size=1,
+        register_count=1,
+        cards=(ModelSODeckEntry(card_id="card.test.advance", count=2),),
+    )
+    weapon = ModelSODeck(
+        schema_version="0.1.0",
+        kind="steel_onslaught.deck",
+        id="deck.test.weapon",
+        display_name="Weapon deck",
+        hand_size=1,
+        register_count=1,
+        cards=(ModelSODeckEntry(card_id="card.test.attack", count=2),),
+    )
+    return ModelSOCardRuntimeSnapshot(
+        schema_version="0.1.0",
+        kind="steel_onslaught.card_runtime_snapshot",
+        card_catalog=cards,
+        decks=(movement, weapon),
+        selected_deck_id=None,
+        content_sha256=canonical_card_runtime_sha256(cards, (movement, weapon)),
+    )
+
+
+def _split_events() -> list[ModelSOEventEnvelope]:
+    events = _events()
+    hand = ModelSOHandDealtPayload.model_validate(events[0].payload).model_copy(
+        update={
+            "deck_id": SPLIT_DECK_MARKER,
+            "register_count": 1,
+            "partitions": ModelSOHandPartitionsPayload(
+                movement=ModelSOHandPartitionPayload(
+                    partition=SOCardPartition.MOVEMENT,
+                    deck_id="deck.test.movement",
+                    card_ids=("card.test.advance",),
+                    requested_count=1,
+                    deck_remaining=1,
+                    reshuffled=False,
+                ),
+                weapon=ModelSOHandPartitionPayload(
+                    partition=SOCardPartition.WEAPON,
+                    deck_id="deck.test.weapon",
+                    card_ids=("card.test.attack",),
+                    requested_count=1,
+                    deck_remaining=1,
+                    reshuffled=False,
+                ),
+            ),
+        }
+    )
+    events[0] = events[0].model_copy(update={"payload": hand.model_dump(mode="json")})
     return events
 
 
@@ -398,6 +462,17 @@ def test_parser_strictly_validates_four_phases_and_provenance() -> None:
         SOEventType.CARDS_DISCARDED,
     ]
     assert replay.hand_dealt[0].card_ids == replay.cards_discarded[0].card_ids
+
+
+def test_parser_validates_split_round_without_selected_deck() -> None:
+    replay = parse_card_round_events(
+        _split_events(),
+        snapshot=_split_snapshot(),
+        expected_match_id=_MATCH_ID,
+    )
+
+    assert replay.deck_id == SPLIT_DECK_MARKER
+    assert replay.cancelled is False
 
 
 @pytest.mark.parametrize(
