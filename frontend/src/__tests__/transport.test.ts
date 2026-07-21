@@ -121,6 +121,48 @@ describe("MatchTransport — buffering", () => {
     expect(rec.released[0]?.match_id).toBe("match.second");
     expect(rec.released[0]?.event_type).toBe("match_started");
   });
+
+  it("promotes a fresh match over a stale incomplete prefix", () => {
+    const t = new MatchTransport({ msPerTick: 100 });
+    const stale = tickStream("match.stale", 4);
+    const fresh = tickStream("match.fresh", 2);
+    const staleStart = stale[0];
+    const staleTick = stale[1];
+    const freshStart = fresh[0];
+    if (staleStart === undefined || staleTick === undefined || freshStart === undefined) {
+      throw new Error("missing stale/fresh transport fixture");
+    }
+
+    // The historical stream has rendered a prefix but never delivered its
+    // terminal.  A restarted runtime then admits a new match.  Waiting for
+    // stale.complete here would keep the old arena/map active indefinitely.
+    t.ingest(staleStart);
+    t.ingest(staleTick);
+    t.frame(0); // The stale prefix is the one currently visible in the deck.
+    t.ingest(freshStart);
+
+    expect(t.snapshot().activeMatchId).toBe("match.fresh");
+    expect(t.snapshot().matchComplete).toBe(false);
+  });
+
+  it("does not override an explicit match selection when a new match arrives", () => {
+    const t = new MatchTransport({ msPerTick: 100 });
+    const stale = tickStream("match.stale", 4);
+    const fresh = tickStream("match.fresh", 2);
+    const staleStart = stale[0];
+    const staleTick = stale[1];
+    const freshStart = fresh[0];
+    if (staleStart === undefined || staleTick === undefined || freshStart === undefined) {
+      throw new Error("missing stale/fresh transport fixture");
+    }
+
+    t.ingest(staleStart);
+    t.ingest(staleTick);
+    t.selectMatch("match.stale");
+    t.ingest(freshStart);
+
+    expect(t.snapshot().activeMatchId).toBe("match.stale");
+  });
 });
 
 describe("MatchTransport — runtime lifecycle projection", () => {
