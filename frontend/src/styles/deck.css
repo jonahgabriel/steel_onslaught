@@ -805,6 +805,38 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Authoritative seat identity (launch_provenance.seat_assignments). */
+.pd-spec-seat {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  min-width: 0;
+}
+.pd-seatchip {
+  max-width: none;
+  color: var(--phosphor);
+  border-color: var(--phosphor);
+}
+.pd-spec-seat[data-seat-kind="HUMAN"] .pd-seatchip {
+  color: var(--arc);
+  border-color: var(--arc);
+}
+.pd-spec-seat-id {
+  color: var(--steam);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pd-spec-seat-kit {
+  color: var(--ash);
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .pd-hpbar {
   position: relative;
   height: 12px;
@@ -1186,6 +1218,12 @@ body {
 .pd-chip[data-fallback="true"] {
   color: var(--danger);
   border-color: var(--danger);
+}
+/* Committed register sequence (card cadence PLAN row). */
+.pd-register b {
+  color: var(--phosphor);
+  font-weight: 700;
+  opacity: 0.9;
 }
 
 /* LLM bracket */

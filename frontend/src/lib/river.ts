@@ -10,8 +10,15 @@
  * `llm_completion_failed`) emitted by the
  * effect node (`steel_onslaught/llm/effect.py`). We discriminate solely on
  * the canonical `event_type` field.
+ *
+ * The pilot's *reasoning* is carried by two event types, one per cadence:
+ * `pilot_decision_made` (tactical cadence, `reducers/pilot_tick.py`) and
+ * `plan_committed` (card cadence, `match/card_adapter.py`). Both are grouped as
+ * `decisions` and both expose rationale + confidence through
+ * {@link rationaleOf} / {@link confidenceOf}, so the river reads the same in
+ * either cadence.
  */
-import type { SOEventEnvelope } from "../types";
+import type { PlanRegister, SOEventEnvelope } from "../types";
 
 // ---------------------------------------------------------------------------
 // Side attribution
@@ -143,11 +150,20 @@ export const FILTER_GROUP_LABELS: Record<FilterGroup, string> = {
 const GROUP_BY_EVENT: Record<string, FilterGroup> = {
   // combat — weapon / hit / damage / armor
   weapon_fired: "combat",
+  weapon_fire_rejected: "combat",
   hit_resolved: "combat",
   armor_absorbed: "combat",
   damage_applied: "combat",
-  // decisions — pilot_decision_made + intents
+  // decisions — the pilot's own choices, in either cadence.
+  //   tactical cadence : pilot_decision_made (ReducerPilotTick)
+  //   card cadence     : plan_committed — the ONLY carrier of the pilot's
+  //                      rationale/confidence in card/paced mode, which is the
+  //                      mode the demo runs. register_resolved is the plan
+  //                      executing register-by-register, so it belongs with the
+  //                      decision it came from rather than in lifecycle noise.
   pilot_decision_made: "decisions",
+  plan_committed: "decisions",
+  register_resolved: "decisions",
   move_intent: "decisions",
   weapon_fire_intent: "decisions",
   mode_switch_intent: "decisions",
@@ -162,7 +178,10 @@ const GROUP_BY_EVENT: Record<string, FilterGroup> = {
   mode_transition_completed: "thermal",
   // lifecycle — match / spawn / death / victory / scored (+ telemetry)
   match_started: "lifecycle",
+  runtime_status_changed: "lifecycle",
   match_tick: "lifecycle",
+  hand_dealt: "lifecycle",
+  cards_discarded: "lifecycle",
   mech_spawned: "lifecycle",
   sensor_observation: "lifecycle",
   pilot_injured: "lifecycle",
@@ -264,6 +283,28 @@ function shortId(id: string): string {
   return dot === -1 ? id : id.slice(dot + 1);
 }
 
+/** `toward_enemy` → `toward enemy` — enum values read as prose, not as code. */
+function words(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+/** Committed registers in execution order — never trust arrival order. */
+export function orderedRegisters(registers: readonly PlanRegister[]): readonly PlanRegister[] {
+  return [...registers].sort((a, b) => a.register_index - b.register_index);
+}
+
+/** `card.attack.fire_primary` → `fire primary` — one rule, used everywhere. */
+export function cardLabel(cardId: string): string {
+  return words(shortId(cardId));
+}
+
+/** The programmed card sequence, e.g. `advance › fire primary › vent`. */
+export function planSequence(registers: readonly PlanRegister[]): string {
+  return orderedRegisters(registers)
+    .map((r) => cardLabel(r.card_id))
+    .join(" › ");
+}
+
 /** A human, one-line summary of an envelope's payload. */
 export function summarizeEnvelope(env: SOEventEnvelope): string {
   if (env.event_type === "llm_completion_requested")
@@ -285,11 +326,34 @@ export function summarizeEnvelope(env: SOEventEnvelope): string {
       return `contact ${shortId(env.payload.enemy_mech_id)} · d≈${env.payload.distance_estimate.toFixed(1)}`;
     case "pilot_decision_made":
       return `${env.payload.action} · ${env.payload.reason_code}`;
+    case "hand_dealt": {
+      const p = env.payload.partitions;
+      const dealt =
+        p === undefined
+          ? `${env.payload.hand_size} cards`
+          : `${p.movement.card_ids.length} move + ${p.weapon.card_ids.length} weapon`;
+      const program =
+        env.payload.register_count === undefined ? "" : ` · program ${env.payload.register_count}`;
+      return `seat ${env.payload.seat} dealt ${dealt}${program}`;
+    }
+    case "plan_committed":
+      return `${env.payload.registers.length}R · ${planSequence(env.payload.registers)}`;
+    case "register_resolved": {
+      const card = env.payload.card_id === null ? "—" : cardLabel(env.payload.card_id);
+      return `R${env.payload.register_index} ${card} · ${words(env.payload.action)} · ${env.payload.outcome}`;
+    }
+    case "cards_discarded":
+      return `discarded ${env.payload.card_ids.length} · ${words(env.payload.reason)}`;
     case "move_intent":
+      return `move ${words(env.payload.direction)}${env.payload.speed === null ? "" : ` · ${env.payload.speed}`}`;
     case "weapon_fire_intent":
+      return `fire ${shortId(env.payload.weapon_id)} → ${
+        env.payload.target_mech_id === null ? "no target" : shortId(env.payload.target_mech_id)
+      }`;
     case "mode_switch_intent":
+      return `mode → ${env.payload.target_mode}`;
     case "vent_intent":
-      return env.event_type.replace(/_/g, " ");
+      return "vent";
     case "movement_resolved":
       return `(${env.payload.from.x},${env.payload.from.y}) → (${env.payload.to.x},${env.payload.to.y})`;
     case "boiler_updated":
@@ -308,6 +372,8 @@ export function summarizeEnvelope(env: SOEventEnvelope): string {
       return `mode → ${env.payload.new_mode}`;
     case "weapon_fired":
       return `${shortId(env.payload.weapon_id)} → ${shortId(env.payload.target_id)} · p${(env.payload.hit_probability * 100).toFixed(0)}%`;
+    case "weapon_fire_rejected":
+      return `REJECTED ${shortId(env.payload.weapon_id)} · ${words(env.payload.reason)}`;
     case "hit_resolved":
       return env.payload.result.hit
         ? `HIT ${shortId(env.payload.defender_id)} · ${env.payload.result.damage_after_armor} dmg`
@@ -368,6 +434,36 @@ export function formatStamp(env: SOEventEnvelope): string {
   const tick = String(env.tick).padStart(3, "0");
   const seq = String(env.sequence_in_tick).padStart(2, "0");
   return `${tick}.${seq}`;
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning accessors (cadence-agnostic)
+// ---------------------------------------------------------------------------
+
+/**
+ * True for the two envelopes that carry a pilot's own reasoning:
+ * `pilot_decision_made` (tactical cadence) and `plan_committed` (card cadence).
+ * The demo runs the card cadence, where `plan_committed` is the ONLY carrier —
+ * a river that renders reasoning for the former alone renders none at all.
+ */
+export function isReasoningEvent(env: SOEventEnvelope): boolean {
+  return env.event_type === "pilot_decision_made" || env.event_type === "plan_committed";
+}
+
+/** The pilot's own words for this decision, or null when it kept them. */
+export function rationaleOf(env: SOEventEnvelope): string | null {
+  if (env.event_type === "pilot_decision_made" || env.event_type === "plan_committed") {
+    return env.payload.rationale;
+  }
+  return null;
+}
+
+/** The pilot's self-reported confidence in [0,1], or null for a non-decision. */
+export function confidenceOf(env: SOEventEnvelope): number | null {
+  if (env.event_type === "pilot_decision_made" || env.event_type === "plan_committed") {
+    return env.payload.confidence;
+  }
+  return null;
 }
 
 /**

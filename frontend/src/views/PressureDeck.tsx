@@ -170,11 +170,25 @@ export function reduce(state: DeckState, action: DeckAction): DeckState {
     switch (env.event_type) {
       case "match_started": {
         sides = buildSideMap(env.payload.mechs);
-        gauges = initGauges(env.payload.mechs, sides);
+        // The launch record is the authority on WHO is flying each seat; the
+        // runtime mech state only says which mech exists. Seed both together so
+        // the spec rail can show the assigned identity, not just an inferred one.
+        gauges = initGauges(
+          env.payload.mechs,
+          sides,
+          env.payload.launch_provenance?.seat_assignments ?? [],
+        );
         break;
       }
       case "pilot_decision_made": {
         latest = `${env.subject.mech_id} ${env.payload.action} — ${summarizeEnvelope(env)}`;
+        gauges = applyGaugeEvent(gauges, env);
+        break;
+      }
+      case "plan_committed": {
+        // The card cadence's decision event — the live region must announce it
+        // for the same reason the river renders it: it is the only reasoning.
+        latest = `${env.subject.mech_id} plan — ${summarizeEnvelope(env)}`;
         gauges = applyGaugeEvent(gauges, env);
         break;
       }

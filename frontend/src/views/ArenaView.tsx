@@ -1,7 +1,10 @@
 /**
  * ArenaView — PRESSURE DECK centerpiece (Rev 2, evolved from TacticalBoard).
  *
- * The 40×40 plotting grid scaled up into the dominant, square center arena.
+ * The arena contract's plotting grid, scaled up into the dominant, square
+ * center arena. The grid dimension is ALWAYS the authoritative
+ * `match_started.payload.arena.size` — the demo runs `foundry_60` at 60×60, and
+ * no dimension is assumed before that envelope arrives.
  * A pure projection of the event stream (never POSTs / fetches): it folds the
  * same `subscribe` fan-out the deck uses into chassis sprites (facing, damage
  * state, venting, firing), fading movement trails, per-weapon-class tracers
@@ -21,10 +24,13 @@ import { weaponClassOf } from "../lib/weapons";
 import type { SOEventEnvelope, SOMechRuntimeState, SOPosition } from "../types";
 
 /**
- * The authoritative dimension is the arena contract's `size` carried on
- * MATCH_STARTED (`payload.arena.size`).
+ * Grid dimension used ONLY before `match_started` arrives — an empty holding
+ * frame with nothing plotted on it, never an arena default. The authoritative
+ * dimension is the arena contract's `size` carried on MATCH_STARTED
+ * (`payload.arena.size`), which replaces this on the first envelope. Nothing
+ * may derive a coordinate, bound or assertion from this constant.
  */
-export const GRID_CELLS = 40;
+export const PLACEHOLDER_GRID_CELLS = 40;
 /** Minor grid lines every 2 cells (subtle) — keyed by coordinate, not index. */
 const minorLines = (cells: number): number[] =>
   Array.from({ length: Math.floor(cells / 2) + 1 }, (_, i) => i * 2);
@@ -95,7 +101,7 @@ export interface ArenaState {
 export const ARENA_INITIAL_STATE: ArenaState = {
   mechs: {},
   obstacles: [],
-  gridCells: GRID_CELLS,
+  gridCells: PLACEHOLDER_GRID_CELLS,
   trails: {},
   tracers: [],
   shimmers: [],
