@@ -154,6 +154,12 @@ export class MatchTransport {
   private readonly seenMessages = new Map<string, string>();
 
   private activeMatchId: string | null = null;
+  /**
+   * A picker choice pins the operator's view.  Without a pin, the first
+   * MATCH_STARTED admitted after a stale/incomplete prefix is the live match
+   * and must take over the deck (an old stream can end without match_ended).
+   */
+  private activeMatchExplicitlySelected = false;
   private releasedCount = 0;
   // Default = paced auto-play replay from tick 0 at ×1. LIVE is opt-in.
   private status: TransportStatus = "playing";
@@ -242,12 +248,21 @@ export class MatchTransport {
       };
       this.buffers.set(matchId, buf);
       this.order.push(matchId);
-      // Default selection = the FIRST match to arrive. Once that match has
-      // reached its canonical terminal, a subsequent MATCH_STARTED is the
-      // next live match and must become active without a page refresh.
+      // Default selection follows a fresh match once the current buffer has
+      // actually been rendered beyond setup.  A historical stream may be
+      // truncated before match_ended; in that case waiting for
+      // `activeBuffer.complete` leaves the UI stuck on the old match forever.
+      // Keep a not-yet-rendered interleaved stream first-seen so a mux does
+      // not churn selection while both matches are only being admitted.  An
+      // explicit picker selection pins the view and is never overridden by a
+      // new match.
       if (this.activeMatchId === null) {
         this.activeMatchId = matchId;
-      } else if (this.activeBuffer()?.complete === true) {
+      } else if (
+        !this.activeMatchExplicitlySelected &&
+        (this.activeBuffer()?.complete === true ||
+          ((this.activeBuffer()?.events.length ?? 0) > 1 && this.releasedCount > 0))
+      ) {
         this.activeMatchId = matchId;
         this.releasedCount = 0;
         this.status = "playing";
@@ -531,7 +546,12 @@ export class MatchTransport {
    */
   selectMatch(matchId: string): void {
     const buf = this.buffers.get(matchId);
-    if (buf === undefined || matchId === this.activeMatchId) return;
+    if (buf === undefined) return;
+    this.activeMatchExplicitlySelected = true;
+    if (matchId === this.activeMatchId) {
+      this.notifyState();
+      return;
+    }
     this.activeMatchId = matchId;
     this.releasedCount = 0;
     this.status = "playing";
