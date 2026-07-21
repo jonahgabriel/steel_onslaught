@@ -130,7 +130,10 @@ describe("types parity against Python-emitted fixtures", () => {
   it("rejects an unknown nested ONEX envelope field", () => {
     const raw: unknown = JSON.parse(readFileSync(join(FIXTURES_DIR, "match_tick.json"), "utf-8"));
     const record = raw as Record<string, unknown>;
-    const envelope = { ...(record["envelope"] as Record<string, unknown>), bogus: 1 };
+    const envelope = {
+      ...(record["envelope"] as Record<string, unknown>),
+      bogus: 1,
+    };
     expect(() => parseEnvelope({ ...record, envelope })).toThrow(/envelope\.envelope.*bogus/);
   });
 
@@ -175,8 +178,63 @@ describe("types parity against Python-emitted fixtures", () => {
       readFileSync(join(FIXTURES_DIR, "boiler_updated.json"), "utf-8"),
     );
     const record = raw as Record<string, unknown>;
-    const payload = { ...(record["payload"] as Record<string, unknown>), bogus: 1 };
+    const payload = {
+      ...(record["payload"] as Record<string, unknown>),
+      bogus: 1,
+    };
     expect(() => parseEnvelope({ ...record, payload })).toThrow(/bogus/);
+  });
+
+  it("parses a legacy plan_committed that predates plan_source", () => {
+    // The Python payload DEFAULTS plan_source, so every plan_committed event
+    // persisted before the field existed carries no key at all.  If the parser
+    // required it, streaming any historical ledger to the browser would hard
+    // fail on the first plan.
+    const envelope = corruptPayload("plan_committed", (payload) => {
+      delete payload["plan_source"];
+    });
+    const parsed = parseEnvelope(envelope);
+    expect(parsed.event_type).toBe("plan_committed");
+    const payload = objectValue(
+      (parsed as unknown as MutableObject)["payload"],
+      "plan_committed.payload",
+    );
+    expect(payload["plan_source"]).toBe("unspecified");
+  });
+
+  it("accepts every plan_source member the Python enum can emit", () => {
+    for (const source of [
+      "llm",
+      "deterministic_planner",
+      "deterministic_fallback",
+      "unspecified",
+    ]) {
+      const envelope = corruptPayload("plan_committed", (payload) => {
+        payload["plan_source"] = source;
+      });
+      const parsed = parseEnvelope(envelope);
+      const payload = objectValue(
+        (parsed as unknown as MutableObject)["payload"],
+        "plan_committed.payload",
+      );
+      expect(payload["plan_source"]).toBe(source);
+    }
+
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("plan_committed", (payload) => {
+          payload["plan_source"] = "invented";
+        }),
+      ),
+    ).toThrow(/plan source/);
+    // An explicit null is still malformed; only an absent key is legacy.
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("plan_committed", (payload) => {
+          payload["plan_source"] = null;
+        }),
+      ),
+    ).toThrow(/plan source/);
   });
 
   it("keeps card event payloads closed and semantically strict", () => {

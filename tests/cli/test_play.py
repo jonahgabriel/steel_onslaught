@@ -20,7 +20,7 @@ from steel_onslaught.cli.play import (
     BrowserLiveProviderCapabilityFactory,
     BrowserPlayServer,
     BrowserPlaySession,
-    _catalog_selection_overlay,
+    _admitted_seat_overlay,
     _configured_browser_server,
     _InjectedSecretResolver,
     _load_yaml_model,
@@ -62,12 +62,15 @@ from steel_onslaught.match.composition import (
     RuntimeDependencies,
     SystemClock,
     SystemIdentityProvider,
+    build_card_programmers,
+    build_llm_dependencies,
     load_application_overlay,
     load_model_catalog,
     load_model_catalog_loadouts,
     load_model_catalog_pilot_registry,
     load_model_catalog_runtime_overlay,
     load_model_catalog_runtime_sources,
+    load_pilot_registry,
 )
 from steel_onslaught.match.runner import MatchIdentity
 from steel_onslaught.match.runtime import ConditionProgressGate, MatchRuntime
@@ -503,11 +506,12 @@ def test_catalog_runtime_overlay_selects_source_card_programmers_per_seat() -> N
         ),
     )
 
-    selected_overlay = _catalog_selection_overlay(
+    selected_overlay = _admitted_seat_overlay(
         overlay=merged_overlay,
+        roster=catalog.to_roster_binding(),
+        request=request,
         catalog=catalog,
         source_overlays=source_overlays,
-        request=request,
     )
     assert selected_overlay.contracts.card_catalog is not None
     assert {
@@ -530,17 +534,133 @@ def test_catalog_runtime_overlay_selects_source_card_programmers_per_seat() -> N
             )
         }
     )
-    differentiated_overlay = _catalog_selection_overlay(
+    differentiated_overlay = _admitted_seat_overlay(
         overlay=merged_overlay,
+        roster=catalog.to_roster_binding(),
+        request=differentiated_request,
         catalog=catalog,
         source_overlays=source_overlays,
-        request=differentiated_request,
     )
     assert differentiated_overlay.contracts.card_catalog is not None
     assert {
         binding.pilot_spec_id
         for binding in differentiated_overlay.contracts.card_catalog.programmers
     } == {"pilot.llm.qwen35_sniper", "pilot.llm.qwen27_opportunist"}
+
+
+def _mirror_selection_session_factory(
+    request: ModelSOBrowserStartMatchRequest,
+    _transport: ModelSOBrowserRequestContext,
+    _principal_id: str,
+    _session_id: str,
+) -> BrowserPlaySession:
+    """Compose the admitted selection with production code and let it fail.
+
+    The rejection is raised by ``build_card_programmers`` itself rather than by
+    a hand-thrown stub, so this asserts the classification of the real error
+    that the browser start path produces for a mirror selection.
+    """
+
+    root = Path(__file__).parents[2]
+    overlay = load_application_overlay(root / "contracts_data/overlays/standard_v1_qwen.yaml")
+    roster = _load_yaml_model(
+        root / "contracts_data/rosters/canonical_qwen35.yaml",
+        ModelSOPlayerRosterBinding,
+    )
+    selected = _admitted_seat_overlay(overlay=overlay, roster=roster, request=request)
+    card_catalog = selected.contracts.card_catalog
+    assert card_catalog is not None
+    llm = build_llm_dependencies(overlay)
+    try:
+        build_card_programmers(
+            card_catalog.programmers,
+            registry=load_pilot_registry(overlay.contracts.pilot_registry_dir),
+            llm=llm,
+            deck_policy=card_catalog.deck_policy,
+        )
+    finally:
+        llm.close()
+    raise AssertionError("mirror selection must not compose")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_seat_identity_rejection_is_not_reported_as_an_authorization_failure() -> None:
+    """A rejected seat pairing must not look like a credential/permission problem.
+
+    The command was well formed and the selection was roster-permitted; the
+    only thing wrong is that both seats resolve to the same decision-maker.
+    Reporting ``invalid_or_unauthorized_command`` for that sends the operator
+    to look at auth, so it gets its own code.
+    """
+
+    server = BrowserPlayServer(
+        bootstrap=cast(Any, object()),
+        gateway=None,
+        bus=None,
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+        session_factory=_mirror_selection_session_factory,
+    )
+    transport = ModelSOBrowserRequestContext(origin="http://localhost:5173", host="127.0.0.1:8765")
+    # The real browser frame: a start intent naming the same option twice.
+    frame = json.dumps(
+        {
+            "schema_version": "1",
+            "kind": "steel_onslaught.browser_start_intent",
+            "request_id": str(_COMMAND_ID),
+            "intent": {
+                "expected_overlay_sha256": "1" * 64,
+                "roster_id": "roster.canonical_qwen35",
+                "expected_roster_sha256": "2" * 64,
+                "selections": [
+                    {"side": "red", "option_id": "player_option.qwen35_model"},
+                    {"side": "blue", "option_id": "player_option.qwen35_model"},
+                ],
+            },
+        }
+    )
+
+    response = await server._dispatch_command(
+        frame,
+        transport=transport,
+        principal_id=_PRINCIPAL,
+        session_id=_SESSION,
+    )
+
+    assert json.loads(response or "{}") == {
+        "schema_version": "1",
+        "kind": "steel_onslaught.browser_command_failed",
+        "authority_scope": "process_lifetime",
+        "outcome": "failed",
+        "error_code": "seat_identity_conflict",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_malformed_command_still_reports_the_authorization_failure_code() -> None:
+    """The distinct seat-identity code must not swallow the generic one."""
+
+    server = BrowserPlayServer(
+        bootstrap=cast(Any, object()),
+        gateway=None,
+        bus=None,
+        authenticate=lambda _origin: (_PRINCIPAL, _SESSION),
+        port=0,
+        session_factory=_mirror_selection_session_factory,
+    )
+
+    response = await server._dispatch_command(
+        json.dumps({"schema_version": "1", "kind": "steel_onslaught.not_a_command"}),
+        transport=ModelSOBrowserRequestContext(
+            origin="http://localhost:5173", host="127.0.0.1:8765"
+        ),
+        principal_id=_PRINCIPAL,
+        session_id=_SESSION,
+    )
+
+    assert json.loads(response or "{}")["error_code"] == "invalid_or_unauthorized_command"
 
 
 @pytest.mark.unit

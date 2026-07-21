@@ -27,7 +27,8 @@
       }
     ],
     "rationale": "Advance, fire, then vent.",
-    "confidence": 0.8
+    "confidence": 0.8,
+    "plan_source": "llm"
   },
   "envelope": {
     "message_id": "569d9ec4-2007-5f75-bc7b-da1f1f917cf4",

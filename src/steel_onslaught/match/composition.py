@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, Self, cast
+from typing import Any, Literal, NamedTuple, Self, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -1026,11 +1026,85 @@ def _validate_llm_pilot_bindings(
         llm.persona_registry.require(spec.parameters.persona)
 
 
+class SeatIdentityError(ValueError):
+    """Two live card seats did not resolve to distinct, declared identities.
+
+    This is deliberately its own type.  The failure is a composition/contract
+    validation failure — the caller asked for a legal, roster-permitted
+    pairing that simply is not a contest between two distinct decision-makers
+    — so a transport boundary must not report it as an authorization failure.
+    """
+
+
+class SeatProgrammerIdentity(NamedTuple):
+    """The two facts that make one card seat its own decision-maker.
+
+    Persona alone is not the identity: the same persona driven by two
+    different models is the cleanest model-vs-model contest there is, and
+    banning it would break the product.  The same persona on the same
+    provider, on both seats, is a mirror match.
+    """
+
+    provider: str
+    persona: str
+
+
+def validate_seat_programmer_identity(
+    resolved_seats: Mapping[str, SeatProgrammerIdentity],
+    *,
+    deck_policy: ModelSOCardDeckPolicy | None = None,
+) -> None:
+    """Fail closed when a seat's programmer is not the seat it claims to be.
+
+    In card mode the card programmer — not the loadout pilot — is the seat's
+    decision-maker, so nothing about a seat's advertised identity is true
+    until the *resolved* programmer for that side is checked.  Two checks make
+    seat identity one validated contract:
+
+    1. Every bound seat must resolve to a distinct ``(provider, persona)``
+       identity.  This is unconditional: it is the check that stops a live
+       match from running an unannounced mirror.  It applies to the split-deck
+       overlays and to the single-deck catalog/roster paths alike, because
+       both admit their seats from a runtime selection rather than from the
+       overlay's authored default.
+    2. When the overlay also declares a split ``deck_policy``, each bound
+       seat's resolved persona must equal that seat's declared archetype.
+       Without it, ``archetype`` is a label with nothing behind it.
+
+    ``resolved_seats`` is the post-rebind, admitted runtime selection — never
+    the overlay's authored template — so a differentiated-looking overlay
+    cannot be collapsed by the selection that actually launched.
+    """
+
+    if deck_policy is not None:
+        mismatched = tuple(
+            f"{seat.side}={resolved_seats[seat.side].persona!r} (archetype {seat.archetype!r})"
+            for seat in deck_policy.seats
+            if seat.side in resolved_seats and resolved_seats[seat.side].persona != seat.archetype
+        )
+        if mismatched:
+            raise SeatIdentityError(
+                "card programmer persona does not match the declared seat archetype: "
+                + ", ".join(mismatched)
+            )
+    declared = tuple(sorted(resolved_seats.items()))
+    identities = {identity for _side, identity in declared}
+    if len(declared) > 1 and len(identities) != len(declared):
+        rendered = ", ".join(
+            f"{side}={identity.persona!r}@{identity.provider!r}" for side, identity in declared
+        )
+        raise SeatIdentityError(
+            "live card seats must resolve to distinct card programmer identities "
+            f"(model + persona); got {rendered}"
+        )
+
+
 def build_card_programmers(
     bindings: tuple[ModelSOCardProgrammerBinding, ...],
     *,
     registry: PilotSpecRegistry,
     llm: LlmDependencies,
+    deck_policy: ModelSOCardDeckPolicy | None = None,
     observer: ProtocolLlmCompletionObserver | None = None,
     correlation_id: UUID | None = None,
 ) -> Mapping[str, ProgrammingPilot]:
@@ -1042,15 +1116,25 @@ def build_card_programmers(
     provider client and persona selected by that spec.  A missing binding is
     represented by an absent mapping entry; the card adapter then retains its
     deterministic priority programmer for that seat.
+
+    Seat identity is validated here, unconditionally, before any provider
+    client is bound: this is the single chokepoint every card path (catalog,
+    roster, and injected overlay) funnels through, and the bindings it
+    receives are the admitted runtime selection, so it is the only place that
+    can prove the seats a live match actually runs are distinct.  When the
+    overlay also declares a split ``deck_policy``, the resolved personas are
+    additionally checked against that policy's seat archetypes.
     """
 
     if observer is not None and correlation_id is None:
         raise ValueError("observed card programmers require a match correlation_id")
 
-    programmers: dict[str, ProgrammingPilot] = {}
+    resolved: list[tuple[ModelSOCardProgrammerBinding, ModelSOLlmPilotParams]] = []
+    bound_sides: set[str] = set()
     for binding in bindings:
-        if binding.side in programmers:
+        if binding.side in bound_sides:
             raise ValueError(f"card programmer seat {binding.side!r} is bound more than once")
+        bound_sides.add(binding.side)
         spec = registry.get(binding.pilot_spec_id)
         if spec is None:
             raise PilotResolutionError(
@@ -1063,20 +1147,36 @@ def build_card_programmers(
             )
         if not isinstance(spec.parameters, ModelSOLlmPilotParams):
             raise TypeError(f"llm card programmer spec {spec.id!r} has invalid parameters")
-        provider_id = spec.parameters.provider
+        resolved.append((binding, spec.parameters))
+
+    if resolved:
+        validate_seat_programmer_identity(
+            {
+                binding.side: SeatProgrammerIdentity(
+                    provider=parameters.provider,
+                    persona=parameters.persona,
+                )
+                for binding, parameters in resolved
+            },
+            deck_policy=deck_policy,
+        )
+
+    programmers: dict[str, ProgrammingPilot] = {}
+    for binding, parameters in resolved:
+        provider_id = parameters.provider
         if observer is not None:
             observed_factory = llm.pilot_factory.with_observer(observer)
             observed_pilot = observed_factory.llm_pilot(
                 ModelSOLlmPilotSelection(
                     provider_id=provider_id,
-                    persona_id=spec.parameters.persona,
+                    persona_id=parameters.persona,
                     opponent_trace=None,
                 )
             )
             client = cast(Any, observed_pilot).client
         else:
             client = llm.client_factory.client_for(provider_id)
-        persona = llm.persona_registry.require(spec.parameters.persona)
+        persona = llm.persona_registry.require(parameters.persona)
         programmers[binding.side] = LLMProgrammingPilot(
             client=client,
             persona=persona,
@@ -1103,6 +1203,7 @@ class CardProgrammerFactory:
     bindings: tuple[ModelSOCardProgrammerBinding, ...]
     registry: PilotSpecRegistry
     llm: LlmDependencies
+    deck_policy: ModelSOCardDeckPolicy | None = None
 
     def for_match(
         self,
@@ -1114,6 +1215,7 @@ class CardProgrammerFactory:
             self.bindings,
             registry=self.registry,
             llm=self.llm,
+            deck_policy=self.deck_policy,
             observer=observer,
             correlation_id=identity.correlation_id,
         )
@@ -1144,9 +1246,11 @@ def build_llm_dependencies(
                 providers=overlay.llm.providers,
                 selected_provider_ids=selected_provider_ids,
             )
-        resolved_failure_policy: LlmPilotFailurePolicy = (
-            "raise" if selected_provider_ids is not None else "fallback"
-        )
+        # Every composition path is fail-closed by default. The unselected
+        # path used to default to "fallback", which masked a provider failure
+        # behind a deterministic REMAIN instead of surfacing it. A caller that
+        # deliberately wants typed recovery passes pilot_failure_policy.
+        resolved_failure_policy: LlmPilotFailurePolicy = "raise"
     else:
         providers = (
             SelectedOnlyLlmClientBuilder().select(
@@ -1397,11 +1501,13 @@ def build_runtime_dependencies(
                 bindings=card_binding.programmers,
                 registry=resolved_pilot_registry,
                 llm=llm,
+                deck_policy=card_binding.deck_policy,
             )
             resolved_card_programmers = build_card_programmers(
                 card_binding.programmers,
                 registry=resolved_pilot_registry,
                 llm=llm,
+                deck_policy=card_binding.deck_policy,
             )
         if card_binding is not None and card_binding.card_mode_enabled:
             if card_runtime_snapshot is None:
@@ -2153,6 +2259,8 @@ __all__ = [
     "MatchRuntime",
     "MissingCardCatalogError",
     "RuntimeDependencies",
+    "SeatIdentityError",
+    "SeatProgrammerIdentity",
     "assemble_match_live",
     "assemble_match_with_dependencies",
     "assemble_selected_match_live",
@@ -2181,4 +2289,5 @@ __all__ = [
     "load_pilot_registry",
     "load_pilot_spec",
     "run_composed_match",
+    "validate_seat_programmer_identity",
 ]

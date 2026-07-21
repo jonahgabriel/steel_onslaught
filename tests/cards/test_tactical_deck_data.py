@@ -127,7 +127,7 @@ def test_tactical_overlay_selects_isolated_deck_and_qwen_provider() -> None:
     assert binding.card_cadence == "paced"
     assert tuple(programmer.pilot_spec_id for programmer in binding.programmers) == (
         "pilot.llm.qwen35",
-        "pilot.llm.qwen35",
+        "pilot.llm.qwen35_sniper",
     )
     assert overlay.llm.providers[0].provider_id == "qwen35"
     assert overlay.event_ledger.path.parts[-2:] == ("tactical_v1_qwen", "events.sqlite3")

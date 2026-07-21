@@ -50,6 +50,39 @@ class SOCardPartition(StrEnum):
     WEAPON = "weapon"
 
 
+class SOPlanSource(StrEnum):
+    """Who actually authored one committed register plan.
+
+    Recording the authorship on the event makes a *substituted* plan durably
+    classified in the ledger and detectable by replay instead of silently
+    indistinguishable from a real provider decision.  The classification is
+    only useful if it separates the three genuinely different cases, so the
+    deterministic planner running by design is not the same member as the
+    deterministic planner standing in for a failed provider:
+
+    ``LLM``
+        A provider completion authored this plan.
+    ``DETERMINISTIC_PLANNER``
+        The priority planner authored it *by design* — a seat with no bound
+        card programmer (a human seat, a deterministic pilot, or a hermetic /
+        replay match).  Nothing was substituted and nothing failed.
+    ``DETERMINISTIC_FALLBACK``
+        A seat that *was* bound to a provider fell back to the priority
+        planner after a classified provider failure.  This member is the
+        only real substitution signal.
+    ``UNSPECIFIED``
+        The authoring seam did not classify the plan.  This is the model
+        default so that events persisted before this field existed stay
+        honestly unknown instead of being retroactively relabelled as a
+        provider decision or as a substitution that never happened.
+    """
+
+    LLM = "llm"
+    DETERMINISTIC_PLANNER = "deterministic_planner"
+    DETERMINISTIC_FALLBACK = "deterministic_fallback"
+    UNSPECIFIED = "unspecified"
+
+
 SPLIT_DECK_MARKER = "deck.split"
 
 
@@ -147,6 +180,13 @@ class ModelSOPlanCommittedPayload(_ClosedCardPayload):
     registers: tuple[ModelSOPlanRegister, ...]
     rationale: StrictStr | None = Field(...)
     confidence: StrictFloat = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    # Fail-safe default: a plan is credited to a provider only when the LLM
+    # boundary explicitly says so, and it is called a substitution only when a
+    # substitution actually happened.  An omitted field (every plan_committed
+    # event persisted before this field existed) is therefore ``unspecified``,
+    # not ``deterministic_fallback``; defaulting to the substitution member
+    # would retroactively relabel historical evidence.
+    plan_source: SOPlanSource = SOPlanSource.UNSPECIFIED
 
     @model_validator(mode="after")
     def _register_indexes_are_unique(self) -> Self:
@@ -200,6 +240,7 @@ __all__ = [
     "ModelSOPlanRegister",
     "ModelSORegisterResolvedPayload",
     "SOCardPartition",
+    "SOPlanSource",
     "SORegisterFillReason",
     "SORegisterOutcome",
 ]

@@ -23,7 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_v
 from steel_onslaught.contracts.card import CardId, ModelSOCard
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.deck import ModelSODeck
-from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, ModelSOPlanRegister
+from steel_onslaught.events.card_payloads import (
+    ModelSOPlanCommittedPayload,
+    ModelSOPlanRegister,
+    SOPlanSource,
+)
 from steel_onslaught.pilots.schemas import ModelSOPilotObservation
 
 _RegisterIndex = Annotated[StrictInt, Field(ge=0)]
@@ -247,7 +251,15 @@ def _validate_plan(
 
 
 def _priority_plan(observation: ModelSOProgrammingObservation) -> ModelSOPlanCommittedPayload:
-    """Build a deterministic priority/id plan without consulting a pilot."""
+    """Build a deterministic priority/id plan without consulting a pilot.
+
+    This seam has no bound programmer at all, so nothing was substituted: it
+    is the by-design planner for human seats, deterministic pilots, and
+    hermetic/replay matches.  It is therefore stamped
+    ``DETERMINISTIC_PLANNER``.  Only ``LLMProgrammingPilot`` — the one caller
+    that *did* have a provider and lost it — restamps the result as
+    ``DETERMINISTIC_FALLBACK``.
+    """
 
     ordered = sorted(observation.hand_cards, key=lambda card: (-card.priority, str(card.id)))
     selected = ordered[: len(observation.free_indices)]
@@ -260,6 +272,7 @@ def _priority_plan(observation: ModelSOProgrammingObservation) -> ModelSOPlanCom
         registers=registers,
         rationale=None,
         confidence=1.0,
+        plan_source=SOPlanSource.DETERMINISTIC_PLANNER,
     )
 
 

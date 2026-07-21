@@ -165,6 +165,8 @@ class PreferAttackCardsRuleHandler:
             registers=tuple(registers),
             rationale=rationale,
             confidence=proposed_plan.confidence,
+            # A rule adjusts the plan; it never changes who authored it.
+            plan_source=proposed_plan.plan_source,
         )
 
 
