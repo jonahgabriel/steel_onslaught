@@ -432,6 +432,10 @@ class CardRunnerAdapter:
                     seat=request.seat,
                     deck_id=SPLIT_DECK_MARKER,
                     payload=payload,
+                    # The current hand remains separate from the dealer state
+                    # for HAND_DEALT conservation.  It is appended to the
+                    # discard piles only in ``split_deck_states`` below, the
+                    # state carried into the next round.
                     split_state=split_result.state,
                 )
             else:
@@ -521,7 +525,7 @@ class CardRunnerAdapter:
                 tuple(
                     ModelSOCardRoundSeatSplitState(
                         seat=deal.seat,
-                        state=deal.split_state,
+                        state=self._split_state_for_next_round(deal),
                     )
                     for deal in deals
                     if deal.split_state is not None
@@ -531,6 +535,38 @@ class CardRunnerAdapter:
             ),
             split_policy=(
                 self.split_deck_adapter.policy if self.split_deck_adapter is not None else None
+            ),
+        )
+
+    @staticmethod
+    def _split_state_for_next_round(deal: ModelSOCardRoundDeal) -> ModelSOSplitDeckState:
+        """Carry a split hand into each partition's discard pile.
+
+        ``ModelSOCardRoundDeal.split_state`` is the post-draw state and must
+        not include the current hand because HAND_DEALT validation counts the
+        hand separately.  The state persisted across rounds, however, must
+        include the hand exactly like the single-deck path's discard update.
+        """
+
+        if deal.split_state is None or deal.payload.partitions is None:
+            raise CardRunnerAdapterError(
+                "split-deck emissions require partition metadata and state"
+            )
+        partitions = deal.payload.partitions
+        return ModelSOSplitDeckState(
+            movement=deal.split_state.movement.model_copy(
+                update={
+                    "discard_pile": (
+                        deal.split_state.movement.discard_pile + partitions.movement.card_ids
+                    )
+                }
+            ),
+            weapon=deal.split_state.weapon.model_copy(
+                update={
+                    "discard_pile": (
+                        deal.split_state.weapon.discard_pile + partitions.weapon.card_ids
+                    )
+                }
             ),
         )
 
