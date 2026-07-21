@@ -13,13 +13,15 @@
  *   - overload + redline ticks      : boiler_overloaded / heat_redline_exited.
  *   - mode + transition countdown   : mode_transition_started / _completed.
  *   - pilot persona / model         : llm_completion_requested / _resolved.
+ *   - seat identity (authoritative) : match_started launch_provenance
+ *                                     .seat_assignments, matched by player_id.
  *   - tallies                       : weapon_fired, damage_applied,
- *                                     pilot_decision_made.
+ *                                     pilot_decision_made / plan_committed.
  * There is no `display_name` on the wire, so the exact `mech_id` is displayed.
  */
 
 import type { ChassisClass, MechState } from "../assets/theme";
-import type { SOEventEnvelope, SOMechRuntimeState } from "../types";
+import type { SOEventEnvelope, SOMechRuntimeState, SOSeatAssignment } from "../types";
 import type { Side, SideMap } from "./river";
 
 export type MechStatus = "alive" | "pilot_killed" | "destroyed";
@@ -45,6 +47,16 @@ export interface GaugeState {
   readonly chassisClass: ChassisClass;
   readonly chassisId: string;
   readonly pilotId: string;
+  /**
+   * The authoritative seat assignment for this mech's player, from
+   * MATCH_STARTED `launch_provenance.seat_assignments` — who is actually flying
+   * this seat (human vs model, which persona, which model identity, which
+   * loadout). Null when the stream carries no launch provenance (a legacy or
+   * historical-replay match). This is launch evidence, NOT runtime inference:
+   * the runtime-derived `persona`/`model` below are folded separately and may
+   * disagree — a disagreement is a real defect, not a display bug.
+   */
+  readonly seat: SOSeatAssignment | null;
   /** True only after canonical LLM evidence identifies this pilot as LLM-backed. */
   readonly isLlm: boolean;
   /** LLM persona (from llm_completion_requested), else null (heuristic pilot). */
@@ -74,6 +86,12 @@ export interface GaugeState {
   readonly damageDealt: number;
   readonly damageTaken: number;
   readonly shotsFired: number;
+  /**
+   * How many decisions THIS pilot made — `pilot_decision_made` (tactical
+   * cadence) plus `plan_committed` (card cadence), and nothing else. This is
+   * NOT the river's ORDERS chip count, which additionally counts the intents a
+   * plan expands into and each register resolving; see `FILTER_GROUP_LABELS`.
+   */
   readonly decisions: number;
   // status
   readonly status: MechStatus;
@@ -101,7 +119,48 @@ export function pilotDescriptor(g: GaugeState): { kind: "LLM" | "UNKNOWN"; label
   return { kind: "UNKNOWN", label: g.pilotId || "unknown" };
 }
 
-function fromRuntime(state: SOMechRuntimeState, sides: SideMap): GaugeState {
+/** The authoritative seat identity, flattened for display. */
+export interface SeatDescriptor {
+  /** Who holds the controls — the launch record's own discriminator. */
+  readonly kind: "HUMAN" | "MODEL";
+  /** `model_identity_id` for a model seat, `human_identity_id` for a human one. */
+  readonly identityId: string;
+  /** Persona id — model seats only; a human seat has none. */
+  readonly personaId: string | null;
+  readonly loadoutId: string;
+  readonly pilotSpecId: string;
+  readonly inputSource: string;
+}
+
+/**
+ * The authoritative per-seat identity for a mech, or null when the match
+ * carried no launch provenance. Read straight off the launch record — never
+ * merged with, or defaulted from, the runtime-derived persona/model.
+ */
+export function seatDescriptor(g: GaugeState): SeatDescriptor | null {
+  const seat = g.seat;
+  if (seat === null) return null;
+  const common = {
+    loadoutId: seat.loadout_id,
+    pilotSpecId: seat.pilot_spec_id,
+    inputSource: seat.input_source,
+  };
+  if (seat.kind === "model") {
+    return {
+      kind: "MODEL",
+      identityId: seat.model_identity_id,
+      personaId: seat.persona_id,
+      ...common,
+    };
+  }
+  return { kind: "HUMAN", identityId: seat.human_identity_id, personaId: null, ...common };
+}
+
+function fromRuntime(
+  state: SOMechRuntimeState,
+  sides: SideMap,
+  seat: SOSeatAssignment | null,
+): GaugeState {
   return {
     mechId: state.mech_id,
     playerId: state.player_id,
@@ -110,6 +169,7 @@ function fromRuntime(state: SOMechRuntimeState, sides: SideMap): GaugeState {
     chassisClass: state.chassis_class,
     chassisId: state.chassis_id,
     pilotId: state.pilot_id,
+    seat,
     isLlm: false,
     persona: null,
     model: null,
@@ -136,9 +196,23 @@ function fromRuntime(state: SOMechRuntimeState, sides: SideMap): GaugeState {
   };
 }
 
-export function initGauges(mechs: readonly SOMechRuntimeState[], sides: SideMap): Gauges {
+/**
+ * Seed the gauge map from MATCH_STARTED. `seats` is the authoritative
+ * `launch_provenance.seat_assignments` pair when the launch carried provenance;
+ * assignments are matched to mechs by `player_id` (the one identifier both the
+ * runtime state and the launch record agree on) and are never inferred.
+ */
+export function initGauges(
+  mechs: readonly SOMechRuntimeState[],
+  sides: SideMap,
+  seats: readonly SOSeatAssignment[] = [],
+): Gauges {
+  const seatByPlayer = new Map<string, SOSeatAssignment>();
+  for (const seat of seats) seatByPlayer.set(seat.player_id, seat);
   const out: Record<string, GaugeState> = {};
-  for (const m of mechs) out[m.mech_id] = fromRuntime(m, sides);
+  for (const m of mechs) {
+    out[m.mech_id] = fromRuntime(m, sides, seatByPlayer.get(m.player_id) ?? null);
+  }
   return out;
 }
 
@@ -197,6 +271,13 @@ export function applyGaugeEvent(gauges: Gauges, env: SOEventEnvelope): Gauges {
         decisions: (cur?.decisions ?? 0) + 1,
         ...(isLlmDecision ? { isLlm: true } : {}),
       });
+    }
+    case "plan_committed": {
+      // The card cadence never runs ReducerPilotTick, so PLAN_COMMITTED is this
+      // mech's decision for the round. Counting only pilot_decision_made left
+      // the DECISIONS tally pinned at 0 for the entire demo.
+      const cur = gauges[env.subject.mech_id];
+      return patch(env.subject.mech_id, { decisions: (cur?.decisions ?? 0) + 1 });
     }
     case "boiler_overloaded":
       return patch(env.subject.mech_id, {

@@ -7,26 +7,22 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.1.0
+  # mypy runs in the PROJECT env, not an isolated hook env.
+  #
+  # `mirrors-mypy` with `additional_dependencies` cannot work here: this repo's
+  # own package is never installed into the hook's venv, so every
+  # `steel_onslaught.*` import resolved to `import-not-found` and the hook
+  # failed on ANY staged Python file — including files it had not touched,
+  # because `[tool.mypy] files = ["src/", "tests/"]` widens the run. A gate
+  # that can only ever fail is a gate nobody can obey.
+  #
+  # This runs the exact command CI runs (`uv run mypy src/ tests/`), so hook
+  # and CI cannot disagree.
+  - repo: local
     hooks:
       - id: mypy
-        # pyyaml (not types-PyYAML) + pytest: mirror the project env so the
-        # same `# type: ignore[import-untyped]` comments are needed in both.
-        # ulid-py ships py.typed; click is typed — both are imported from src.
-        # websockets is imported by src/steel_onslaught/cli/serve.py + its tests.
-        # playwright is imported by tests/integration/test_proof_of_life.py.
-        additional_dependencies:
-          [
-            pydantic>=2.6,
-            pyyaml,
-            pytest,
-            ulid-py,
-            click>=8.1,
-            websockets>=12.0,
-            playwright>=1.40,
-            omnibase-core>=0.46.2,
-            omnibase-spi>=0.22.0,
-            httpx>=0.27,
-          ]
-        args: [--strict]
+        name: mypy (project env, matches CI)
+        entry: uv run mypy src/ tests/
+        language: system
+        types: [python]
+        pass_filenames: false

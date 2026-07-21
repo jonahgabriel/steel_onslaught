@@ -6,8 +6,10 @@
  * facing, damage state), fading movement TRAILS, per-weapon-class TRACERS
  * (weapon_fired → hit_resolved impact), wreck + steam burst on destruction, and
  * range rings on the selected mech. These assertions replace the old
- * marker/firing-line contract; the HeatBar / PressureBar / MechMarker unit
- * coverage below is preserved verbatim (those presentational components remain).
+ * marker/firing-line contract. Only HeatBar survives from the old marker
+ * cluster (SpecPanel mounts it); MechMarker / PressureBar were deleted along
+ * with the tests that certified them — a green test on an unmounted component
+ * is worse than no test, because it reads as coverage.
  */
 import "./setup-dom";
 import { readFileSync } from "node:fs";
@@ -18,7 +20,7 @@ import type { EnvelopeHandler, WebSocketLike } from "../lib/event_stream";
 import { EventStream } from "../lib/event_stream";
 import { parseEnvelope } from "../types";
 import ArenaView, {
-  GRID_CELLS,
+  PLACEHOLDER_GRID_CELLS,
   spriteOffsets,
   spritePlacements,
   spriteSizePct,
@@ -82,6 +84,43 @@ describe("ArenaView", () => {
     expect(screen.getByTestId("arena-grid")).toBeInTheDocument();
   });
 
+  it("holds an empty placeholder grid before match_started, then takes the contract size", async () => {
+    const base = parseEnvelope(JSON.parse(fixtureText("match_started")));
+    if (base.event_type !== "match_started") throw new Error("wrong fixture event type");
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+
+    // Pre-start: a holding frame with NOTHING plotted on it. The dimension is
+    // the declared placeholder, not an arena claim.
+    const grid = screen.getByTestId("arena-grid");
+    expect(grid).toHaveAttribute(
+      "viewBox",
+      `0 0 ${PLACEHOLDER_GRID_CELLS} ${PLACEHOLDER_GRID_CELLS}`,
+    );
+    expect(screen.queryByTestId("arena-mech-mech.a.01")).not.toBeInTheDocument();
+
+    // Post-start: the authoritative arena contract size wins, whatever it is —
+    // the demo arena (foundry_60) is 60×60, not the placeholder's 40.
+    const started = makeEnvelope("match_started", {
+      ...base.payload,
+      mechs: base.payload.mechs.map((mech, index) => ({
+        ...mech,
+        position: index === 0 ? { x: 4, y: 4 } : { x: 55, y: 55 },
+      })),
+      arena: {
+        ...base.payload.arena,
+        arena_id: "foundry_60",
+        size: 60,
+        spawn_a: { x: 4, y: 4 },
+        spawn_b: { x: 55, y: 55 },
+        obstacles: [],
+      },
+    });
+    await act(async () => socket.emit(JSON.stringify(started)));
+    expect(screen.getByTestId("arena-grid")).toHaveAttribute("viewBox", "0 0 60 60");
+    expect(screen.getByTestId("arena-mech-mech.b.01")).toBeInTheDocument();
+  });
+
   it("drives the grid and obstacle layer from the required arena snapshot", async () => {
     const base = parseEnvelope(JSON.parse(fixtureText("match_started")));
     if (base.event_type !== "match_started") throw new Error("wrong fixture event type");
@@ -121,7 +160,7 @@ describe("ArenaView", () => {
       })),
       arena: {
         ...base.payload.arena,
-        size: GRID_CELLS,
+        size: 40,
         spawn_a: { x: 10, y: 10 },
         spawn_b: { x: 11, y: 10 },
         obstacles: [],
@@ -451,69 +490,5 @@ describe("HeatBar", () => {
     render(<HeatBar heat={80} redlineThreshold={70} ruptureThreshold={100} />);
     const bar = screen.getByTestId("heat-bar");
     expect(bar.getAttribute("data-heat-level")).toBe("redline");
-  });
-});
-
-describe("PressureBar", () => {
-  it("renders a filled bar proportional to current/max pressure", async () => {
-    const { default: PressureBar } = await import("../views/PressureBar");
-    render(<PressureBar current={45} maximum={90} />);
-    const bar = screen.getByTestId("pressure-bar");
-    expect(bar).toBeInTheDocument();
-    expect(bar.getAttribute("data-pressure-pct")).toBe("50");
-  });
-});
-
-describe("MechMarker", () => {
-  it("shows chassis-class label", async () => {
-    const { default: MechMarker } = await import("../views/MechMarker");
-    render(
-      <svg role="img" aria-label="test">
-        <title>test</title>
-        <MechMarker
-          mechId="mech.a.01"
-          chassisClass="light"
-          heat={20}
-          redlineThreshold={70}
-          ruptureThreshold={100}
-          pressureCurrent={45}
-          pressureMaximum={90}
-          hp={100}
-          hpMax={100}
-          x={5}
-          y={5}
-          cellSize={10}
-          alive={true}
-        />
-      </svg>,
-    );
-    const marker = screen.getByTestId("mech-marker-mech.a.01");
-    expect(marker).toBeInTheDocument();
-    expect(marker.getAttribute("data-chassis-class")).toBe("light");
-  });
-
-  it("is not rendered when alive is false", async () => {
-    const { default: MechMarker } = await import("../views/MechMarker");
-    render(
-      <svg role="img" aria-label="test">
-        <title>test</title>
-        <MechMarker
-          mechId="mech.a.01"
-          chassisClass="heavy"
-          heat={0}
-          redlineThreshold={70}
-          ruptureThreshold={100}
-          pressureCurrent={0}
-          pressureMaximum={90}
-          hp={0}
-          hpMax={100}
-          x={10}
-          y={10}
-          cellSize={10}
-          alive={false}
-        />
-      </svg>,
-    );
-    expect(screen.queryByTestId("mech-marker-mech.a.01")).not.toBeInTheDocument();
   });
 });

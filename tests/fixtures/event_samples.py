@@ -34,6 +34,10 @@ from uuid import UUID, uuid5
 from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.contracts.player_selection import (
+    ModelSOMatchLaunchProvenance,
+    ModelSOModelSeatAssignment,
+)
 from steel_onslaught.contracts.runtime import (
     ModelSORuntimeStatusPayload,
     SORuntimeMode,
@@ -78,6 +82,44 @@ _SUBJECT_B = ModelSOEventSubject(mech_id="mech.b.01", player_id="player.b")
 _CORRELATION_ID: UUID = uuid5(UUID(int=0), _MATCH_ID)
 
 _ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32 (ULID)
+
+# The launch record's own ``match_id`` is a canonical ULID-shaped MatchId
+# (``^match\.[0-7][0-9A-HJKMNP-TV-Z]{25}$``), which the human-readable fixture
+# envelope id ``match.fixture.0001`` deliberately is not.  Both forms occur on
+# the wire; the launch record is the stricter one, so the fixture carries it in
+# its canonical shape rather than weakening the contract to match the envelope.
+_LAUNCH_MATCH_ID = "match." + ("01JFXTRE" + "0" * 26)[:26]
+
+# The two seats of the fixture match, as the launch record declares them —
+# model vs model, the mode the demo runs.  Both seats are MODEL seats with
+# DISTINCT persona + model identity, because "who is flying each seat" is only
+# a real readout if the two seats can be told apart.
+_SEAT_ASSIGNMENTS = (
+    ModelSOModelSeatAssignment(
+        kind="model",
+        side="red",
+        player_id="player.a",
+        option_id="player_option.fixture_red_model",
+        loadout_id="loadout.fixture.alpha",
+        pilot_spec_id="pilot.model.fixture_red",
+        option_sha256="a" * 64,
+        model_identity_id="model_identity.fixture_red",
+        persona_id="aggressor",
+        input_source="llm_completion",
+    ),
+    ModelSOModelSeatAssignment(
+        kind="model",
+        side="blue",
+        player_id="player.b",
+        option_id="player_option.fixture_blue_model",
+        loadout_id="loadout.fixture.bravo",
+        pilot_spec_id="pilot.model.fixture_blue",
+        option_sha256="b" * 64,
+        model_identity_id="model_identity.fixture_blue",
+        persona_id="sentinel",
+        input_source="llm_completion",
+    ),
+)
 
 
 def _event_id(event_type: SOEventType) -> str:
@@ -251,6 +293,24 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
                 obstacles=(),
                 sudden_death_start_tick=None,
                 sudden_death_damage_base=8,
+            ).model_dump(mode="json"),
+            # The runner emits this on every authorized launch
+            # (``tests/match/test_runner.py::
+            # test_authorized_run_emits_exact_launch_provenance``), so the
+            # canonical fixture must carry it: without it the frontend's
+            # seat-identity path had no fixture that exercised it.
+            "launch_provenance": ModelSOMatchLaunchProvenance(
+                schema_version="1",
+                kind="steel_onslaught.match_launch_provenance",
+                match_id=_LAUNCH_MATCH_ID,
+                # RFC-4122 shaped (version 4, variant 8) — the frontend parser
+                # requires a real version/variant nibble, not `UUID(int=n)`.
+                launch_command_id=UUID("22222222-2222-4222-8222-222222222222"),
+                launch_command_sha256="c" * 64,
+                overlay_sha256="d" * 64,
+                roster_id="roster.fixture.local",
+                roster_sha256="e" * 64,
+                seat_assignments=_SEAT_ASSIGNMENTS,
             ).model_dump(mode="json"),
         },
         SOEventType.RUNTIME_STATUS_CHANGED: ModelSORuntimeStatusPayload(

@@ -1,10 +1,15 @@
 /**
  * EventRow — PRESSURE DECK.
  *
- * One punch-card river row.  Three shapes, discriminated purely on data:
+ * One punch-card river row.  Four shapes, discriminated purely on data:
  *  - LLM evidence (event_type)   → a bracketed request/terminal strip.
  *  - pilot_decision_made         → an expanded decision row (rationale,
  *                                   confidence meter, reason chip, fallback).
+ *  - plan_committed              → the same expanded decision row for the card
+ *                                   cadence, with the programmed register
+ *                                   sequence in place of the single action.
+ *                                   This is the ONLY reasoning carrier in the
+ *                                   card/paced mode the demo runs.
  *  - everything else             → a single-line telemetry row.
  *
  * Presentational: all state (side, lane, dim, focus, thinking) arrives as
@@ -12,12 +17,15 @@
  */
 import type React from "react";
 import {
+  cardLabel,
   confidenceSegments,
   fallbackClassOf,
   formatStamp,
   glyphOf,
   groupOf,
   isDangerEvent,
+  orderedRegisters,
+  rationaleOf,
   type Side,
   summarizeEnvelope,
 } from "../lib/river";
@@ -129,6 +137,23 @@ function LlmContent({ env }: { env: SOEventEnvelope }): React.JSX.Element | null
   );
 }
 
+/** The 5-segment confidence meter — identical in both decision cadences. */
+function ConfidenceMeter({ confidence }: { confidence: number }): React.JSX.Element {
+  return (
+    <span
+      className="pd-conf"
+      data-testid="decision-confidence"
+      role="img"
+      aria-label={`confidence ${confidence.toFixed(2)}`}
+    >
+      {confidenceSegments(confidence).map((on, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: fixed 5-segment meter, never reorders
+        <i key={i} data-on={on} />
+      ))}
+    </span>
+  );
+}
+
 function DecisionContent({
   env,
 }: {
@@ -145,23 +170,43 @@ function DecisionContent({
         {payload.action.toUpperCase()}
         {weaponLabel}
       </span>
-      <span
-        className="pd-conf"
-        data-testid="decision-confidence"
-        role="img"
-        aria-label={`confidence ${payload.confidence.toFixed(2)}`}
-      >
-        {confidenceSegments(payload.confidence).map((on, i) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: fixed 5-segment meter, never reorders
-          <i key={i} data-on={on} />
-        ))}
-      </span>
+      <ConfidenceMeter confidence={payload.confidence} />
       <span className="pd-chip">{payload.reason_code}</span>
       {fallback !== null ? (
         <span className="pd-chip" data-fallback="true" data-testid="fallback-chip">
           FALLBACK: {fallback}
         </span>
       ) : null}
+    </>
+  );
+}
+
+/**
+ * The card-cadence decision row. The committed registers ARE the tactical
+ * choice — rendered in execution order as `R0 advance › R1 fire primary` so the
+ * per-round variety the stream already carries is legible instead of collapsed
+ * into a bare "plan committed" label.
+ */
+function PlanContent({
+  env,
+}: {
+  env: SOEventEnvelope & { event_type: "plan_committed" };
+}): React.JSX.Element {
+  const { payload } = env;
+  const registers = orderedRegisters(payload.registers);
+  return (
+    <>
+      <span className="pd-type">PLAN</span>
+      <span className="pd-summary" data-testid="plan-registers">
+        {registers.map((register, i) => (
+          <span className="pd-register" key={register.register_index}>
+            {i === 0 ? "" : " › "}
+            <b>R{register.register_index}</b> {cardLabel(register.card_id)}
+          </span>
+        ))}
+      </span>
+      <ConfidenceMeter confidence={payload.confidence} />
+      <span className="pd-chip">SEAT {payload.seat.toUpperCase()}</span>
     </>
   );
 }
@@ -179,7 +224,8 @@ export default function EventRow({
 }: EventRowProps): React.JSX.Element {
   const group = groupOf(env);
   const isDecision = env.event_type === "pilot_decision_made";
-  const rationale = isDecision && env.payload.rationale !== null ? env.payload.rationale : null;
+  const isPlan = env.event_type === "plan_committed";
+  const rationale = rationaleOf(env);
   const fallback = isDecision ? fallbackClassOf(env) : null;
 
   return (
@@ -215,6 +261,8 @@ export default function EventRow({
           <LlmContent env={env} />
         ) : isDecision ? (
           <DecisionContent env={env} />
+        ) : isPlan ? (
+          <PlanContent env={env} />
         ) : (
           <>
             <span className="pd-type">{env.event_type.replace(/_/g, " ")}</span>

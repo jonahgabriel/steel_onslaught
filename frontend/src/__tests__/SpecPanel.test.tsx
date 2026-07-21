@@ -18,7 +18,14 @@ import { applyGaugeEvent, type GaugeState, initGauges } from "../lib/gauges";
 import { buildSideMap } from "../lib/river";
 import { parseEnvelope, type SOEventEnvelope } from "../types";
 import SpecPanel from "../views/SpecPanel";
-import { makeDecision, makeEnvelope, makeLlmRequest, makeLlmResolved } from "./helpers";
+import {
+  makeDecision,
+  makeEnvelope,
+  makeLlmRequest,
+  makeLlmResolved,
+  makeModelSeat,
+  makePlan,
+} from "./helpers";
 
 const FIXTURES_DIR = join(process.cwd(), "src/__tests__/fixtures");
 function fixtureText(name: string): string {
@@ -156,6 +163,72 @@ describe("SpecPanel — fixture replay", () => {
   });
 });
 
+describe("SpecPanel — card cadence + authoritative seat identity", () => {
+  function startedFixture() {
+    const started = parseEnvelope(JSON.parse(fixtureText("match_started")));
+    if (started.event_type !== "match_started") throw new Error("fixture is not match_started");
+    return started;
+  }
+
+  it("counts a committed plan in the DECISIONS tally (card cadence emits no pilot_decision_made)", () => {
+    const started = startedFixture();
+    const sides = buildSideMap(started.payload.mechs);
+    let gauges = initGauges(started.payload.mechs, sides);
+    for (const env of [
+      makePlan({ seat: "a", mechId: "mech.a.01", playerId: "player.a" }),
+      makePlan({ seat: "a", mechId: "mech.a.01", playerId: "player.a" }),
+    ]) {
+      gauges = applyGaugeEvent(gauges, env);
+    }
+    render(<SpecPanel gauges={Object.values(gauges)} />);
+    const a = screen.getByTestId("spec-mech.a.01");
+    expect(within(a).getByTestId("spec-decisions-mech.a.01").textContent).toContain("2");
+    // The opposing seat committed nothing, so its tally must stay honest.
+    const b = screen.getByTestId("spec-mech.b.01");
+    expect(within(b).getByTestId("spec-decisions-mech.b.01").textContent).toContain("0");
+  });
+
+  it("renders the authoritative per-seat identity, visibly different per side", () => {
+    const started = startedFixture();
+    const sides = buildSideMap(started.payload.mechs);
+    const gauges = initGauges(started.payload.mechs, sides, [
+      makeModelSeat({
+        side: "red",
+        playerId: "player.a",
+        personaId: "persona.berserker",
+        modelIdentityId: "model_identity.glm_flash",
+        loadoutId: "loadout.playable.red_light",
+      }),
+      makeModelSeat({
+        side: "blue",
+        playerId: "player.b",
+        personaId: "persona.sniper",
+        modelIdentityId: "model_identity.claude_haiku",
+        loadoutId: "loadout.playable.blue_heavy",
+      }),
+    ]);
+    render(<SpecPanel gauges={Object.values(gauges)} />);
+
+    const red = screen.getByTestId("spec-seat-mech.a.01");
+    const blue = screen.getByTestId("spec-seat-mech.b.01");
+    expect(red).toHaveAttribute("data-seat-kind", "MODEL");
+    expect(red.textContent).toContain("persona.berserker");
+    expect(red.textContent).toContain("model_identity.glm_flash");
+    expect(red.textContent).toContain("loadout.playable.red_light");
+    expect(blue.textContent).toContain("persona.sniper");
+    expect(blue.textContent).toContain("model_identity.claude_haiku");
+    // The whole point of surfacing this: the two seats must not read the same.
+    expect(blue.textContent).not.toBe(red.textContent);
+  });
+
+  it("renders no seat line at all when the match carried no launch provenance", () => {
+    const started = startedFixture();
+    const sides = buildSideMap(started.payload.mechs);
+    render(<SpecPanel gauges={Object.values(initGauges(started.payload.mechs, sides))} />);
+    expect(screen.queryByTestId("spec-seat-mech.a.01")).not.toBeInTheDocument();
+  });
+});
+
 describe("SpecPanel — synthetic state", () => {
   function gauge(overrides: Partial<GaugeState>): GaugeState {
     return {
@@ -166,6 +239,7 @@ describe("SpecPanel — synthetic state", () => {
       chassisClass: "heavy",
       chassisId: "chassis.heavy.ironclad_mk1",
       pilotId: "pilot.tactician",
+      seat: null,
       isLlm: false,
       persona: null,
       model: null,
@@ -213,6 +287,32 @@ describe("SpecPanel — synthetic state", () => {
     render(<SpecPanel gauges={[gauge({})]} />);
     const pilot = screen.getByTestId("spec-pilot-mech.x.01");
     expect(pilot.textContent).toBe("UNKNOWN · pilot.tactician");
+  });
+
+  it("labels a human seat as HUMAN with its human identity, never a persona", () => {
+    render(
+      <SpecPanel
+        gauges={[
+          gauge({
+            seat: {
+              kind: "human",
+              side: "red",
+              player_id: "player.x",
+              option_id: "player_option.browser_human",
+              loadout_id: "loadout.playable.red_light",
+              pilot_spec_id: "pilot.human.browser",
+              option_sha256: "b".repeat(64),
+              human_identity_id: "human_identity.local_browser",
+              input_source: "browser_command",
+            },
+          }),
+        ]}
+      />,
+    );
+    const seat = screen.getByTestId("spec-seat-mech.x.01");
+    expect(seat).toHaveAttribute("data-seat-kind", "HUMAN");
+    expect(seat.textContent).toContain("human_identity.local_browser");
+    expect(seat.textContent).not.toContain("persona");
   });
 
   it("marks a destroyed mech in the status lamp + section", () => {

@@ -3,7 +3,7 @@
  *
  * The JSON fixtures under `./fixtures/` are pinned one-per-SOEventType by
  * `types_parity.test.ts`, so river/causation tests build typed envelopes in
- * code instead (the same approach `DecisionInspector.test.tsx` already uses).
+ * code instead.
  * Every builder returns a fully-typed `SOEventEnvelope`; the LLM-evidence
  * builders mirror `steel_onslaught/llm/effect.py` exactly — the first-class,
  * closed requested / resolved / failed payload contracts.
@@ -11,9 +11,11 @@
 import type {
   PayloadMap,
   PilotDecisionMadePayload,
+  PlanCommittedPayload,
   SOArenaSnapshot,
   SOEventEnvelopeOf,
   SOEventType,
+  SOModelSeatAssignment,
   SOPilotAction,
   SOPilotReasonCode,
 } from "../types";
@@ -96,6 +98,61 @@ export function makeDecision(
     rationale: o.rationale ?? null,
   };
   return makeEnvelope("pilot_decision_made", payload, o);
+}
+
+/**
+ * A committed card-cadence plan — the ONLY carrier of pilot rationale +
+ * confidence in the card/paced mode the demo runs (`match/card_adapter.py`).
+ */
+export function makePlan(
+  o: EnvelopeOverrides & {
+    seat?: string;
+    cardIds?: readonly string[];
+    confidence?: number;
+    rationale?: string | null;
+  } = {},
+): SOEventEnvelopeOf<"plan_committed"> {
+  const cardIds = o.cardIds ?? [
+    "card.movement.advance",
+    "card.attack.fire_primary",
+    "card.vent.emergency_vent",
+  ];
+  const payload: PlanCommittedPayload = {
+    seat: o.seat ?? "a",
+    registers: cardIds.map((card_id, register_index) => ({ register_index, card_id })),
+    rationale: o.rationale ?? null,
+    confidence: o.confidence ?? 0.8,
+  };
+  return makeEnvelope("plan_committed", payload, o);
+}
+
+/**
+ * A model seat assignment, as carried by
+ * `match_started.payload.launch_provenance.seat_assignments`.
+ */
+export function makeModelSeat(
+  o: {
+    side?: "red" | "blue";
+    playerId?: string;
+    personaId?: string;
+    modelIdentityId?: string;
+    loadoutId?: string;
+    pilotSpecId?: string;
+  } = {},
+): SOModelSeatAssignment {
+  const side = o.side ?? "red";
+  return {
+    kind: "model",
+    side,
+    player_id: o.playerId ?? `player.${side}`,
+    option_id: `player_option.${side}_model`,
+    loadout_id: o.loadoutId ?? `loadout.playable.${side}_light`,
+    pilot_spec_id: o.pilotSpecId ?? `pilot.model.${side}`,
+    option_sha256: "a".repeat(64),
+    model_identity_id: o.modelIdentityId ?? `model_identity.${side}`,
+    persona_id: o.personaId ?? `persona.${side}`,
+    input_source: "llm_completion",
+  };
 }
 
 /** LLM request evidence — mirrors the canonical closed payload. */

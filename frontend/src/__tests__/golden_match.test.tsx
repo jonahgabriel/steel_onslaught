@@ -28,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EnvelopeHandler } from "../lib/event_stream";
 import { MatchTransport, type ReleaseSink } from "../lib/transport";
 import { parseHistoricalReplayEnvelope, type SOEventEnvelope } from "../types";
-import { ARENA_INITIAL_STATE, type ArenaState, arenaReduce, GRID_CELLS } from "../views/ArenaView";
+import { ARENA_INITIAL_STATE, type ArenaState, arenaReduce } from "../views/ArenaView";
 import EventRiver from "../views/EventRiver";
 import PressureDeck from "../views/PressureDeck";
 
@@ -134,12 +134,15 @@ describe("golden replay — arena state (BUG A)", () => {
     if (started?.event_type !== "match_started") throw new Error("no match_started");
     expect(mechCountAfterStart).toBe(started.payload.mechs.length);
 
-    // … and every mech sits on the 40×40 grid.
+    // … and every mech sits inside the arena the CONTRACT declared, whatever
+    // its size — bounds are never asserted against a hardcoded grid constant.
+    const cells = started.payload.arena.size;
+    expect(state.gridCells).toBe(cells);
     for (const mech of Object.values(state.mechs)) {
       expect(mech.position.x).toBeGreaterThanOrEqual(0);
-      expect(mech.position.x).toBeLessThan(GRID_CELLS);
+      expect(mech.position.x).toBeLessThan(cells);
       expect(mech.position.y).toBeGreaterThanOrEqual(0);
-      expect(mech.position.y).toBeLessThan(GRID_CELLS);
+      expect(mech.position.y).toBeLessThan(cells);
     }
   });
 });

@@ -2,13 +2,25 @@
  * SpecPanel — PRESSURE DECK left rail (Rev 2 mech spec panels).
  *
  * Two full mech readouts stacked RED over BLUE, each a projection of the same
- * envelope stream via `lib/gauges.ts` (restyled HeatBar / PressureBar / boiler
- * dial reused, not re-derived). Renders identity + vitals + thermal + mode +
- * per-weapon cooldowns + tallies + status — the fields folded in `GaugeState`.
+ * envelope stream via `lib/gauges.ts` (restyled HeatBar / boiler dial reused,
+ * not re-derived). Renders identity + seat assignment + vitals + thermal + mode
+ * + per-weapon cooldowns + tallies + status — the fields folded in `GaugeState`.
+ *
+ * The seat line is the AUTHORITATIVE per-seat identity from MATCH_STARTED
+ * `launch_provenance.seat_assignments`. It is deliberately rendered next to the
+ * runtime-derived pilot line rather than merged into it: the two are separate
+ * evidence sources, and a disagreement between them is a defect the operator
+ * must be able to see.
  */
 import type React from "react";
 import { ChassisSprite, LampCooldown, LampReady, WEAPON_CLASS_GLYPH } from "../assets";
-import { type GaugeState, type MechStatus, mechStateOf, pilotDescriptor } from "../lib/gauges";
+import {
+  type GaugeState,
+  type MechStatus,
+  mechStateOf,
+  pilotDescriptor,
+  seatDescriptor,
+} from "../lib/gauges";
 import type { CardPriorities, Hands, PlayedCards } from "../lib/hands";
 import type { Side } from "../lib/river";
 import { weaponClassOf, weaponLabel } from "../lib/weapons";
@@ -148,6 +160,7 @@ function MechSpec({
       : 0;
   const spriteState = mechStateOf(g.hp, g.hpMax, g.status !== "destroyed");
   const pilot = pilotDescriptor(g);
+  const seat = seatDescriptor(g);
   const weapons = Object.entries(g.weaponCooldowns);
 
   return (
@@ -177,6 +190,28 @@ function MechSpec({
           <div className="pd-spec-pilot" data-testid={`spec-pilot-${g.mechId}`}>
             {pilot.kind} · {pilot.label}
           </div>
+          {/* Authoritative seat identity from MATCH_STARTED launch_provenance —
+              who was actually assigned this seat, as opposed to the pilot line
+              above, which is derived from runtime LLM evidence. Rendering both
+              is the point: a divergence between them is the seat-identity
+              defect class, and it stayed invisible while this was unrendered. */}
+          {seat !== null ? (
+            <div
+              className="pd-spec-seat"
+              data-testid={`spec-seat-${g.mechId}`}
+              data-seat-kind={seat.kind}
+            >
+              <span className="pd-chip pd-seatchip">{seat.kind}</span>
+              <span className="pd-spec-seat-id">
+                {seat.personaId === null
+                  ? seat.identityId
+                  : `${seat.personaId} · ${seat.identityId}`}
+              </span>
+              <span className="pd-spec-seat-kit">
+                {seat.pilotSpecId} · {seat.loadoutId}
+              </span>
+            </div>
+          ) : null}
         </div>
         <span className="pd-lamp" data-status={g.status} data-testid={`spec-status-${g.mechId}`}>
           {STATUS_LABEL[g.status]}

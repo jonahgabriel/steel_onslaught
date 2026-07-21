@@ -38,15 +38,30 @@ def test_pre_commit_config_has_ruff_hook() -> None:
 
 @pytest.mark.unit
 def test_pre_commit_config_has_mypy_hook() -> None:
-    """The pre-commit config must include the mypy hook with --strict arg."""
+    """The pre-commit config must run mypy strictly over the same trees as CI.
+
+    Deliberately agnostic about WHICH repo the hook comes from. The
+    ``mirrors-mypy`` form was removed because its isolated venv never contained
+    this project's own package, so every ``steel_onslaught.*`` import resolved
+    to ``import-not-found`` and the hook failed on ANY staged Python file --
+    including files it had not touched, since ``files = src/, tests/`` widens
+    the run. The hook is now a local one invoking the project environment's
+    mypy, so strictness comes from mypy.ini (see ``test_mypy_ini_has_strict``)
+    rather than an inline ``--strict``.
+    """
     config = REPO_ROOT / ".pre-commit-config.yaml"
     data = yaml.safe_load(config.read_text())
-    mypy_repos = [r for r in data["repos"] if "mypy" in r["repo"]]
-    assert len(mypy_repos) == 1, "Expected exactly one mypy repo in .pre-commit-config.yaml"
-    mypy_hooks = [h for h in mypy_repos[0]["hooks"] if h["id"] == "mypy"]
-    assert len(mypy_hooks) == 1, "Expected exactly one mypy hook"
+    mypy_hooks = [hook for repo in data["repos"] for hook in repo["hooks"] if hook["id"] == "mypy"]
+    assert len(mypy_hooks) == 1, "Expected exactly one mypy hook in .pre-commit-config.yaml"
     hook = mypy_hooks[0]
-    assert "--strict" in hook.get("args", []), "mypy hook must include --strict in args"
+    if "--strict" in hook.get("args", []):
+        return
+    # Otherwise it must invoke mypy itself over both trees CI type-checks; a
+    # hook narrower than CI would let a type error reach the PR.
+    entry = str(hook.get("entry", ""))
+    assert "mypy" in entry, f"mypy hook must invoke mypy, got entry {entry!r}"
+    for tree in ("src/", "tests/"):
+        assert tree in entry, f"mypy hook must cover {tree} like CI does, got entry {entry!r}"
 
 
 @pytest.mark.unit

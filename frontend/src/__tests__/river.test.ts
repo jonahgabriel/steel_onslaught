@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSideMap,
   compareRows,
+  confidenceOf,
   FILTER_GROUPS,
   filterRows,
   glyphOf,
@@ -16,10 +17,14 @@ import {
   groupCounts,
   groupOf,
   isDangerEvent,
+  isReasoningEvent,
   llmEvidenceKind,
+  orderedRegisters,
   orderRows,
   pairLlmEvidence,
+  planSequence,
   type RiverRow,
+  rationaleOf,
   sideOf,
   summarizeEnvelope,
   windowRows,
@@ -30,6 +35,7 @@ import {
   makeLlmFailed,
   makeLlmRequest,
   makeLlmResolved,
+  makePlan,
 } from "./helpers";
 
 function row(env: RiverRow["env"], arrival: number): RiverRow {
@@ -242,6 +248,103 @@ describe("LLM evidence discrimination + pairing", () => {
   it("summarizes resolved evidence with token counts", () => {
     const res = makeLlmResolved({ promptTokens: 100, completionTokens: 40 });
     expect(summarizeEnvelope(res)).toContain("100→40 tok");
+  });
+});
+
+describe("card-cadence reasoning is a decision, not lifecycle noise", () => {
+  it("groups plan_committed and register_resolved with the decisions filter", () => {
+    expect(groupOf(makePlan())).toBe("decisions");
+    expect(
+      groupOf(
+        makeEnvelope("register_resolved", {
+          seat: "a",
+          register_index: 0,
+          card_id: "card.movement.advance",
+          action: "move",
+          outcome: "resolved",
+          priority: 10,
+          priority_rank: 0,
+          fill_reason: null,
+        }),
+      ),
+    ).toBe("decisions");
+  });
+
+  it("moves weapon_fire_rejected out of the lifecycle fallback and into combat", () => {
+    // This is a BEHAVIOUR CHANGE, not a no-op: `weapon_fire_rejected` had no
+    // GROUP_BY_EVENT entry, so `groupOf` returned its `lifecycle` fallback. A
+    // refused shot is a combat outcome and belongs on the combat chip, where a
+    // "why did nothing fire?" question is actually answerable.
+    const rejected = makeEnvelope("weapon_fire_rejected", {
+      weapon_id: "module.weapon.machine_gun",
+      target_id: "mech.b.01",
+      reason: "weapon_on_cooldown",
+    });
+    expect(groupOf(rejected)).toBe("combat");
+    expect(summarizeEnvelope(rejected)).toBe("REJECTED machine_gun · weapon on cooldown");
+  });
+
+  it("exposes rationale + confidence identically for both decision cadences", () => {
+    const plan = makePlan({ rationale: "Hold the ridge and let them close.", confidence: 0.6 });
+    const tactical = makeDecision({ rationale: "Punish the overcommit.", confidence: 0.9 });
+    expect(isReasoningEvent(plan)).toBe(true);
+    expect(isReasoningEvent(tactical)).toBe(true);
+    expect(rationaleOf(plan)).toBe("Hold the ridge and let them close.");
+    expect(rationaleOf(tactical)).toBe("Punish the overcommit.");
+    expect(confidenceOf(plan)).toBe(0.6);
+    expect(confidenceOf(tactical)).toBe(0.9);
+  });
+
+  it("reports no reasoning for a non-decision envelope", () => {
+    const tick = makeEnvelope("match_tick", {});
+    expect(isReasoningEvent(tick)).toBe(false);
+    expect(rationaleOf(tick)).toBeNull();
+    expect(confidenceOf(tick)).toBeNull();
+  });
+
+  it("summarizes a plan as its ordered register sequence", () => {
+    const plan = makePlan({
+      cardIds: ["card.movement.advance", "card.attack.fire_primary"],
+    });
+    expect(summarizeEnvelope(plan)).toBe("2R · advance › fire primary");
+  });
+
+  it("orders registers by register_index, never by arrival order", () => {
+    const scrambled = makeEnvelope("plan_committed", {
+      seat: "a",
+      registers: [
+        { register_index: 1, card_id: "card.attack.fire_primary" },
+        { register_index: 0, card_id: "card.movement.advance" },
+      ],
+      rationale: null,
+      confidence: 0.5,
+    });
+    expect(planSequence(scrambled.payload.registers)).toBe("advance › fire primary");
+    expect(orderedRegisters(scrambled.payload.registers).map((r) => r.register_index)).toEqual([
+      0, 1,
+    ]);
+  });
+});
+
+describe("intent summaries carry their tactical content", () => {
+  it("keeps move direction and speed instead of collapsing to the event name", () => {
+    expect(
+      summarizeEnvelope(makeEnvelope("move_intent", { direction: "flank_right", speed: "full" })),
+    ).toBe("move flank right · full");
+    expect(
+      summarizeEnvelope(makeEnvelope("move_intent", { direction: "toward_cover", speed: null })),
+    ).toBe("move toward cover");
+  });
+
+  it("names the weapon and the target of a fire intent", () => {
+    expect(
+      summarizeEnvelope(
+        makeEnvelope("weapon_fire_intent", {
+          weapon_id: "module.weapon.steam_cannon",
+          target_mech_id: "mech.blue.01",
+        }),
+      ),
+    ).toBe("fire steam_cannon → 01");
   });
 });
 
