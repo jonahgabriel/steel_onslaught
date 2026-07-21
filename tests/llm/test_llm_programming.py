@@ -226,6 +226,49 @@ def test_programming_request_carries_typed_evidence_and_card_context() -> None:
     assert "ONLY legal card IDs" in request.system_prompt
 
 
+def test_split_programming_request_uses_partition_descriptor_before_provider_call() -> None:
+    """Split hands must reach the provider instead of failing on ``selected_deck``."""
+
+    base = _observation()
+    # Keep the legacy selected id populated as some overlays do; the explicit
+    # two-deck tuple still owns this observation's hand authority.
+    source_deck = base.card_runtime_snapshot.selected_deck
+    movement_deck = source_deck.model_copy(update={"id": "deck.test.movement"})
+    weapon_deck = source_deck.model_copy(update={"id": "deck.test.weapon"})
+    split_decks = tuple(sorted((movement_deck, weapon_deck), key=lambda deck: str(deck.id)))
+    snapshot = base.card_runtime_snapshot.model_copy(
+        update={
+            "selected_deck_id": "deck.test.movement",
+            "decks": split_decks,
+            "content_sha256": canonical_card_runtime_sha256(
+                base.card_runtime_snapshot.card_catalog, split_decks
+            ),
+        }
+    )
+    observation = base.model_copy(
+        update={
+            "card_runtime_snapshot": snapshot,
+            "register_count": 3,
+            "hand_deck_ids": ("deck.test.movement", "deck.test.weapon"),
+        }
+    )
+    client = _ResponseClient(_response())
+
+    plan = program_for_seat(LLMProgrammingPilot(client=client, persona=_persona()), observation)
+
+    assert len(plan.registers) == 2
+    assert len(client.requests) == 1
+    context = json.loads(client.requests[0].user_prompt)
+    assert context["deck"] == {
+        "deck_id": "deck.split",
+        "display_name": "Split movement and weapon decks",
+        "hand_size": 3,
+        "register_count": 3,
+        "partition_deck_ids": ["deck.test.movement", "deck.test.weapon"],
+    }
+    assert context["registers"]["register_count"] == 3
+
+
 def test_programming_request_preserves_dealt_hand_multiplicity() -> None:
     base = _observation()
     deck = base.deck.model_copy(
