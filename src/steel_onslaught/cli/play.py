@@ -99,6 +99,7 @@ from steel_onslaught.llm.schemas import (
 from steel_onslaught.match.composition import (
     LiveMatchStack,
     RuntimeDependencies,
+    SeatIdentityError,
     assemble_selected_match_live,
     load_application_overlay,
     load_loadout,
@@ -292,6 +293,26 @@ class _PreadmittedStartCoordinator:
         ):
             raise ValueError("browser start does not match the admitted launch")
         return self._provenance
+
+
+def _command_failure_frame(error_code: str) -> str:
+    """Render the one closed command-failure frame with an explicit code.
+
+    The frame shape is fixed by the browser command contract; only the
+    classification varies, so every failure path renders it here rather than
+    inlining a second copy that can drift.
+    """
+
+    return json.dumps(
+        {
+            "schema_version": "1",
+            "kind": "steel_onslaught.browser_command_failed",
+            "authority_scope": "process_lifetime",
+            "outcome": "failed",
+            "error_code": error_code,
+        },
+        separators=(",", ":"),
+    )
 
 
 def launch_browser_play_session(
@@ -1026,17 +1047,16 @@ class BrowserPlayServer:
                 principal_id=principal_id,
                 session_id=session_id,
             )
+        except SeatIdentityError:
+            # A rejected seat pairing is a validation failure, not an
+            # authorization failure.  The selection was legal and the caller
+            # was entitled to make it; the two seats simply do not resolve to
+            # two distinct decision-makers, so the match cannot be a contest.
+            # Reporting this as "invalid_or_unauthorized_command" would tell
+            # the operator to go looking at credentials and permissions.
+            return _command_failure_frame("seat_identity_conflict")
         except Exception:
-            return json.dumps(
-                {
-                    "schema_version": "1",
-                    "kind": "steel_onslaught.browser_command_failed",
-                    "authority_scope": "process_lifetime",
-                    "outcome": "failed",
-                    "error_code": "invalid_or_unauthorized_command",
-                },
-                separators=(",", ":"),
-            )
+            return _command_failure_frame("invalid_or_unauthorized_command")
 
     def _clear_pending_prompts(
         self,
@@ -1206,16 +1226,7 @@ class BrowserPlayServer:
         self._terminal_failure = "play_session_failed"
         if self._session is not None:
             self._session.close()
-        message = json.dumps(
-            {
-                "schema_version": "1",
-                "kind": "steel_onslaught.browser_command_failed",
-                "authority_scope": "process_lifetime",
-                "outcome": "failed",
-                "error_code": self._terminal_failure,
-            },
-            separators=(",", ":"),
-        )
+        message = _command_failure_frame(self._terminal_failure)
         if self._loop is None:
             return
         self._loop.call_soon_threadsafe(lambda: broadcast(self._command_clients, message))

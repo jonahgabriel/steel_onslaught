@@ -35,6 +35,7 @@ from steel_onslaught.llm.schemas import (
     ModelSOOpenAIResponseUsage,
 )
 from steel_onslaught.match.composition import (
+    SeatIdentityError,
     build_card_programmers,
     build_llm_dependencies,
     load_application_overlay,
@@ -267,7 +268,7 @@ def test_collapsed_seat_overlay_fails_closed_before_binding_a_provider() -> None
     registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
     llm = build_llm_dependencies(overlay, http_transport=_PlanTransport())
     try:
-        with pytest.raises(ValueError, match="does not match the declared seat archetype"):
+        with pytest.raises(SeatIdentityError, match="does not match the declared seat archetype"):
             build_card_programmers(
                 collapsed.programmers,
                 registry=registry,
@@ -305,7 +306,7 @@ def test_same_persona_on_both_seats_fails_closed() -> None:
     registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
     llm = build_llm_dependencies(overlay, http_transport=_PlanTransport())
     try:
-        with pytest.raises(ValueError, match="distinct card programmer personas"):
+        with pytest.raises(SeatIdentityError, match="distinct card programmer identities"):
             build_card_programmers(
                 mirrored.programmers,
                 registry=registry,

@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, Self, cast
+from typing import Any, Literal, NamedTuple, Self, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -1026,42 +1026,76 @@ def _validate_llm_pilot_bindings(
         llm.persona_registry.require(spec.parameters.persona)
 
 
+class SeatIdentityError(ValueError):
+    """Two live card seats did not resolve to distinct, declared identities.
+
+    This is deliberately its own type.  The failure is a composition/contract
+    validation failure — the caller asked for a legal, roster-permitted
+    pairing that simply is not a contest between two distinct decision-makers
+    — so a transport boundary must not report it as an authorization failure.
+    """
+
+
+class SeatProgrammerIdentity(NamedTuple):
+    """The two facts that make one card seat its own decision-maker.
+
+    Persona alone is not the identity: the same persona driven by two
+    different models is the cleanest model-vs-model contest there is, and
+    banning it would break the product.  The same persona on the same
+    provider, on both seats, is a mirror match.
+    """
+
+    provider: str
+    persona: str
+
+
 def validate_seat_programmer_identity(
-    resolved_personas: Mapping[str, str],
+    resolved_seats: Mapping[str, SeatProgrammerIdentity],
     *,
-    deck_policy: ModelSOCardDeckPolicy,
+    deck_policy: ModelSOCardDeckPolicy | None = None,
 ) -> None:
     """Fail closed when a seat's programmer is not the seat it claims to be.
 
-    In paced card mode the card programmer — not the loadout pilot — is the
-    seat's decision-maker, so ``deck_policy.archetype`` is only a label until
-    something proves the programmer bound to that side actually resolves to
-    it.  Two checks make the seat identity one validated contract: each bound
-    programmer's resolved persona must equal its seat archetype, and the two
-    seats must resolve to distinct personas.  Without the second check a
-    differentiated-looking split-deck overlay can silently run a mirror match.
+    In card mode the card programmer — not the loadout pilot — is the seat's
+    decision-maker, so nothing about a seat's advertised identity is true
+    until the *resolved* programmer for that side is checked.  Two checks make
+    seat identity one validated contract:
+
+    1. Every bound seat must resolve to a distinct ``(provider, persona)``
+       identity.  This is unconditional: it is the check that stops a live
+       match from running an unannounced mirror.  It applies to the split-deck
+       overlays and to the single-deck catalog/roster paths alike, because
+       both admit their seats from a runtime selection rather than from the
+       overlay's authored default.
+    2. When the overlay also declares a split ``deck_policy``, each bound
+       seat's resolved persona must equal that seat's declared archetype.
+       Without it, ``archetype`` is a label with nothing behind it.
+
+    ``resolved_seats`` is the post-rebind, admitted runtime selection — never
+    the overlay's authored template — so a differentiated-looking overlay
+    cannot be collapsed by the selection that actually launched.
     """
 
-    mismatched = tuple(
-        f"{seat.side}={resolved_personas[seat.side]!r} (archetype {seat.archetype!r})"
-        for seat in deck_policy.seats
-        if seat.side in resolved_personas and resolved_personas[seat.side] != seat.archetype
-    )
-    if mismatched:
-        raise ValueError(
-            "card programmer persona does not match the declared seat archetype: "
-            + ", ".join(mismatched)
+    if deck_policy is not None:
+        mismatched = tuple(
+            f"{seat.side}={resolved_seats[seat.side].persona!r} (archetype {seat.archetype!r})"
+            for seat in deck_policy.seats
+            if seat.side in resolved_seats and resolved_seats[seat.side].persona != seat.archetype
         )
-    declared = tuple(
-        (seat.side, resolved_personas[seat.side])
-        for seat in deck_policy.seats
-        if seat.side in resolved_personas
-    )
-    personas = {persona for _side, persona in declared}
-    if len(declared) > 1 and len(personas) != len(declared):
-        rendered = ", ".join(f"{side}={persona!r}" for side, persona in declared)
-        raise ValueError(
-            f"split-deck seats must resolve to distinct card programmer personas: {rendered}"
+        if mismatched:
+            raise SeatIdentityError(
+                "card programmer persona does not match the declared seat archetype: "
+                + ", ".join(mismatched)
+            )
+    declared = tuple(sorted(resolved_seats.items()))
+    identities = {identity for _side, identity in declared}
+    if len(declared) > 1 and len(identities) != len(declared):
+        rendered = ", ".join(
+            f"{side}={identity.persona!r}@{identity.provider!r}" for side, identity in declared
+        )
+        raise SeatIdentityError(
+            "live card seats must resolve to distinct card programmer identities "
+            f"(model + persona); got {rendered}"
         )
 
 
@@ -1083,9 +1117,13 @@ def build_card_programmers(
     represented by an absent mapping entry; the card adapter then retains its
     deterministic priority programmer for that seat.
 
-    When the overlay also declares a split ``deck_policy``, the resolved
-    personas are checked against that policy's seat archetypes before any
-    provider client is bound.
+    Seat identity is validated here, unconditionally, before any provider
+    client is bound: this is the single chokepoint every card path (catalog,
+    roster, and injected overlay) funnels through, and the bindings it
+    receives are the admitted runtime selection, so it is the only place that
+    can prove the seats a live match actually runs are distinct.  When the
+    overlay also declares a split ``deck_policy``, the resolved personas are
+    additionally checked against that policy's seat archetypes.
     """
 
     if observer is not None and correlation_id is None:
@@ -1111,9 +1149,15 @@ def build_card_programmers(
             raise TypeError(f"llm card programmer spec {spec.id!r} has invalid parameters")
         resolved.append((binding, spec.parameters))
 
-    if deck_policy is not None and resolved:
+    if resolved:
         validate_seat_programmer_identity(
-            {binding.side: parameters.persona for binding, parameters in resolved},
+            {
+                binding.side: SeatProgrammerIdentity(
+                    provider=parameters.provider,
+                    persona=parameters.persona,
+                )
+                for binding, parameters in resolved
+            },
             deck_policy=deck_policy,
         )
 
@@ -2215,6 +2259,8 @@ __all__ = [
     "MatchRuntime",
     "MissingCardCatalogError",
     "RuntimeDependencies",
+    "SeatIdentityError",
+    "SeatProgrammerIdentity",
     "assemble_match_live",
     "assemble_match_with_dependencies",
     "assemble_selected_match_live",

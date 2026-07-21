@@ -163,7 +163,12 @@ class _Clients(ProtocolLlmClientFactory):
 
 
 def _llm_dependencies(client: ProtocolLlmClient) -> LlmDependencies:
-    personas = PersonaRegistry({"sniper": Persona("sniper", "Sniper", "sniper", 0.2)})
+    personas = PersonaRegistry(
+        {
+            "sniper": Persona("sniper", "Sniper", "sniper", 0.2),
+            "berserker": Persona("berserker", "Berserker", "berserker", 0.6),
+        }
+    )
     clients = _Clients(client)
     return LlmDependencies(
         client_factory=clients,
@@ -207,19 +212,35 @@ def _card_snapshot() -> ModelSOCardRuntimeSnapshot:
     )
 
 
-def _pilot_spec() -> ModelSOPilotSpec:
+def _pilot_spec(
+    *,
+    spec_id: str = "pilot.card.telemetry",
+    persona: str = "sniper",
+) -> ModelSOPilotSpec:
+    """Build one telemetry card-programmer spec.
+
+    Two seats need two specs: ``build_card_programmers`` fails closed when
+    both live seats resolve to the same (provider, persona) identity, because
+    that is a mirror match rather than a contest.  The telemetry fixture
+    therefore differentiates the seats by persona.
+    """
+
     return ModelSOPilotSpec(
         schema_version="0.1.0",
         kind="steel_onslaught.pilot",
-        id="pilot.card.telemetry",
+        id=spec_id,
         display_name="Card telemetry fixture",
         archetype="llm",
         lineage=ModelSOPilotLineage(parent=None),
         parameters=ModelSOLlmPilotParams(
             provider="provider.card.fixture",
-            persona="sniper",
+            persona=persona,
         ),
     )
+
+
+def _blue_pilot_spec() -> ModelSOPilotSpec:
+    return _pilot_spec(spec_id="pilot.card.telemetry_blue", persona="berserker")
 
 
 def _compose(
@@ -230,13 +251,17 @@ def _compose(
     runtime_root = load_match_contract_catalog(_ROOT)
     full_registry = load_pilot_registry(_ROOT / "pilots")
     full_registry = PilotSpecRegistry(
-        {**full_registry.as_mapping(), _pilot_spec().id: _pilot_spec()}
+        {
+            **full_registry.as_mapping(),
+            _pilot_spec().id: _pilot_spec(),
+            _blue_pilot_spec().id: _blue_pilot_spec(),
+        }
     )
     snapshot = _card_snapshot()
     llm = _llm_dependencies(client or _CardProgrammingClient())
     bindings = (
         ModelSOCardProgrammerBinding(side="red", pilot_spec_id="pilot.card.telemetry"),
-        ModelSOCardProgrammerBinding(side="blue", pilot_spec_id="pilot.card.telemetry"),
+        ModelSOCardProgrammerBinding(side="blue", pilot_spec_id="pilot.card.telemetry_blue"),
     )
     factory = CardProgrammerFactory(bindings=bindings, registry=full_registry, llm=llm)
     raw_programmers = build_card_programmers(bindings, registry=full_registry, llm=llm)

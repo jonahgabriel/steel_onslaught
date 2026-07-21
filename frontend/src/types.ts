@@ -540,7 +540,11 @@ export interface MatchScoredPayload {
 export type SORegisterOutcome = "resolved" | "auto_remain" | "heat_locked";
 export type SORegisterFillReason = "short_deck";
 /** Mirror of SOPlanSource: who actually authored a committed register plan. */
-export type SOPlanSource = "llm" | "deterministic_fallback";
+export type SOPlanSource =
+  | "llm"
+  | "deterministic_planner"
+  | "deterministic_fallback"
+  | "unspecified";
 
 export interface HandPartitionPayload {
   partition: "movement" | "weapon";
@@ -753,7 +757,20 @@ function parseRegisterFillReason(value: unknown, context: string): SORegisterFil
 }
 
 function parsePlanSource(value: unknown, context: string): SOPlanSource {
-  if (value === "llm" || value === "deterministic_fallback") return value;
+  // The Python payload defaults this field, so a plan_committed event
+  // persisted before the classification existed carries no key at all.  An
+  // absent key is exactly that legacy "unspecified" case and must parse, or
+  // streaming any historical ledger to the browser hard-fails.  An explicit
+  // null or an unknown string is still malformed.
+  if (value === undefined) return "unspecified";
+  if (
+    value === "llm" ||
+    value === "deterministic_planner" ||
+    value === "deterministic_fallback" ||
+    value === "unspecified"
+  ) {
+    return value;
+  }
   fail(context, `unknown plan source ${JSON.stringify(value)}`);
 }
 

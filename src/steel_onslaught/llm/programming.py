@@ -348,9 +348,12 @@ class LLMProgrammingPilot:
 
         This is reachable only when the overlay opted a seat into ``fallback``
         and the provider produced a *classified* semantic failure. The plan is
-        marked ``deterministic_fallback`` so the substitution is durable in the
-        ledger and detectable by replay rather than indistinguishable from a
-        real provider decision.
+        restamped from the planner's own ``deterministic_planner`` to
+        ``deterministic_fallback`` — this seat *was* bound to a provider and
+        lost it, which is the one case that is a genuine substitution — so it
+        is durable in the ledger and detectable by replay rather than
+        indistinguishable from a real provider decision or from a seat that
+        was deterministic by design.
         """
 
         _LOG.warning(
