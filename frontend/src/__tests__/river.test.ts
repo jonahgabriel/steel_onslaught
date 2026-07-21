@@ -270,6 +270,20 @@ describe("card-cadence reasoning is a decision, not lifecycle noise", () => {
     ).toBe("decisions");
   });
 
+  it("moves weapon_fire_rejected out of the lifecycle fallback and into combat", () => {
+    // This is a BEHAVIOUR CHANGE, not a no-op: `weapon_fire_rejected` had no
+    // GROUP_BY_EVENT entry, so `groupOf` returned its `lifecycle` fallback. A
+    // refused shot is a combat outcome and belongs on the combat chip, where a
+    // "why did nothing fire?" question is actually answerable.
+    const rejected = makeEnvelope("weapon_fire_rejected", {
+      weapon_id: "module.weapon.machine_gun",
+      target_id: "mech.b.01",
+      reason: "weapon_on_cooldown",
+    });
+    expect(groupOf(rejected)).toBe("combat");
+    expect(summarizeEnvelope(rejected)).toBe("REJECTED machine_gun · weapon on cooldown");
+  });
+
   it("exposes rationale + confidence identically for both decision cadences", () => {
     const plan = makePlan({ rationale: "Hold the ridge and let them close.", confidence: 0.6 });
     const tactical = makeDecision({ rationale: "Punish the overcommit.", confidence: 0.9 });

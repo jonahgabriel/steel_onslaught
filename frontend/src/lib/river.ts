@@ -139,9 +139,21 @@ export const FILTER_GROUPS: readonly FilterGroup[] = [
   "lifecycle",
 ] as const;
 
+/**
+ * Chip labels for the bottom filter bar.
+ *
+ * `decisions` is labelled ORDERS, deliberately NOT "DECISIONS". The chip is a
+ * ROW count for the whole order lane — the pilot's decision or committed plan,
+ * the intents it expands into, and each register resolving — whereas the spec
+ * rail's DECISIONS stat is a PER-MECH count of the pilot's own decision events
+ * (`pilot_decision_made` / `plan_committed`) and nothing else. Those are
+ * different quantities: one committed 3-register plan is 1 spec-rail DECISION
+ * but ~7 ORDERS rows. Labelling both "DECISIONS" invited the operator to read
+ * them as the same number and call the mismatch a bug.
+ */
 export const FILTER_GROUP_LABELS: Record<FilterGroup, string> = {
   combat: "COMBAT",
-  decisions: "DECISIONS",
+  decisions: "ORDERS",
   thermal: "THERMAL",
   llm: "LLM",
   lifecycle: "LIFECYCLE",
@@ -154,13 +166,16 @@ const GROUP_BY_EVENT: Record<string, FilterGroup> = {
   hit_resolved: "combat",
   armor_absorbed: "combat",
   damage_applied: "combat",
-  // decisions — the pilot's own choices, in either cadence.
+  // decisions (chip label: ORDERS) — the pilot's order lane: what it chose,
+  // and that choice being carried out.
   //   tactical cadence : pilot_decision_made (ReducerPilotTick)
   //   card cadence     : plan_committed — the ONLY carrier of the pilot's
   //                      rationale/confidence in card/paced mode, which is the
   //                      mode the demo runs. register_resolved is the plan
   //                      executing register-by-register, so it belongs with the
   //                      decision it came from rather than in lifecycle noise.
+  // The lane therefore holds several rows per decision; that is why the chip is
+  // NOT labelled DECISIONS — see FILTER_GROUP_LABELS above.
   pilot_decision_made: "decisions",
   plan_committed: "decisions",
   register_resolved: "decisions",

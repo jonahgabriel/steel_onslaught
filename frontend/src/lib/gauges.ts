@@ -86,6 +86,12 @@ export interface GaugeState {
   readonly damageDealt: number;
   readonly damageTaken: number;
   readonly shotsFired: number;
+  /**
+   * How many decisions THIS pilot made — `pilot_decision_made` (tactical
+   * cadence) plus `plan_committed` (card cadence), and nothing else. This is
+   * NOT the river's ORDERS chip count, which additionally counts the intents a
+   * plan expands into and each register resolving; see `FILTER_GROUP_LABELS`.
+   */
   readonly decisions: number;
   // status
   readonly status: MechStatus;
