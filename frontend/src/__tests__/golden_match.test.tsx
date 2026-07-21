@@ -199,6 +199,9 @@ describe("golden replay — arena DOM through PressureDeck (BUG A)", () => {
 
     const started = stream.find((e) => e.event_type === "match_started");
     if (started?.event_type !== "match_started") throw new Error("no match_started");
+    expect(screen.getByTestId("arena-contract")).toHaveTextContent(
+      `ARENA ${started.payload.arena.arena_id} · ${started.payload.arena.size}×${started.payload.arena.size}`,
+    );
     for (const mech of started.payload.mechs) {
       const rendered = screen.getByTestId(`arena-mech-${mech.mech_id}`);
       expect(rendered).toBeInTheDocument();
