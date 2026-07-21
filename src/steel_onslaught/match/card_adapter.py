@@ -121,13 +121,23 @@ class ModelSOCardSeatRequest(_ClosedCardAdapterModel):
         return self
 
 
+SOCardIntentUnavailableReason = Literal["weapon_slot_absent"]
+
+
 class ModelSOCardIntentProjection(_ClosedCardAdapterModel):
     """A compiled card action in the existing intent vocabulary.
 
     ``payload`` is one of the existing intent payload models, not a loosely
     typed card dictionary.  ``None`` is reserved for explicit short-deck
-    ``AUTO_REMAIN`` rows; those rows are retained in ``actions`` as telemetry
-    but never become a gameplay intent.
+    ``AUTO_REMAIN`` rows and for rows carrying an ``unavailable_reason``; those
+    rows are retained in ``actions`` as telemetry but never become a gameplay
+    intent.
+
+    ``unavailable_reason`` records a card the seat legitimately resolved but
+    physically cannot execute — today only an attack card naming a hardpoint
+    the mech does not field.  The register still resolved (the card WAS
+    played and is discarded), so the row must survive; only its intent is
+    suppressed.  Raising instead killed the whole round.
     """
 
     seat: StrictStr = Field(min_length=1)
@@ -144,10 +154,13 @@ class ModelSOCardIntentProjection(_ClosedCardAdapterModel):
         | None
     ) = None
     outcome: SORegisterOutcome
+    unavailable_reason: SOCardIntentUnavailableReason | None = None
 
     @model_validator(mode="after")
     def _projection_is_closed(self) -> Self:
         if self.outcome is SORegisterOutcome.AUTO_REMAIN:
+            if self.unavailable_reason is not None:
+                raise CardRunnerAdapterError("AUTO_REMAIN projections carry no unavailable reason")
             if self.card_id is not None or self.translation is not None:
                 raise CardRunnerAdapterError("AUTO_REMAIN projections cannot name a card")
             if self.action is not SOPilotAction.REMAIN or self.event_type is not None:
@@ -157,7 +170,10 @@ class ModelSOCardIntentProjection(_ClosedCardAdapterModel):
             return self
         if self.card_id is None or self.translation is None:
             raise CardRunnerAdapterError("resolved card projections require card and translation")
-        if self.event_type is None or self.payload is None:
+        if self.unavailable_reason is not None:
+            if self.event_type is not None or self.payload is not None:
+                raise CardRunnerAdapterError("unavailable card projections must remain inert")
+        elif self.event_type is None or self.payload is None:
             raise CardRunnerAdapterError("resolved card projections require an intent payload")
         if self.action is not self.translation.action:
             raise CardRunnerAdapterError("projection action differs from compiled translation")
@@ -589,7 +605,22 @@ class CardRunnerAdapter:
             self.card_round_runtime.snapshot.card_catalog.require(row.card_id)
         )
         request = next(request for request in seats if request.seat == row.seat)
-        event_type, payload = self._intent_for_translation(translation, request)
+        resolved = self._intent_for_translation(translation, request)
+        if resolved is None:
+            # The seat does not field that hardpoint.  The card still resolved
+            # and is still discarded; only the intent is suppressed, so an
+            # unfielded weapon slot costs the pilot a register instead of
+            # killing the round.
+            return ModelSOCardIntentProjection(
+                seat=row.seat,
+                register_index=row.register_index,
+                card_id=row.card_id,
+                action=translation.action,
+                translation=translation,
+                outcome=row.outcome,
+                unavailable_reason="weapon_slot_absent",
+            )
+        event_type, payload = resolved
         return ModelSOCardIntentProjection(
             seat=row.seat,
             register_index=row.register_index,
@@ -605,13 +636,18 @@ class CardRunnerAdapter:
     def _intent_for_translation(
         translation: ModelSOCardActionTranslation,
         request: ModelSOCardSeatRequest,
-    ) -> tuple[
-        SOEventType,
-        ModelSOEmptyPayload
-        | ModelSOMoveIntentPayload
-        | ModelSOWeaponFireIntentPayload
-        | ModelSOModeSwitchIntentPayload,
-    ]:
+    ) -> (
+        tuple[
+            SOEventType,
+            ModelSOEmptyPayload
+            | ModelSOMoveIntentPayload
+            | ModelSOWeaponFireIntentPayload
+            | ModelSOModeSwitchIntentPayload,
+        ]
+        | None
+    ):
+        """Compile one translation into an intent, or ``None`` if unfieldable."""
+
         parameters: ModelSOCardActionParameters = translation.parameters
         if isinstance(parameters, ModelSOCardMovementParameters):
             direction = cast(
@@ -631,10 +667,7 @@ class CardRunnerAdapter:
             return SOEventType.MOVE_INTENT, ModelSOMoveIntentPayload(direction=direction)
         if isinstance(parameters, ModelSOCardAttackParameters):
             if parameters.weapon_slot >= len(request.weapon_ids):
-                raise CardRunnerAdapterError(
-                    f"seat {request.seat!r} card weapon slot {parameters.weapon_slot} "
-                    "is absent from injected weapon_ids"
-                )
+                return None  # unfielded hardpoint: inert, never a crashed round
             return SOEventType.WEAPON_FIRE_INTENT, ModelSOWeaponFireIntentPayload(
                 weapon_id=request.weapon_ids[parameters.weapon_slot],
                 target_mech_id=None,

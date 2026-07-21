@@ -239,3 +239,78 @@ def test_continuous_successor_without_factory_fails_closed() -> None:
                 mode="continuous",
             )
         )
+
+
+@pytest.mark.unit
+def test_worker_exception_commits_a_terminal_failed_status() -> None:
+    """A crashed worker must leave a TERMINAL projection, never RUNNING.
+
+    Regression for match-composition-02: ``run`` used to stop the gate, set
+    ``_stop_requested`` and re-raise without touching ``_status``.  The runtime
+    stayed ``RUNNING`` forever, because ``mark_match_ended`` correctly refuses
+    to commit ``ENDED`` without durable ``MATCH_ENDED`` evidence — which a
+    crashed worker never produced.
+    """
+    gate = ConditionProgressGate()
+
+    def run_match() -> None:
+        raise RuntimeError("worker exploded mid-tick")
+
+    runtime = MatchRuntime(
+        match_id=_MATCH,
+        owner_id=_OWNER,
+        run_match=run_match,
+        progress_gate=gate,
+        # No terminal evidence exists on this path; asserting it does would
+        # weaken the proof, so the probe reports the truth.
+        terminal_evidence=lambda _match_id: False,
+    )
+    runtime.dispatch(_command("start", revision=0, command_id=_START_ID, mode="one_game"))
+
+    with pytest.raises(RuntimeError, match="worker exploded mid-tick"):
+        runtime.run()
+
+    status = runtime.status
+    assert status.status.value == "failed"
+    assert status.revision == 2
+    # FAILED is terminal and is NOT ENDED: no further lifecycle command is legal
+    # and the match can never be reported as completed.
+    with pytest.raises(RuntimeTransitionError, match="only an active runtime can be ended"):
+        runtime.mark_match_ended()
+    with pytest.raises(RuntimeTransitionError):
+        runtime.dispatch(
+            _command(
+                "stop",
+                revision=2,
+                command_id=UUID("55555555-5555-4555-8555-555555555555"),
+            )
+        )
+    with pytest.raises(ProgressGateStoppedError):
+        gate.checkpoint(match_id=_MATCH, next_tick=1)
+
+
+@pytest.mark.unit
+def test_worker_exception_does_not_overwrite_an_already_ended_status() -> None:
+    """A raise AFTER terminal evidence keeps ENDED; FAILED never downgrades it."""
+    gate = ConditionProgressGate()
+    marked = Event()
+
+    def run_match() -> None:
+        marked.set()
+        raise RuntimeError("late teardown failure")
+
+    runtime = MatchRuntime(
+        match_id=_MATCH,
+        owner_id=_OWNER,
+        run_match=run_match,
+        progress_gate=gate,
+        terminal_evidence=lambda _match_id: True,
+    )
+    runtime.dispatch(_command("start", revision=0, command_id=_START_ID, mode="one_game"))
+    ended = runtime.mark_match_ended()
+    assert ended.status.value == "ended"
+
+    with pytest.raises(RuntimeTransitionError, match="must be running"):
+        runtime.run()
+    assert runtime.status.status.value == "ended"
+    assert not marked.is_set()

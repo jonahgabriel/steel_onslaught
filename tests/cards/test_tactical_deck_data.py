@@ -85,14 +85,22 @@ def test_tactical_cards_compile_to_distinct_canonical_effect_parameters() -> Non
     assert cover.parameters.direction == "away_from_enemy"
 
     request = _request("a", weapon_ids=("weapon.primary", "weapon.secondary"))
-    precision_event, precision_payload = CardRunnerAdapter._intent_for_translation(
-        precision, request
-    )
-    suppressive_event, suppressive_payload = CardRunnerAdapter._intent_for_translation(
-        suppressive, request
-    )
-    guard_event, guard_payload = CardRunnerAdapter._intent_for_translation(guard, request)
-    cover_event, cover_payload = CardRunnerAdapter._intent_for_translation(cover, request)
+    compiled = {}
+    for name, translation in (
+        ("precision", precision),
+        ("suppressive", suppressive),
+        ("guard", guard),
+        ("cover", cover),
+    ):
+        resolved = CardRunnerAdapter._intent_for_translation(translation, request)
+        # Every slot here IS fielded by ``request``; ``None`` is reserved for a
+        # hardpoint the seat does not carry.
+        assert resolved is not None, f"{name} must compile to a canonical intent"
+        compiled[name] = resolved
+    precision_event, precision_payload = compiled["precision"]
+    suppressive_event, suppressive_payload = compiled["suppressive"]
+    guard_event, guard_payload = compiled["guard"]
+    cover_event, cover_payload = compiled["cover"]
     assert precision_event is SOEventType.WEAPON_FIRE_INTENT
     assert suppressive_event is SOEventType.WEAPON_FIRE_INTENT
     assert guard_event is SOEventType.MODE_SWITCH_INTENT

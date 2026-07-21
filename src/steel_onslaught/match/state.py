@@ -36,12 +36,23 @@ class SOMatchStatus(StrEnum):
 
 
 class SOMatchEndReason(StrEnum):
-    """Why a match ended (recorded on the final state and MATCH_ENDED payload)."""
+    """Why a match ended (recorded on the final state and MATCH_ENDED payload).
+
+    ``DRAW_MUTUAL_DESTRUCTION`` is the terminal for a tick that leaves ZERO
+    survivors — simultaneous arena pressure or a boiler rupture that takes the
+    last two mechs together.  It is deliberately distinct from
+    ``DRAW_MAX_TICKS``: one is "nobody won in time", the other is "everybody
+    died at once".  ``ABORTED_RUNAWAY`` is the runaway failsafe, never a
+    gameplay outcome — matches are unbounded by design, so a match that
+    reaches the failsafe is a bug to diagnose, not a draw to record.
+    """
 
     LAST_MECH_STANDING = "last_mech_standing"
     PILOT_KILLED = "pilot_killed"
     DRAW_MAX_TICKS = "draw_max_ticks"
+    DRAW_MUTUAL_DESTRUCTION = "draw_mutual_destruction"
     ABORTED = "aborted"
+    ABORTED_RUNAWAY = "aborted_runaway"
 
 
 # ---------------------------------------------------------------------------
