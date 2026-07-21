@@ -125,11 +125,36 @@ def _card_definition(card: object) -> dict[str, object]:
 def _serialize_programming_observation(observation: ModelSOProgrammingObservation) -> str:
     """Build a compact, deterministic prompt from one typed observation."""
 
-    deck = observation.deck
+    # A split-deck observation deliberately has no ``selected_deck_id``: the
+    # movement and weapon partitions are the authority for that hand.  The
+    # old serializer unconditionally accessed ``observation.deck`` here,
+    # which raised before ``consume_llm_completion`` and made a live match
+    # appear to freeze at tick one without emitting provider-request
+    # telemetry.  Keep the single-deck prompt shape for existing callers, but
+    # describe the explicit split boundary with a closed synthetic descriptor
+    # assembled only from the typed observation fields.
+    if len(observation.hand_deck_ids) > 1:
+        if observation.register_count is None:
+            raise ValueError("split programming observation requires register_count")
+        register_count = observation.register_count
+        deck_prompt = {
+            "deck_id": "deck.split",
+            "display_name": "Split movement and weapon decks",
+            "hand_size": len(observation.hand),
+            "register_count": register_count,
+            "partition_deck_ids": list(observation.hand_deck_ids),
+        }
+    else:
+        deck = observation.deck
+        register_count = deck.register_count
+        deck_prompt = {
+            "deck_id": deck.id,
+            "display_name": deck.display_name,
+            "hand_size": deck.hand_size,
+            "register_count": register_count,
+        }
     free_indices = tuple(observation.free_indices)
-    locked_indices = tuple(
-        index for index in range(deck.register_count) if index not in free_indices
-    )
+    locked_indices = tuple(index for index in range(register_count) if index not in free_indices)
     hand_card_ids = tuple(str(card_id) for card_id in observation.hand)
     hand_counts = Counter(hand_card_ids)
     pilot = observation.pilot_observation
@@ -154,7 +179,7 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
             "match_elapsed_ticks": pilot.match_elapsed_ticks,
         },
         "registers": {
-            "register_count": deck.register_count,
+            "register_count": register_count,
             "locked_indices": locked_indices,
             "free_indices": free_indices,
         },
@@ -163,12 +188,7 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
         # only from this round's dealt hand.  The hand definitions below carry
         # all card semantics needed for planning; ``legal_hand`` is the closed
         # multiset boundary used by the parser.
-        "deck": {
-            "deck_id": deck.id,
-            "display_name": deck.display_name,
-            "hand_size": deck.hand_size,
-            "register_count": deck.register_count,
-        },
+        "deck": deck_prompt,
         "legal_hand": legal_hand,
         "hand": [
             {

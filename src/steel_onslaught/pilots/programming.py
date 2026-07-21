@@ -103,23 +103,42 @@ class ModelSOProgrammingObservation(_ClosedProgrammingModel):
 
     @model_validator(mode="after")
     def _validate_hand_and_registers(self) -> ModelSOProgrammingObservation:
-        try:
-            deck = self.card_runtime_snapshot.selected_deck
-        except ValueError as exc:
-            if self.register_count is None or not self.hand_deck_ids:
-                raise ValueError(
-                    "programming observation requires an explicitly selected deck or "
-                    "explicit split register/deck inputs"
-                ) from exc
+        # Split-deck observations carry both authoritative partition deck ids
+        # and a seat-specific register count.  Some composition overlays also
+        # retain a selected single-deck id for legacy/replay provenance, so
+        # checking ``selected_deck`` first incorrectly rejects the valid
+        # split tuple before the provider is ever called.  Treat an explicit
+        # multi-deck tuple as the split boundary in either snapshot shape and
+        # validate the hand against the union of those named decks.
+        split_deck_ids = tuple(self.hand_deck_ids)
+        if len(split_deck_ids) > 1:
+            if self.register_count is None:
+                raise ValueError("split programming observation requires register_count")
+            deck_counts: Counter[str] = Counter()
+            for deck_id in split_deck_ids:
+                deck = self.card_runtime_snapshot.require_deck(str(deck_id))
+                deck_counts.update(str(card_id) for card_id in deck.card_multiset())
             register_count = self.register_count
             for card_id in self.hand:
                 self.card_runtime_snapshot.card_catalog.require(card_id)
         else:
-            register_count = deck.register_count
-            if self.register_count is not None and self.register_count != register_count:
-                raise ValueError("register_count differs from selected deck")
-            if self.hand_deck_ids and tuple(self.hand_deck_ids) != (str(deck.id),):
-                raise ValueError("hand_deck_ids differs from selected deck")
+            try:
+                deck = self.card_runtime_snapshot.selected_deck
+            except ValueError as exc:
+                if self.register_count is None or not split_deck_ids:
+                    raise ValueError(
+                        "programming observation requires an explicitly selected deck or "
+                        "explicit split register/deck inputs"
+                    ) from exc
+                register_count = self.register_count
+                for card_id in self.hand:
+                    self.card_runtime_snapshot.card_catalog.require(card_id)
+            else:
+                register_count = deck.register_count
+                if self.register_count is not None and self.register_count != register_count:
+                    raise ValueError("register_count differs from selected deck")
+                if split_deck_ids and split_deck_ids != (str(deck.id),):
+                    raise ValueError("hand_deck_ids differs from selected deck")
 
         indices = self.free_indices
         if indices != tuple(sorted(indices)):
@@ -134,13 +153,20 @@ class ModelSOProgrammingObservation(_ClosedProgrammingModel):
                 "must be programmed"
             )
 
-        if self.card_runtime_snapshot.selected_deck_id is not None:
+        if self.card_runtime_snapshot.selected_deck_id is not None and len(split_deck_ids) <= 1:
             deck_counts = Counter(str(card_id) for card_id in deck.card_multiset())
             hand_counts = Counter(str(card_id) for card_id in self.hand)
             missing = hand_counts - deck_counts
             if missing:
                 raise ValueError(
                     f"hand contains card ids not available in selected deck: {sorted(missing)}"
+                )
+        elif len(split_deck_ids) > 1:
+            hand_counts = Counter(str(card_id) for card_id in self.hand)
+            missing = hand_counts - deck_counts
+            if missing:
+                raise ValueError(
+                    f"hand contains card ids not available in split decks: {sorted(missing)}"
                 )
         return self
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from steel_onslaught.cards.dealer import DealerCompute, ModelSODealerScope, ModelSODeckState
@@ -32,6 +34,9 @@ from steel_onslaught.events.card_payloads import (
     ModelSOPlanRegister,
     SOCardPartition,
 )
+from steel_onslaught.llm.personas import Persona
+from steel_onslaught.llm.programming import LLMProgrammingPilot
+from steel_onslaught.llm.schemas import LlmResponse, LlmUsage, ModelSOLlmCompletionRequest
 from steel_onslaught.match.card_adapter import CardRunnerAdapter, ModelSOCardSeatRequest
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotObservation,
@@ -52,6 +57,27 @@ class _SideProgrammer:
             ),
             rationale="side programmer",
             confidence=1.0,
+        )
+
+
+class _QwenCardClient:
+    """Provider-shaped fixture proving split cards reach live programming."""
+
+    def __init__(self) -> None:
+        self.requests: list[ModelSOLlmCompletionRequest] = []
+
+    def complete(self, request):  # type: ignore[no-untyped-def]
+        self.requests.append(request)
+        prompt = json.loads(request.user_prompt)
+        registers = [
+            {"register_index": index, "card_id": card["card_id"]}
+            for index, card in zip(prompt["registers"]["free_indices"], prompt["hand"], strict=True)
+        ]
+        return LlmResponse(
+            text=json.dumps({"registers": registers, "confidence": 0.9, "rationale": "fixture"}),
+            usage=LlmUsage(prompt_tokens=5, completion_tokens=3, cost_usd=0.0),
+            model="qwen35-card-fixture",
+            finish_reason="stop",
         )
 
 
@@ -296,3 +322,29 @@ def test_split_runtime_resolves_programmers_by_configured_side() -> None:
     plans = {plan.seat: plan for plan in emission.sequence.plan_committed}
     assert plans["mech.red"].rationale == "side programmer"
     assert plans["mech.blue"].rationale is None
+
+
+def test_split_runtime_completes_one_provider_programmed_round() -> None:
+    """The live split path must call both providers and return a finite round."""
+
+    red_client = _QwenCardClient()
+    blue_client = _QwenCardClient()
+    persona = Persona("qwen35", "Qwen35", "Choose a valid tactical plan.", 0.2)
+    adapter = _adapter(
+        {
+            "red": LLMProgrammingPilot(client=red_client, persona=persona),
+            "blue": LLMProgrammingPilot(client=blue_client, persona=persona),
+        }
+    )
+
+    emission = adapter.produce(
+        seats=(_request("mech.red", "red"), _request("mech.blue", "blue")),
+        round_index=0,
+        tick=1,
+        causation_id="split-provider-round",
+    )
+
+    assert emission.sequence is not None
+    assert len(red_client.requests) == 1
+    assert len(blue_client.requests) == 1
+    assert len(emission.sequence.hand_dealt) == 2
