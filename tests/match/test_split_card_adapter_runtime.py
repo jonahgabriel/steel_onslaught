@@ -300,6 +300,29 @@ def test_split_runtime_emits_typed_quotas_and_independent_state() -> None:
     assert len(by_seat["mech.red"].partitions.weapon.card_ids) == 2
     assert len(by_seat["mech.blue"].partitions.movement.card_ids) == 2
     assert len(by_seat["mech.blue"].partitions.weapon.card_ids) == 3
+
+    # The state emitted at a round boundary must retain the just-dealt hand
+    # in each partition's discard pile.  A second round otherwise loses the
+    # first hand from the dealer multiset and raises CardRoundValidationError
+    # as soon as the draw pile is exhausted.
+    second = adapter.produce(
+        seats=(red, blue),
+        round_index=1,
+        tick=1,
+        causation_id="split-round-1",
+        starting_split_deck_states=first.split_deck_states,
+    )
+    assert second.sequence is not None
+    assert len(second.sequence.hand_dealt) == 2
+    first_states = {state.seat: state.state for state in first.split_deck_states}
+    for seat_state in second.split_deck_states:
+        prior = first_states[seat_state.seat]
+        assert seat_state.state.movement.discard_pile[: len(prior.movement.discard_pile)] == (
+            prior.movement.discard_pile
+        )
+        assert seat_state.state.weapon.discard_pile[: len(prior.weapon.discard_pile)] == (
+            prior.weapon.discard_pile
+        )
     with pytest.raises(ValueError, match="starting_split_deck_states"):
         adapter.produce(
             seats=(red, blue),
