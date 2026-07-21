@@ -116,7 +116,13 @@ export type SOPilotReasonCode =
   | "human_input"
   | "llm_decision"
   | "llm_fallback";
-export type SOMatchEndReason = "last_mech_standing" | "pilot_killed" | "draw_max_ticks" | "aborted";
+export type SOMatchEndReason =
+  | "last_mech_standing"
+  | "pilot_killed"
+  | "draw_max_ticks"
+  | "draw_mutual_destruction"
+  | "aborted"
+  | "aborted_runaway";
 
 /** Mirror of steel_onslaught.contracts.boiler.ModelSOBoilerState. */
 export interface SOBoilerState {
@@ -275,7 +281,7 @@ export interface MatchStartedPayload {
   card_rule_pack_provenance?: SOCardRulePackProvenance;
 }
 
-export type SORuntimeStatus = "ready" | "running" | "paused" | "ended";
+export type SORuntimeStatus = "ready" | "running" | "paused" | "ended" | "failed";
 export type SORuntimeMode = "one_game" | "continuous";
 
 export interface RuntimeStatusChangedPayload {
@@ -539,6 +545,12 @@ export interface MatchScoredPayload {
 
 export type SORegisterOutcome = "resolved" | "auto_remain" | "heat_locked";
 export type SORegisterFillReason = "short_deck";
+/** Mirror of SOPlanSource: who actually authored a committed register plan. */
+export type SOPlanSource =
+  | "llm"
+  | "deterministic_planner"
+  | "deterministic_fallback"
+  | "unspecified";
 
 export interface HandPartitionPayload {
   partition: "movement" | "weapon";
@@ -576,6 +588,7 @@ export interface PlanCommittedPayload {
   registers: PlanRegister[];
   rationale: string | null;
   confidence: number;
+  plan_source: SOPlanSource;
 }
 
 /** Mirror of ModelSORegisterResolvedPayload. */
@@ -747,6 +760,24 @@ function parseRegisterOutcome(value: unknown, context: string): SORegisterOutcom
 function parseRegisterFillReason(value: unknown, context: string): SORegisterFillReason {
   if (value === "short_deck") return value;
   fail(context, `unknown register fill reason ${JSON.stringify(value)}`);
+}
+
+function parsePlanSource(value: unknown, context: string): SOPlanSource {
+  // The Python payload defaults this field, so a plan_committed event
+  // persisted before the classification existed carries no key at all.  An
+  // absent key is exactly that legacy "unspecified" case and must parse, or
+  // streaming any historical ledger to the browser hard-fails.  An explicit
+  // null or an unknown string is still malformed.
+  if (value === undefined) return "unspecified";
+  if (
+    value === "llm" ||
+    value === "deterministic_planner" ||
+    value === "deterministic_fallback" ||
+    value === "unspecified"
+  ) {
+    return value;
+  }
+  fail(context, `unknown plan source ${JSON.stringify(value)}`);
 }
 
 function num(record: Record<string, unknown>, key: string, context: string): number {
@@ -957,7 +988,9 @@ function parseEndReason(value: unknown, context: string): SOMatchEndReason {
     value === "last_mech_standing" ||
     value === "pilot_killed" ||
     value === "draw_max_ticks" ||
-    value === "aborted"
+    value === "draw_mutual_destruction" ||
+    value === "aborted" ||
+    value === "aborted_runaway"
   ) {
     return value;
   }
@@ -1777,7 +1810,11 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       context,
     );
     const status = str(record, "status", context);
-    if (!(["ready", "running", "paused", "ended"] as const).includes(status as SORuntimeStatus)) {
+    if (
+      !(["ready", "running", "paused", "ended", "failed"] as const).includes(
+        status as SORuntimeStatus,
+      )
+    ) {
       fail(context, `field "status" has an unknown value ${JSON.stringify(status)}`);
     }
     if (!("mode" in record)) {
@@ -1988,7 +2025,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
   },
   plan_committed: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["seat", "registers", "rationale", "confidence"], context);
+    rejectUnknown(record, ["seat", "registers", "rationale", "confidence", "plan_source"], context);
     requireFields(record, ["rationale"], context);
     const rawRegisters = record["registers"];
     if (!Array.isArray(rawRegisters)) {
@@ -2012,6 +2049,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       registers,
       rationale: nullableStr(record, "rationale", context),
       confidence: boundedNum(record, "confidence", context, 0, 1),
+      plan_source: parsePlanSource(record["plan_source"], `${context}.plan_source`),
     };
   },
   register_resolved: (value, context) => {

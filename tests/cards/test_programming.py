@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -21,6 +23,7 @@ from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.card_payloads import (
     ModelSOPlanCommittedPayload,
     ModelSOPlanRegister,
+    SOPlanSource,
 )
 from steel_onslaught.pilots.programming import (
     ModelSOProgrammingObservation,
@@ -279,3 +282,36 @@ def test_explicit_programmer_output_is_strictly_rejected(
 
     with pytest.raises(ProgrammingPilotError):
         program_for_seat(BadProgrammer(), observation)
+
+
+def test_unbound_seat_is_classified_as_the_planner_not_as_a_fallback() -> None:
+    """A seat with no bound programmer never substituted for anything.
+
+    This is the path a human seat, a deterministic pilot, and every
+    hermetic/replay match take.  Labelling it ``deterministic_fallback`` would
+    claim a provider failed when no provider was ever involved, which makes
+    the one member that means "a live seat lost its provider" useless.
+    """
+
+    plan = program_for_seat(None, _observation(_snapshot()))
+
+    assert plan.plan_source is SOPlanSource.DETERMINISTIC_PLANNER
+
+
+def test_plan_committed_payload_defaults_legacy_events_to_unspecified() -> None:
+    """An event persisted before the field existed stays honestly unknown."""
+
+    legacy = ModelSOPlanCommittedPayload.model_validate_json(
+        json.dumps(
+            {
+                "seat": "red",
+                "registers": [{"register_index": 0, "card_id": "card.test.advance"}],
+                "rationale": None,
+                "confidence": 1.0,
+            }
+        )
+    )
+
+    # Specifically NOT relabelled as a substitution that never happened, and
+    # not credited to a provider either.
+    assert legacy.plan_source is SOPlanSource.UNSPECIFIED

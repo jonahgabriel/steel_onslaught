@@ -43,10 +43,21 @@ class SORuntimeMode(StrEnum):
 
 
 class SORuntimeStatus(StrEnum):
+    """Lifecycle projection of one composed match runtime.
+
+    ``FAILED`` is a terminal status distinct from ``ENDED``: the worker raised
+    a non-boundary error, so the match has NO canonical terminal evidence and
+    must never be reported as a completed match.  Without it a crashed worker
+    left the projection stuck on ``RUNNING`` forever, because
+    ``mark_match_ended`` correctly refuses to commit ``ENDED`` without durable
+    ``MATCH_ENDED`` evidence in the ledger.
+    """
+
     READY = "ready"
     RUNNING = "running"
     PAUSED = "paused"
     ENDED = "ended"
+    FAILED = "failed"
 
 
 class _ClosedRuntimeModel(BaseModel):

@@ -41,9 +41,9 @@ contracts:
     card_cadence: paced
     programmers:
       - side: red
-        pilot_spec_id: pilot.glm.card_opportunist
+        pilot_spec_id: pilot.glm.sniper
       - side: blue
-        pilot_spec_id: pilot.glm.card_opportunist
+        pilot_spec_id: pilot.glm.opportunist
 llm:
   providers:
     - kind: openai_compatible

@@ -49,6 +49,7 @@ from steel_onslaught.events.card_payloads import (
     ModelSOPlanCommittedPayload,
     ModelSOPlanRegister,
     ModelSORegisterResolvedPayload,
+    SOPlanSource,
     SORegisterOutcome,
 )
 from steel_onslaught.events.envelope import (
@@ -212,6 +213,9 @@ def _card_event_payloads() -> dict[SOEventType, dict[str, Any]]:
         ),
         rationale="Advance, fire, then vent.",
         confidence=0.8,
+        # A live match is LLM-driven, so the canonical wire sample is an
+        # LLM-authored plan.
+        plan_source=SOPlanSource.LLM,
     )
     register_resolved = ModelSORegisterResolvedPayload(
         seat="a",

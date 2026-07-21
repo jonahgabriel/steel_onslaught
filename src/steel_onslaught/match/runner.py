@@ -32,6 +32,7 @@ from pydantic import ValidationError
 
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.cards.dealer import ModelSODealerScope, ModelSODeckState
+from steel_onslaught.cards.round import carry_forward_plans
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
@@ -54,6 +55,7 @@ from steel_onslaught.events.envelope import (
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.events.payloads import (
     ModelSOEmptyPayload,
+    ModelSOMatchEndedPayload,
     ModelSOMoveIntentPayload,
     ModelSOSensorObservationPayload,
     ModelSOWeaponFireIntentPayload,
@@ -108,6 +110,42 @@ from steel_onslaught.reducers.weapons import (
 )
 
 _PRODUCER_NODE = "node.match.runner"
+
+RUNAWAY_TICK_LIMIT = 1000
+"""Runaway failsafe, NOT a tactical tick cap.
+
+Matches are unbounded by design: arena convergence pressure, not a timer, is
+what ends an uncapped match.  A match that reaches this tick has stopped
+converging, which is a bug in the pressure/terminal path rather than a
+gameplay outcome — so it terminates with its own ``ABORTED_RUNAWAY`` reason
+that no draw or victory path can produce.  Never widen this into a draw, and
+never lower it to bound tactics.
+
+It is also NOT an upper bound on ``max_ticks``.  ``--max-ticks`` is
+``IntRange(min=1)`` and ``ModelSOMatchStartedPayload.max_ticks`` is
+``Field(..., gt=0)`` — both unbounded above — so a caller may legitimately ask
+for more ticks than this guard.  Such a match is converging on its own explicit
+cap and must reach it; see :func:`_effective_runaway_limit`.
+"""
+
+
+def _effective_runaway_limit(max_ticks: int | None) -> int:
+    """Failsafe tick for this match, never below an explicit ``max_ticks``.
+
+    An explicit cap is an intentional terminal, so the guard must never
+    preempt it: a 2000-tick match aborted at tick 1000 would report an engine
+    defect (``aborted_runaway`` means "a bug to diagnose") for a perfectly
+    correct run, and silently truncate the match the caller asked for.
+
+    The guard is raised rather than disabled.  A capped match that somehow
+    walked PAST its own cap is exactly the non-converging failure this failsafe
+    exists to catch, so the loop stays bounded for every input.
+    """
+
+    if max_ticks is None:
+        return RUNAWAY_TICK_LIMIT
+    return max(RUNAWAY_TICK_LIMIT, max_ticks)
+
 
 # Match-scoped events have no single mech/player subject.
 _MATCH_SUBJECT = ModelSOEventSubject(mech_id="*", player_id="*")
@@ -199,6 +237,7 @@ class MatchRunner:
         self._loadout_b = loadout_b
         self._bus = bus
         self._max_ticks = max_ticks
+        self._runaway_tick_limit = _effective_runaway_limit(max_ticks)
         self._side_a = side_a
         self._side_b = side_b
         self._arena = arena.to_snapshot()
@@ -343,6 +382,9 @@ class MatchRunner:
 
         while self.fold.state.status is SOMatchStatus.RUNNING:
             next_tick = self.fold.state.tick + 1
+            if next_tick > self._runaway_tick_limit:
+                self._terminate_for_runaway(tick=self.fold.state.tick)
+                break
             try:
                 self._progress_gate.checkpoint(match_id=self._match_id, next_tick=next_tick)
             except ProgressGateStoppedError:
@@ -467,6 +509,24 @@ class MatchRunner:
             )
         return self.fold.state
 
+    def _terminate_for_runaway(self, *, tick: int) -> None:
+        """Record the runaway failsafe terminal with its own diagnosable reason."""
+
+        if self.fold.state.status is not SOMatchStatus.RUNNING:
+            return
+        if self._card_cadence == "paced":
+            self._cancel_active_card_round(tick=tick, reason="runaway")
+        self._bus.publish(
+            self._make_match_event(
+                SOEventType.MATCH_ENDED,
+                tick=tick,
+                payload={
+                    "reason": SOMatchEndReason.ABORTED_RUNAWAY.value,
+                    "winner_id": None,
+                },
+            )
+        )
+
     def _terminate_for_llm_boundary(self, *, tick: int) -> None:
         """Record an aborted terminal when a live provider cannot complete."""
 
@@ -587,7 +647,7 @@ class MatchRunner:
             raise RuntimeError("enabled card emission must carry sequence and deck state")
         self._card_deck_state = emission.deck_state
         self._card_split_deck_states = emission.split_deck_states
-        self._card_previous_plans = {plan.seat: plan for plan in emission.sequence.plan_committed}
+        self._card_previous_plans = carry_forward_plans(emission.sequence)
         self._card_round_index += 1
 
     def _run_paced_card_round(self, tick: int, tick_event: ModelSOEventEnvelope) -> None:
@@ -748,7 +808,7 @@ class MatchRunner:
         if final_register:
             self._card_deck_state = active.emission.deck_state
             self._card_split_deck_states = active.emission.split_deck_states
-            self._card_previous_plans = {plan.seat: plan for plan in sequence.plan_committed}
+            self._card_previous_plans = carry_forward_plans(sequence)
             self._card_round_index += 1
             self._card_active_round = None
         else:
@@ -766,6 +826,11 @@ class MatchRunner:
         terminal scoring subscriber can therefore observe the declaration
         before the runner's post-resolution cleanup unless the active card
         round is closed at this effect boundary first.
+
+        The cancellation reason follows the terminal that caused it: a
+        mutual-destruction ``MATCH_ENDED`` closed the round because mechs
+        DIED, so labelling it ``max_ticks`` would put a false cause in the
+        canonical discard row.
         """
 
         if (
@@ -773,13 +838,13 @@ class MatchRunner:
             and self._card_cadence == "paced"
             and self._card_active_round is not None
         ):
+            death_driven = event.event_type is SOEventType.VICTORY_DECLARED or (
+                ModelSOMatchEndedPayload.model_validate(event.payload).reason
+                is SOMatchEndReason.DRAW_MUTUAL_DESTRUCTION
+            )
             self._cancel_active_card_round(
                 tick=event.tick,
-                reason=(
-                    "decisive_death"
-                    if event.event_type is SOEventType.VICTORY_DECLARED
-                    else "max_ticks"
-                ),
+                reason="decisive_death" if death_driven else "max_ticks",
                 emit_match_ended=False,
             )
 
@@ -860,39 +925,86 @@ class MatchRunner:
         This is game-design convergence, not a hidden lifecycle timer. Every
         attrition fact is emitted through the canonical damage/destruction path
         and is therefore folded and replayed exactly like weapon damage.
+
+        The pulse is SIMULTANEOUS: every living mech is damaged from the same
+        pre-pulse snapshot, and only then is destruction resolved.  Damaging
+        and destroying one mech at a time (and breaking on the first kill) gave
+        the win to whichever mech sorted last by ``mech_id`` — the
+        alphabetically-first mech died before its opponent absorbed the same
+        lethal pressure, so a symmetric uncapped match always ended
+        ``winner=player.b`` at full HP.  When the pulse is lethal for every
+        remaining mech the fold sees the ``>1 -> ==0`` survivor transition and
+        records ``draw_mutual_destruction``; the ``hp == 0`` deferral in
+        ``MatchStateFold._on_flag_drop`` is what stops the first destruction
+        event from declaring a false victory in between.
+
+        Why the destruction loop needs no post-terminal guard TODAY, and the
+        exact precondition that would change that:
+
+        The loop publishes ``MECH_DESTROYED`` only for the mechs the pulse
+        zeroed, and the fold's terminals key on surviving *player* ids.  A
+        match is duel-only — the runner builds exactly ``mech_a`` and
+        ``mech_b``, one per player — so the zeroed set is either one mech (the
+        survivor's own destruction never publishes, and the terminal lands on
+        the single destruction) or both (survivors walk ``2 -> 1 -> 0``, the
+        ``hp == 0`` deferral suppresses the intermediate victory, and the
+        terminal lands on the last destruction).  Either way the terminal
+        coincides with the FINAL publish of the pulse, so nothing is emitted
+        after ``MATCH_ENDED``.
+
+        That invariant is a consequence of one-mech-per-player, NOT of the
+        loop.  Give a player two mechs and it breaks: with ``a`` fielding
+        ``A1``/``A2`` and ``b`` fielding ``B1``, a pulse that zeroes ``A1`` and
+        ``B1`` (leaving ``A2`` healthy) declares victory for ``a`` on ``B1``'s
+        destruction whenever initiative orders ``B1`` first — and ``A1``'s
+        destruction would then publish after the terminal, which the browser
+        transport rejects outright.  A ``break`` here is deliberately NOT the
+        answer: the fold applies ``alive=False`` before its terminal guard, so
+        dropping the publish would leave ``A1`` recorded alive at zero hp.
+        Whoever adds multi-mech seats must fix the ORDER (terminal-triggering
+        destruction last), not silence the tail.  ``tests/match/
+        test_terminal_correctness.py`` pins the duel invariant so the duel case
+        cannot regress unnoticed in the meantime.
         """
         start = self._sudden_death_start_tick
         if start is None or tick < start or self._max_ticks is not None:
             return
         damage = self._sudden_death_damage_base * (tick - start + 1)
-        for mech in sorted(self.fold.state.living_mechs(), key=lambda item: item.mech_id):
-            if self.fold.state.status is not SOMatchStatus.RUNNING:
-                break
-            current = self.fold.state.mech_states[mech.mech_id]
-            hp_after = max(0, current.hp - damage)
+        # Initiative (seeded, never a raw mech_id sort) orders the residual
+        # per-mech event sequence; it cannot change who dies, because every
+        # hp_after is computed from the same pre-pulse snapshot.
+        pulse = tuple(
+            (mech, max(0, mech.hp - damage))
+            for mech in order_by_initiative(
+                list(self.fold.state.living_mechs()), rng=self._rng, tick=tick
+            )
+        )
+        for mech, hp_after in pulse:
             self._bus.publish(
                 self._make_subject_event(
                     SOEventType.DAMAGE_APPLIED,
                     tick=tick,
-                    mech=current,
+                    mech=mech,
                     payload={
-                        "target_id": current.mech_id,
-                        "damage": current.hp - hp_after,
+                        "target_id": mech.mech_id,
+                        "damage": mech.hp - hp_after,
                         "cause": "sudden_death",
                         "hp_after": hp_after,
                         "source_mech_id": None,
                     },
                 )
             )
-            if hp_after == 0:
-                self._bus.publish(
-                    self._make_subject_event(
-                        SOEventType.MECH_DESTROYED,
-                        tick=tick,
-                        mech=current,
-                        payload={"cause": "sudden_death", "source_mech_id": None},
-                    )
+        for mech, hp_after in pulse:
+            if hp_after != 0:
+                continue
+            self._bus.publish(
+                self._make_subject_event(
+                    SOEventType.MECH_DESTROYED,
+                    tick=tick,
+                    mech=mech,
+                    payload={"cause": "sudden_death", "source_mech_id": None},
                 )
+            )
 
     @staticmethod
     def _validate_launch_provenance(

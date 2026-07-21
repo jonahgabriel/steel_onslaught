@@ -19,7 +19,7 @@ from steel_onslaught.contracts.card_runtime import (
 )
 from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.contracts.mode import ModeId
-from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload
+from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, SOPlanSource
 from steel_onslaught.llm.effect import LlmSemanticError
 from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.programming import LLMProgrammingPilot
@@ -193,6 +193,7 @@ def test_programming_request_carries_typed_evidence_and_card_context() -> None:
     plan = program_for_seat(pilot, observation)
 
     assert isinstance(plan, ModelSOPlanCommittedPayload)
+    assert plan.plan_source is SOPlanSource.LLM
     assert plan.seat == "red"
     assert tuple(register.register_index for register in plan.registers) == (0, 2)
     assert tuple(register.card_id for register in plan.registers) == (
@@ -374,7 +375,22 @@ def test_explicit_fallback_policy_is_deterministic_and_non_llm() -> None:
         "card.test.vent",
     )
     assert plan.confidence == 1.0
+    # The substitution is durably classified, not silent.
+    assert plan.plan_source is SOPlanSource.DETERMINISTIC_FALLBACK
     assert len(client.requests) == 1
+
+
+def test_fallback_policy_still_raises_unclassified_provider_failures() -> None:
+    """A live match cannot continue on the deterministic planner."""
+
+    pilot = LLMProgrammingPilot(
+        client=_FailingClient(),
+        persona=_persona(),
+        failure_policy="fallback",
+    )
+
+    with pytest.raises(ConnectionError, match="provider unavailable"):
+        program_for_seat(pilot, _observation())
 
 
 def test_explicit_fallback_policy_recovers_invalid_action_parameters() -> None:
@@ -399,4 +415,5 @@ def test_explicit_fallback_policy_recovers_invalid_action_parameters() -> None:
         "card.test.vent",
     )
     assert plan.confidence == 1.0
+    assert plan.plan_source is SOPlanSource.DETERMINISTIC_FALLBACK
     assert len(client.requests) == 1

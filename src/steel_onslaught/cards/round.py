@@ -41,6 +41,7 @@ from steel_onslaught.events.card_payloads import (
     ModelSOCardsDiscardedPayload,
     ModelSOHandDealtPayload,
     ModelSOPlanCommittedPayload,
+    ModelSOPlanRegister,
     ModelSORegisterResolvedPayload,
 )
 
@@ -461,6 +462,52 @@ def validate_card_round(
             )
 
 
+def carry_forward_plans(
+    sequence: ModelSOCardRoundSequence,
+) -> dict[str, ModelSOPlanCommittedPayload]:
+    """Project a completed round into the ``previous_plan`` the next round needs.
+
+    ``PLAN_COMMITTED`` only carries the registers a pilot was FREE to program,
+    so a register that stayed heat-locked is absent from it.  Carrying that
+    plan forward verbatim makes the next round unresolvable whenever the same
+    register is locked twice in a row: the heat-lock repeat looks up its prior
+    card, finds nothing, and ``RegisterPlanError`` escapes into the runner and
+    kills the match.
+
+    ``REGISTER_RESOLVED`` is the complete per-register truth — ``RESOLVED``
+    rows carry the programmed card and ``HEAT_LOCKED`` rows carry the repeated
+    one — so the resolved rows, not the plan, are what the next round must
+    inherit.  ``AUTO_REMAIN`` rows name no card and are dropped: a short-deck
+    register has nothing to repeat, which the reducer already rejects loudly
+    rather than inventing a null-card heat lock.
+
+    Decision metadata (``rationale``/``confidence``) is preserved from the
+    seat's committed plan; only the register program is widened.
+    """
+
+    registers_by_seat: dict[str, list[ModelSOPlanRegister]] = {}
+    for row in sequence.register_resolved:
+        if row.card_id is None:
+            continue
+        registers_by_seat.setdefault(row.seat, []).append(
+            ModelSOPlanRegister(register_index=row.register_index, card_id=row.card_id)
+        )
+    carried: dict[str, ModelSOPlanCommittedPayload] = {}
+    for plan in sequence.plan_committed:
+        registers = tuple(
+            sorted(
+                registers_by_seat.get(plan.seat, []),
+                key=lambda register: register.register_index,
+            )
+        )
+        carried[plan.seat] = (
+            plan
+            if registers == plan.registers
+            else plan.model_copy(update={"registers": registers})
+        )
+    return carried
+
+
 def resolve_card_round(
     reducer: RegisterExecutionReducer,
     contexts: tuple[ModelSOSeatResolutionContext, ...],
@@ -643,6 +690,7 @@ __all__ = [
     "ModelSOCardRoundSequence",
     "build_discarded",
     "build_hand_dealt",
+    "carry_forward_plans",
     "resolve_card_round",
     "validate_card_round",
     "validate_hand_dealt",

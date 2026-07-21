@@ -61,6 +61,7 @@ from steel_onslaught.llm.schemas import (
 )
 from steel_onslaught.match.composition import (
     RuntimeDependencies,
+    SeatIdentityError,
     assemble_selected_match_live,
     build_selected_runtime_dependencies,
     load_application_overlay,
@@ -684,9 +685,18 @@ def test_browser_live_start_mints_one_exact_capability_and_replay_does_not_remin
     assert callable(launch_calls[0]["live_runtime_factory"])
 
 
-@pytest.mark.integration
-def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path) -> None:
-    """A selected catalog overlay must not make a browser start hash stale."""
+def _catalog_browser_launch(
+    tmp_path: Path,
+    *,
+    red_option_id: str,
+    blue_option_id: str,
+) -> tuple[play_cli.BrowserPlaySession, ModelSOApplicationOverlay, ModelSOApplicationOverlay]:
+    """Launch one catalog-path browser session exactly as ``so play-live`` does.
+
+    Returns the live session plus the canonical and per-selection overlays so a
+    caller can assert on launch hashes, seat assignments, or — for a rejected
+    pairing — on the exception this raises before any session exists.
+    """
 
     catalog_path = _ROOT / "contracts_data/model_catalogs/configured_v1.yaml"
     base_overlay = load_application_overlay(_ROOT / "contracts_data/overlays/live_glm_cards.yaml")
@@ -714,8 +724,9 @@ def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path
             ),
         }
     )
-    selected_overlay = play_cli._catalog_selection_overlay(
+    selected_overlay = play_cli._admitted_seat_overlay(
         overlay=canonical_overlay,
+        roster=catalog.to_roster_binding(),
         catalog=catalog,
         source_overlays=source_overlays,
         request=ModelSOBrowserStartMatchRequest(
@@ -727,12 +738,8 @@ def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path
                 expected_overlay_sha256="0" * 64,
                 expected_roster_sha256="1" * 64,
                 selections=(
-                    ModelSOStartMatchSeatSelection(
-                        side="red", option_id="player_option.qwen35_model"
-                    ),
-                    ModelSOStartMatchSeatSelection(
-                        side="blue", option_id="player_option.qwen35_sniper"
-                    ),
+                    ModelSOStartMatchSeatSelection(side="red", option_id=red_option_id),
+                    ModelSOStartMatchSeatSelection(side="blue", option_id=blue_option_id),
                 ),
             ),
         ),
@@ -745,8 +752,8 @@ def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path
         expected_overlay_sha256=canonical_overlay_sha256(canonical_overlay),
         expected_roster_sha256=roster.canonical_sha256(),
         selections=(
-            ModelSOStartMatchSeatSelection(side="red", option_id="player_option.qwen35_model"),
-            ModelSOStartMatchSeatSelection(side="blue", option_id="player_option.qwen35_sniper"),
+            ModelSOStartMatchSeatSelection(side="red", option_id=red_option_id),
+            ModelSOStartMatchSeatSelection(side="blue", option_id=blue_option_id),
         ),
     )
     request = ModelSOBrowserStartMatchRequest(
@@ -791,7 +798,6 @@ def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path
     )
     assert isinstance(capability, ProcessLocalOneShotLiveProviderCapability)
 
-    assert canonical_overlay_sha256(selected_overlay) != canonical_overlay_sha256(canonical_overlay)
     session = play_cli.launch_browser_play_session(
         overlay=selected_overlay,
         canonical_overlay=canonical_overlay,
@@ -818,7 +824,22 @@ def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path
         max_ticks=2,
         allowed_origins=("http://localhost:5173", "http://127.0.0.1:5173"),
     )
+    return session, canonical_overlay, selected_overlay
+
+
+@pytest.mark.integration
+def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path) -> None:
+    """A selected catalog overlay must not make a browser start hash stale."""
+
+    session, canonical_overlay, selected_overlay = _catalog_browser_launch(
+        tmp_path,
+        red_option_id="player_option.qwen35_model",
+        blue_option_id="player_option.qwen35_sniper",
+    )
     try:
+        assert canonical_overlay_sha256(selected_overlay) != canonical_overlay_sha256(
+            canonical_overlay
+        )
         assert session.start_result.overlay_sha256 == canonical_overlay_sha256(canonical_overlay)
         assert session.launch_provenance.overlay_sha256 == canonical_overlay_sha256(
             canonical_overlay
@@ -830,6 +851,26 @@ def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path
         assert assignments["blue"].pilot_spec_id == "pilot.llm.qwen35_sniper"
     finally:
         session.close()
+
+
+@pytest.mark.integration
+def test_catalog_mirror_selection_fails_the_browser_launch(tmp_path: Path) -> None:
+    """The default demo catalog permits a mirror; the launch must not.
+
+    ``player_option.qwen35_model`` is in ``allowed_option_ids`` for BOTH catalog
+    seats, and the catalog's own ``mirror_match_mode`` rule only guards
+    duplicate *defaults* at contract-load time.  This is the runtime selection
+    that reaches production composition, so the guard has to hold here, on the
+    real ``so play-live`` launch path, and it has to fail before a session
+    exists rather than quietly run berserker-vs-berserker.
+    """
+
+    with pytest.raises(SeatIdentityError, match="distinct card programmer identities"):
+        _catalog_browser_launch(
+            tmp_path,
+            red_option_id="player_option.qwen35_model",
+            blue_option_id="player_option.qwen35_model",
+        )
 
 
 @pytest.mark.integration

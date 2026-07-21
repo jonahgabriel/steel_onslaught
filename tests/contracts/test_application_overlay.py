@@ -636,7 +636,17 @@ def test_overlay_rejects_every_unsupported_binding_kind(
 
 
 @pytest.mark.unit
-def test_overlay_relative_paths_resolve_from_overlay_directory(tmp_path: Path) -> None:
+def test_overlay_relative_paths_resolve_from_overlay_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # This fixture must be authored with RELATIVE paths or the test proves
+    # nothing -- but ``_overlay_data`` also *writes* a pilot registry under the
+    # directory it is given, so calling it with ``Path(".")`` from the repo
+    # root made the suite deposit five stray pilot specs in the working tree
+    # (which is how they ended up committed).  Anchor the relative paths to
+    # tmp_path, which is also the overlay's own directory, so the resolution
+    # assertions below are unchanged.
+    monkeypatch.chdir(tmp_path)
     raw = _overlay_data(Path("."))
     overlay_path = tmp_path / "application.yaml"
     serialized = ModelSOApplicationOverlay.model_validate(raw).model_dump(mode="json")
