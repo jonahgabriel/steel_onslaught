@@ -63,7 +63,7 @@ contracts:
         pilot_spec_id: pilot.llm.qwen35
         failure_policy: fallback
       - side: blue
-        pilot_spec_id: pilot.llm.qwen35
+        pilot_spec_id: pilot.llm.qwen35_sniper
         failure_policy: fallback
   balance_rule_pack:
     kind: card_programming_rules

@@ -714,8 +714,9 @@ def test_catalog_qwen35_browser_start_uses_canonical_overlay_hash(tmp_path: Path
             ),
         }
     )
-    selected_overlay = play_cli._catalog_selection_overlay(
+    selected_overlay = play_cli._admitted_seat_overlay(
         overlay=canonical_overlay,
+        roster=catalog.to_roster_binding(),
         catalog=catalog,
         source_overlays=source_overlays,
         request=ModelSOBrowserStartMatchRequest(

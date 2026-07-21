@@ -20,7 +20,7 @@ from steel_onslaught.cli.play import (
     BrowserLiveProviderCapabilityFactory,
     BrowserPlayServer,
     BrowserPlaySession,
-    _catalog_selection_overlay,
+    _admitted_seat_overlay,
     _configured_browser_server,
     _InjectedSecretResolver,
     _load_yaml_model,
@@ -500,11 +500,12 @@ def test_catalog_runtime_overlay_selects_source_card_programmers_per_seat() -> N
         ),
     )
 
-    selected_overlay = _catalog_selection_overlay(
+    selected_overlay = _admitted_seat_overlay(
         overlay=merged_overlay,
+        roster=catalog.to_roster_binding(),
+        request=request,
         catalog=catalog,
         source_overlays=source_overlays,
-        request=request,
     )
     assert selected_overlay.contracts.card_catalog is not None
     assert {
@@ -527,11 +528,12 @@ def test_catalog_runtime_overlay_selects_source_card_programmers_per_seat() -> N
             )
         }
     )
-    differentiated_overlay = _catalog_selection_overlay(
+    differentiated_overlay = _admitted_seat_overlay(
         overlay=merged_overlay,
+        roster=catalog.to_roster_binding(),
+        request=differentiated_request,
         catalog=catalog,
         source_overlays=source_overlays,
-        request=differentiated_request,
     )
     assert differentiated_overlay.contracts.card_catalog is not None
     assert {

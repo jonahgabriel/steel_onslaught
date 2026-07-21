@@ -31,7 +31,7 @@ def test_tactical_qwen27_overlay_binds_exact_lab_provider_and_model() -> None:
     assert binding.decks_dir == (_ROOT / "contracts_data/decks").resolve()
     assert tuple(programmer.pilot_spec_id for programmer in binding.programmers) == (
         "pilot.llm.qwen27",
-        "pilot.llm.qwen27",
+        "pilot.llm.qwen27_opportunist",
     )
 
     provider = overlay.llm.providers[0]

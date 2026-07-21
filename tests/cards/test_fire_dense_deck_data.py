@@ -81,7 +81,7 @@ def test_qwen_overlay_selects_fire_dense_deck_and_isolated_evidence_roots() -> N
     assert binding.card_cadence == "paced"
     assert tuple(programmer.pilot_spec_id for programmer in binding.programmers) == (
         "pilot.llm.qwen35",
-        "pilot.llm.qwen35",
+        "pilot.llm.qwen35_sniper",
     )
     provider = overlay.llm.providers[0]
     assert provider.kind == "openai_compatible"

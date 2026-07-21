@@ -1026,11 +1026,51 @@ def _validate_llm_pilot_bindings(
         llm.persona_registry.require(spec.parameters.persona)
 
 
+def validate_seat_programmer_identity(
+    resolved_personas: Mapping[str, str],
+    *,
+    deck_policy: ModelSOCardDeckPolicy,
+) -> None:
+    """Fail closed when a seat's programmer is not the seat it claims to be.
+
+    In paced card mode the card programmer — not the loadout pilot — is the
+    seat's decision-maker, so ``deck_policy.archetype`` is only a label until
+    something proves the programmer bound to that side actually resolves to
+    it.  Two checks make the seat identity one validated contract: each bound
+    programmer's resolved persona must equal its seat archetype, and the two
+    seats must resolve to distinct personas.  Without the second check a
+    differentiated-looking split-deck overlay can silently run a mirror match.
+    """
+
+    mismatched = tuple(
+        f"{seat.side}={resolved_personas[seat.side]!r} (archetype {seat.archetype!r})"
+        for seat in deck_policy.seats
+        if seat.side in resolved_personas and resolved_personas[seat.side] != seat.archetype
+    )
+    if mismatched:
+        raise ValueError(
+            "card programmer persona does not match the declared seat archetype: "
+            + ", ".join(mismatched)
+        )
+    declared = tuple(
+        (seat.side, resolved_personas[seat.side])
+        for seat in deck_policy.seats
+        if seat.side in resolved_personas
+    )
+    personas = {persona for _side, persona in declared}
+    if len(declared) > 1 and len(personas) != len(declared):
+        rendered = ", ".join(f"{side}={persona!r}" for side, persona in declared)
+        raise ValueError(
+            f"split-deck seats must resolve to distinct card programmer personas: {rendered}"
+        )
+
+
 def build_card_programmers(
     bindings: tuple[ModelSOCardProgrammerBinding, ...],
     *,
     registry: PilotSpecRegistry,
     llm: LlmDependencies,
+    deck_policy: ModelSOCardDeckPolicy | None = None,
     observer: ProtocolLlmCompletionObserver | None = None,
     correlation_id: UUID | None = None,
 ) -> Mapping[str, ProgrammingPilot]:
@@ -1042,15 +1082,21 @@ def build_card_programmers(
     provider client and persona selected by that spec.  A missing binding is
     represented by an absent mapping entry; the card adapter then retains its
     deterministic priority programmer for that seat.
+
+    When the overlay also declares a split ``deck_policy``, the resolved
+    personas are checked against that policy's seat archetypes before any
+    provider client is bound.
     """
 
     if observer is not None and correlation_id is None:
         raise ValueError("observed card programmers require a match correlation_id")
 
-    programmers: dict[str, ProgrammingPilot] = {}
+    resolved: list[tuple[ModelSOCardProgrammerBinding, ModelSOLlmPilotParams]] = []
+    bound_sides: set[str] = set()
     for binding in bindings:
-        if binding.side in programmers:
+        if binding.side in bound_sides:
             raise ValueError(f"card programmer seat {binding.side!r} is bound more than once")
+        bound_sides.add(binding.side)
         spec = registry.get(binding.pilot_spec_id)
         if spec is None:
             raise PilotResolutionError(
@@ -1063,20 +1109,30 @@ def build_card_programmers(
             )
         if not isinstance(spec.parameters, ModelSOLlmPilotParams):
             raise TypeError(f"llm card programmer spec {spec.id!r} has invalid parameters")
-        provider_id = spec.parameters.provider
+        resolved.append((binding, spec.parameters))
+
+    if deck_policy is not None and resolved:
+        validate_seat_programmer_identity(
+            {binding.side: parameters.persona for binding, parameters in resolved},
+            deck_policy=deck_policy,
+        )
+
+    programmers: dict[str, ProgrammingPilot] = {}
+    for binding, parameters in resolved:
+        provider_id = parameters.provider
         if observer is not None:
             observed_factory = llm.pilot_factory.with_observer(observer)
             observed_pilot = observed_factory.llm_pilot(
                 ModelSOLlmPilotSelection(
                     provider_id=provider_id,
-                    persona_id=spec.parameters.persona,
+                    persona_id=parameters.persona,
                     opponent_trace=None,
                 )
             )
             client = cast(Any, observed_pilot).client
         else:
             client = llm.client_factory.client_for(provider_id)
-        persona = llm.persona_registry.require(spec.parameters.persona)
+        persona = llm.persona_registry.require(parameters.persona)
         programmers[binding.side] = LLMProgrammingPilot(
             client=client,
             persona=persona,
@@ -1103,6 +1159,7 @@ class CardProgrammerFactory:
     bindings: tuple[ModelSOCardProgrammerBinding, ...]
     registry: PilotSpecRegistry
     llm: LlmDependencies
+    deck_policy: ModelSOCardDeckPolicy | None = None
 
     def for_match(
         self,
@@ -1114,6 +1171,7 @@ class CardProgrammerFactory:
             self.bindings,
             registry=self.registry,
             llm=self.llm,
+            deck_policy=self.deck_policy,
             observer=observer,
             correlation_id=identity.correlation_id,
         )
@@ -1397,11 +1455,13 @@ def build_runtime_dependencies(
                 bindings=card_binding.programmers,
                 registry=resolved_pilot_registry,
                 llm=llm,
+                deck_policy=card_binding.deck_policy,
             )
             resolved_card_programmers = build_card_programmers(
                 card_binding.programmers,
                 registry=resolved_pilot_registry,
                 llm=llm,
+                deck_policy=card_binding.deck_policy,
             )
         if card_binding is not None and card_binding.card_mode_enabled:
             if card_runtime_snapshot is None:
@@ -2181,4 +2241,5 @@ __all__ = [
     "load_pilot_registry",
     "load_pilot_spec",
     "run_composed_match",
+    "validate_seat_programmer_identity",
 ]

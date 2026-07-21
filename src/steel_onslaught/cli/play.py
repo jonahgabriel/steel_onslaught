@@ -56,6 +56,7 @@ from steel_onslaught.commands.live_provider import (
 )
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
+    ModelSOCardProgrammerBinding,
     ModelSOFrontendBootstrap,
     ModelSOFrontendCommandGatewayBinding,
     ModelSOSecretRef,
@@ -73,6 +74,7 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOMatchLaunchProvenance,
     ModelSOModelPlayerOptionBinding,
     ModelSOPlayerRosterBinding,
+    Side,
 )
 from steel_onslaught.contracts.runtime import (
     ModelSORuntimeCommand,
@@ -1492,40 +1494,80 @@ def _injected_live_provider_capability_factory(
     return build_capability
 
 
-def _catalog_selection_overlay(
+def _programmer_template(
+    programmers: tuple[ModelSOCardProgrammerBinding, ...],
+    side: Side,
+) -> ModelSOCardProgrammerBinding | None:
+    """Return the declared seat binding whose non-identity policy is reused."""
+
+    return next((programmer for programmer in programmers if programmer.side == side), None)
+
+
+def _admitted_seat_overlay(
     *,
     overlay: ModelSOApplicationOverlay,
-    catalog: ModelSOModelCatalog,
-    source_overlays: Mapping[str, ModelSOApplicationOverlay],
+    roster: ModelSOPlayerRosterBinding,
     request: ModelSOBrowserStartMatchRequest,
+    catalog: ModelSOModelCatalog | None = None,
+    source_overlays: Mapping[str, ModelSOApplicationOverlay] | None = None,
 ) -> ModelSOApplicationOverlay:
-    """Select only the card-programmer bindings for the admitted catalog seats."""
+    """Bind every admitted model seat's card programmer to that seat's pilot.
 
-    options = {option.option_id: option for option in catalog.options}
-    card_bindings = []
-    for selection in request.command.selections:
-        option = options.get(selection.option_id)
-        if option is None or option.kind != "model":
-            continue
-        source_overlay = source_overlays.get(option.source_overlay_id)
-        if source_overlay is None or source_overlay.contracts.card_catalog is None:
-            continue
-        source_programmers = source_overlay.contracts.card_catalog.programmers
-        if source_programmers is None:
-            continue
-        binding = next(
-            (programmer for programmer in source_programmers if programmer.side == selection.side),
-            None,
-        )
-        if binding is not None:
-            # A source overlay supplies the seat's card-programming defaults,
-            # but the selected catalog option owns the exact pilot identity.
-            # Rebind that programmer to the admitted option so a differentiated
-            # same-provider role (for example Qwen35 sniper) cannot execute
-            # the source roster's other pilot by accident.
-            card_bindings.append(binding.model_copy(update={"pilot_spec_id": option.pilot_spec_id}))
+    This is the single seat-identity path.  The admitted option — not the
+    overlay's authored default — owns the exact pilot spec for its side, so a
+    differentiated same-provider role (for example Qwen35 sniper) can never
+    execute the other seat's pilot.  The roster and catalog launch paths share
+    this resolution: the catalog only adds the source overlay whose authored
+    binding supplies the seat's non-identity policy (``failure_policy``).
+
+    An overlay that declares no programmers at all keeps that choice: the card
+    adapter then retains its deterministic priority programmer.  A seat whose
+    source overlay simply has no authored binding is still bound here rather
+    than dropped, so one missing default cannot silently demote a live LLM
+    seat to the deterministic planner.
+    """
+
     card_catalog = overlay.contracts.card_catalog
     if card_catalog is None:
+        return overlay
+
+    catalog_options = {} if catalog is None else {opt.option_id: opt for opt in catalog.options}
+    resolved_sources = {} if source_overlays is None else source_overlays
+    roster_options = {option.option_id: option for option in roster.options}
+
+    declared_programmers = bool(card_catalog.programmers)
+    card_bindings: list[ModelSOCardProgrammerBinding] = []
+    for selection in request.command.selections:
+        option = roster_options.get(selection.option_id)
+        if not isinstance(option, ModelSOModelPlayerOptionBinding):
+            continue
+        catalog_option = catalog_options.get(selection.option_id)
+        source_overlay = (
+            None
+            if catalog_option is None or catalog_option.kind != "model"
+            else resolved_sources.get(catalog_option.source_overlay_id)
+        )
+        source_programmers: tuple[ModelSOCardProgrammerBinding, ...] = ()
+        if source_overlay is not None and source_overlay.contracts.card_catalog is not None:
+            source_programmers = source_overlay.contracts.card_catalog.programmers
+        declared_programmers = declared_programmers or bool(source_programmers)
+        template = _programmer_template(source_programmers, selection.side)
+        if template is None:
+            template = _programmer_template(card_catalog.programmers, selection.side)
+        if template is None:
+            # No authored default for this seat: keep the closed contract's own
+            # fail-closed ``failure_policy`` rather than dropping the seat.
+            card_bindings.append(
+                ModelSOCardProgrammerBinding(
+                    side=selection.side,
+                    pilot_spec_id=option.pilot_spec_id,
+                )
+            )
+        else:
+            card_bindings.append(
+                template.model_copy(update={"pilot_spec_id": option.pilot_spec_id})
+            )
+    if not declared_programmers:
         return overlay
     selected_card_catalog = card_catalog.model_copy(update={"programmers": tuple(card_bindings)})
     contracts = overlay.contracts.model_copy(update={"card_catalog": selected_card_catalog})
@@ -1680,14 +1722,13 @@ def _configured_browser_server(
             creator_session_id=session_id,
             human_seats=claims,
         )
-        selected_overlay = overlay
-        if model_catalog is not None:
-            selected_overlay = _catalog_selection_overlay(
-                overlay=overlay,
-                catalog=model_catalog,
-                source_overlays=catalog_source_overlays,
-                request=request,
-            )
+        selected_overlay = _admitted_seat_overlay(
+            overlay=overlay,
+            roster=roster,
+            request=request,
+            catalog=model_catalog,
+            source_overlays=catalog_source_overlays,
+        )
         selected_live_capability: BrowserLiveProviderCapability | None = None
         if _selects_non_stub_provider(request, overlay=overlay, roster=roster):
             selected_live_capability = live_provider_capability

@@ -1,0 +1,10 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.local
+display_name: local
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: operator
+  provider: local
