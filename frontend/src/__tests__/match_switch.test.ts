@@ -88,6 +88,10 @@ describe("transport match switch — deck fold reset (two interleaved matches)",
     expect(deck.matchId).toBe(idA);
     expect(deck.rows.length).toBeGreaterThan(0);
     expect(deck.rows.every((r) => r.env.match_id === idA)).toBe(true);
+    const startedA = a.find((event) => event.event_type === "match_started");
+    if (startedA?.event_type !== "match_started") throw new Error("match A has no start");
+    expect(deck.arenaId).toBe(startedA.payload.arena.arena_id);
+    expect(deck.arenaSize).toBe(startedA.payload.arena.size);
     const aRowCount = deck.rows.length;
 
     // Switch to B → fold resets; follow it live to fold all of B.
@@ -97,6 +101,8 @@ describe("transport match switch — deck fold reset (two interleaved matches)",
     expect(deck.matchId).toBe(idB);
     expect(deck.rows.length).toBeGreaterThan(0);
     expect(deck.rows.every((r) => r.env.match_id === idB)).toBe(true);
+    expect(deck.arenaId).toBe(startedA.payload.arena.arena_id);
+    expect(deck.arenaSize).toBe(startedA.payload.arena.size);
     // No leakage: B's fold is its own match, not A's rows appended after.
     expect(deck.rows.length).toBe(aRowCount);
     expect(deck.total).toBe(aRowCount);

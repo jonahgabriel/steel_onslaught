@@ -64,6 +64,10 @@ interface DeckState {
   rows: RiverRow[];
   arrival: number;
   matchId: string;
+  /** Authoritative arena identity projected from MATCH_STARTED. */
+  arenaId: string | null;
+  /** Authoritative arena side length projected from MATCH_STARTED. */
+  arenaSize: number | null;
   tick: number;
   sides: SideMap;
   gauges: Gauges;
@@ -84,6 +88,8 @@ export const INITIAL: DeckState = {
   rows: [],
   arrival: 0,
   matchId: "",
+  arenaId: null,
+  arenaSize: null,
   tick: 0,
   sides: EMPTY_SIDES,
   gauges: {},
@@ -109,6 +115,8 @@ function sideForMech(sides: SideMap, mechId: string): Side {
 export function reduce(state: DeckState, action: DeckAction): DeckState {
   let {
     matchId,
+    arenaId,
+    arenaSize,
     tick,
     sides,
     gauges,
@@ -144,6 +152,8 @@ export function reduce(state: DeckState, action: DeckAction): DeckState {
       hands = {};
       cardPriorities = {};
       playedCards = {};
+      arenaId = env.payload.arena.arena_id;
+      arenaSize = env.payload.arena.size;
     }
 
     rows.push({ env, arrival });
@@ -197,6 +207,8 @@ export function reduce(state: DeckState, action: DeckAction): DeckState {
     rows: trimmed,
     arrival,
     matchId,
+    arenaId,
+    arenaSize,
     tick,
     sides,
     gauges,
@@ -425,6 +437,10 @@ export default function PressureDeck({
         <Wordmark height={30} className="pd-wordmark" />
         <span className="pd-matchid" data-testid="match-id">
           ▮ {state.matchId || "no match"}
+        </span>
+        <span className="pd-arena-contract" data-testid="arena-contract">
+          ARENA {state.arenaId ?? "—"}
+          {state.arenaSize === null ? "" : ` · ${state.arenaSize}×${state.arenaSize}`}
         </span>
         <Odometer value={state.tick} />
         <HeaderTransport

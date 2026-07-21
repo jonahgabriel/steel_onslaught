@@ -185,6 +185,16 @@ body {
   font-size: 0.72rem;
   color: var(--ash);
 }
+.pd-arena-contract {
+  max-width: 18rem;
+  overflow: hidden;
+  color: var(--phosphor);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pd-odometer {
   display: inline-flex;
   gap: 3px;
