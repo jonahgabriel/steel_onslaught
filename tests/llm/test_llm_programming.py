@@ -21,7 +21,11 @@ from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, SOPlanSource
 from steel_onslaught.llm.personas import Persona
-from steel_onslaught.llm.programming import LLMProgrammingPilot
+from steel_onslaught.llm.programming import (
+    _DEFAULT_SEMANTIC_RETRY_LIMIT,
+    LLMProgrammingPilot,
+    programming_system_prompt,
+)
 from steel_onslaught.llm.schemas import (
     LlmResponse,
     LlmSemanticExhaustedError,
@@ -405,6 +409,67 @@ def test_default_failure_policy_exhausts_bounded_retries_on_invalid_plans(
     assert client.requests[2].persona == "opportunist.repair.2"
     for repair in client.requests[1:]:
         assert "REJECTED" in repair.system_prompt
+
+
+def test_programming_instructions_forbid_reasoning_wrappers() -> None:
+    """The code-owned output contract explicitly forbids the `<think>`/
+    chain-of-thought/markdown-fence wrappers that drive the sniper-specific
+    ``provider_semantic_failure`` on a reasoning gateway — while preserving the
+    existing strict-plan anchors so the fix does not loosen the contract."""
+
+    prompt = programming_system_prompt(_persona())
+    # New strict-output prohibitions (the reasoning-wrapper fix).
+    assert "<think>" in prompt
+    assert "chain-of-thought" in prompt
+    assert "code fences" in prompt
+    assert "return only the JSON object" in prompt
+    # Existing anchors are still present (unchanged contract surface).
+    assert "registers" in prompt
+    assert "ONLY legal card IDs" in prompt
+    assert "available_copies" in prompt
+
+
+def test_parser_strips_a_reasoning_wrapper_before_extracting_the_plan() -> None:
+    """A reasoning gateway that leaks a `<think>` chain-of-thought (carrying its
+    OWN braces) before the JSON still yields a valid plan on the FIRST
+    completion.  Without the strip the inner brace defeats the first-'{'/last-'}'
+    extraction and the whole match aborts on ``malformed_json``."""
+
+    reasoning = (
+        "<think>The sniper holds standoff. Draft register "
+        '{"register_index": 9, "card_id": "card.wrong"} then reconsider.</think>\n'
+    )
+    client = _ResponseClient(reasoning + _response())
+    pilot = LLMProgrammingPilot(client=client, persona=_persona())
+
+    plan = program_for_seat(pilot, _observation())
+
+    assert plan.plan_source is SOPlanSource.LLM
+    assert tuple(register.register_index for register in plan.registers) == (0, 2)
+    # Parsed on the first attempt: no repair reprompt was needed.
+    assert len(client.requests) == 1
+
+
+def test_reasoning_only_response_still_reaches_a_terminal() -> None:
+    """#115 guarantee under the stricter contract: a provider that answers every
+    time with a `<think>` block but no JSON object never freezes — the bounded
+    repair budget is spent and the DISTINCT ``LlmSemanticExhaustedError``
+    (``malformed_json``) terminal is raised, one real completion per attempt."""
+
+    client = _ResponseClient("<think>I am still weighing spacing and heat.</think>")
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+    )
+
+    with pytest.raises(LlmSemanticExhaustedError) as excinfo:
+        program_for_seat(pilot, _observation())
+
+    assert excinfo.value.semantic_failure_code == "malformed_json"
+    # 1 initial attempt + the bounded reprompt budget, all real completions.
+    assert len(client.requests) == _DEFAULT_SEMANTIC_RETRY_LIMIT + 1
+    assert excinfo.value.attempts == _DEFAULT_SEMANTIC_RETRY_LIMIT + 1
 
 
 def test_default_policy_retry_recovers_when_the_model_self_corrects() -> None:
