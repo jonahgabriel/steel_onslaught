@@ -28,7 +28,64 @@ explicit failure mode, not the default demo path.
 The finish line is evidence-based. “The UI loaded” or “a match reached a tick”
 is not sufficient; every gate below names the proof that must be retained.
 
+**The "durable terminal result" gate is empirically FAILING** as of the
+[2026-07-21 live run](#live-run--verified-gameplay-2026-07-21): a real Qwen match
+reached tick 31 then stalled with no `match_ended` when the engine rejected a
+provider plan as `invalid_action_parameters` and neither retried, terminated, nor
+degraded. Remediation is in flight as **PR #115** (bounded reprompt +
+classified `provider_semantic_failure` terminal). Until that lands and is
+re-proven live, treat this gate as red.
+
 ## Current baseline (shipped, but not all proven)
+
+### Live run — verified gameplay (2026-07-21)
+
+Driven with a real browser against the live Qwen endpoint, not read from code.
+Launch: `uv run so play` (zero flags, keyless). Provider: `Qwen3.6-35B-A3B` over
+`http://omninode-pc.tail75df5e.ts.net:8000`. Match `match.2WKZ1NPNND8T795ZFFA9JWQSEN`,
+`foundry_60` 60×60, seed 7. Screenshots and authoritative ledger counts in
+[`docs/evidence/2026-07-21-live-run/`](../evidence/2026-07-21-live-run/)
+(`02-configured.png`, `03-just-started.png`, `04-running.png`).
+
+**Works (empirically, this run):**
+
+- Keyless `uv run so play` launches and truly plays on live Qwen — Vite deck and
+  match server both HTTP 200, `/v1/models` 200. Live Qwen was genuinely called:
+  `llm_completion_requested` ×14 / `resolved` ×13 (`04-running.png`).
+- 60×60 `foundry_60` renders with terrain; RED = Qwen berserker scout (spawn 4,4,
+  60 HP), BLUE = Qwen sniper ironclad (spawn 55,55, 160 HP) — **two visibly
+  distinct pilots** (the PR #110 seat-identity fix renders correctly: rails show
+  `LLM · berserker` vs `LLM · sniper`) (`02-configured.png`, `04-running.png`).
+- Split decks are visibly different in the hand UI: red **M3/W2**, blue **M2/W3**
+  (`04-running.png`).
+- The setup / PLAYER SELECT panel and START button **correctly disappeared** on
+  match start — the reported "panel doesn't disappear" defect did **not**
+  reproduce this run (`02-configured.png` shows the panel; `04-running.png` shows
+  it gone). Downgrade that defect below.
+- Real play happened: `movement_resolved` ×30, blue `artillery_mortar` fired ×3,
+  one 34-damage hit put red to HP 26/60 at tick 29.
+
+**Broken (empirically, this run):**
+
+- **STALL — the #1 blocker.** The match ran ticks 0→31 in ~16 s then **froze with
+  no terminal event**. Pinned to the last ledger event, tick 31:
+  `llm_completion_failed {provider_id: qwen35, reason_code: invalid_response,
+  semantic_failure_code: invalid_action_parameters, model: Qwen3.6-35B-A3B,
+  completion_tokens: 176}`. The endpoint stayed healthy (re-probed 200). A Qwen
+  plan the engine rejected as `invalid_action_parameters` halted the match with
+  **no retry, no terminate, no recovery** — no `match_ended`, no victor. This is
+  the live-provider stall (`match-composition-02` class), being remediated in
+  **PR #115** (`fix/so-live-provider-stall-recovery`, bounded reprompt +
+  classified `provider_semantic_failure` terminal).
+- **The brawler never brawled.** RED (berserker, short-range) fired **0 shots**;
+  `weapon_fire_rejected` ×17 (out of range). It was chunked by blue's artillery
+  on the approach and never closed. The speed/range tradeoff is not working — this
+  is exactly the Phase 2 / Phase 2.5 combat-depth gap, not a stall symptom.
+- **HP asymmetry reads unfair at a glance:** blue ironclad 160 HP vs red scout
+  60 HP (`04-running.png`).
+- **Pacing:** 31 ticks in ~16 s then freeze — "watch it play" is currently a
+  burst, not a match. Follows directly from the stall (no terminal to pace
+  toward) plus the never-closing brawler.
 
 ### Demo-path correction (2026-07-21, verified)
 
@@ -214,9 +271,21 @@ operating rule 9 has to be applied to whichever is chosen.
   rather than select. Loci: blocking-defects table below, plus
   `contracts-data-02/03/04/06/07`, `contracts-models-01`, `cards-01/04`,
   `pilots-bus-01`, `product-viral-04`.
-- PRs #106 and #107 fixed late replay delivery and stale-match promotion and
-  are merged. The two remaining GitHub PRs are #81 (movement-variety guard) and
-  #100 (preferred-range handler).
+- **PR state (verified live 2026-07-21, `main` at `f869d6a`).** Merged to `main`
+  this session: **#111** (correct every wrong/missing terminal), **#110** (one
+  validated seat contract + LLM-only live decisions — the seat-identity fix),
+  **#109** (render card-cadence pilot reasoning in the deck); plus earlier #106/
+  #107 (late replay delivery, stale-match promotion). **Open, NOT yet on `main`:**
+  **#113** (one-command launch + start lifecycle), **#112** (every configured
+  model selectable per seat), **#114** (editable prompts + plug-in rule handlers),
+  **#115** (live-provider stall recovery), **#108** (this plan). **#81**
+  (movement-variety guard) and **#100** (preferred-range handler) are
+  **superseded by #114** and should be closed with #114 recorded as the
+  replacement. Read this plan with the fact in mind that **most of the fixes are
+  on open PRs, not on `main`** — the live run above used the keyless `so play`
+  path (open **#113**) on top of the merged seat-identity fix (**#110**), which is
+  why the seats rendered distinct while the still-unmerged stall recovery
+  (**#115**) meant the match froze with no terminal.
 - Learning persists after-match evidence only, and the live path is **dead code,
   not merely disabled**. `LiveLearningCoordinator` is never instantiated in
   production, no concrete `LiveLearningEvaluator` implementation exists anywhere
@@ -368,7 +437,12 @@ Settled in post-audit review. Constraints, not options.
    aesthetics. Terrain LOS blocking is the brawler's approach tool and the
    sniper's main vulnerability, which is what makes the 336 blocking cells
    load-bearing. Requires the versioned movement-distance/multiplier field; the
-   card schema supports only `speed: full` today.
+   card schema supports only `speed: full` today. **Empirically broken as of the
+   2026-07-21 live run:** the brawler fired 0 shots and never closed — it was
+   chunked on the approach by the sniper's artillery and `weapon_fire_rejected`
+   ×17 (out of range). Today the tradeoff is all downside for the brawler with no
+   mechanism to make closing pay off; this decision plus Phase 2.5 objectives are
+   what make it a real triangle rather than a losing archetype.
 
 ## Ordered execution phases
 
@@ -433,7 +507,12 @@ or stale-match artifacts.
   seat-identity repair — immediate action 1 — landing first). Verify the setup panel
   disappears after `MATCH_STARTED`, the current match ID/arena header updates,
   controls re-arm after `MATCH_ENDED`, and a new match supersedes an incomplete
-  old prefix without a manual refresh.
+  old prefix without a manual refresh. **Partially discharged (2026-07-21 live
+  run):** the setup-panel-disappears and match-ID/arena-header-updates behaviors
+  were observed passing on the keyless `so play` path (the reported
+  panel-doesn't-disappear defect did not reproduce). The `MATCH_ENDED` re-arm and
+  supersession behaviors remain **unproven** because the match stalled with no
+  terminal — re-verify once PR #115 lands.
 - Run a long match with no artificial two/eleven-tick cap. Prove provider
   requests, responses/fallbacks, terminal events, SQLite rows, and replay
   validation all agree.
@@ -837,20 +916,31 @@ battery, completed acceptance matrix, clean worktree report, and ledger links.
 
 ## Immediate next actions
 
-Reordered 2026-07-21: the seat-identity repair now leads, because it clears five
-of the six audit blockers, is the precondition for every combat metric being
-meaningful, and is simultaneously the highest-value product fix.
+Reordered again 2026-07-21 after the live run: the **live-provider stall is now
+the top blocker (P1)** — a real Qwen match cannot reach a terminal at all, so the
+finish line's durable-terminal gate is empirically red. The seat-identity repair
+(previously the lead) **merged as PR #110** and was confirmed rendering distinct
+seats in the live run, so it drops out of the immediate queue.
+
+**P1 — land the live-provider stall recovery (PR #115), then re-prove a terminal
+live.** The 2026-07-21 live run stalled at tick 31 when the engine rejected a Qwen
+plan as `invalid_action_parameters` and neither retried, terminated, nor degraded
+(no `match_ended`). Bounded reprompt + a classified `provider_semantic_failure`
+terminal is in flight as **#115**. Until it lands and a real match reaches a
+durable terminal on the live endpoint, actions 4 and 7 below cannot complete and
+the whole "watch it play" pitch is a ~16 s burst, not a match. This is a distinct
+class from the boundary-error terminal work in action 4 (that is length/timeout;
+this is a semantic-parse rejection).
 
 0. **Answer the open decision — which overlay is THE demo, and which provider.**
    Every action below that names an overlay is blocked on it, and the plan can
    no longer default to `tactical_split_v1_qwen` because nothing loads it.
 1. **Repair seat identity end-to-end and lock it with a fail-closed validator**
-   (Phase 2 precondition; PR #110). Bind blue to `pilot.llm.qwen35_sniper`,
-   collapse the two seat-selection paths to one, and land the cross-boundary
-   regression that asserts the two seats record different `persona_id` values.
-   Not blocked on action 0 — the validator is unconditional and covers the
-   reachable single-deck path either way. Without this, actions 5 and 7 measure
-   a mirror match.
+   (Phase 2 precondition). **DONE — merged as PR #110** and confirmed in the
+   2026-07-21 live run (RED berserker vs BLUE sniper rendered distinct). It bound
+   blue to `pilot.llm.qwen35_sniper`, collapsed the seat-selection paths, and
+   landed the cross-boundary `persona_id` regression. Retained here only as the
+   dependency other actions cite; no further work.
 2. Set `failure_policy: raise` on the chosen demo overlay and add `plan_source` to
    `PLAN_COMMITTED`, so a provider failure can no longer masquerade as a real
    LLM match in the authoritative evidence.
@@ -859,15 +949,22 @@ meaningful, and is simultaneously the highest-value product fix.
 4. Fix the terminal-state defects (sudden-death fairness, mutual-KO terminal,
    two-round heat lock, draw-path transport throw, runtime `FAILED` status), then
    prove the clean-browser start/terminal flow with Playwright.
-5. Review #81 and #100, land the selected handler path on top of `main`, and
-   **enable it in the overlay action 0 designates** (`handler_ids` is empty or
+5. Land the plug-in rule-handler path (open **PR #114**, which **supersedes #81
+   and #100** — close both, recording #114 as the replacement) on top of `main`,
+   and **enable it in the overlay action 0 designates** (`handler_ids` is empty or
    unset in all eight overlays today, so merging alone changes nothing).
 6. Render `plan_committed.rationale` as a decision row and surface
    `seat_assignments` in the UI — the cheapest change that makes the demo
    legible and shareable.
 7. Run the 20-match variance battery, reporting winner-side distribution
    alongside the tactical metrics; use it to choose the first balance
-   adjustment. Do not tune from a single ledger.
+   adjustment. Do not tune from a single ledger. The 2026-07-21 live run already
+   surfaced two concrete balance targets to confirm across the battery: the
+   short-range berserker fired **0 shots** (`weapon_fire_rejected` ×17, never
+   closed under artillery fire), and HP was **160 vs 60**. These are Phase 2
+   speed/range-triangle and Phase 2.5 objective work, not stall symptoms — the
+   brawler needs a reason and a way to close (objectives, Assault keyword, movement
+   multiplier), not a bigger health bar.
 8. Decide and document whether `foundry_60` is sufficient for the first
    satisfying demo; if not, open a separate versioned-arena slice.
 9. Decide whether live learning is in demo scope at all. If yes, implement the
