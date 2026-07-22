@@ -573,3 +573,100 @@ def test_explicit_fallback_policy_recovers_invalid_action_parameters() -> None:
     assert plan.confidence == 1.0
     assert plan.plan_source is SOPlanSource.DETERMINISTIC_FALLBACK
     assert len(client.requests) == 1
+
+
+def test_programming_instructions_clamp_doctrine_to_dealt_copies() -> None:
+    """The code-owned output contract explicitly subordinates persona doctrine
+    to the ``available_copies`` multiset — the live RED-brawler abort was a
+    doctrinally-consistent ``advance``x5 plan against a single dealt copy,
+    repeated near-verbatim across the whole repair budget.  Existing strict-plan
+    anchors must survive so the fix tightens, never loosens, the contract."""
+
+    from steel_onslaught.llm.programming import programming_system_prompt
+
+    # Collapse the hard-wrapped prompt so phrase assertions cannot be broken
+    # by a reflow of the instruction block's line wrapping.
+    prompt = " ".join(programming_system_prompt(_persona()).split())
+    # New copy-clamp prohibitions (the invalid_action_parameters fix).
+    assert "at most ONE register" in prompt
+    assert "persona doctrine never overrides" in prompt
+    assert "fill the remaining registers with other legal_hand cards" in prompt
+    # Existing anchors are still present (unchanged contract surface).
+    assert "registers" in prompt
+    assert "ONLY legal card IDs" in prompt
+    assert "available_copies" in prompt
+
+
+def test_over_copy_plan_repair_names_the_violation_and_forbids_action_shape() -> None:
+    """The exact live failure shape: the model programs MORE copies of one card
+    than were dealt (``advance`` in both free registers, one copy dealt).  The
+    repair request must (1) echo the precise multiset rejection back to the
+    model, (2) keep the full observation so ``legal_hand`` is available for a
+    corrected pick, and (3) forbid the per-tick ``action``/``action_params``
+    shape — the observed secondary repair failure where the persona's per-tick
+    JSON instruction wins over the whole-round shape after a rejection."""
+
+    client = _SequenceClient(
+        [
+            _response(
+                registers=[
+                    {"register_index": 0, "card_id": "card.test.advance"},
+                    {"register_index": 2, "card_id": "card.test.advance"},
+                ]
+            ),
+            _response(),
+        ]
+    )
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    plan = program_for_seat(pilot, _observation())
+
+    assert plan.plan_source is SOPlanSource.LLM
+    assert tuple(register.card_id for register in plan.registers) == (
+        "card.test.advance",
+        "card.test.vent",
+    )
+    # One rejected completion + one successful repair; no third call.
+    assert len(client.requests) == 2
+    repair = client.requests[1]
+    # (1) The precise rejection reaches the model.
+    assert "invalid_action_parameters" in repair.system_prompt
+    assert "card.test.advance" in repair.system_prompt
+    # (2) The full observation (legal_hand allowlist) is retained.
+    assert '"legal_hand"' in repair.user_prompt
+    assert '"available_copies"' in repair.user_prompt
+    # (3) The whole-round shape is re-asserted against the per-tick shape.
+    assert "NEVER the per-tick" in repair.system_prompt
+    assert "action_params" in repair.system_prompt
+
+
+def test_over_copy_exhaustion_still_classifies_invalid_action_parameters() -> None:
+    """A provider that repeats the over-copy plan through the whole budget must
+    exhaust into the DISTINCT ``invalid_action_parameters`` terminal (the live
+    RED abort classification) — never a silent stall, never ``malformed_json``."""
+
+    over_copy = _response(
+        registers=[
+            {"register_index": 0, "card_id": "card.test.advance"},
+            {"register_index": 2, "card_id": "card.test.advance"},
+        ]
+    )
+    client = _ResponseClient(over_copy)
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    with pytest.raises(LlmSemanticExhaustedError) as excinfo:
+        program_for_seat(pilot, _observation())
+
+    assert excinfo.value.semantic_failure_code == "invalid_action_parameters"
+    assert excinfo.value.attempts == 3
+    assert len(client.requests) == 3

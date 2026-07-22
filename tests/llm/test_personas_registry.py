@@ -128,3 +128,27 @@ def test_load_persona_rejects_unknown_missing_and_coerced_fields(tmp_path: Path,
     path.write_text(body, encoding="utf-8")
     with pytest.raises(ValidationError):
         load_persona(path)
+
+
+@pytest.mark.unit
+def test_shipped_berserker_persona_carries_dealt_hand_discipline() -> None:
+    """The live RED-brawler abort driver: on a hand whose doctrine-preferred
+    card has fewer copies than free registers (e.g. one ADVANCE + two VENT),
+    the berserker spam-fills every register with its preferred card — a
+    structurally perfect plan the multiset validator rejects, repeated
+    near-verbatim on every reprompt until the budget exhausts as
+    ``invalid_action_parameters``.  The shipped doctrine now subordinates
+    aggression to the dealt hand while KEEPING the RECKLESS BERSERKER
+    identity the registry test above anchors on."""
+
+    registry = PersonaRegistry.load(_SHIPPED_PERSONAS)
+    berserker_prompt = registry.require("berserker").system_prompt
+    # Behavioural identity preserved.
+    assert "RECKLESS BERSERKER" in berserker_prompt
+    assert "CLOSE TO POINT-BLANK RANGE IMMEDIATELY" in berserker_prompt
+    # Dealt-hand discipline added (the invalid_action_parameters fix).
+    assert "FIGHT WITH THE HAND YOU ARE DEALT" in berserker_prompt
+    assert "available_copies" in berserker_prompt
+    assert "Never program more copies of a card than were dealt" in berserker_prompt
+    # The fixed JSON output contract still terminates the prompt verbatim.
+    assert berserker_prompt.endswith(JSON_INSTRUCTION)

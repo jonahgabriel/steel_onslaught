@@ -119,11 +119,14 @@ and let the weakest ones go. Fill every free register exactly once, in
 ascending register_index order. Use each physical card at most once and only
 card ids from ``legal_hand``. The ONLY legal card IDs are the ``legal_hand``
 entries: do not copy ids from the deck description or persona instructions.
-Duplicate an id only up to its ``available_copies`` count. Before emitting,
-check every register against that allowlist and replace any unavailable tactic
-with an available card. Never assign a card to a locked register. Do not add
-fields, prose, comments, markdown, or code fences. Do not think out loud,
-emit a <think> block, or include any chain-of-thought: decide silently and
+Duplicate an id only up to its ``available_copies`` count: an id with
+available_copies 1 may appear in at most ONE register, and persona doctrine
+never overrides this multiset — when your preferred card runs out, fill the
+remaining registers with other legal_hand cards. Before emitting, check every
+register against that allowlist and replace any unavailable tactic with an
+available card. Never assign a card to a locked register. Do not add fields,
+prose, comments, markdown, or code fences. Do not think out loud, emit a
+<think> block, or include any chain-of-thought: decide silently and
 return only the JSON object. Keep rationale to twelve words or fewer. Emit
 the JSON object as the first character of the response and stop immediately
 after its closing brace.
@@ -524,7 +527,9 @@ class LLMProgrammingPilot:
             note + " Return a corrected plan that uses ONLY card ids from legal_hand, "
             "fills every free register exactly once in ascending register_index order, "
             "never exceeds available_copies, never assigns a locked register, and adds "
-            "no extra fields."
+            "no extra fields. Reply with the whole-round programming JSON object "
+            "(keys registers, confidence, rationale) and NEVER the per-tick "
+            "action/action_params shape."
         )
 
     def _classified_fallback(
