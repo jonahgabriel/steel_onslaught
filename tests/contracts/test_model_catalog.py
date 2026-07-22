@@ -12,7 +12,10 @@ from pydantic import ValidationError
 from scripts.export_frontend_bootstrap import export_frontend_bootstrap
 from steel_onslaught.cli.serve import build_frontend_bootstrap
 from steel_onslaught.commands.authority import canonical_overlay_sha256
-from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from steel_onslaught.contracts.application import (
+    ModelSOApplicationOverlay,
+    ModelSOOpenAICompatibleProviderBinding,
+)
 from steel_onslaught.contracts.model_catalog import (
     CatalogSeatIdentity,
     CatalogSeatIdentityError,
@@ -27,7 +30,7 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
 )
-from steel_onslaught.match.composition import load_model_catalog
+from steel_onslaught.match.composition import load_application_overlay, load_model_catalog
 from tests.overlay import complete_test_overlay
 
 _HASHES = {
@@ -361,12 +364,61 @@ def test_catalog_index_exports_existing_bootstrap_roster_and_metadata(tmp_path: 
     assert bootstrap.player_roster is not None
     assert bootstrap.player_roster.roster_id == "roster.configured_models"
     assert bootstrap.model_catalog is not None
+    # The zero-config default is the keyless local Qwen35 pair, so a bare
+    # `so play` starts without an injected API key.
     assert bootstrap.model_catalog.default_option_ids == (
-        "player_option.glm_sniper",
-        "player_option.glm_opportunist",
+        "player_option.qwen35_model",
+        "player_option.qwen35_sniper",
     )
     assert bootstrap.model_catalog.mirror_match_mode is False
     assert output_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_zero_config_default_pair_is_keyless_and_distinct() -> None:
+    """A bare ``so play`` must start a real match with no injected API key.
+
+    The zero-config default seats resolve to the keyless local Qwen35 models
+    with distinct personas, so the default pairing both needs no secret and
+    satisfies the ``(provider, persona)`` seat-identity guard without
+    mirror_match_mode. GLM/OpenRouter/Gemini stay selectable -- only the DEFAULT
+    moved off the key-bound GLM pair that broke a keyless launch at match start.
+    """
+    catalog = load_model_catalog(_CONTRACTS_DATA / "model_catalogs/configured_v1.yaml")
+    red_default = catalog.seats[0].default_option_id
+    blue_default = catalog.seats[1].default_option_id
+    assert red_default is not None and blue_default is not None
+
+    options = {option.option_id: option for option in catalog.options}
+    red, blue = options[red_default], options[blue_default]
+    assert isinstance(red, ModelSOModelCatalogModelOption)
+    assert isinstance(blue, ModelSOModelCatalogModelOption)
+
+    # Both defaults are the keyless local Qwen35 provider with distinct personas.
+    assert red.provider_binding_id == "qwen35"
+    assert blue.provider_binding_id == "qwen35"
+    assert red.persona_id != blue.persona_id
+
+    # The default pairing is admitted -> distinct (provider, persona) seat
+    # identity without mirror_match_mode; a mirror would raise here.
+    assert catalog.mirror_match_mode is False
+    pairing = catalog.pairing_provenance(red_option_id=red_default, blue_option_id=blue_default)
+    assert (pairing.red_programmer_source_id, pairing.red_role_id) != (
+        pairing.blue_programmer_source_id,
+        pairing.blue_role_id,
+    )
+
+    # Keyless: the qwen35 provider binding declares no secret_ref in its source
+    # overlay, unlike the GLM default it replaced (secret://llm/glm).
+    overlay = load_application_overlay(_CONTRACTS_DATA / "overlays/standard_v1_qwen.yaml")
+    providers = {provider.provider_id: provider for provider in overlay.llm.providers}
+    qwen_provider = providers["qwen35"]
+    assert isinstance(qwen_provider, ModelSOOpenAICompatibleProviderBinding)
+    assert qwen_provider.secret_ref is None
+
+    # The widened catalog is intact: every keyed provider stays selectable, the
+    # DEFAULT simply is no longer one of them.
+    assert "player_option.glm_sniper" in set(catalog.seats[0].allowed_option_ids)
+    assert "player_option.glm_opportunist" in set(catalog.seats[1].allowed_option_ids)
 
 
 @pytest.mark.unit

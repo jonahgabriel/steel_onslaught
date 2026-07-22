@@ -87,10 +87,18 @@ sources:
 # seats may never resolve to the same (provider, persona), while the same
 # persona on two different models is an admitted, and the most informative,
 # contest.
+# The DEFAULT seat options are the keyless local Qwen35 models so a bare
+# `so play` starts a real match with zero configuration: neither default needs
+# an API key (the qwen35 provider binding carries `secret_ref: null`). GLM,
+# OpenRouter, and Gemini remain fully SELECTABLE for either seat -- they are just
+# no longer the zero-config default, because they fail at match start without an
+# injected key. The two defaults keep distinct personas (berserker vs sniper) so
+# the pair satisfies the (provider, persona) seat-identity guard without needing
+# mirror_match_mode.
 seats:
   - side: red
     loadout_id: loadout.live.glm_sniper_ironclad
-    default_option_id: player_option.glm_sniper
+    default_option_id: player_option.qwen35_model
   - side: blue
     loadout_id: loadout.live.glm_opportunist_hunter
-    default_option_id: player_option.glm_opportunist
+    default_option_id: player_option.qwen35_sniper

@@ -482,9 +482,11 @@ async def test_catalog_index_is_the_browser_bootstrap_roster_authority() -> None
         bootstrap = server.bootstrap
         assert bootstrap.model_catalog is not None
         assert bootstrap.player_roster is not None
+        # Zero-config default is the keyless local Qwen35 pair (a bare `so play`
+        # needs no API key); GLM and the others stay selectable, not default.
         assert bootstrap.model_catalog.default_option_ids == (
-            "player_option.glm_sniper",
-            "player_option.glm_opportunist",
+            "player_option.qwen35_model",
+            "player_option.qwen35_sniper",
         )
         assert bootstrap.model_catalog.mirror_match_mode is False
         model_options = {
