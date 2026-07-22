@@ -52,6 +52,27 @@ def test_shipped_registry_is_loaded_only_from_explicit_path() -> None:
 
 
 @pytest.mark.unit
+def test_shipped_sniper_persona_carries_strict_output_discipline() -> None:
+    """The verbose sniper doctrine drives a reasoning gateway to leak
+    chain-of-thought/`<think>` output, which is the sniper-specific
+    provider_semantic_failure driver.  The shipped doctrine now forbids that at
+    the source while KEEPING its behavioural identity (the loopback fixture and
+    the long-range asymmetry both key on ``METHODICAL SNIPER``)."""
+    registry = PersonaRegistry.load(_SHIPPED_PERSONAS)
+    sniper_prompt = registry.require("sniper").system_prompt
+    # Behavioural identity + fixture anchor preserved.
+    assert "METHODICAL SNIPER" in sniper_prompt
+    assert "STANDOFF" in sniper_prompt
+    # Strict single-JSON output discipline added (mirrors card_opportunist).
+    assert "<think>" in sniper_prompt
+    assert "chain-of-thought" in sniper_prompt
+    assert "ONLY the required JSON object" in sniper_prompt
+    assert "code fences" in sniper_prompt
+    # The fixed JSON output contract still terminates the prompt verbatim.
+    assert sniper_prompt.endswith(JSON_INSTRUCTION)
+
+
+@pytest.mark.unit
 def test_registry_load_from_custom_dir_preserves_contract_values(tmp_path: Path) -> None:
     _write_persona(tmp_path, "alpha", "alpha")
     _write_persona(tmp_path, "beta", "beta")
