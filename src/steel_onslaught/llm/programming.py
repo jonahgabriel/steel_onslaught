@@ -20,6 +20,15 @@ can end and classify the match.  Only a *typed* ``LlmSemanticError`` on a seat
 whose overlay explicitly selected ``fallback`` may take the deterministic
 plan, and that plan is stamped ``plan_source=deterministic_fallback`` so the
 substitution is durable in the ledger and detectable by replay.
+
+Under the default ``raise`` policy a semantically invalid plan is not a silent
+stall and not an immediate death: the *same* model is reprompted with the exact
+rejection so it can self-correct, up to a small bounded number of attempts.
+This is a bounded reprompt loop, not determinism — every attempt is a real
+provider call with its own ``llm_completion_requested``/``llm_completion_failed``
+evidence.  When the budget is exhausted the pilot raises
+``LlmSemanticExhaustedError`` so the runner ends the match with a distinct
+``provider_semantic_failure`` terminal instead of freezing with no terminal.
 """
 
 from __future__ import annotations
@@ -50,6 +59,7 @@ from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
     LlmResponse,
+    LlmSemanticExhaustedError,
     ModelSOLlmCompletionRequest,
     ModelSOLlmEvidenceContext,
     ProtocolLlmClient,
@@ -109,6 +119,21 @@ assign a card to a locked register. Do not add fields, prose, markdown, or
 comments. Keep rationale to twelve words or fewer. Emit the JSON object as the
 first character of the response and stop immediately after its closing brace.
 """.strip()
+
+
+def _error_detail(exc: BaseException, *, limit: int = 240) -> str:
+    """Return a bounded, single-line rejection detail for a repair prompt.
+
+    The message comes from our own closed response model or the canonical plan
+    validator (never raw provider text), so it is safe to echo back to the
+    model.  It is collapsed to one line and truncated so a verbose
+    ``ValidationError`` cannot blow up the repair prompt.
+    """
+
+    detail = " ".join(str(exc).split())
+    if len(detail) > limit:
+        detail = detail[: limit - 1] + "…"
+    return detail
 
 
 def _card_definition(card: object) -> dict[str, object]:
@@ -249,6 +274,13 @@ _PROGRAMMING_REPAIR_INSTRUCTIONS = (
     "rationale under twelve words. No reasoning, prose, markdown, or extra keys."
 )
 
+# Additional same-model reprompts after the first rejected plan.  Two extra
+# attempts (three total provider calls) is enough for a capable model to
+# self-correct a strict-schema slip without letting a persistently broken
+# provider spin the match.  A bounded reprompt loop is not determinism: every
+# attempt is a real, separately-recorded provider completion.
+_DEFAULT_SEMANTIC_RETRY_LIMIT = 2
+
 
 class LLMProgrammingPilot:
     """A whole-round ``ProgrammingPilot`` backed by an injected LLM client."""
@@ -260,18 +292,56 @@ class LLMProgrammingPilot:
         persona: Persona,
         failure_policy: LlmProgrammingFailurePolicy = "raise",
         correlation_id: UUID | None = None,
+        provider_id: str | None = None,
+        semantic_retry_limit: int = _DEFAULT_SEMANTIC_RETRY_LIMIT,
     ) -> None:
         if failure_policy not in ("raise", "fallback"):
             raise ValueError(f"unknown LLM programming failure policy: {failure_policy!r}")
+        if semantic_retry_limit < 0:
+            raise ValueError("semantic_retry_limit must not be negative")
         self._client = client
         self._persona = persona
         self._failure_policy = failure_policy
         self._correlation_id = correlation_id
+        self._provider_id = provider_id
+        self._semantic_retry_limit = semantic_retry_limit
 
     def program(self, observation: ModelSOProgrammingObservation) -> ModelSOPlanCommittedPayload:
         """Request, parse, and strictly validate one complete register plan."""
 
-        request = ModelSOLlmCompletionRequest(
+        request = self._build_request(observation)
+        try:
+            return consume_llm_completion(
+                client=self._client,
+                request=request,
+                consumer=lambda response: self._parse_response(response, observation),
+            )
+        except LlmSemanticError as exc:
+            if self._failure_policy == "fallback":
+                return self._classified_fallback(observation, reason=exc.code)
+            # A live match is LLM-only: never substitute a deterministic plan.
+            # Reprompt the SAME model with the exact rejection so it can
+            # self-correct, up to the bounded budget; on exhaustion raise a
+            # classified terminal signal the runner converts into MATCH_ENDED.
+            return self._reprompt_or_terminate(observation, request, first_error=exc)
+        except LlmCompletionBoundaryError:
+            # Provider length/timeout boundaries are terminal live-match
+            # failures. Never convert them into a deterministic card plan.
+            raise
+        except Exception:
+            # A live match is LLM-driven end to end. An unclassified provider,
+            # transport, or programming failure is a match failure: it is
+            # re-raised so the runner can classify and end the match, never
+            # silently replaced by a deterministic plan behind a log line.
+            # Only the typed ``LlmSemanticError`` path above may take the
+            # explicitly opted-in recovery, and that plan is stamped
+            # ``deterministic_fallback`` in the ledger.
+            raise
+
+    def _build_request(
+        self, observation: ModelSOProgrammingObservation
+    ) -> ModelSOLlmCompletionRequest:
+        return ModelSOLlmCompletionRequest(
             system_prompt=f"{self._persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}",
             user_prompt=_serialize_programming_observation(observation),
             persona=self._persona.persona_id,
@@ -289,29 +359,27 @@ class LLMProgrammingPilot:
                 correlation_id=self._correlation_id,
             ),
         )
-        try:
-            return consume_llm_completion(
-                client=self._client,
-                request=request,
-                consumer=lambda response: self._parse_response(response, observation),
-            )
-        except LlmSemanticError as exc:
-            if self._failure_policy == "fallback":
-                return self._classified_fallback(observation, reason=exc.code)
-            if exc.code != "malformed_json":
-                raise
-            # Some reasoning providers occasionally spend the full response
-            # budget before emitting the requested object.  A single compact
-            # semantic repair remains on the same injected provider and uses
-            # the same evidence context; it never changes provider or falls
-            # back to a deterministic pilot.
-            repair_request = request.model_copy(
-                update={
-                    "system_prompt": _PROGRAMMING_REPAIR_INSTRUCTIONS,
-                    "user_prompt": _serialize_repair_observation(observation),
-                    "temperature": 0.0,
-                    "persona": f"{self._persona.persona_id}.repair",
-                }
+
+    def _reprompt_or_terminate(
+        self,
+        observation: ModelSOProgrammingObservation,
+        base_request: ModelSOLlmCompletionRequest,
+        *,
+        first_error: LlmSemanticError,
+    ) -> ModelSOPlanCommittedPayload:
+        """Reprompt the same model up to the bounded budget, then terminate.
+
+        Each attempt is a real provider completion whose requested/failed
+        evidence is durably observed.  A completion boundary (length/timeout)
+        during a repair belongs to its own terminal path and is re-raised
+        unchanged.  Any other repair-time failure is treated as a spent attempt
+        so the match still reaches a durable terminal rather than freezing.
+        """
+
+        last_error = first_error
+        for attempt in range(1, self._semantic_retry_limit + 1):
+            repair_request = self._build_repair_request(
+                base_request, observation, last_error, attempt=attempt
             )
             try:
                 return consume_llm_completion(
@@ -321,22 +389,83 @@ class LLMProgrammingPilot:
                 )
             except LlmCompletionBoundaryError:
                 raise
+            except LlmSemanticError as exc:
+                last_error = exc
             except Exception:
-                pass
-            raise exc
-        except LlmCompletionBoundaryError:
-            # Provider length/timeout boundaries are terminal live-match
-            # failures. Never convert them into a deterministic card plan.
-            raise
-        except Exception:
-            # A live match is LLM-driven end to end. An unclassified provider,
-            # transport, or programming failure is a match failure: it is
-            # re-raised so the runner can classify and end the match, never
-            # silently replaced by a deterministic plan behind a log line.
-            # Only the typed ``LlmSemanticError`` path above may take the
-            # explicitly opted-in recovery, and that plan is stamped
-            # ``deterministic_fallback`` in the ledger.
-            raise
+                # An unclassified repair-time provider/transport error is a
+                # spent attempt, not a stall. Keep the last classified semantic
+                # code and continue the bounded loop toward a durable terminal.
+                _LOG.warning(
+                    "live provider repair attempt %d raised an unclassified error "
+                    "for seat %s (persona=%s)",
+                    attempt,
+                    observation.seat,
+                    self._persona.persona_id,
+                )
+        total_attempts = self._semantic_retry_limit + 1
+        _LOG.warning(
+            "live provider exhausted %d plan attempt(s) for seat %s "
+            "(persona=%s, provider=%s, last_code=%s)",
+            total_attempts,
+            observation.seat,
+            self._persona.persona_id,
+            self._provider_id,
+            last_error.code,
+        )
+        raise LlmSemanticExhaustedError(
+            seat=observation.seat,
+            semantic_failure_code=last_error.code,
+            attempts=total_attempts,
+            provider_id=self._provider_id,
+        )
+
+    def _build_repair_request(
+        self,
+        base_request: ModelSOLlmCompletionRequest,
+        observation: ModelSOProgrammingObservation,
+        error: LlmSemanticError,
+        *,
+        attempt: int,
+    ) -> ModelSOLlmCompletionRequest:
+        """Build a same-model repair request annotated with the exact rejection.
+
+        ``malformed_json`` keeps the compact repair shape (a reasoning gateway
+        that spent its budget needs a *smaller* prompt, not a larger one).  A
+        structurally-valid-but-illegal plan (unknown/unavailable card, invalid
+        parameters) keeps the full observation — the model needs ``legal_hand``
+        to pick an admissible card — and gains an explicit correction note.
+        """
+
+        correction = self._correction_note(error)
+        persona = f"{self._persona.persona_id}.repair.{attempt}"
+        if error.code == "malformed_json":
+            return base_request.model_copy(
+                update={
+                    "system_prompt": f"{correction}\n\n{_PROGRAMMING_REPAIR_INSTRUCTIONS}",
+                    "user_prompt": _serialize_repair_observation(observation),
+                    "temperature": 0.0,
+                    "persona": persona,
+                }
+            )
+        return base_request.model_copy(
+            update={
+                "system_prompt": f"{correction}\n\n{base_request.system_prompt}",
+                "temperature": 0.0,
+                "persona": persona,
+            }
+        )
+
+    @staticmethod
+    def _correction_note(error: LlmSemanticError) -> str:
+        note = f"Your previous plan was REJECTED by the strict rules engine (reason: {error.code})."
+        if error.detail:
+            note += f" Details: {error.detail}"
+        return (
+            note + " Return a corrected plan that uses ONLY card ids from legal_hand, "
+            "fills every free register exactly once in ascending register_index order, "
+            "never exceeds available_copies, never assigns a locked register, and adds "
+            "no extra fields."
+        )
 
     def _classified_fallback(
         self,
@@ -383,8 +512,8 @@ class LLMProgrammingPilot:
                 if start < 0 or end <= start:
                     raise
                 parsed = _ModelSOLlmProgrammingResponse.model_validate_json(text[start : end + 1])
-        except (ValidationError, ValueError, TypeError):
-            raise LlmSemanticError("malformed_json") from None
+        except (ValidationError, ValueError, TypeError) as exc:
+            raise LlmSemanticError("malformed_json", detail=_error_detail(exc)) from None
 
         try:
             plan = ModelSOPlanCommittedPayload(
@@ -403,8 +532,8 @@ class LLMProgrammingPilot:
             # Run the candidate through the canonical boundary here so an
             # observed completion is resolved only after hand/register checks.
             return program_for_seat(_ValueProgrammer(plan), observation)
-        except (ProgrammingPilotError, TypeError, ValueError):
-            raise LlmSemanticError("invalid_action_parameters") from None
+        except (ProgrammingPilotError, TypeError, ValueError) as exc:
+            raise LlmSemanticError("invalid_action_parameters", detail=_error_detail(exc)) from None
 
 
 __all__ = [

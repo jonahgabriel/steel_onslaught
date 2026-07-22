@@ -152,6 +152,71 @@ class _TimeoutProgrammingClient:
         raise LlmCompletionBoundaryError("timeout", retryable=True)
 
 
+class _InvalidActionProgrammingClient:
+    """Always answer with a well-formed plan naming a card absent from the hand.
+
+    This is the live stall reproduced hermetically: the completion parses
+    against the closed response model (so it is not ``malformed_json``) but the
+    canonical plan validator rejects it as ``invalid_action_parameters`` on
+    every attempt — exactly the Qwen failure that froze the match at tick 31.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        self.calls += 1
+        prompt = json.loads(request.user_prompt)
+        free_indices = prompt["registers"]["free_indices"]
+        registers = [
+            {"register_index": index, "card_id": "card.telemetry.not_in_hand"}
+            for index in free_indices
+        ]
+        return LlmResponse(
+            text=json.dumps(
+                {"registers": registers, "confidence": 0.5, "rationale": "invalid plan"}
+            ),
+            usage=LlmUsage(prompt_tokens=5, completion_tokens=176, cost_usd=0.0),
+            model="Qwen3.6-35B-A3B",
+            finish_reason="stop",
+        )
+
+
+class _InvalidThenValidProgrammingClient:
+    """Reject exactly the first plan, then play validly forever after.
+
+    Proves the happy-retry path: a single semantic slip is self-corrected on
+    the same model and the match keeps advancing rather than aborting.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        self.calls += 1
+        prompt = json.loads(request.user_prompt)
+        free_indices = prompt["registers"]["free_indices"]
+        hand = prompt["hand"]
+        if self.calls == 1:
+            registers = [
+                {"register_index": index, "card_id": "card.telemetry.not_in_hand"}
+                for index in free_indices
+            ]
+            rationale = "invalid plan"
+        else:
+            registers = [
+                {"register_index": index, "card_id": card["card_id"]}
+                for index, card in zip(free_indices, hand, strict=True)
+            ]
+            rationale = "valid recovery"
+        return LlmResponse(
+            text=json.dumps({"registers": registers, "confidence": 0.7, "rationale": rationale}),
+            usage=LlmUsage(prompt_tokens=5, completion_tokens=6, cost_usd=0.0),
+            model="Qwen3.6-35B-A3B",
+            finish_reason="stop",
+        )
+
+
 class _Clients(ProtocolLlmClientFactory):
     def __init__(self, client: ProtocolLlmClient) -> None:
         self.client = client
@@ -408,3 +473,106 @@ def test_provider_boundary_ends_match_before_hand_dealt(
     assert event_types.index(SOEventType.LLM_COMPLETION_FAILED) < event_types.index(
         SOEventType.MATCH_ENDED
     )
+
+
+@pytest.mark.parametrize("cadence", ["atomic", "paced"])
+def test_semantic_failure_reaches_a_classified_terminal_not_a_stall(cadence: str) -> None:
+    """The live stall fix: a persistently invalid plan ENDS the match cleanly.
+
+    Before the fix a ``LlmSemanticError`` propagated past the boundary-only
+    handler and the match froze with no terminal (observed live: pinned at
+    tick 31, 344 events, no ``match_ended``). Now the pilot reprompts the same
+    model within a bounded budget and, on exhaustion, the runner records a
+    DISTINCT ``provider_semantic_failure`` terminal. The per-attempt failure
+    evidence (provider, model, semantic code) is durable in the ledger.
+    """
+
+    client = _InvalidActionProgrammingClient()
+    dependencies, stack, ledger, snapshot = _compose(cadence=cadence, client=client)
+
+    final = stack.runner.run()
+
+    assert final.status is SOMatchStatus.ENDED
+    assert final.end_reason is not None
+    assert final.end_reason.value == "provider_semantic_failure"
+
+    event_types = [event.event_type for event in ledger.events]
+    assert SOEventType.MATCH_STARTED in event_types
+    assert SOEventType.MATCH_ENDED in event_types
+
+    ended = [event for event in ledger.events if event.event_type is SOEventType.MATCH_ENDED]
+    assert len(ended) == 1
+    assert ended[0].payload["reason"] == "provider_semantic_failure"
+    assert ended[0].payload["winner_id"] is None
+
+    # Bounded retry: three same-model attempts (one initial + two reprompts)
+    # for the first-programmed seat, each producing durable failed evidence,
+    # before the match terminates. This is the "retries then terminate" proof.
+    failed = [
+        event for event in ledger.events if event.event_type is SOEventType.LLM_COMPLETION_FAILED
+    ]
+    assert client.calls == 3
+    assert len(failed) == 3
+    for event in failed:
+        assert event.payload["reason_code"] == "invalid_response"
+        assert event.payload["semantic_failure_code"] == "invalid_action_parameters"
+        assert event.payload["provider_id"] == "provider.card.fixture"
+        assert event.payload["model"] == "Qwen3.6-35B-A3B"
+
+    # The classified terminal follows the exhausted attempts; no partial round
+    # was committed (the plan never validated, so nothing was dealt).
+    assert event_types.index(SOEventType.LLM_COMPLETION_FAILED) < event_types.index(
+        SOEventType.MATCH_ENDED
+    )
+    assert SOEventType.HAND_DEALT not in event_types
+
+    # replay == live: the semantic-failure terminal folds back deterministically
+    # from the recorded ledger (the LLM is never re-invoked on replay).
+    replay = ReplayEngine(
+        ledger,
+        stack.match_id,
+        catalog=dependencies.catalog,
+        event_factory=EventFactory(clock=FixedClock(), identities=SequentialIdentities()),
+        card_runtime_snapshot=snapshot,
+        validate_card_events=True,
+    )
+    reconstructed = replay.reconstruct_at_tick(final.tick)
+    assert reconstructed == final
+    assert reconstructed.end_reason is not None
+    assert reconstructed.end_reason.value == "provider_semantic_failure"
+
+
+def test_semantic_retry_recovers_and_the_match_keeps_playing() -> None:
+    """Happy-retry end to end: one invalid plan, then the match plays on.
+
+    A single semantic slip is self-corrected on the same model — the match
+    deals hands, commits plans, resolves registers, and reaches an ordinary
+    (non-provider-failure) terminal instead of aborting.
+    """
+
+    client = _InvalidThenValidProgrammingClient()
+    _dependencies, stack, ledger, _snapshot = _compose(cadence="atomic", client=client)
+
+    final = stack.runner.run()
+
+    assert final.status is SOMatchStatus.ENDED
+    assert final.end_reason is not None
+    # The match ends on its own terms, never on the provider-failure terminal.
+    assert final.end_reason.value != "provider_semantic_failure"
+
+    event_types = [event.event_type for event in ledger.events]
+    # The recovered round actually happened: cards were dealt and resolved.
+    assert SOEventType.HAND_DEALT in event_types
+    assert SOEventType.PLAN_COMMITTED in event_types
+    assert SOEventType.REGISTER_RESOLVED in event_types
+
+    failed = [
+        event for event in ledger.events if event.event_type is SOEventType.LLM_COMPLETION_FAILED
+    ]
+    resolved = [
+        event for event in ledger.events if event.event_type is SOEventType.LLM_COMPLETION_RESOLVED
+    ]
+    # Exactly one rejected attempt was recovered; the rest resolved cleanly.
+    assert len(failed) == 1
+    assert failed[0].payload["semantic_failure_code"] == "invalid_action_parameters"
+    assert resolved

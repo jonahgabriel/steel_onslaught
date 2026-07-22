@@ -20,11 +20,11 @@ from steel_onslaught.contracts.card_runtime import (
 from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, SOPlanSource
-from steel_onslaught.llm.effect import LlmSemanticError
 from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.programming import LLMProgrammingPilot
 from steel_onslaught.llm.schemas import (
     LlmResponse,
+    LlmSemanticExhaustedError,
     LlmUsage,
     ModelSOLlmCompletionRequest,
 )
@@ -161,6 +161,24 @@ class _ResponseClient:
         self.requests.append(request)
         return LlmResponse(
             text=self.text,
+            usage=LlmUsage(prompt_tokens=10, completion_tokens=4, cost_usd=0.0),
+            model="programming-test",
+            finish_reason="stop",
+        )
+
+
+class _SequenceClient:
+    """Return each queued response text in order, one per completion call."""
+
+    def __init__(self, texts: list[str]) -> None:
+        self._texts = list(texts)
+        self.requests: list[ModelSOLlmCompletionRequest] = []
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        self.requests.append(request)
+        index = min(len(self.requests) - 1, len(self._texts) - 1)
+        return LlmResponse(
+            text=self._texts[index],
             usage=LlmUsage(prompt_tokens=10, completion_tokens=4, cost_usd=0.0),
             model="programming-test",
             finish_reason="stop",
@@ -346,11 +364,84 @@ def test_programming_request_preserves_dealt_hand_multiplicity() -> None:
         ),
     ],
 )
-def test_default_failure_policy_rejects_invalid_or_unsafe_plans(response_text: str) -> None:
-    pilot = LLMProgrammingPilot(client=_ResponseClient(response_text), persona=_persona())
+def test_default_failure_policy_exhausts_bounded_retries_on_invalid_plans(
+    response_text: str,
+) -> None:
+    """A persistently-invalid provider terminates, never stalls or dies once.
 
-    with pytest.raises(LlmSemanticError):
+    Under the live ``raise`` policy an invalid plan is reprompted on the same
+    model up to the bounded budget. When every attempt is still invalid the
+    pilot raises the DISTINCT ``LlmSemanticExhaustedError`` (not a bare
+    ``LlmSemanticError``) so the runner can end the match with a classified
+    terminal. The provider is called ``retry_limit + 1`` times — one initial
+    attempt plus the bounded reprompts.
+    """
+
+    client = _ResponseClient(response_text)
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    with pytest.raises(LlmSemanticExhaustedError) as excinfo:
         program_for_seat(pilot, _observation())
+
+    assert len(client.requests) == 3
+    assert excinfo.value.seat == "red"
+    assert excinfo.value.attempts == 3
+    assert excinfo.value.provider_id == "provider.card.test"
+    assert excinfo.value.semantic_failure_code in {
+        "malformed_json",
+        "unknown_action",
+        "action_unavailable",
+        "invalid_action_parameters",
+    }
+    # Each reprompt is a real same-model call annotated with the rejection so
+    # the model can self-correct — a bounded loop, never a determinism swap.
+    assert client.requests[0].persona == "opportunist"
+    assert client.requests[1].persona == "opportunist.repair.1"
+    assert client.requests[2].persona == "opportunist.repair.2"
+    for repair in client.requests[1:]:
+        assert "REJECTED" in repair.system_prompt
+
+
+def test_default_policy_retry_recovers_when_the_model_self_corrects() -> None:
+    """Invalid once, then valid: the match continues on the same model.
+
+    The happy-retry path proves the bounded loop is a genuine self-correction
+    opportunity, not just a delayed abort.
+    """
+
+    client = _SequenceClient(
+        [
+            _response(
+                registers=[
+                    {"register_index": 0, "card_id": "card.test.unknown"},
+                    {"register_index": 2, "card_id": "card.test.vent"},
+                ]
+            ),
+            _response(),
+        ]
+    )
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    plan = program_for_seat(pilot, _observation())
+
+    assert plan.plan_source is SOPlanSource.LLM
+    assert tuple(register.card_id for register in plan.registers) == (
+        "card.test.advance",
+        "card.test.vent",
+    )
+    # Exactly two provider calls: one rejected, one accepted. No third attempt.
+    assert len(client.requests) == 2
+    assert client.requests[1].persona == "opportunist.repair.1"
 
 
 def test_default_failure_policy_raises_transport_errors() -> None:

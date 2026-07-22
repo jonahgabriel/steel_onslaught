@@ -45,6 +45,13 @@ class SOMatchEndReason(StrEnum):
     died at once".  ``ABORTED_RUNAWAY`` is the runaway failsafe, never a
     gameplay outcome — matches are unbounded by design, so a match that
     reaches the failsafe is a bug to diagnose, not a draw to record.
+
+    ``PROVIDER_SEMANTIC_FAILURE`` is the live-provider terminal recorded when a
+    bound LLM seat could not produce a semantically admissible plan within the
+    bounded reprompt budget.  It is deliberately distinct from ``ABORTED`` (the
+    provider completion-boundary terminal for length/timeout): one is "the model
+    kept answering with plans the engine rejected", the other is "the completion
+    was truncated or timed out".  Neither is a gameplay outcome.
     """
 
     LAST_MECH_STANDING = "last_mech_standing"
@@ -53,6 +60,7 @@ class SOMatchEndReason(StrEnum):
     DRAW_MUTUAL_DESTRUCTION = "draw_mutual_destruction"
     ABORTED = "aborted"
     ABORTED_RUNAWAY = "aborted_runaway"
+    PROVIDER_SEMANTIC_FAILURE = "provider_semantic_failure"
 
 
 # ---------------------------------------------------------------------------

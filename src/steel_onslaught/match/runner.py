@@ -24,6 +24,7 @@ event stream is a pure function of ``(seed, loadouts, max_ticks, geometry)``.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -62,7 +63,7 @@ from steel_onslaught.events.payloads import (
     ModelSOWeaponFireRejectedPayload,
     WeaponFireRejectionReason,
 )
-from steel_onslaught.llm.schemas import LlmCompletionBoundaryError
+from steel_onslaught.llm.schemas import LlmCompletionBoundaryError, LlmSemanticExhaustedError
 from steel_onslaught.match.card_adapter import (
     CardRunnerAdapter,
     ModelSOCardRoundEmission,
@@ -108,6 +109,8 @@ from steel_onslaught.reducers.weapons import (
     roll_hit,
     validate_weapon_fire_intent,
 )
+
+_LOG = logging.getLogger(__name__)
 
 _PRODUCER_NODE = "node.match.runner"
 
@@ -469,6 +472,14 @@ class MatchRunner:
                 # durably terminal and prevents a pre-hand-dealt freeze.
                 self._terminate_for_llm_boundary(tick=next_tick)
                 break
+            except LlmSemanticExhaustedError as exc:
+                # A bound seat answered every reprompt but never with an
+                # admissible plan. The completion effect already recorded one
+                # sanitized llm_completion_failed per attempt; this makes the
+                # match durably terminal with a DISTINCT provider_semantic_failure
+                # reason instead of freezing with no terminal (the live stall).
+                self._terminate_for_llm_semantic(tick=next_tick, detail=exc)
+                break
 
             # Resolve intents in initiative order. Initiative is a real combat
             # mechanic (match/initiative.py): lighter chassis and well-managed
@@ -540,6 +551,43 @@ class MatchRunner:
                 tick=tick,
                 payload={
                     "reason": SOMatchEndReason.ABORTED.value,
+                    "winner_id": None,
+                },
+            )
+        )
+
+    def _terminate_for_llm_semantic(self, *, tick: int, detail: LlmSemanticExhaustedError) -> None:
+        """Record the distinct terminal for a bounded semantic-retry exhaustion.
+
+        This is the fix for the live-provider stall: a plan the engine rejects
+        as a SEMANTIC failure (e.g. ``invalid_action_parameters``) used to
+        propagate past the boundary-only handler and freeze the match with no
+        terminal. The seat/provider/semantic-code detail is durable in the
+        per-attempt ``llm_completion_failed`` events at this tick; the terminal
+        names its own distinct reason so it is never confused with a
+        length/timeout ``aborted`` or a clean gameplay outcome.
+        """
+
+        _LOG.warning(
+            "match %s ended provider_semantic_failure at tick %d "
+            "(seat=%s, provider=%s, code=%s, attempts=%d)",
+            self._match_id,
+            tick,
+            detail.seat,
+            detail.provider_id,
+            detail.semantic_failure_code,
+            detail.attempts,
+        )
+        if self.fold.state.status is not SOMatchStatus.RUNNING:
+            return
+        if self._card_cadence == "paced":
+            self._cancel_active_card_round(tick=tick, reason="provider_semantic_failure")
+        self._bus.publish(
+            self._make_match_event(
+                SOEventType.MATCH_ENDED,
+                tick=tick,
+                payload={
+                    "reason": SOMatchEndReason.PROVIDER_SEMANTIC_FAILURE.value,
                     "winner_id": None,
                 },
             )
