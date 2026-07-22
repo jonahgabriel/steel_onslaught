@@ -4,7 +4,16 @@ id: weapon.light.machine_gun
 display_name: "Steam Machine Gun"
 weapon_class: light
 range: 12
-damage: 8
+# Balance round 2 (brawler damage buff): 8 -> 44 (5.5x). Round 1 measured the
+# brawler landing ~3-5 hits/match under c11 but each netting ~1 damage vs the
+# sniper — hopeless against 160 HP. Arithmetic against the real degrading-armor
+# model (heavy target_class_effectiveness 0.7, STANDARD cap 0.75, sniper armor
+# 16 pool / regen 1/tick): damage_raw = int(44*0.7)=30; a fresh-armor hit nets
+# 30-16=14, a steady-state hit (armor stripped to ~2 after the opener) nets ~28.
+# So a landed machine-gun hit is worth ~28 armor-adjusted, ~7 to kill the sniper
+# on machine-gun alone — safe chip damage that rewards, but does not require,
+# closing to shrapnel range. Not a one-shot (max single hit 30 << 160).
+damage: 44
 pressure_cost: 4
 heat_generated: 3
 cooldown_ticks: 1
