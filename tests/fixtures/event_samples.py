@@ -423,6 +423,9 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
             "hit_probability": 0.65,
             "pressure_cost": 4,
             "heat_generated": 6,
+            # Round-4 range band: 1.0 == no falloff (a short-range machine gun is
+            # never subject); present so the fixture exercises the field's parse.
+            "close_range_mult": 1.0,
         },
         SOEventType.HIT_RESOLVED: {
             "attacker_id": "mech.a.01",

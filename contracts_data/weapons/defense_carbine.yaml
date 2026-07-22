@@ -1,0 +1,55 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.weapon
+id: weapon.light.defense_carbine
+display_name: "Defense Carbine"
+weapon_class: light
+# Round-4 close-in secondary for the sniper. range 14 keeps it BELOW the range
+# band's min_weapon_range (20), so it is NEVER subject to the close-range
+# accuracy falloff that degrades the mortar/harpoon up close — it is the
+# sniper's dedicated point-blank answer while the big guns are unreliable.
+range: 14
+# Weak-but-not-helpless: damage_raw vs the 60-HP light scout brawler (armor 6,
+# regen 2/tick, STANDARD mitigation cap 0.75) = int(20*1.0)=20; absorbable =
+# min(6, ceil(20*0.75)=15)=6, so a fresh-armor hit nets 20-6=14 and a
+# steady-state hit (armor stripped to ~0 after the opener, regen 2) nets ~18.
+# That is real close-range counterplay (the brawler cannot melee for free) but
+# clearly below the brawler's ~30-39/tick armor-adjusted output, so it is a
+# CONTEST, not a sniper walkover. Much weaker than the harpoon (28) / mortar
+# (45): a secondary, never a primary.
+damage: 20
+# SUSTAINABILITY against the REAL Bessemer-90 economy (regen 5/tick pressure,
+# cap 90; vent 4/tick heat; c11 overpressure lockout ceiling 28) — NOT free-fire
+# DPS. Paced cadence resolves one register per tick; the sniper's weapon hand
+# quota is 3/round over a 5-register round, and cooldown 1 lets the carbine fire
+# on every weapon register, so the worst case is 3 carbine shots per 5 ticks.
+#   PRESSURE: spend 3*5 = 15 per round; regen 5*5 = 25 per round -> net +10/round
+#             (steady draw 15/25 = 0.6x regen). The carbine alone never starves.
+#   HEAT:     add 3*3 = 9 per round; vent 4*5 = 20 per round -> net -11/round.
+#             Carbine-only fire trends the heat pool to 0; it never self-heats.
+#   c11 NON-LOCK: the max heat any plan can reach is the ceiling 28 (the
+#             overpressure_cooldown handler defers shots that would cross it). A
+#             carbine shot from the hottest reachable state vents first:
+#             heat_after_vent = max(28-4,0)=24, +3 = 27 < 28 -> ADMISSIBLE from
+#             every reachable heat. The carbine is therefore NEVER c11-locked,
+#             unlike the mortar (heat 20: from any heat>=12 it crosses 28 and is
+#             rate-taxed). That asymmetry is the point — the big guns are
+#             throttled, the carbine is the sustainable fallback.
+pressure_cost: 5
+heat_generated: 3
+cooldown_ticks: 1
+accuracy_curve:
+  - range: 0
+    hit_probability: 0.90
+  - range: 7
+    hit_probability: 0.80
+  - range: 14
+    hit_probability: 0.55
+target_class_effectiveness:
+  light: 1.0
+  medium: 0.85
+  heavy: 0.6
+damage_type: standard
+compatibility:
+  compatible_chassis_classes:
+    - medium
+    - heavy

@@ -194,6 +194,55 @@ class ModelSOMovesEvasionBinding(_ClosedBinding):
         return self
 
 
+class ModelSOCloseRangeFalloffBinding(_ClosedBinding):
+    """Close-range accuracy falloff on long weapons — the round-4 range band.
+
+    A long-range weapon (one whose ``range`` is at least ``min_weapon_range``)
+    loses accuracy the closer its target is: at a Chebyshev ``distance`` at or
+    above ``band_distance`` there is no penalty (multiplier ``1.0``); below it the
+    weapon's curve accuracy is scaled by a gradient that falls to
+    ``point_blank_multiplier`` at ``distance == 0``.  A short weapon (range below
+    ``min_weapon_range`` — a close-in carbine, a scout's machine gun) is never
+    subject, so it stays a physically sensible universal rule ("long guns are bad
+    up close") rather than a targeted nerf.
+
+    The multiplier is a pure, stateless function of the Chebyshev distance already
+    computed at fire time, folded into the recorded ``WEAPON_FIRED``
+    hit_probability (never persisted into match state), so replay stays exact by
+    construction — the recorded hit_probability is the single source of truth on
+    replay, exactly as the round-3 evasion bonus is.
+
+    A gradient (not a hard min-range) is deliberate: a hard cutoff leaves an
+    accuracy "ledge" a target can sit just inside; the gradient makes the sniper's
+    hit chance decay smoothly through the whole close band, matching the real
+    reason it cannot hold a range band (its speed is far below the scout's).
+
+    Absence of this binding is the OFF state: with no overlay naming it the
+    mechanic contributes nothing (every weapon keeps multiplier ``1.0``), so the
+    comparison arm is byte-identical apart from this one field.
+    """
+
+    kind: Literal["close_range_accuracy_falloff"]
+    min_weapon_range: StrictInt = Field(
+        ge=1,
+        le=1000,
+        description="Only weapons whose range is >= this value suffer the close-range falloff",
+    )
+    band_distance: StrictInt = Field(
+        ge=1,
+        le=1000,
+        description="Chebyshev distance at/above which no penalty applies; gradient below it",
+    )
+    point_blank_multiplier: StrictFloat = Field(
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Accuracy multiplier at distance 0 (in (0,1)); a strict penalty that never fully "
+            "disables the weapon and never becomes a bonus"
+        ),
+    )
+
+
 class ModelSOContractBindings(_ClosedBinding):
     """Filesystem contract roots owned by the application overlay.
 
@@ -215,6 +264,14 @@ class ModelSOContractBindings(_ClosedBinding):
     # explicitly names it turns moves-scaled evasion on, so the comparison arm
     # stays byte-identical apart from this one field.
     moves_scaled_evasion: ModelSOMovesEvasionBinding | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    # Round-4 kill-conversion knob (the close-range sniper penalty composed with
+    # the moderate evasion above).  Absent by default (OFF): only an overlay that
+    # explicitly names it turns the long-weapon close-range falloff on, so the
+    # comparison arm stays byte-identical apart from this one field.
+    close_range_falloff: ModelSOCloseRangeFalloffBinding | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -487,6 +544,7 @@ __all__ = [
     "ModelSOCardCatalogBinding",
     "ModelSOCardDeckPolicy",
     "ModelSOCardProgrammerBinding",
+    "ModelSOCloseRangeFalloffBinding",
     "ModelSOContractBindings",
     "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOFrontendBootstrap",

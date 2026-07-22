@@ -34,7 +34,10 @@ from pydantic import ValidationError
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.cards.dealer import ModelSODealerScope, ModelSODeckState
 from steel_onslaught.cards.round import carry_forward_plans
-from steel_onslaught.contracts.application import ModelSOMovesEvasionBinding
+from steel_onslaught.contracts.application import (
+    ModelSOCloseRangeFalloffBinding,
+    ModelSOMovesEvasionBinding,
+)
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
@@ -106,6 +109,7 @@ from steel_onslaught.reducers.movement import chebyshev, effective_speed, mode_e
 from steel_onslaught.reducers.pilot_tick import ReducerPilotTick, build_pilot_observation
 from steel_onslaught.reducers.sensors import ReducerSensors
 from steel_onslaught.reducers.weapons import (
+    close_range_accuracy_multiplier,
     interpolate_accuracy,
     moves_scaled_evasion_bonus,
     resolve_hit_probability,
@@ -233,6 +237,7 @@ class MatchRunner:
         card_adapter: CardRunnerAdapter | None = None,
         card_cadence: Literal["atomic", "paced"] = "atomic",
         moves_evasion: ModelSOMovesEvasionBinding | None = None,
+        close_range_falloff: ModelSOCloseRangeFalloffBinding | None = None,
         progress_gate: ProgressGate | None = None,
     ) -> None:
         self._identity = identity
@@ -297,6 +302,18 @@ class MatchRunner:
         if moves_evasion is not None and not isinstance(moves_evasion, ModelSOMovesEvasionBinding):
             raise TypeError("moves_evasion must be ModelSOMovesEvasionBinding when supplied")
         self._moves_evasion = moves_evasion
+        if close_range_falloff is not None and not isinstance(
+            close_range_falloff, ModelSOCloseRangeFalloffBinding
+        ):
+            raise TypeError(
+                "close_range_falloff must be ModelSOCloseRangeFalloffBinding when supplied"
+            )
+        # Round-4 range band.  Like the round-3 evasion bonus this is a pure,
+        # stateless function of the fire-time Chebyshev distance folded straight
+        # into the recorded WEAPON_FIRED hit_probability, never persisted into
+        # match state, so replay stays exact (the recorded hit_probability is the
+        # single source of truth).  None => every weapon keeps a 1.0 multiplier.
+        self._close_range_falloff = close_range_falloff
         # Moves-scaled evasion is derived from the movement registers a mech
         # resolves within the CURRENT card round, and applied only at
         # hit-resolution time.  It is deliberately NOT persisted into match
@@ -1278,6 +1295,25 @@ class MatchRunner:
         )
         return min(1.0, base + bonus)
 
+    def _close_range_multiplier(self, spec: ModelSOWeaponSpec, distance: int) -> float:
+        """Round-4 close-range accuracy multiplier for one weapon at ``distance``.
+
+        Returns ``1.0`` (inert) when the range-band binding is absent or the
+        weapon is short-range (``range`` below the band's ``min_weapon_range``),
+        so a close-in carbine and the scout's own guns are never penalised.  For a
+        long weapon it is a pure function of the fire-time Chebyshev distance, so
+        the recorded WEAPON_FIRED hit_probability (which it is folded into) stays
+        the single source of truth on replay.
+        """
+        policy = self._close_range_falloff
+        if policy is None or spec.range < policy.min_weapon_range:
+            return 1.0
+        return close_range_accuracy_multiplier(
+            distance=distance,
+            band_distance=policy.band_distance,
+            point_blank_multiplier=policy.point_blank_multiplier,
+        )
+
     def _resolve_weapon_fire(
         self,
         intent: ModelSOEventEnvelope,
@@ -1313,6 +1349,10 @@ class MatchRunner:
             return
 
         distance = chebyshev(mech.position, target.position)
+        # Round-4 range band: a stateless function of this fire-time distance.
+        # Computed once here so the recorded WEAPON_FIRED carries the exact
+        # multiplier whether or not the shot resolves an accuracy roll.
+        close_range_mult = self._close_range_multiplier(spec, distance)
         try:
             validate_weapon_fire_intent(
                 weapon_id=weapon_id,
@@ -1361,6 +1401,7 @@ class MatchRunner:
                         "hit_probability": 0.0,
                         "pressure_cost": spec.pressure_cost,
                         "heat_generated": spec.heat_generated,
+                        "close_range_mult": close_range_mult,
                     },
                     caused_by_intent=intent,
                 )
@@ -1368,7 +1409,10 @@ class MatchRunner:
             return
 
         curve = [(point.range, point.hit_probability) for point in spec.accuracy_curve]
-        base_accuracy = interpolate_accuracy(curve, distance)
+        # Round-4: scale the curve accuracy by the close-range multiplier before
+        # any lock/evasion/overload term.  For a short weapon or an OFF binding
+        # this is *1.0 (byte-identical to the prior behaviour).
+        base_accuracy = interpolate_accuracy(curve, distance) * close_range_mult
         lock_confidence = 0.0
         for observation in self._sensor_buffer:
             if observation.subject.mech_id != mech.mech_id:
@@ -1400,6 +1444,7 @@ class MatchRunner:
                     "hit_probability": hit_probability,
                     "pressure_cost": spec.pressure_cost,
                     "heat_generated": spec.heat_generated,
+                    "close_range_mult": close_range_mult,
                 },
                 caused_by_intent=intent,
             )

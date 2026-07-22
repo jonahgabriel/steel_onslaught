@@ -474,6 +474,10 @@ export interface WeaponFiredPayload {
   hit_probability: number;
   pressure_cost: number;
   heat_generated: number;
+  // Round-4 range band: the close-range accuracy multiplier folded into
+  // hit_probability for this shot (1.0 == no falloff). Known-but-optional so
+  // pre-round-4 ledger events (which never carried it) still parse.
+  close_range_mult: number;
 }
 
 export type WeaponFireRejectionReason =
@@ -2524,7 +2528,14 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     const record = asRecord(value, context);
     rejectUnknown(
       record,
-      ["weapon_id", "target_id", "hit_probability", "pressure_cost", "heat_generated"],
+      [
+        "weapon_id",
+        "target_id",
+        "hit_probability",
+        "pressure_cost",
+        "heat_generated",
+        "close_range_mult",
+      ],
       context,
     );
     return {
@@ -2533,6 +2544,11 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       hit_probability: boundedNum(record, "hit_probability", context, 0, 1),
       pressure_cost: nonNegativeInt(record, "pressure_cost", context),
       heat_generated: nonNegativeInt(record, "heat_generated", context),
+      // Known-but-optional (round 4): default 1.0 for pre-round-4 events.
+      close_range_mult:
+        "close_range_mult" in record
+          ? boundedNum(record, "close_range_mult", context, 0, 1)
+          : 1,
     };
   },
   hit_resolved: (value, context) => {

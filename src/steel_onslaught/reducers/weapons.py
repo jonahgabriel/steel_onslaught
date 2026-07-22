@@ -115,6 +115,45 @@ def moves_scaled_evasion_bonus(
     return min(cap, evasion_per_move * moves_resolved)
 
 
+def close_range_accuracy_multiplier(
+    *,
+    distance: int,
+    band_distance: int,
+    point_blank_multiplier: float,
+) -> float:
+    """Accuracy multiplier for a long weapon firing at ``distance`` (round 4).
+
+    Long-range weapons should be *worst* at point-blank, not best: without this,
+    an accuracy curve that plateaus at its first breakpoint makes a sniper's
+    mortar as accurate at ``d=0`` as at its ideal band.  This returns a gradient
+    multiplier applied to the curve accuracy so the closer the target, the lower
+    the hit chance:
+
+        - ``distance >= band_distance``  -> ``1.0`` (no penalty; the sniper's band)
+        - ``distance <= 0``              -> ``point_blank_multiplier`` (the floor)
+        - in between                     -> linear from the floor at 0 up to 1.0
+
+    The result is monotonic non-decreasing in ``distance`` and bounded to
+    ``[point_blank_multiplier, 1.0]``, so composing it with target evasion (a
+    second multiplicative ``1 - evasion`` term) can only ever lower a hit chance,
+    never raise it, and the product stays clamped in ``[0, 1]``.
+
+    Args:
+        distance:              Chebyshev distance to the target in grid cells.
+        band_distance:         Distance at/above which no penalty applies (> 0).
+        point_blank_multiplier: Multiplier at distance 0, in ``(0, 1)``.
+
+    Returns:
+        The accuracy multiplier in ``[point_blank_multiplier, 1.0]``.
+    """
+    if distance >= band_distance:
+        return 1.0
+    if distance <= 0:
+        return point_blank_multiplier
+    fraction = distance / band_distance
+    return point_blank_multiplier + (1.0 - point_blank_multiplier) * fraction
+
+
 def validate_weapon_fire_intent(
     *,
     weapon_id: str,
