@@ -34,6 +34,7 @@ from pydantic import ValidationError
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.cards.dealer import ModelSODealerScope, ModelSODeckState
 from steel_onslaught.cards.round import carry_forward_plans
+from steel_onslaught.contracts.application import ModelSOMovesEvasionBinding
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
@@ -106,6 +107,7 @@ from steel_onslaught.reducers.pilot_tick import ReducerPilotTick, build_pilot_ob
 from steel_onslaught.reducers.sensors import ReducerSensors
 from steel_onslaught.reducers.weapons import (
     interpolate_accuracy,
+    moves_scaled_evasion_bonus,
     resolve_hit_probability,
     roll_hit,
     validate_weapon_fire_intent,
@@ -230,6 +232,7 @@ class MatchRunner:
         prompt_provenance: ModelSOMatchPromptProvenance | None = None,
         card_adapter: CardRunnerAdapter | None = None,
         card_cadence: Literal["atomic", "paced"] = "atomic",
+        moves_evasion: ModelSOMovesEvasionBinding | None = None,
         progress_gate: ProgressGate | None = None,
     ) -> None:
         self._identity = identity
@@ -291,6 +294,16 @@ class MatchRunner:
         if card_cadence not in {"atomic", "paced"}:
             raise ValueError("card_cadence must be 'atomic' or 'paced'")
         self._card_cadence = card_cadence
+        if moves_evasion is not None and not isinstance(moves_evasion, ModelSOMovesEvasionBinding):
+            raise TypeError("moves_evasion must be ModelSOMovesEvasionBinding when supplied")
+        self._moves_evasion = moves_evasion
+        # Moves-scaled evasion is derived from the movement registers a mech
+        # resolves within the CURRENT card round, and applied only at
+        # hit-resolution time.  It is deliberately NOT persisted into match
+        # state: the recorded WEAPON_FIRED hit_probability is the single source
+        # of truth on replay, so this ephemeral per-round tally keeps the fold
+        # (and therefore replay) untouched.  Reset at each round boundary.
+        self._round_move_counts: dict[str, int] = {}
         self._card_round_index = 0
         self._card_deck_state: ModelSODeckState | None = None
         self._card_split_deck_states: tuple[ModelSOCardRoundSeatSplitState, ...] = ()
@@ -617,6 +630,9 @@ class MatchRunner:
         if self._card_cadence == "paced":
             self._run_paced_card_round(tick, tick_event)
             return
+        # A fresh atomic round: moves-scaled evasion counts only movement the
+        # mech resolves within THIS round.
+        self._round_move_counts = {}
         living = tuple(sorted(self.fold.state.living_mechs(), key=lambda mech: mech.mech_id))
         seats: list[ModelSOCardSeatRequest] = []
         subject_by_seat: dict[str, ModelSOEventSubject] = {}
@@ -723,6 +739,10 @@ class MatchRunner:
         active = self._card_active_round
         first_tick = active is None
         if first_tick:
+            # A fresh paced round starts here (register 0 deals + resolves this
+            # tick): zero the moves-scaled evasion tally so it counts only the
+            # movement this round resolves.
+            self._round_move_counts = {}
             living = tuple(sorted(self.fold.state.living_mechs(), key=lambda mech: mech.mech_id))
             seats: list[ModelSOCardSeatRequest] = []
             subject_by_seat: dict[str, ModelSOEventSubject] = {}
@@ -1204,6 +1224,11 @@ class MatchRunner:
         if moved == 0:
             return  # pinned against the arena edge, terrain, or already adjacent
 
+        # Card-native moves-scaled evasion: a movement register that actually
+        # displaces the mech counts toward its evasion for the rest of this
+        # round (a pinned/hold move above emits nothing and does not count).
+        self._round_move_counts[mech.mech_id] = self._round_move_counts.get(mech.mech_id, 0) + 1
+
         self._bus.publish(
             self._make_subject_event(
                 SOEventType.MOVEMENT_RESOLVED,
@@ -1230,6 +1255,28 @@ class MatchRunner:
                 break
             last = ModelSOPosition(x=x, y=y)
         return last
+
+    def _effective_target_evasion(self, target: ModelSOMechRuntimeState) -> float:
+        """Folded target_evasion plus this round's moves-scaled evasion bonus.
+
+        When no moves-scaled evasion policy is configured this is exactly the
+        folded ``target.evasion`` — the mechanic is inert, so an OFF overlay is
+        byte-for-byte the prior behaviour.  When configured, each movement
+        register the target resolved this round adds ``evasion_per_move`` (capped),
+        so a sprinting mech is harder to hit while the shooter is aiming and a
+        stationary mech (zero resolved movement) is exactly as easy to hit as
+        before.  The sum is clamped to ``[0, 1]`` for ``resolve_hit_probability``.
+        """
+        base = target.evasion
+        policy = self._moves_evasion
+        if policy is None:
+            return base
+        bonus = moves_scaled_evasion_bonus(
+            evasion_per_move=policy.evasion_per_move,
+            cap=policy.cap,
+            moves_resolved=self._round_move_counts.get(target.mech_id, 0),
+        )
+        return min(1.0, base + bonus)
 
     def _resolve_weapon_fire(
         self,
@@ -1332,7 +1379,7 @@ class MatchRunner:
         hit_probability = resolve_hit_probability(
             base_accuracy,
             lock_confidence,
-            target.evasion,
+            self._effective_target_evasion(target),
             mech.accuracy_penalty_next_fire,
         )
         hit = roll_hit(

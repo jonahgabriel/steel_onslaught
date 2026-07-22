@@ -86,6 +86,35 @@ def resolve_hit_probability(
     return max(0.0, min(1.0, raw))
 
 
+def moves_scaled_evasion_bonus(
+    *,
+    evasion_per_move: float,
+    cap: float,
+    moves_resolved: int,
+) -> float:
+    """Evasion a target earns from the movement registers it resolved this round.
+
+    The round-3 survivability knob: a mech that spends registers *moving* is
+    harder to hit for the remainder of the round, while a mech that stops to
+    shoot earns nothing.  Each resolved movement register adds
+    ``evasion_per_move``; the total is clamped to ``cap`` so a full-sprint round
+    cannot drive the shooter's hit chance arbitrarily low (and can never flip the
+    matchup into an auto-win).
+
+    Args:
+        evasion_per_move: Evasion added per movement register resolved this round.
+        cap:              Maximum bonus a target can accrue within one round.
+        moves_resolved:   Count of MOVEMENT registers the target resolved so far
+                          this round (0 = stationary => no bonus).
+
+    Returns:
+        The additive evasion bonus in ``[0, cap]``.  Zero for a stationary round.
+    """
+    if moves_resolved <= 0:
+        return 0.0
+    return min(cap, evasion_per_move * moves_resolved)
+
+
 def validate_weapon_fire_intent(
     *,
     weapon_id: str,

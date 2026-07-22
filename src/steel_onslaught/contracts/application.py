@@ -156,6 +156,44 @@ class ModelSOBalanceRulePackBinding(_ClosedBinding):
         return self
 
 
+class ModelSOMovesEvasionBinding(_ClosedBinding):
+    """Moves-scaled evasion — the card-native survivability knob (round 3).
+
+    Each MOVEMENT register a mech resolves in the current card round raises its
+    target_evasion (harder to hit *this round*, while a shooter is aiming at it),
+    additive over the folded evasion term and capped by ``cap``.  A round in which
+    the mech resolves no movement (it stopped to spend registers on weapons) earns
+    zero bonus and stays as easy to hit as before.  The bonus is derived at
+    hit-resolution time from the round's *resolved* movement events — it is never
+    persisted into match state, so replay stays exact (the recorded
+    ``WEAPON_FIRED`` hit_probability is the single source of truth on replay).
+
+    Absence of this binding is the OFF state: the mechanic contributes nothing
+    unless an overlay names it, so the round-2 comparison arm is byte-unchanged.
+    """
+
+    kind: Literal["moves_scaled_evasion"]
+    evasion_per_move: StrictFloat = Field(
+        gt=0.0,
+        le=1.0,
+        description="Evasion added to a target per movement register it resolved this round",
+    )
+    cap: StrictFloat = Field(
+        gt=0.0,
+        le=1.0,
+        description="Ceiling on the moves-scaled evasion a target can accrue within one round",
+    )
+
+    @model_validator(mode="after")
+    def _cap_at_least_one_move(self) -> Self:
+        if self.cap < self.evasion_per_move:
+            raise ValueError(
+                f"cap ({self.cap}) must be >= evasion_per_move ({self.evasion_per_move}); "
+                "a cap below a single move's bonus would make the ceiling unreachable"
+            )
+        return self
+
+
 class ModelSOContractBindings(_ClosedBinding):
     """Filesystem contract roots owned by the application overlay.
 
@@ -170,6 +208,13 @@ class ModelSOContractBindings(_ClosedBinding):
     arena_id: StrictStr = Field(pattern=r"^[a-z][a-z0-9_]*$")
     card_catalog: ModelSOCardCatalogBinding | None = None
     balance_rule_pack: ModelSOBalanceRulePackBinding | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    # Round-3 survivability knob.  Absent by default (OFF): only an overlay that
+    # explicitly names it turns moves-scaled evasion on, so the comparison arm
+    # stays byte-identical apart from this one field.
+    moves_scaled_evasion: ModelSOMovesEvasionBinding | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -453,6 +498,7 @@ __all__ = [
     "ModelSOLlmRetryBinding",
     "ModelSOModelCatalogProjection",
     "ModelSOModelIdentityBinding",
+    "ModelSOMovesEvasionBinding",
     "ModelSONoSecretResolverBinding",
     "ModelSOOpenAICompatibleProviderBinding",
     "ModelSOPersonaPromptOverride",

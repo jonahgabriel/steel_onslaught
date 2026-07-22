@@ -189,6 +189,66 @@ def test_resolve_hit_probability_reduced_by_evasion() -> None:
 
 
 @pytest.mark.unit
+def test_moves_scaled_evasion_zero_moves_is_zero() -> None:
+    """A stationary round (no movement register resolved) earns no evasion."""
+    from steel_onslaught.reducers.weapons import moves_scaled_evasion_bonus
+
+    assert moves_scaled_evasion_bonus(evasion_per_move=0.08, cap=0.24, moves_resolved=0) == 0.0
+    # A negative/degenerate count is treated as stationary, never a negative bonus.
+    assert moves_scaled_evasion_bonus(evasion_per_move=0.08, cap=0.24, moves_resolved=-1) == 0.0
+
+
+@pytest.mark.unit
+def test_moves_scaled_evasion_monotonic_then_capped() -> None:
+    """More resolved movement -> strictly more evasion, until the cap clamps it."""
+    from steel_onslaught.reducers.weapons import moves_scaled_evasion_bonus
+
+    per_move, cap = 0.08, 0.24
+    b1 = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=1)
+    b2 = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=2)
+    b3 = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=3)
+    b4 = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=4)
+
+    assert b1 == pytest.approx(0.08)
+    assert b2 == pytest.approx(0.16)
+    assert b3 == pytest.approx(0.24)
+    assert b1 < b2 < b3  # strictly increasing while below the cap
+    assert b3 == pytest.approx(cap)  # exactly the ceiling at the 3-move hand quota
+    assert b4 == pytest.approx(cap)  # never exceeds the cap, no matter how many moves
+
+
+@pytest.mark.unit
+def test_more_moves_lower_hit_chance_than_stationary() -> None:
+    """The mechanic's whole point: more movement -> higher evasion -> lower hit
+    chance; a stationary target keeps the un-modified hit chance."""
+    from steel_onslaught.reducers.weapons import (
+        moves_scaled_evasion_bonus,
+        resolve_hit_probability,
+    )
+
+    base_evasion, base_accuracy, lock = 0.0, 0.70, 1.0  # mortar mid-approach ~0.70
+    per_move, cap = 0.08, 0.24
+
+    def hit_chance(moves: int) -> float:
+        bonus = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=moves)
+        return resolve_hit_probability(
+            base_accuracy=base_accuracy,
+            lock_confidence=lock,
+            target_evasion=min(1.0, base_evasion + bonus),
+            accuracy_penalty=0.0,
+        )
+
+    stationary = hit_chance(0)
+    sprint = hit_chance(3)
+
+    assert stationary == pytest.approx(0.70)  # unchanged when it stops to shoot
+    assert sprint == pytest.approx(0.70 * (1 - 0.24))  # 0.532: ~24% relative cut
+    assert sprint < stationary
+    # Monotonic across the approach: each extra resolved move lowers hit chance.
+    assert hit_chance(0) > hit_chance(1) > hit_chance(2) > hit_chance(3)
+
+
+@pytest.mark.unit
 def test_resolve_hit_probability_reduced_by_accuracy_penalty() -> None:
     """Accuracy penalty (overload) reduces hit probability."""
     from steel_onslaught.reducers.weapons import resolve_hit_probability
