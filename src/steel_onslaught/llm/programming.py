@@ -333,17 +333,25 @@ def _serialize_repair_observation(observation: ModelSOProgrammingObservation) ->
 
 
 _PROGRAMMING_REPAIR_INSTRUCTIONS = (
-    "Return ONLY compact JSON with keys registers, confidence, rationale. "
-    "Use each free register exactly once, use only hand_card_ids, and keep "
-    "rationale under twelve words. No reasoning, prose, markdown, or extra keys."
+    "Output MUST be a single JSON object and nothing else. The first character "
+    "of your reply is '{' and the last is '}'. Do NOT think out loud, explain, "
+    "apologize, or use markdown or code fences. Keys, in order: registers (a "
+    "list of {register_index, card_id}), confidence (a number 0.0-1.0), "
+    "rationale (a string under twelve words). Fill each free register exactly "
+    "once, use only hand_card_ids, and add no extra keys."
 )
 
-# Additional same-model reprompts after the first rejected plan.  Two extra
-# attempts (three total provider calls) is enough for a capable model to
-# self-correct a strict-schema slip without letting a persistently broken
+# Additional same-model reprompts after the first rejected plan.  Round-1 live
+# Qwen batteries lost ~40% of matches to non-gameplay terminals, part of which
+# was semantic exhaustion (malformed/invalid JSON three attempts running).  Three
+# extra attempts (four total provider calls) gives a capable-but-verbose reasoning
+# gateway one more chance to self-correct a strict-schema slip before the match
+# ends on ``provider_semantic_failure``, without letting a persistently broken
 # provider spin the match.  A bounded reprompt loop is not determinism: every
-# attempt is a real, separately-recorded provider completion.
-_DEFAULT_SEMANTIC_RETRY_LIMIT = 2
+# attempt is a real, separately-recorded provider completion, and the loop is
+# still bounded so a live match always reaches a durable terminal (the #115
+# stall guarantee).
+_DEFAULT_SEMANTIC_RETRY_LIMIT = 3
 
 
 class LLMProgrammingPilot:

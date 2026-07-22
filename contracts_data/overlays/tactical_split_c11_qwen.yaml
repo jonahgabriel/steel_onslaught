@@ -87,8 +87,14 @@ llm:
       endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
       model: Qwen3.6-35B-A3B
       secret_ref: null
-      timeout_seconds: 45.0
-      max_tokens: 2048
+      # Balance round 2 (abort-rate cut): round 1 lost ~40% of live-Qwen matches
+      # to non-gameplay terminals — truncated JSON (finish_reason=length ->
+      # aborted) or wall-clock timeout. Give keyless Qwen more room to emit one
+      # complete, valid plan: a reasoning gateway can spend >2048 tokens before
+      # the JSON object, and the larger budget needs proportionally more wall
+      # time. (Paired with the +1 semantic reprompt in llm/programming.py.)
+      timeout_seconds: 90.0
+      max_tokens: 4096
       retry:
         max_attempts: 1
         initial_backoff_seconds: 0.0

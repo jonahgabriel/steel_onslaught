@@ -21,7 +21,10 @@ from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, SOPlanSource
 from steel_onslaught.llm.personas import Persona
-from steel_onslaught.llm.programming import LLMProgrammingPilot
+from steel_onslaught.llm.programming import (
+    _DEFAULT_SEMANTIC_RETRY_LIMIT,
+    LLMProgrammingPilot,
+)
 from steel_onslaught.llm.schemas import (
     LlmResponse,
     LlmSemanticExhaustedError,
@@ -440,6 +443,43 @@ def test_default_failure_policy_exhausts_bounded_retries_on_invalid_plans(
     assert client.requests[2].persona == "opportunist.repair.2"
     for repair in client.requests[1:]:
         assert "REJECTED" in repair.system_prompt
+
+
+def test_default_semantic_retry_budget_is_three_extra_attempts() -> None:
+    """Balance round 2 (abort-rate cut): the default reprompt budget is raised
+    from 2 to 3 so a verbose live provider gets one more self-correction chance
+    before the match ends on ``provider_semantic_failure``."""
+
+    assert _DEFAULT_SEMANTIC_RETRY_LIMIT == 3
+
+
+def test_default_pilot_uses_the_raised_budget_before_exhausting() -> None:
+    """A pilot built without an explicit limit reprompts the raised number of
+    times (retry_limit + 1 = 4 total provider calls) and still reaches the
+    classified terminal — the #115 stall guarantee holds under the larger
+    budget (the loop is bounded, never infinite)."""
+
+    client = _ResponseClient("this is not a json object at all")
+    # No semantic_retry_limit kwarg -> the shipped default is used.
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+    )
+
+    with pytest.raises(LlmSemanticExhaustedError) as excinfo:
+        program_for_seat(pilot, _observation())
+
+    # 1 initial attempt + 3 bounded reprompts = 4 real provider completions.
+    assert len(client.requests) == 4
+    assert excinfo.value.attempts == 4
+    assert excinfo.value.semantic_failure_code == "malformed_json"
+    assert client.requests[0].persona == "opportunist"
+    assert [req.persona for req in client.requests[1:]] == [
+        "opportunist.repair.1",
+        "opportunist.repair.2",
+        "opportunist.repair.3",
+    ]
 
 
 def test_default_policy_retry_recovers_when_the_model_self_corrects() -> None:
