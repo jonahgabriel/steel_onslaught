@@ -6,7 +6,13 @@ weapon_class: siege
 range: 50
 damage: 45
 pressure_cost: 20
-heat_generated: 15
+# c11 Overpressure Cooldown: heat_generated 15->20 so sustained artillery+harpoon
+# fire accumulates heat toward the Bessemer-90 lockout ceiling (28) and forces a
+# vent. Chosen by a measured 24-seed sweep (see PR body): at this level the
+# overpressure handler holds peak sniper heat ~36 (below redline 80, no rupture)
+# while the same economy WITHOUT the handler climbs to ~51 — the self-regulating
+# duty cycle the panel wanted, not a self-immolation. This is the sniper rate-tax.
+heat_generated: 20
 cooldown_ticks: 5
 accuracy_curve:
   - range: 20

@@ -91,6 +91,7 @@ def _observation() -> ModelSOProgrammingObservation:
         regeneration_per_tick=5,
         heat_current=10,
         heat_redline_threshold=80,
+        heat_capacity=100,
         heat_rupture_threshold=100,
         heat_vent_rate=5,
         status_redline=False,
@@ -243,6 +244,40 @@ def test_programming_request_carries_typed_evidence_and_card_context() -> None:
     ]
     assert [entry["available_copies"] for entry in context["legal_hand"]] == [1, 1, 1]
     assert "ONLY legal card IDs" in request.system_prompt
+
+
+def test_programming_prompt_surfaces_heat_capacity_and_thermal_lockout() -> None:
+    """c11 legibility: the pilot MUST see heat_capacity and the derived thermal
+    overpressure read in its decision inputs, or the vent window goes unused."""
+
+    client = _ResponseClient(_response())
+    pilot = LLMProgrammingPilot(client=client, persona=_persona())
+
+    program_for_seat(pilot, _observation())
+
+    request = client.requests[0]
+    context = json.loads(request.user_prompt)
+    own = context["own_observation"]
+    # The raw boiler carries the ceiling, and a derived thermal block pre-computes
+    # the overpressure decision so the LLM can time the vent/rush.
+    assert "heat_capacity" in own["boiler"]
+    thermal = own["thermal"]
+    assert set(thermal) == {
+        "heat_current",
+        "heat_capacity",
+        "heat_headroom",
+        "heat_vent_rate",
+        "next_shot_heat",
+        "next_shot_locks_out",
+        "ticks_to_vent_lockout",
+    }
+    assert thermal["heat_capacity"] == own["boiler"]["heat_capacity"]
+    assert (
+        thermal["heat_headroom"] == own["boiler"]["heat_capacity"] - own["boiler"]["heat_current"]
+    )
+    assert isinstance(thermal["next_shot_locks_out"], bool)
+    # The instruction block explains what the flag means.
+    assert "next_shot_locks_out" in request.system_prompt
 
 
 def test_split_programming_request_uses_partition_descriptor_before_provider_call() -> None:

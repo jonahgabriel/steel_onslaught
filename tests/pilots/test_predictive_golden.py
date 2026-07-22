@@ -102,6 +102,7 @@ def _boiler(
         regeneration_per_tick=5,
         heat_current=heat,
         heat_redline_threshold=redline,
+        heat_capacity=rupture,
         heat_rupture_threshold=rupture,
         heat_vent_rate=10,
         status_redline=False,

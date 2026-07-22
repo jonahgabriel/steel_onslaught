@@ -134,6 +134,7 @@ def _make_boiler(
         regeneration_per_tick=4,
         heat_current=heat_current,
         heat_redline_threshold=heat_redline_threshold,
+        heat_capacity=heat_rupture_threshold,
         heat_rupture_threshold=heat_rupture_threshold,
         heat_vent_rate=0,
         status_redline=heat_current >= heat_redline_threshold,

@@ -1487,6 +1487,7 @@ class MatchRunner:
             pressure_maximum=boiler_spec.pressure_capacity,
             regeneration_per_tick=boiler_spec.regen_per_tick,
             heat_current=0,
+            heat_capacity=boiler_spec.heat_capacity,
             heat_redline_threshold=boiler_spec.redline_threshold,
             heat_rupture_threshold=boiler_spec.rupture_threshold,
             heat_vent_rate=boiler_spec.vent_rate,

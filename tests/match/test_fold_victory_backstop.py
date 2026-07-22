@@ -105,6 +105,7 @@ def _mech_dict(mech_id: str, player_id: str) -> dict[str, Any]:
             "regeneration_per_tick": 5,
             "heat_current": 0,
             "heat_redline_threshold": 80,
+            "heat_capacity": 100,
             "heat_rupture_threshold": 100,
             "heat_vent_rate": 5,
             "status_redline": False,

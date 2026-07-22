@@ -43,6 +43,7 @@ def _boiler_state(*, pressure: int = 40, heat: int = 20) -> ModelSOBoilerState:
         regeneration_per_tick=3,
         heat_current=heat,
         heat_redline_threshold=80,
+        heat_capacity=100,
         heat_rupture_threshold=100,
         heat_vent_rate=5,
         status_redline=False,

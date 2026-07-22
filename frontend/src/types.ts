@@ -136,6 +136,11 @@ export interface SOBoilerState {
   pressure_maximum: number;
   regeneration_per_tick: number;
   heat_current: number;
+  /**
+   * Overpressure-cooldown lockout ceiling (c11). Optional on the wire: ledgers
+   * predating the field default it to heat_rupture_threshold when absent.
+   */
+  heat_capacity: number;
   heat_redline_threshold: number;
   heat_rupture_threshold: number;
   heat_vent_rate: number;
@@ -1660,9 +1665,17 @@ const BOILER_FIELDS = [
   "modifier_mode_switch_heat_delta",
 ] as const;
 
+// Required fields plus the c11 heat_capacity, which is accepted but not required
+// (legacy ledgers omit it and it is defaulted from heat_rupture_threshold).
+const BOILER_ALLOWED_FIELDS = [...BOILER_FIELDS, "heat_capacity"] as const;
+
 function parseBoilerState(value: unknown, context: string): SOBoilerState {
   const record = asRecord(value, context);
-  rejectUnknown(record, BOILER_FIELDS, context);
+  // heat_capacity (c11) is a known-but-optional field: a ledger persisted
+  // before the overpressure-cooldown lockout carries no key at all, so it is
+  // accepted by rejectUnknown yet not demanded by requireFields, then defaulted
+  // to heat_rupture_threshold below — mirroring the plan_source legacy path.
+  rejectUnknown(record, BOILER_ALLOWED_FIELDS, context);
   requireFields(record, BOILER_FIELDS, context);
   if (record["schema_version"] !== "0.1.0") {
     fail(context, 'field "schema_version" must be "0.1.0"');
@@ -1680,6 +1693,10 @@ function parseBoilerState(value: unknown, context: string): SOBoilerState {
     pressure_maximum: positiveInt(record, "pressure_maximum", context),
     regeneration_per_tick: nonNegativeInt(record, "regeneration_per_tick", context),
     heat_current: nonNegativeInt(record, "heat_current", context),
+    heat_capacity:
+      "heat_capacity" in record
+        ? positiveInt(record, "heat_capacity", context)
+        : positiveInt(record, "heat_rupture_threshold", context),
     heat_redline_threshold: positiveInt(record, "heat_redline_threshold", context),
     heat_rupture_threshold: positiveInt(record, "heat_rupture_threshold", context),
     heat_vent_rate: nonNegativeInt(record, "heat_vent_rate", context),
@@ -1705,6 +1722,9 @@ function parseBoilerState(value: unknown, context: string): SOBoilerState {
   };
   if (parsed.heat_current > parsed.heat_rupture_threshold) {
     fail(context, "heat_current must not exceed heat_rupture_threshold");
+  }
+  if (parsed.heat_capacity > parsed.heat_rupture_threshold) {
+    fail(context, "heat_capacity must not exceed heat_rupture_threshold");
   }
   return parsed;
 }

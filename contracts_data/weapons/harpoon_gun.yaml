@@ -6,7 +6,12 @@ weapon_class: heavy
 range: 30
 damage: 28
 pressure_cost: 14
-heat_generated: 6
+# c11 Overpressure Cooldown: heat_generated 6->12. Hostile review found the
+# original 6 let the sniper harpoon-kite the 12-30 band heat-free, defeating the
+# whole mechanic. At 12 the mid-range weapon also folds into the shared heat
+# pool, so the lockout gates BOTH weapons, not just artillery. The exact value
+# came from the same 24-seed sweep as artillery (see PR body).
+heat_generated: 12
 cooldown_ticks: 4
 accuracy_curve:
   - range: 0

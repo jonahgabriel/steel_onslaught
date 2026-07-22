@@ -151,6 +151,7 @@ def _mech_state(
         regeneration_per_tick=5,
         heat_current=0,
         heat_redline_threshold=70,
+        heat_capacity=100,
         heat_rupture_threshold=100,
         heat_vent_rate=8,
         status_redline=False,

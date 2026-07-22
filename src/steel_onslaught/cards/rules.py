@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from steel_onslaught.contracts.card import SOCardCategory
+from steel_onslaught.contracts.card import ModelSOCard, SOCardCategory
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, ModelSOPlanRegister
 from steel_onslaught.pilots.programming import (
     CardProgrammingRuleHandler,
@@ -398,6 +398,149 @@ class CloseTheGapRuleHandler:
         return _restamp(proposed_plan, registers, self.metadata.handler_id)
 
 
+class OverpressureCooldownRuleHandler:
+    """c11 Overpressure Cooldown — a heat-lockout resource on the shared pool.
+
+    This is the allowlisted, plan-time half of the c11 balance fix. It folds the
+    proposed round's fire/vent registers over the pilot's *own* event-sourced
+    heat pool (``boiler.heat_current``) and, whenever the next admissible shot
+    would cross the boiler's overpressure ceiling (``boiler.heat_capacity``),
+    EXCHANGES that attack register with a later vent register in the same round
+    (a multiset-preserving permutation, never a substitution): the vent moves
+    earlier to cool this tick and the shot is deferred to the vent's slot, where
+    it is re-gated. If the dealt round holds no spendable vent the shot fires and
+    the dormant redline backstop remains. The effect is simultaneously a sniper
+    RATE-tax (fewer shells per approach) and a brawler APPROACH-tool (the
+    forced-vent register is a non-firing window to close distance).
+
+    It is intentionally NOT a hidden core-sim conditional: it is a pure
+    transform of a typed plan against the immutable programming observation,
+    identical for the LLM programmer and the deterministic priority planner, and
+    revalidated against the dealt hand by ``program_for_seat``. The runtime heat
+    economy (WEAPON_FIRED adds ``heat_generated``, MATCH_TICK vents
+    ``heat_vent_rate``) is the source of truth; this handler only decides which
+    registers are allowed to fire, so replay stays exact from the committed plan.
+
+    Projection model (paced cadence: one register resolves per tick):
+      - Cooldowns are seeded from ``weapons[slot].cooldown_remaining_ticks`` and
+        decremented one tick per register, so an attack the weapon cannot yet
+        fire is never counted as heat and never swapped (it would resolve as a
+        no-op regardless — addressing the "don't overcount the effect" review).
+      - Each register-tick vents ``heat_vent_rate`` first, then a firing register
+        adds ``heat_generated`` — mirroring the runtime tick order (vent on
+        MATCH_TICK, then WEAPON_FIRED during the card round).
+      - A fired weapon is modeled as unavailable for the remainder of the round
+        (base cooldowns are not surfaced in the observation; artillery/harpoon
+        cooldowns exceed a 5-register round, so this round-granularity is exact
+        for the c11 loadouts and conservative otherwise).
+    """
+
+    descriptor: ModelSOCardRuleHandlerDescriptor = _descriptor(
+        handler_id="overpressure_cooldown",
+        version="v1.0.0",
+        implementation="steel_onslaught.cards.rules.OverpressureCooldownRuleHandler",
+        display_name="Overpressure cooldown (heat lockout)",
+        description=(
+            "Fold the round's shots over the boiler heat pool; when the next shot would "
+            "cross heat_capacity, force an emergency vent (or a non-attack card) instead. "
+            "A sniper rate-tax and the brawler's approach window. No-op when no shot overheats."
+        ),
+    )
+    metadata: ModelSOCardRuleHandlerMetadata = descriptor.metadata
+
+    def apply(
+        self,
+        observation: ModelSOProgrammingObservation,
+        proposed_plan: ModelSOPlanCommittedPayload,
+    ) -> ModelSOPlanCommittedPayload:
+        boiler = observation.pilot_observation.boiler
+        weapons = observation.pilot_observation.weapons
+        capacity = boiler.heat_capacity
+        vent_rate = boiler.heat_vent_rate
+        hand_cards = {card.id: card for card in observation.hand_cards}
+
+        # The result is a PERMUTATION of the proposed round's cards across the
+        # same register slots — never a substitution with an unused card. The
+        # deterministic priority planner consumes the whole hand (no card is
+        # left over to swap in), so a heat-blocked attack is EXCHANGED with a
+        # later non-attack register (a vent, preferred): the vent moves earlier
+        # to cool, the shot is deferred to the later slot (and re-gated there).
+        # Multiset-preserving, so ``_validate_plan`` accepts it.
+        result_ids = [str(register.card_id) for register in proposed_plan.registers]
+
+        cooldown: dict[int, int] = {
+            slot: max(0, weapon.cooldown_remaining_ticks) for slot, weapon in enumerate(weapons)
+        }
+        locked_for_round = len(proposed_plan.registers) + 1
+
+        projected = boiler.heat_current
+        changed = False
+
+        for position in range(len(result_ids)):
+            # One tick elapses per register in the paced cadence.
+            for cd_slot in cooldown:
+                cooldown[cd_slot] = max(cooldown[cd_slot] - 1, 0)
+            card = hand_cards[result_ids[position]]
+            slot = card.effect.weapon_slot if card.category is SOCardCategory.ATTACK else None
+            if slot is None or slot < 0 or slot >= len(weapons):
+                # Non-attack, or an unfielded hardpoint: one tick passes, cool.
+                projected = max(projected - vent_rate, 0)
+                continue
+            if cooldown[slot] > 0:
+                # Cooldown-rejected at runtime: fires nothing, no heat, so it is
+                # not a real overheat and must not be swapped or counted.
+                projected = max(projected - vent_rate, 0)
+                continue
+            heat_after_vent = max(projected - vent_rate, 0)
+            heat_generated = weapons[slot].heat_generated
+            if heat_after_vent + heat_generated >= capacity:
+                other = self._later_vent(hand_cards, result_ids, position + 1)
+                if other is not None:
+                    # Exchange the overheating shot with a later VENT register:
+                    # the vent moves earlier to cool this tick, the shot is
+                    # deferred to the vent's old slot and re-gated there.
+                    # Movement/mode registers are deliberately left in place so
+                    # the lockout is a "vent instead of shoot" resource, not a
+                    # repositioning side effect.
+                    result_ids[position], result_ids[other] = (
+                        result_ids[other],
+                        result_ids[position],
+                    )
+                    changed = True
+                    projected = heat_after_vent
+                    continue
+                # No vent card left to spend this round: the shot fires rather
+                # than abort a live round on a hand-composition accident. Heat
+                # crossing the ceiling without a vent to spend is exactly when
+                # the dormant redline backstop remains available.
+                projected = min(heat_after_vent + heat_generated, capacity)
+                cooldown[slot] = locked_for_round
+                continue
+            projected = heat_after_vent + heat_generated
+            cooldown[slot] = locked_for_round
+
+        if not changed:
+            return proposed_plan
+        registers = tuple(
+            ModelSOPlanRegister(register_index=register.register_index, card_id=card_id)
+            for register, card_id in zip(proposed_plan.registers, result_ids, strict=True)
+        )
+        return _restamp(proposed_plan, registers, self.metadata.handler_id)
+
+    @staticmethod
+    def _later_vent(
+        hand_cards: Mapping[str, ModelSOCard],
+        result_ids: list[str],
+        start: int,
+    ) -> int | None:
+        """Index of the first later register holding a vent card, if any."""
+
+        for index in range(start, len(result_ids)):
+            if hand_cards[result_ids[index]].category is SOCardCategory.VENT:
+                return index
+        return None
+
+
 def _restamp(
     proposed_plan: ModelSOPlanCommittedPayload,
     registers: tuple[ModelSOPlanRegister, ...],
@@ -432,6 +575,7 @@ def default_rule_registry() -> CardProgrammingRuleRegistry:
             PreferAttackCardsRuleHandler(),
             EnsureMovementCardRuleHandler(),
             CloseTheGapRuleHandler(),
+            OverpressureCooldownRuleHandler(),
         ),
     )
 
@@ -441,6 +585,7 @@ __all__ = [
     "CardProgrammingRuleRegistry",
     "CloseTheGapRuleHandler",
     "EnsureMovementCardRuleHandler",
+    "OverpressureCooldownRuleHandler",
     "PreferAttackCardsRuleHandler",
     "default_rule_registry",
 ]
