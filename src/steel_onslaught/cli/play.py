@@ -112,6 +112,10 @@ from steel_onslaught.match.composition import (
 )
 from steel_onslaught.match.runner import MatchIdentity
 from steel_onslaught.match.state import ModelSOMatchState
+from steel_onslaught.pilots.inspection import (
+    project_effective_prompts,
+    project_rule_catalog,
+)
 
 BrowserLiveProviderCapability = (
     ProcessLocalOneShotLiveProviderCapability
@@ -1813,6 +1817,11 @@ def _configured_browser_server(
             overlay,
             roster=roster,
             model_catalog=model_catalog,
+            # Carry the operator prompt/rule inspection projections so the
+            # browser workbench can render (and derive overlay edits for) the
+            # exact effective prompts this overlay flies with, before a match.
+            prompt_provenance=project_effective_prompts(overlay),
+            rule_catalog=project_rule_catalog(overlay),
         ),
         gateway=None,
         bus=None,

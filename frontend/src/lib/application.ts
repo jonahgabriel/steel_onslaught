@@ -1,5 +1,11 @@
 import { BrowserCommandGateway, type CommandSocketFactory } from "./command_gateway";
 import { EventStream, type WebSocketLike } from "./event_stream";
+import {
+  type MatchPromptProvenance,
+  parseMatchPromptProvenance,
+  parseRuleCatalog,
+  type RuleCatalog,
+} from "./prompt_rules";
 import { MatchTransport } from "./transport";
 
 export const FRONTEND_BOOTSTRAP_PATH = "/steel-onslaught/bootstrap.json";
@@ -102,6 +108,14 @@ export interface FrontendBootstrap {
   readonly player_roster: PlayerRosterProjection | null;
   readonly command_gateway: FrontendCommandGatewayBinding | null;
   readonly model_catalog: ModelCatalogProjection | null;
+  /**
+   * Read-only operator inspection projections for the prompt/rule workbench.
+   * They are the exact `so prompts show --json` / `so rules list --json`
+   * documents, so a browser edit derives the same overlay fragment the CLI
+   * would. Null on replay-only decks and older bundles.
+   */
+  readonly prompt_provenance: MatchPromptProvenance | null;
+  readonly rule_catalog: RuleCatalog | null;
 }
 
 export interface BootstrapHeaders {
@@ -513,6 +527,8 @@ export function parseFrontendBootstrap(value: unknown): FrontendBootstrap {
   // fail through the closed-key check below.
   if (!("command_gateway" in root)) root["command_gateway"] = null;
   if (!("model_catalog" in root)) root["model_catalog"] = null;
+  if (!("prompt_provenance" in root)) root["prompt_provenance"] = null;
+  if (!("rule_catalog" in root)) root["rule_catalog"] = null;
   exactKeys(
     root,
     [
@@ -523,6 +539,8 @@ export function parseFrontendBootstrap(value: unknown): FrontendBootstrap {
       "player_roster",
       "command_gateway",
       "model_catalog",
+      "prompt_provenance",
+      "rule_catalog",
     ],
     "root",
   );
@@ -572,6 +590,11 @@ export function parseFrontendBootstrap(value: unknown): FrontendBootstrap {
     command_gateway:
       root["command_gateway"] === null ? null : commandGateway(root["command_gateway"]),
     model_catalog: root["model_catalog"] === null ? null : modelCatalog(root["model_catalog"]),
+    prompt_provenance:
+      root["prompt_provenance"] === null
+        ? null
+        : parseMatchPromptProvenance(root["prompt_provenance"]),
+    rule_catalog: root["rule_catalog"] === null ? null : parseRuleCatalog(root["rule_catalog"]),
   };
 }
 

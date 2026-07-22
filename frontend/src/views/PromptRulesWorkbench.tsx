@@ -11,10 +11,11 @@
  * derived fragment is presented for the operator to save into an overlay
  * (equivalently, `so prompts set` / `so rules set` emit the same fragment).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   computeOverlayFragment,
   type MatchPromptProvenance,
+  type OverlayFragment,
   type RuleCatalog,
   splitDoctrine,
 } from "../lib/prompt_rules";
@@ -22,11 +23,20 @@ import {
 export interface PromptRulesWorkbenchProps {
   readonly provenance: MatchPromptProvenance;
   readonly catalog: RuleCatalog;
+  /**
+   * Observe the derived overlay fragment whenever an edit changes it. This is
+   * the SAME fragment `so prompts set` / `so rules set` emit: a mounting
+   * surface (the setup screen) uses it to surface that operator edits are
+   * pending, which take effect only through the overlay -> composition ->
+   * MATCH_STARTED provenance path.
+   */
+  readonly onFragmentChange?: (fragment: OverlayFragment) => void;
 }
 
 export default function PromptRulesWorkbench({
   provenance,
   catalog,
+  onFragmentChange,
 }: PromptRulesWorkbenchProps): React.JSX.Element {
   const baseDoctrines = useMemo(() => {
     const map = new Map<string, string>();
@@ -47,6 +57,10 @@ export default function PromptRulesWorkbench({
       }),
     [provenance, catalog, doctrines, enabled],
   );
+
+  useEffect(() => {
+    onFragmentChange?.(fragment);
+  }, [fragment, onFragmentChange]);
 
   return (
     <section className="prompt-rules-workbench" aria-label="Prompt and rule workbench">
