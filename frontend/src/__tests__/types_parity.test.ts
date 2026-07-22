@@ -237,6 +237,42 @@ describe("types parity against Python-emitted fixtures", () => {
     ).toThrow(/plan source/);
   });
 
+  it("accepts every match end reason the Python enum can emit", () => {
+    // The provider_semantic_failure terminal is the live-provider stall fix:
+    // a bound seat that never produced an admissible plan ends the match with
+    // this distinct reason. The strict parser must accept it or streaming the
+    // terminal to the browser would hard fail.
+    for (const reason of [
+      "last_mech_standing",
+      "pilot_killed",
+      "draw_max_ticks",
+      "draw_mutual_destruction",
+      "aborted",
+      "aborted_runaway",
+      "provider_semantic_failure",
+    ]) {
+      const parsed = parseEnvelope(
+        corruptPayload("match_ended", (payload) => {
+          payload["reason"] = reason;
+          payload["winner_id"] = null;
+        }),
+      );
+      const payload = objectValue(
+        (parsed as unknown as MutableObject)["payload"],
+        "match_ended.payload",
+      );
+      expect(payload["reason"]).toBe(reason);
+    }
+
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_ended", (payload) => {
+          payload["reason"] = "invented_reason";
+        }),
+      ),
+    ).toThrow(/match end reason/);
+  });
+
   it("keeps card event payloads closed and semantically strict", () => {
     expect(() =>
       parseEnvelope(

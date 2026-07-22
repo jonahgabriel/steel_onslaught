@@ -122,7 +122,8 @@ export type SOMatchEndReason =
   | "draw_max_ticks"
   | "draw_mutual_destruction"
   | "aborted"
-  | "aborted_runaway";
+  | "aborted_runaway"
+  | "provider_semantic_failure";
 
 /** Mirror of steel_onslaught.contracts.boiler.ModelSOBoilerState. */
 export interface SOBoilerState {
@@ -990,7 +991,8 @@ function parseEndReason(value: unknown, context: string): SOMatchEndReason {
     value === "draw_max_ticks" ||
     value === "draw_mutual_destruction" ||
     value === "aborted" ||
-    value === "aborted_runaway"
+    value === "aborted_runaway" ||
+    value === "provider_semantic_failure"
   ) {
     return value;
   }

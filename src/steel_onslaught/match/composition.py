@@ -1184,6 +1184,8 @@ def build_card_programmers(
             # this is never an implicit provider/stub fallback.
             failure_policy=binding.failure_policy,
             correlation_id=correlation_id,
+            # Names the failing provider on a bounded-retry semantic terminal.
+            provider_id=provider_id,
         )
     return MappingProxyType(programmers)
 

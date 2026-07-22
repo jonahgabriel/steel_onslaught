@@ -144,6 +144,48 @@ class LlmCompletionBoundaryError(LlmTransportError):
         super().__init__(message, retryable=retryable)
 
 
+class LlmSemanticExhaustedError(LlmTransportError):
+    """A live provider never produced a semantically admissible plan.
+
+    Raised only after a *bounded* number of same-model reprompts each failed
+    the strict plan contract (malformed JSON, unknown/unavailable card, or
+    invalid action parameters).  It is deliberately distinct from
+    ``LlmCompletionBoundaryError``: a boundary failure means the completion was
+    truncated/timed out, while this means the provider *answered every time*
+    but never with a plan the engine could accept.
+
+    Both belong to the same live-play termination family (``LlmTransportError``)
+    so the match runner can convert either into durable ``MATCH_ENDED``
+    evidence.  A boundary maps to ``aborted``; a semantic exhaustion maps to the
+    distinct ``provider_semantic_failure`` terminal so a self-correction loop
+    that ran out of attempts is never confused with a truncated completion or a
+    clean gameplay outcome.  The failing seat, provider, model, and semantic
+    code travel with the exception so the terminal is diagnosable without a
+    ledger join (the per-attempt ``llm_completion_failed`` events remain the
+    primary durable record).
+    """
+
+    def __init__(
+        self,
+        *,
+        seat: str,
+        semantic_failure_code: LlmSemanticFailureCode,
+        attempts: int,
+        provider_id: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        self.seat = seat
+        self.semantic_failure_code = semantic_failure_code
+        self.attempts = attempts
+        self.provider_id = provider_id
+        self.model = model
+        super().__init__(
+            f"live provider produced no admissible plan for seat {seat!r} after "
+            f"{attempts} attempt(s) (last failure: {semantic_failure_code})",
+            retryable=False,
+        )
+
+
 @runtime_checkable
 class ProtocolSecretResolver(Protocol):
     def resolve(self, reference: ModelSOSecretRef) -> str: ...
@@ -264,6 +306,7 @@ __all__ = [
     "LlmCompletionBoundaryError",
     "LlmCompletionFailureReason",
     "LlmResponse",
+    "LlmSemanticExhaustedError",
     "LlmSemanticFailureCode",
     "LlmTransportError",
     "LlmUsage",

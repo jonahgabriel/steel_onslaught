@@ -50,10 +50,17 @@ def _safe_finish_reason(response: LlmResponse | None) -> str | None:
 
 
 class LlmSemanticError(ValueError):
-    """A provider response failed the consumer's strict semantic contract."""
+    """A provider response failed the consumer's strict semantic contract.
 
-    def __init__(self, code: str) -> None:
+    ``detail`` optionally carries the sanitized underlying validation message
+    (never provider text) so a bounded same-model reprompt can tell the model
+    exactly which constraint it violated.  The classified ``code`` remains the
+    only value written to the ledger's ``semantic_failure_code`` field.
+    """
+
+    def __init__(self, code: str, *, detail: str | None = None) -> None:
         self.code = _SEMANTIC_FAILURE_CODE_ADAPTER.validate_python(code, strict=True)
+        self.detail = detail
         super().__init__(self.code)
 
 
