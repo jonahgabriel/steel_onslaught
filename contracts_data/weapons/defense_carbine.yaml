@@ -20,11 +20,21 @@ damage: 20
 # SUSTAINABILITY against the REAL Bessemer-90 economy (regen 5/tick pressure,
 # cap 90; vent 4/tick heat; c11 overpressure lockout ceiling 28) — NOT free-fire
 # DPS. Paced cadence resolves one register per tick; the sniper's weapon hand
-# quota is 3/round over a 5-register round, and cooldown 1 lets the carbine fire
-# on every weapon register, so the worst case is 3 carbine shots per 5 ticks.
-#   PRESSURE: spend 3*5 = 15 per round; regen 5*5 = 25 per round -> net +10/round
-#             (steady draw 15/25 = 0.6x regen). The carbine alone never starves.
-#   HEAT:     add 3*3 = 9 per round; vent 4*5 = 20 per round -> net -11/round.
+# quota is 3/round over a 5-register round, but cooldown 3 gates the carbine to
+# at most one fire per 3 ticks, so the sustained worst case is ~1 carbine shot
+# per 5-tick round (5 // 3), down from 3 shots at cooldown 1.
+#   BALANCE INTENT (c11 throttle): at cooldown 1 the carbine fired on every
+#     weapon register and BACKFILLED the exact point-blank damage the round-4
+#     range-band falloff stripped from the mortar — the sniper's DMG-OUT barely
+#     moved (59->62) and 0% brawler win-rate held. cooldown 3 cuts sustained
+#     point-blank output ~66% so the carbine stays a real occasional close-range
+#     answer without refunding the stripped damage, restoring the kill-conversion
+#     the range band was meant to create. It is still weak-but-real, never a
+#     primary — only its cadence is throttled here (damage/range/pressure/heat
+#     are unchanged from the round-4 carbine).
+#   PRESSURE: spend 1*5 = 5 per round; regen 5*5 = 25 per round -> net +20/round
+#             (steady draw 5/25 = 0.2x regen). The carbine alone never starves.
+#   HEAT:     add 1*3 = 3 per round; vent 4*5 = 20 per round -> net -17/round.
 #             Carbine-only fire trends the heat pool to 0; it never self-heats.
 #   c11 NON-LOCK: the max heat any plan can reach is the ceiling 28 (the
 #             overpressure_cooldown handler defers shots that would cross it). A
@@ -36,7 +46,10 @@ damage: 20
 #             throttled, the carbine is the sustainable fallback.
 pressure_cost: 5
 heat_generated: 3
-cooldown_ticks: 1
+# c11 throttle: 1 -> 3. Gates the carbine to ~1 fire per 3 ticks so it no longer
+# backfills the point-blank damage the round-4 range-band falloff strips from the
+# mortar. See the SUSTAINABILITY block above for the per-round arithmetic.
+cooldown_ticks: 3
 accuracy_curve:
   - range: 0
     hit_probability: 0.90

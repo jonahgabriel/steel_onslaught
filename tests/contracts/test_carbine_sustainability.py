@@ -48,13 +48,29 @@ _CHASSIS = _ROOT / "chassis"
 # The sniper's shipped split-deck seat parameters (see
 # tactical_split_range_band_evasion_qwen.yaml): 5 registers per paced round, of
 # which up to 3 are weapon registers. Paced cadence resolves one register per
-# tick, so a round spans 5 MATCH_TICKs and the carbine (cooldown 1) can fire on
-# every one of the 3 weapon registers. This is the worst case for sustainability.
+# tick, so a round spans 5 MATCH_TICKs.
 _ROUND_TICKS = 5
 _WEAPON_REGISTERS_PER_ROUND = 3
 
 # The shipped range-band binding (tactical_split_range_band_evasion_qwen.yaml).
 _MIN_WEAPON_RANGE = 20
+
+
+def _carbine_fires_per_round(cooldown_ticks: int) -> int:
+    """Sustained worst-case carbine fires in one paced round.
+
+    Two independent caps apply: the sniper may spend at most
+    ``_WEAPON_REGISTERS_PER_ROUND`` weapon registers on the carbine, and
+    ``cooldown_ticks`` forces a >= ``cooldown_ticks``-MATCH_TICK gap between
+    fires, admitting at most ``_ROUND_TICKS // cooldown_ticks`` sustained fires
+    per ``_ROUND_TICKS``-tick round. The effective sustained rate is the smaller
+    of the two. At cooldown 1 the register quota binds (3/round); at the shipped
+    cooldown 3 the cooldown binds (~1/round). This is the c11 throttle: the same
+    formula reproduces the pre-throttle worst case, so the drop is proven by the
+    cooldown value alone.
+    """
+    cooldown_admitted = _ROUND_TICKS // cooldown_ticks
+    return min(_WEAPON_REGISTERS_PER_ROUND, cooldown_admitted)
 
 
 def _weapon(filename: str) -> ModelSOWeaponSpec:
@@ -74,16 +90,34 @@ def test_shipped_carbine_values() -> None:
     assert carbine.damage == 20
     assert carbine.pressure_cost == 5
     assert carbine.heat_generated == 3
-    assert carbine.cooldown_ticks == 1
+    # c11 throttle: cooldown 1 -> 3 gates sustained point-blank fire to ~1/round
+    # so the carbine stops backfilling the mortar's stripped damage.
+    assert carbine.cooldown_ticks == 3
+
+
+def test_carbine_cooldown_throttle_cuts_sustained_output() -> None:
+    """The c11 fix is the cooldown alone: at the shipped cooldown 3 the carbine's
+    sustained fires/round drop well below the pre-throttle cooldown-1 rate that
+    fully backfilled the mortar's range-band-stripped point-blank damage."""
+    carbine = _weapon("defense_carbine.yaml")
+    throttled = _carbine_fires_per_round(carbine.cooldown_ticks)
+    pre_throttle = _carbine_fires_per_round(1)
+    assert pre_throttle == 3  # register-quota-bound at cooldown 1
+    assert throttled == 1  # cooldown-bound at cooldown 3 (5 // 3)
+    # ~66% cut in sustained point-blank cadence (3 -> 1), the balance target.
+    assert throttled < pre_throttle
+    assert throttled <= pre_throttle // 3 + (1 if pre_throttle % 3 else 0)
 
 
 def test_carbine_pressure_is_sustainable() -> None:
-    """Firing the carbine on every weapon register never drains pressure: the
-    per-round spend is strictly below the per-round regen (net positive)."""
+    """Firing the carbine on every ADMISSIBLE weapon register never drains
+    pressure: the per-round spend is strictly below the per-round regen (net
+    positive). cooldown 3 only deepens the margin the cooldown-1 carbine had."""
     carbine = _weapon("defense_carbine.yaml")
     boiler = _bessemer()
 
-    spend_per_round = _WEAPON_REGISTERS_PER_ROUND * carbine.pressure_cost  # 3 * 5 = 15
+    fires = _carbine_fires_per_round(carbine.cooldown_ticks)  # 1 at cooldown 3
+    spend_per_round = fires * carbine.pressure_cost  # 1 * 5 = 5
     regen_per_round = _ROUND_TICKS * boiler.regen_per_tick  # 5 * 5 = 25
     assert spend_per_round < regen_per_round, (spend_per_round, regen_per_round)
     # Net per round is comfortably positive (pressure climbs back toward the cap).
@@ -91,12 +125,14 @@ def test_carbine_pressure_is_sustainable() -> None:
 
 
 def test_carbine_heat_is_sustainable() -> None:
-    """Firing the carbine on every weapon register never accumulates heat: the
-    per-round heat added is strictly below the per-round venting (net cooling)."""
+    """Firing the carbine on every admissible weapon register never accumulates
+    heat: the per-round heat added is strictly below the per-round venting (net
+    cooling). cooldown 3 only deepens the cooling margin."""
     carbine = _weapon("defense_carbine.yaml")
     boiler = _bessemer()
 
-    added_per_round = _WEAPON_REGISTERS_PER_ROUND * carbine.heat_generated  # 3 * 3 = 9
+    fires = _carbine_fires_per_round(carbine.cooldown_ticks)  # 1 at cooldown 3
+    added_per_round = fires * carbine.heat_generated  # 1 * 3 = 3
     vented_per_round = _ROUND_TICKS * boiler.vent_rate  # 5 * 4 = 20
     assert added_per_round < vented_per_round, (added_per_round, vented_per_round)
 
