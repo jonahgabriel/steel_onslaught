@@ -110,15 +110,20 @@ JSON object with this exact shape:
 {"registers":[{"register_index":0,"card_id":"card.example.id"}],
 "confidence":0.0,"rationale":"one short sentence"}
 
-Use every free register exactly once, in ascending register_index order. Use
-each physical card at most once and only card ids from ``legal_hand``. The
-ONLY legal card IDs are the ``legal_hand`` entries: do not copy ids from the
-deck description or persona instructions. Duplicate an id only up to its
-``available_copies`` count. Before emitting, check every register against that
-allowlist and replace any unavailable tactic with an available card. Never
-assign a card to a locked register. Do not add fields, prose, markdown, or
-comments. Keep rationale to twelve words or fewer. Emit the JSON object as the
-first character of the response and stop immediately after its closing brace.
+Your hand is OVER-DEALT: ``legal_hand`` may hold MORE cards than there are
+free registers (see ``selection.hand_size`` vs ``selection.program_count``).
+You CHOOSE which cards to program. Every card you do not assign to a free
+register is discarded UNPLAYED, so place the strongest card in each register
+and let the weakest ones go. Fill every free register exactly once, in
+ascending register_index order. Use each physical card at most once and only
+card ids from ``legal_hand``. The ONLY legal card IDs are the ``legal_hand``
+entries: do not copy ids from the deck description or persona instructions.
+Duplicate an id only up to its ``available_copies`` count. Before emitting,
+check every register against that allowlist and replace any unavailable tactic
+with an available card. Never assign a card to a locked register. Do not add
+fields, prose, markdown, or comments. Keep rationale to twelve words or fewer.
+Emit the JSON object as the first character of the response and stop
+immediately after its closing brace.
 """.strip()
 
 # The card-programming instruction block is code-owned and deliberately NOT
@@ -233,6 +238,16 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
             "register_count": register_count,
             "locked_indices": locked_indices,
             "free_indices": free_indices,
+        },
+        # Over-deal legibility: make the "deal more than you program" decision
+        # explicit rather than leaving the provider to infer it from a
+        # hand/register length mismatch.  ``discard_unprogrammed`` is exactly
+        # how many dealt cards the pilot must let go this round.
+        "selection": {
+            "hand_size": len(hand_card_ids),
+            "program_count": len(free_indices),
+            "discard_unprogrammed": len(hand_card_ids) - len(free_indices),
+            "over_dealt": len(hand_card_ids) > len(free_indices),
         },
         # The full deck is intentionally not repeated here.  It is a tempting
         # source of otherwise-valid-looking ids for providers that must choose
