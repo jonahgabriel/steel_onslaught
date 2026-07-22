@@ -28,13 +28,17 @@ explicit failure mode, not the default demo path.
 The finish line is evidence-based. “The UI loaded” or “a match reached a tick”
 is not sufficient; every gate below names the proof that must be retained.
 
-**The "durable terminal result" gate is empirically FAILING** as of the
-[2026-07-21 live run](#live-run--verified-gameplay-2026-07-21): a real Qwen match
-reached tick 31 then stalled with no `match_ended` when the engine rejected a
-provider plan as `invalid_action_parameters` and neither retried, terminated, nor
-degraded. Remediation is in flight as **PR #115** (bounded reprompt +
-classified `provider_semantic_failure` terminal). Until that lands and is
-re-proven live, treat this gate as red.
+**The "durable terminal result" gate is now GREEN for the stall class
+(2026-07-22).** The [2026-07-21 live run](#live-run--verified-gameplay-2026-07-21)
+had a real Qwen match stall at tick 31 with no `match_ended` when the engine
+rejected a provider plan as `invalid_action_parameters` and neither retried,
+terminated, nor degraded. **PR #115** (bounded reprompt + classified
+`provider_semantic_failure` terminal) **merged to `main`**; a keyless
+`uv run so play` match now plays through to a **real terminal, no stall**,
+live-verified end to end. **Residual, not a regression:** with the sniper
+`malformed_json` abort separately fixed on PR #116, a RED brawler
+`invalid_action_parameters` abort is now the dominant abort — a next-session
+follow-up, not a re-open of the stall gate.
 
 ## Current baseline (shipped, but not all proven)
 
@@ -74,9 +78,10 @@ Launch: `uv run so play` (zero flags, keyless). Provider: `Qwen3.6-35B-A3B` over
   completion_tokens: 176}`. The endpoint stayed healthy (re-probed 200). A Qwen
   plan the engine rejected as `invalid_action_parameters` halted the match with
   **no retry, no terminate, no recovery** — no `match_ended`, no victor. This is
-  the live-provider stall (`match-composition-02` class), being remediated in
-  **PR #115** (`fix/so-live-provider-stall-recovery`, bounded reprompt +
-  classified `provider_semantic_failure` terminal).
+  the live-provider stall (`match-composition-02` class), **resolved 2026-07-22
+  by PR #115** (`fix/so-live-provider-stall-recovery`, bounded reprompt +
+  classified `provider_semantic_failure` terminal), **now merged to `main`; a
+  keyless `so play` match reaches a real terminal, no stall (live-verified).**
 - **The brawler never brawled.** RED (berserker, short-range) fired **0 shots**;
   `weapon_fire_rejected` ×17 (out of range). It was chunked by blue's artillery
   on the approach and never closed. The speed/range tradeoff is not working — this
@@ -271,21 +276,23 @@ operating rule 9 has to be applied to whichever is chosen.
   rather than select. Loci: blocking-defects table below, plus
   `contracts-data-02/03/04/06/07`, `contracts-models-01`, `cards-01/04`,
   `pilots-bus-01`, `product-viral-04`.
-- **PR state (verified live 2026-07-21, `main` at `f869d6a`).** Merged to `main`
-  this session: **#111** (correct every wrong/missing terminal), **#110** (one
-  validated seat contract + LLM-only live decisions — the seat-identity fix),
-  **#109** (render card-cadence pilot reasoning in the deck); plus earlier #106/
-  #107 (late replay delivery, stale-match promotion). **Open, NOT yet on `main`:**
-  **#113** (one-command launch + start lifecycle), **#112** (every configured
-  model selectable per seat), **#114** (editable prompts + plug-in rule handlers),
-  **#115** (live-provider stall recovery), **#108** (this plan). **#81**
-  (movement-variety guard) and **#100** (preferred-range handler) are
-  **superseded by #114** and should be closed with #114 recorded as the
-  replacement. Read this plan with the fact in mind that **most of the fixes are
-  on open PRs, not on `main`** — the live run above used the keyless `so play`
-  path (open **#113**) on top of the merged seat-identity fix (**#110**), which is
-  why the seats rendered distinct while the still-unmerged stall recovery
-  (**#115**) meant the match froze with no terminal.
+- **PR state (verified 2026-07-22, `main` at `6a88c28`).** Merged to `main` this
+  session: **#110** (one validated seat contract + LLM-only live decisions — the
+  seat-identity fix), **#111** (correct every wrong/missing terminal), **#109**
+  (render card-cadence pilot reasoning in the deck), **#115** (live-provider stall
+  recovery), **#113** (one-command keyless launch + start lifecycle), **#112**
+  (every configured model selectable per seat), **#114** (editable prompts +
+  plug-in rule handlers / mounted workbench); plus earlier #106/#107 (late replay
+  delivery, stale-match promotion). **#81** (movement-variety guard) and **#100**
+  (preferred-range handler) are **closed as superseded by #114**. **Open, NOT on
+  `main`:** **#116** (balance investigation — CI green, unmerged, open merge
+  decision; see the balance section), **#117** (depth Phase A / over-deal — CI
+  green, mergeable, unmerged), **#108** (this plan). **The stall-blocked live run
+  above is now superseded:** keyless launch (#113), stall recovery (#115),
+  per-seat model selection (#112), and editable prompts / plug-in handlers (#114)
+  are all on `main`, so `uv run so play` now launches keyless and plays a full
+  match to a **real terminal (no stall)** with two distinct keyless Qwen personas
+  — live-verified end to end (`docs/evidence/2026-07-21-live-run/`).
 - Learning persists after-match evidence only, and the live path is **dead code,
   not merely disabled**. `LiveLearningCoordinator` is never instantiated in
   production, no concrete `LiveLearningEvaluator` implementation exists anywhere
@@ -298,6 +305,8 @@ operating rule 9 has to be applied to whichever is chosen.
   ever written, so live-learning state is neither durable nor replayable and
   depends on wall-clock ordering recorded nowhere.
   (`learning-adaptation-01/02/03/04`)
+  **Status:** untouched this session; now a **first-class next-session track**
+  (operator: "it's necessary") — wire it unified with depth, see Phase 3.
 - No larger battlefield contract exists. `foundry_60` is the authoritative
   current map; legacy `foundry` (40×40) remains valid only for old replays.
 - The full Python suite is not green in this environment solely because the
@@ -429,6 +438,12 @@ Settled in post-audit review. Constraints, not options.
    (`match-runner-fold-01`), never from a clock.
 2. **Pilots select cards.** Break `register_count == hand_size`; deal more than
    can be programmed so the discard is the decision (`cards-04`, approved).
+   **VALIDATED 2026-07-21 (PR #117, Phase A).** Over-deal (deal 8 / program 5)
+   produced genuinely intentful pruning, decisively better than random, and
+   tactical identity emerged from the *selection* not the deal (same 4/4 hand:
+   brawler keeps ADVANCE 0.94 vs sniper 0.30; dumps dead VENT 0.11 vs random
+   0.62). It needed **zero new code** — `hand_quota` was already the declarative
+   deal count. Green-lights utility cards + heat-drafting.
 3. **The map exists to create a speed/range tradeoff.** Archetypes are an
    explicit triangle: fast/brawler mechs move far per card, carry short weapon
    range, and must close under fire; sniper/heavy mechs move little, carry long
@@ -442,7 +457,106 @@ Settled in post-audit review. Constraints, not options.
    chunked on the approach by the sniper's artillery and `weapon_fire_rejected`
    ×17 (out of range). Today the tradeoff is all downside for the brawler with no
    mechanism to make closing pay off; this decision plus Phase 2.5 objectives are
-   what make it a real triangle rather than a losing archetype.
+   what make it a real triangle rather than a losing archetype. **Verified since:**
+   terrain blocking works (88% of shots blocked); the gap is *layout* — 336
+   symmetric-scatter cells help nobody — so the fix is asymmetric cover in a new
+   versioned arena (Phase 4), not the blocking mechanic.
+
+## 2026-07-21 session update — balance stopped, depth validated, learning next
+
+Measured or verified this session. Terse by design; do not inflate.
+
+### Balance investigation — four measured rounds, then stop (PR #116, unmerged)
+
+The lopsided fixed deck — brawler (light scout, 60 HP, short-range) vs sniper
+(heavy ironclad, 160 HP, long-range mortar + harpoon) — was probed with four
+measured live-Qwen rounds, all on **PR #116** (`feat/so-overpressure-cooldown`,
+head `74216c9`, **CI green, UNMERGED**):
+
+- **r1 — heat-lockout (c11):** did not fix. Taxes the sniper's heat, not its offense.
+- **r2 — brawler damage ×5.5** (machine_gun 8→44, shrapnel 12→66): brawler now
+  out-damages the sniper in some matches but **dies before converting**. Damage
+  ceiling solved; kill conversion not.
+- **r3 — moves-scaled evasion + strength sweep** (0.08/0.14/0.20): the *right*
+  survivability lever (sniper aimed hit-rate falls to 0.14 at max) but win-rate
+  **plateaus ~9%** — fixes being-hit, not kill-conversion, and pushing higher is
+  cheesy before fair. A survivability/flavor knob, not the win lever.
+- **r4 — sniper range-band + close-in carbine:** the range-band mechanism fired
+  (mortar in-band hit 0.72→0.33) but win-rate **still ~0%** — a point-blank
+  carbine backfilled the sniper's close-range hole.
+- **r4b — carbine throttle (cooldown 1→3) + sniper invalid-JSON fix:** still
+  **~5%** (pooled 1/43). The carbine theory was **falsified** — sniper DMG-OUT
+  stayed flat (62→64) regardless of carbine rate; the **harpoon + mortar core is
+  the killer, not the carbine**. The sniper JSON fix **worked**: blue
+  `malformed_json` aborts 3→0 across 56 matches.
+
+**Progress despite zero wins:** the brawler went from ~2 DMG-OUT to ~50 median
+(36% of the sniper's 160 HP) and survives ~4× longer; sniper JSON aborts
+eliminated. But the 60-vs-160 fixed deck **resisted four measured single-lever
+interventions**.
+
+**Decision (pre-agreed, now triggered): stop tuning this lopsided fixed-deck
+matchup.** Balance re-emerges via the **depth direction** (drafting + asymmetric
+matchups + objectives), not more knobs — as the heat-drafting design pass
+predicted. **PR #116 stays open** as real, verified, measured work; whether/what
+to merge is an **open decision** — the sniper-JSON fix is a standalone robustness
+win, but the balance numbers may be superseded by depth. **New residual:** with
+the sniper JSON abort fixed, a **RED brawler `invalid_action_parameters` abort**
+is now the dominant abort — next-session follow-up.
+
+### Depth thesis — VALIDATED (Phase A, PR #117, CI green, mergeable, unmerged)
+
+Over-dealing the hand (deal 8 / program 5) so the LLM **selects** which cards to
+play produced genuinely **intentful pruning**, decisively better than random —
+and tactical identity emerges from the **selection**, not the deal (same balanced
+4/4 hand: brawler keeps ADVANCE 0.94 vs sniper 0.30; dumps dead VENT 0.11 vs
+random 0.62). This is the "watch two models out-think each other" payoff,
+empirically confirmed. Over-deal needed **zero new code** — `hand_quota` was
+already the declarative deal count. This green-lights **utility cards +
+heat-drafting**, and validates design decision 2 and the Phase 2
+`register_count == hand_size` break. **Depth is now the active direction.**
+
+### Learning — necessary, first-class, next session
+
+Operator: "it's necessary." Not optional, not off. The live loop is dead code
+today (`learning-adaptation-01/02/03`); next session wires it for real —
+instantiate `LiveLearningCoordinator` + a concrete evaluator, add a
+`POLICY_PROMOTED` event to `SOEventType` so promotion folds from events, connect
+the admission↔terminal seam. **Unified with depth:** the loop learns over the
+deck/draft decision space, and event-sourced replay makes promoted policies
+auditable ("here's the policy that got promoted, replay why") = the RSD /
+platform-proof thesis. Infra can start independently; efficacy rides on the depth
+decision space, so the next depth design and the learning design should be **one
+document, not two**. See Phase 3 (rewritten).
+
+### Design menu — spec'd, not built
+
+Queued, rough priority:
+
+- **Utility cards** — chaff / flares / smoke as active counterplay and
+  heat-drafting fodder. `ModelSOCard.heat_cost` **already exists but is inert**:
+  heat-as-card-currency was designed in and never wired, so pricing utility cards
+  in heat is wiring, not a new field.
+- **Terrain lever — premise corrected.** Verified: obstacles **do** block
+  movement **and** weapon LOS today — **88% of shots blocked** in the probe — so
+  "they do nothing" was **false**. The real issue is **layout quality**: 336
+  symmetric-scatter cells that help nobody. Fix is **asymmetric cover via a NEW
+  versioned arena** (Phase 4), not editing `foundry_60` in place.
+- **Heat-drafting deckbuilder** (design pass on PR #108): **do not pivot the core
+  loop yet — probe with kill-gates.** The make-or-break **unmeasured risk is
+  draw-through**: do acquired cards get drawn and played before match end? Prove
+  that before building the deckbuilder.
+
+### On record
+
+- **20-candidate balance bracket** (final 5: c11, Heavy-vs-Assault, Shell-Windup,
+  Juking-Scout, Sensor-Fog); several built levers map to it — evasion =
+  Juking-Scout, terrain = Cover-Corridors, range-band = Siege-Dead-Zone /
+  Point-Blank-Falloff.
+- **90-finding canonical audit** (`docs/2026-07-21-…`, PR #108).
+- Branch `jonah/so-recover-cards` (W-R2) is **dead/abandoned** — local-only, no
+  PR, 17d dormant, unreachable from `main`, a different (shooter-accuracy)
+  mechanic. Safe to ignore.
 
 ## Ordered execution phases
 
@@ -657,6 +771,12 @@ adoptions.
   reward closing), `Hazardous` (self-damage risk, maps onto the existing
   boiler/heat system), `Ignores Cover` / `Indirect Fire` (which is what makes the
   336 blocking LOS cells load-bearing in both directions), `Anti-[keyword]`.
+- **Utility cards as active counterplay.** chaff / flares / smoke — declarative
+  cards that deny or degrade a shot rather than deal damage — add depth and
+  heat-drafting fodder. `ModelSOCard.heat_cost` **already exists in the model but
+  is inert**: heat-as-card-currency was designed in and never wired, so a utility
+  card priced in heat is a wiring job, not a new field. Green-lit by the over-deal
+  validation (Phase A / #117).
 - **Explicit non-adoption: 40k's dice resolution.** Do not take hit roll → wound
   roll → save roll. High per-attack variance obscures whether the LLM played
   well, and "model quality is visible" is the entire premise. Randomness belongs
@@ -688,10 +808,17 @@ kills, decide matches.
 
 **Goal:** move from evidence collection to controlled adaptation.
 
-- Decide first whether this phase is in scope for the demo at all. "Learning is
-  explicitly off, and the code says so" is an acceptable terminal state for this
-  plan and is cheaper than a half-wired loop; what is *not* acceptable is the
-  current state, where dead code implies a capability that does not exist.
+- **Scope is settled: learning is in, and it is necessary** (operator, 2026-07-21
+  — "it's necessary"). First-class track, tackled next session, not a deferred
+  maybe. The prior "explicitly off is acceptable" framing is withdrawn; the only
+  unacceptable state is today's — dead code implying a capability that does not
+  exist. Design it **unified with depth**: the loop learns over the deck/draft
+  decision space that Phase 2 / Phase 2.5 open up, and event-sourced replay of a
+  `POLICY_PROMOTED` stream makes every promotion auditable — "here is the policy
+  that got promoted, replay why" — which is the RSD / platform-proof thesis.
+  Infrastructure can be built independently; efficacy rides on the depth decision
+  space, so the next depth design and the learning design should be one document,
+  not two.
 - If in scope: wire `LiveLearningCoordinator` into the composition and supply a
   concrete `LiveLearningEvaluator` — **none exists**; the shipped `DuelEvaluator`
   implements an unrelated protocol with a different signature. Fix the port seam
@@ -727,6 +854,14 @@ is enabled in the demo overlay.
   desired, define a new versioned arena contract (size, spawns, cell budget,
   movement scale, LOS rules) before implementation; never change legacy map
   semantics in place.
+- **Premise corrected (2026-07-21, verified):** terrain is **not** inert —
+  obstacles block movement *and* weapon LOS today (**88% of shots blocked** in the
+  probe). The defect is **layout quality**: `foundry_60`'s 336 cells are a
+  symmetric scatter that helps nobody. Fix is **asymmetric cover authored into a
+  new versioned arena** (approach lanes for the brawler, standoff sightlines for
+  the sniper), not an in-place edit — the arena work this phase already scopes.
+  This is what makes the speed/range triangle (design decision 3) mechanically
+  real. (See the design menu.)
 - For the selected contract, specify obstacle semantics: blocking, cover,
   clamber/traversal, graduated LOS penalties, and sensor/weapon cover fields.
   Implement each change as a contract + handler/reducer slice with replay
@@ -909,28 +1044,29 @@ battery, completed acceptance matrix, clean worktree report, and ledger links.
 | Objectives | Matches end on a VP threshold from contested objective points, not a clock; Heavy/Assault keywords change resolution as declared | objective contract hash in `MATCH_STARTED` + per-round VP events + keyword handler IDs in replay + keyword fixtures |
 | Terminal | Every match reaches a durable terminal: mutual KO, draw, and worker-error paths included; no wedged `RUNNING` | terminal event per match across the battery + draw scorecard screenshot |
 | Terrain | Obstacles affect movement/LOS according to versioned contract | geometry/LOS fixtures |
-| Learning | Promotion is either proven and auditable or explicitly off | promotion/holdout/rollback artifacts |
+| Learning | Live loop wired (not dead code); a promotion changes a later decision and is replay-auditable via a `POLICY_PROMOTED` event | promotion/holdout/rollback artifacts + `POLICY_PROMOTED` in ledger |
 | Architecture | Extra fields reject; storage/provider protocols and DI are canonical | negative/composition tests (storage parity only if Postgres lands) |
 | UI | Pressure Deck states and accessibility checklist complete | screenshots + CI checks |
 | Release | Tests/build/Docker/clean worktrees pass | CI receipt + ledger closeout |
 
 ## Immediate next actions
 
-Reordered again 2026-07-21 after the live run: the **live-provider stall is now
-the top blocker (P1)** — a real Qwen match cannot reach a terminal at all, so the
-finish line's durable-terminal gate is empirically red. The seat-identity repair
-(previously the lead) **merged as PR #110** and was confirmed rendering distinct
-seats in the live run, so it drops out of the immediate queue.
+Reordered 2026-07-22 after the stall fix and the balance/depth findings. The
+**live-provider stall is resolved** — **PR #115 merged**; a keyless
+`uv run so play` match now reaches a durable terminal with no stall, live-verified
+end to end — so it drops out of the queue, as does the seat-identity repair
+(**PR #110 merged**, distinct seats confirmed live). The active direction is now
+**depth**, not more balance knobs.
 
-**P1 — land the live-provider stall recovery (PR #115), then re-prove a terminal
-live.** The 2026-07-21 live run stalled at tick 31 when the engine rejected a Qwen
-plan as `invalid_action_parameters` and neither retried, terminated, nor degraded
-(no `match_ended`). Bounded reprompt + a classified `provider_semantic_failure`
-terminal is in flight as **#115**. Until it lands and a real match reaches a
-durable terminal on the live endpoint, actions 4 and 7 below cannot complete and
-the whole "watch it play" pitch is a ~16 s burst, not a match. This is a distinct
-class from the boundary-error terminal work in action 4 (that is length/timeout;
-this is a semantic-parse rejection).
+**P1 — commit to the depth direction and design depth+learning as one.** The
+balance investigation stopped after four measured single-lever rounds could not
+crack the 60-vs-160 fixed deck (see the balance section); over-deal (#117) proved
+selection produces intentful, divergent play. So the next build is **depth**
+(utility cards + heat-drafting + objectives) and the next design is a **single
+unified depth+learning design** — the deckbuilder and the live learning loop must
+compose from the start. Learning is **first-class and necessary** (operator), not
+a deferred maybe; it is the immediate next-session track (see action 9 and
+Phase 3, rewritten).
 
 0. **Answer the open decision — which overlay is THE demo, and which provider.**
    Every action below that names an overlay is blocked on it, and the plan can
@@ -949,28 +1085,38 @@ this is a semantic-parse rejection).
 4. Fix the terminal-state defects (sudden-death fairness, mutual-KO terminal,
    two-round heat lock, draw-path transport throw, runtime `FAILED` status), then
    prove the clean-browser start/terminal flow with Playwright.
-5. Land the plug-in rule-handler path (open **PR #114**, which **supersedes #81
-   and #100** — close both, recording #114 as the replacement) on top of `main`,
-   and **enable it in the overlay action 0 designates** (`handler_ids` is empty or
-   unset in all eight overlays today, so merging alone changes nothing).
+5. **DONE — PR #114 merged** (plug-in rule handlers / editable prompts / mounted
+   workbench), and **#81 and #100 closed as superseded**. Remaining work:
+   **enable the handlers in the overlay action 0 designates** — `handler_ids` was
+   empty or unset in all eight overlays, so merging alone changed nothing an
+   operator sees.
 6. Render `plan_committed.rationale` as a decision row and surface
    `seat_assignments` in the UI — the cheapest change that makes the demo
    legible and shareable.
-7. Run the 20-match variance battery, reporting winner-side distribution
-   alongside the tactical metrics; use it to choose the first balance
-   adjustment. Do not tune from a single ledger. The 2026-07-21 live run already
-   surfaced two concrete balance targets to confirm across the battery: the
-   short-range berserker fired **0 shots** (`weapon_fire_rejected` ×17, never
-   closed under artillery fire), and HP was **160 vs 60**. These are Phase 2
-   speed/range-triangle and Phase 2.5 objective work, not stall symptoms — the
-   brawler needs a reason and a way to close (objectives, Assault keyword, movement
-   multiplier), not a bigger health bar.
+7. **Balance battery run and stopped (2026-07-21).** Four measured live-Qwen
+   rounds on PR #116 could not crack the 60-vs-160 fixed deck with any single lever
+   (heat-lockout, ×5.5 damage, evasion sweep, sniper range-band + carbine
+   throttle); the brawler went from ~2 to ~50 median DMG-OUT and ~4× survival but
+   never won. **Decision: stop tuning this matchup; balance re-emerges via depth**
+   (drafting + asymmetric matchups + objectives). Do **not** open a fifth lever.
+   PR #116 stays open with an **open merge decision** (the sniper-JSON fix is a
+   standalone robustness win; the balance numbers may be superseded by depth). The
+   brawler still needs a *reason and a way to close* — objectives, Assault keyword,
+   movement multiplier — Phase 2 / Phase 2.5 work, not a bigger health bar. When a
+   battery reruns, report winner-side distribution, not a single exciting ledger.
 8. Decide and document whether `foundry_60` is sufficient for the first
    satisfying demo; if not, open a separate versioned-arena slice.
-9. Decide whether live learning is in demo scope at all. If yes, implement the
-   promotion boundary as an event only after the combat and provider gates are
-   green, then run the before/after adaptation battery. If no, say so in code
-   and docs and delete the dead coordinator.
+9. **Wire live learning for real — first-class, next session (operator: "it's
+   necessary").** Not a scope question anymore. Instantiate
+   `LiveLearningCoordinator` + a concrete `LiveLearningEvaluator`, add a closed
+   `POLICY_PROMOTED` member to `SOEventType` so promotion folds from events, and
+   connect the admission↔terminal seam (`begin_match` at admission, same instance
+   receives the terminal) — closing blocker `learning-adaptation-01/02/03`. Design
+   it **unified with depth**: the loop learns over the deck/draft decision space,
+   and event-sourced replay makes promoted policies auditable ("replay why this
+   policy got promoted") = the RSD / platform-proof thesis. Infra can start
+   independently; efficacy rides on the depth decision space. Then run the
+   before/after adaptation battery.
 
 ## Explicit deferrals
 
