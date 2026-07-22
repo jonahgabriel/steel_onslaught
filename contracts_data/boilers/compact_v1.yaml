@@ -4,9 +4,15 @@ id: boiler.compact.v1
 display_name: Compact Boiler Mk.I
 
 # Fast regen, fast venting, low rupture ceiling — ideal for scouts / light skirmishers.
+#
+# c11: heat_capacity is the overpressure lockout ceiling. The scout's light
+# weapons (machine_gun heat 3, shrapnel heat 5) vent faster than they heat
+# (vent_rate 6), so the brawler's heat sits near zero and this ceiling never
+# gates it — the lockout is a sniper rate-tax, not a brawler tax. Kept below
+# redline (65) for consistency with the sniper.
 pressure_capacity: 50
 regen_per_tick: 8
-heat_capacity: 80
+heat_capacity: 40       # c11 overpressure lockout ceiling (never gates the scout)
 heat_multiplier: 1.0
 vent_rate: 6
 

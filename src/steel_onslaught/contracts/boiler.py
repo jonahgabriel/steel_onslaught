@@ -103,6 +103,12 @@ class ModelSOBoilerState(BaseModel):
 
     # Heat section.
     heat_current: int = Field(ge=0)
+    # Overpressure-cooldown lockout ceiling (c11). Surfaced from the boiler
+    # spec at spawn so the allowlisted OverpressureCooldownRuleHandler can gate
+    # firing before heat crosses it, and so it is legible in the pilot prompt.
+    # Kept strictly at/below the rupture threshold so the plan-time lockout
+    # fires before (or no later than) the terminal rupture cascade.
+    heat_capacity: int = Field(gt=0)
     heat_redline_threshold: int = Field(gt=0)
     heat_rupture_threshold: int = Field(gt=0)
     heat_vent_rate: int = Field(ge=0)
@@ -126,5 +132,22 @@ class ModelSOBoilerState(BaseModel):
                 f"heat_current ({self.heat_current}) must not exceed "
                 f"heat_rupture_threshold ({self.heat_rupture_threshold}): "
                 "rupture is terminal, not a persistent state"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _capacity_at_or_below_rupture(self) -> ModelSOBoilerState:
+        """The overpressure lockout ceiling must not sit above the rupture point.
+
+        A ceiling above rupture could never gate a shot before the terminal
+        rupture cascade, which would make the plan-time lockout a no-op. Kept
+        ``<=`` (not ``<``) so a scout boiler may deliberately place the lockout
+        exactly at its low rupture ceiling.
+        """
+        if self.heat_capacity > self.heat_rupture_threshold:
+            raise ValueError(
+                f"heat_capacity ({self.heat_capacity}) must not exceed "
+                f"heat_rupture_threshold ({self.heat_rupture_threshold}): "
+                "the overpressure lockout ceiling cannot sit above rupture"
             )
         return self

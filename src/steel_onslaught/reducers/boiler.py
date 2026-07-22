@@ -203,6 +203,7 @@ class ReducerBoiler:
             pressure_maximum=old_boiler.pressure_maximum,
             regeneration_per_tick=old_boiler.regeneration_per_tick,
             heat_current=new_heat,
+            heat_capacity=old_boiler.heat_capacity,
             heat_redline_threshold=old_boiler.heat_redline_threshold,
             heat_rupture_threshold=old_boiler.heat_rupture_threshold,
             heat_vent_rate=old_boiler.heat_vent_rate,

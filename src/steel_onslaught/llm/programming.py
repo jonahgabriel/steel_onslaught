@@ -36,6 +36,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
+import re
 from collections import Counter
 from typing import Literal
 from uuid import UUID
@@ -116,9 +118,17 @@ ONLY legal card IDs are the ``legal_hand`` entries: do not copy ids from the
 deck description or persona instructions. Duplicate an id only up to its
 ``available_copies`` count. Before emitting, check every register against that
 allowlist and replace any unavailable tactic with an available card. Never
-assign a card to a locked register. Do not add fields, prose, markdown, or
-comments. Keep rationale to twelve words or fewer. Emit the JSON object as the
-first character of the response and stop immediately after its closing brace.
+assign a card to a locked register. Do not add fields, prose, comments,
+markdown, or code fences. Do not think out loud, emit a <think> block, or
+include any chain-of-thought: decide silently and return only the JSON object.
+Keep rationale to twelve words or fewer. Emit the JSON object as the first
+character of the response and stop immediately after its closing brace.
+
+Heat/overpressure: own_observation.thermal reports heat_headroom before your
+boiler overpressures and next_shot_locks_out. When next_shot_locks_out is true a
+second attack this round overheats you into a forced vent, so program a vent
+card or reposition instead of stacking another shot; a fast mech can rush an
+overheating opponent during that vent window.
 """.strip()
 
 # The card-programming instruction block is code-owned and deliberately NOT
@@ -135,6 +145,26 @@ def programming_system_prompt(persona: Persona) -> str:
     """Return the exact system prompt one whole-round programmer will send."""
 
     return f"{persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}"
+
+
+# Reasoning gateways (e.g. Qwen "thinking" models) may prefix the JSON object
+# with a ``<think>...</think>`` chain-of-thought span.  That span routinely
+# contains its own braces (the model drafting register JSON while reasoning),
+# which defeats the first-'{'/last-'}' extraction below and surfaces as a
+# ``malformed_json`` semantic failure — the sniper-specific abort driver, since
+# the verbose sniper persona invites more chain-of-thought than the terse
+# brawler.  The programming/repair instructions and the persona now forbid the
+# span, but a reasoning model can still leak one, so we strip any *complete*
+# ``<think>`` spans before extracting the object.  An unterminated span is left
+# untouched: that is a truncated (``finish_reason=length``) completion, which is
+# a distinct boundary terminal and must not be silently repaired here.
+_REASONING_WRAPPER_PATTERN = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_reasoning_wrapper(text: str) -> str:
+    """Remove complete ``<think>...</think>`` reasoning spans from provider text."""
+
+    return _REASONING_WRAPPER_PATTERN.sub("", text).strip()
 
 
 def _error_detail(exc: BaseException, *, limit: int = 240) -> str:
@@ -170,6 +200,44 @@ def _card_definition(card: object) -> dict[str, object]:
         "priority": dumped["priority"],
         "heat_cost": dumped["heat_cost"],
         "effect": dumped["effect"],
+    }
+
+
+def _thermal_block(pilot: object) -> dict[str, object]:
+    """Derive a legible overpressure-cooldown read from the boiler + weapons.
+
+    The raw boiler (with ``heat_capacity``) already reaches the prompt via
+    ``own_observation.boiler``; this block pre-computes the c11 decision the
+    pilot must otherwise infer — how much headroom remains before the
+    overpressure lockout and whether the next shot trips it — so the LLM can
+    time the vent/rush instead of the window reading as the sniper randomly
+    pausing (the legibility requirement). Values are a pure function of the
+    already-authorized own-state; no hidden or opponent state is added.
+    """
+
+    boiler = pilot.boiler  # type: ignore[attr-defined]
+    weapons = pilot.weapons  # type: ignore[attr-defined]
+    current = boiler.heat_current
+    capacity = boiler.heat_capacity
+    vent_rate = boiler.heat_vent_rate
+    headroom = max(capacity - current, 0)
+    ready_heats = [w.heat_generated for w in weapons if w.cooldown_remaining_ticks == 0]
+    all_heats = [w.heat_generated for w in weapons]
+    next_shot_heat = max(ready_heats) if ready_heats else (max(all_heats) if all_heats else 0)
+    heat_after_vent = max(current - vent_rate, 0)
+    next_shot_locks_out = bool(ready_heats) and heat_after_vent + next_shot_heat >= capacity
+    net_per_shot = next_shot_heat - vent_rate
+    ticks_to_vent_lockout = (
+        math.ceil(headroom / net_per_shot) if net_per_shot > 0 and headroom > 0 else None
+    )
+    return {
+        "heat_current": current,
+        "heat_capacity": capacity,
+        "heat_headroom": headroom,
+        "heat_vent_rate": vent_rate,
+        "next_shot_heat": next_shot_heat,
+        "next_shot_locks_out": next_shot_locks_out,
+        "ticks_to_vent_lockout": ticks_to_vent_lockout,
     }
 
 
@@ -254,6 +322,9 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
         # provider cannot confuse sensor evidence with authoritative state.
         "own_observation": {
             "boiler": pilot.boiler.model_dump(mode="json"),
+            # Derived overpressure-cooldown read (c11): pre-computed headroom and
+            # lockout flag so the pilot can time the vent/rush legibly.
+            "thermal": _thermal_block(pilot),
             "weapons": [weapon.model_dump(mode="json") for weapon in pilot.weapons],
             "current_mode": pilot.current_mode,
             "mode_lock_expired": pilot.mode_lock_expired,
@@ -285,17 +356,26 @@ def _serialize_repair_observation(observation: ModelSOProgrammingObservation) ->
 
 
 _PROGRAMMING_REPAIR_INSTRUCTIONS = (
-    "Return ONLY compact JSON with keys registers, confidence, rationale. "
-    "Use each free register exactly once, use only hand_card_ids, and keep "
-    "rationale under twelve words. No reasoning, prose, markdown, or extra keys."
+    "Output MUST be a single JSON object and nothing else. The first character "
+    "of your reply is '{' and the last is '}'. Do NOT think out loud, emit a "
+    "<think> block or any chain-of-thought, explain, apologize, or use markdown "
+    "or code fences. Keys, in order: registers (a list of {register_index, "
+    "card_id}), confidence (a number 0.0-1.0), rationale (a string under twelve "
+    "words). Fill each free register exactly once, use only hand_card_ids, and "
+    "add no extra keys."
 )
 
-# Additional same-model reprompts after the first rejected plan.  Two extra
-# attempts (three total provider calls) is enough for a capable model to
-# self-correct a strict-schema slip without letting a persistently broken
+# Additional same-model reprompts after the first rejected plan.  Round-1 live
+# Qwen batteries lost ~40% of matches to non-gameplay terminals, part of which
+# was semantic exhaustion (malformed/invalid JSON three attempts running).  Three
+# extra attempts (four total provider calls) gives a capable-but-verbose reasoning
+# gateway one more chance to self-correct a strict-schema slip before the match
+# ends on ``provider_semantic_failure``, without letting a persistently broken
 # provider spin the match.  A bounded reprompt loop is not determinism: every
-# attempt is a real, separately-recorded provider completion.
-_DEFAULT_SEMANTIC_RETRY_LIMIT = 2
+# attempt is a real, separately-recorded provider completion, and the loop is
+# still bounded so a live match always reaches a durable terminal (the #115
+# stall guarantee).
+_DEFAULT_SEMANTIC_RETRY_LIMIT = 3
 
 
 class LLMProgrammingPilot:
@@ -523,10 +603,12 @@ class LLMProgrammingPilot:
                 parsed = _ModelSOLlmProgrammingResponse.model_validate_json(response.text)
             except (ValidationError, ValueError, TypeError):
                 # A few OpenAI-compatible reasoning gateways wrap an otherwise
-                # complete JSON object in a short markdown/thought prefix.
-                # Strip only that wrapper; the inner object remains subject to
-                # the closed response model and the canonical plan validator.
-                text = response.text.strip()
+                # complete JSON object in a markdown/thought prefix.  Strip any
+                # complete <think> reasoning span first (it can carry its own
+                # braces that would defeat the extraction), then take the outer
+                # object.  The inner object remains subject to the closed
+                # response model and the canonical plan validator.
+                text = _strip_reasoning_wrapper(response.text)
                 start = text.find("{")
                 end = text.rfind("}")
                 if start < 0 or end <= start:

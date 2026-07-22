@@ -188,6 +188,7 @@ def _make_state(**overrides: object) -> ModelSOBoilerState:
         "regeneration_per_tick": 5,
         "heat_current": 72,
         "heat_redline_threshold": 80,
+        "heat_capacity": 100,
         "heat_rupture_threshold": 100,
         "heat_vent_rate": 4,
         "status_redline": False,
@@ -216,6 +217,21 @@ def test_boiler_state_heat_at_rupture_is_valid() -> None:
     assert state.heat_current == 100
 
 
+@pytest.mark.unit
+def test_boiler_state_heat_capacity_above_rupture_is_invalid() -> None:
+    """c11: the overpressure lockout ceiling cannot sit above the rupture point."""
+    with pytest.raises(ValueError, match="heat_capacity"):
+        _make_state(heat_capacity=120, heat_rupture_threshold=100)
+
+
+@pytest.mark.unit
+def test_boiler_state_heat_capacity_at_rupture_is_valid() -> None:
+    """heat_capacity == rupture is accepted (a scout may place the lockout at its
+    low rupture ceiling); the guard is ``<=``, deliberately not ``<``."""
+    state = _make_state(heat_capacity=80, heat_rupture_threshold=80, heat_current=0)
+    assert state.heat_capacity == 80
+
+
 # ---------------------------------------------------------------------------
 # BoilerState valid construction (§10.3 example values)
 # ---------------------------------------------------------------------------
@@ -235,6 +251,7 @@ def test_boiler_state_valid_construction() -> None:
         regeneration_per_tick=5,
         heat_current=72,
         heat_redline_threshold=80,
+        heat_capacity=100,
         heat_rupture_threshold=100,
         heat_vent_rate=4,
         status_redline=False,
@@ -265,6 +282,7 @@ def test_boiler_state_round_trip_json() -> None:
         regeneration_per_tick=5,
         heat_current=72,
         heat_redline_threshold=80,
+        heat_capacity=100,
         heat_rupture_threshold=100,
         heat_vent_rate=4,
         status_redline=False,

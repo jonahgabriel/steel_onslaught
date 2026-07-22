@@ -1,0 +1,18 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.attack.fire_tertiary"
+display_name: "Fire Tertiary"
+# Round-4: fires the third hardpoint (weapon_slot 2) — the sniper's close-in
+# defense carbine. Lower priority than primary/secondary so it resolves after
+# them when registers fire simultaneously. On a mech that fields only two
+# weapons this card is inert (the adapter suppresses the intent as
+# weapon_slot_absent), so a deck that includes it never crashes a two-weapon
+# seat; only the sniper's dedicated weapon deck carries it.
+# Lowest-priority attack (below primary 600 / secondary 550, and distinct from
+# every other card's priority) so it resolves after the primary/secondary shots.
+category: "attack"
+priority: 520
+# Power-neutral: heat comes from the weapon contract, not the card.
+heat_cost: 0
+effect:
+  weapon_slot: 2

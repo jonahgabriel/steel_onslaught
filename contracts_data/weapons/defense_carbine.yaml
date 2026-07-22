@@ -1,0 +1,68 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.weapon
+id: weapon.light.defense_carbine
+display_name: "Defense Carbine"
+weapon_class: light
+# Round-4 close-in secondary for the sniper. range 14 keeps it BELOW the range
+# band's min_weapon_range (20), so it is NEVER subject to the close-range
+# accuracy falloff that degrades the mortar/harpoon up close — it is the
+# sniper's dedicated point-blank answer while the big guns are unreliable.
+range: 14
+# Weak-but-not-helpless: damage_raw vs the 60-HP light scout brawler (armor 6,
+# regen 2/tick, STANDARD mitigation cap 0.75) = int(20*1.0)=20; absorbable =
+# min(6, ceil(20*0.75)=15)=6, so a fresh-armor hit nets 20-6=14 and a
+# steady-state hit (armor stripped to ~0 after the opener, regen 2) nets ~18.
+# That is real close-range counterplay (the brawler cannot melee for free) but
+# clearly below the brawler's ~30-39/tick armor-adjusted output, so it is a
+# CONTEST, not a sniper walkover. Much weaker than the harpoon (28) / mortar
+# (45): a secondary, never a primary.
+damage: 20
+# SUSTAINABILITY against the REAL Bessemer-90 economy (regen 5/tick pressure,
+# cap 90; vent 4/tick heat; c11 overpressure lockout ceiling 28) — NOT free-fire
+# DPS. Paced cadence resolves one register per tick; the sniper's weapon hand
+# quota is 3/round over a 5-register round, but cooldown 3 gates the carbine to
+# at most one fire per 3 ticks, so the sustained worst case is ~1 carbine shot
+# per 5-tick round (5 // 3), down from 3 shots at cooldown 1.
+#   BALANCE INTENT (c11 throttle): at cooldown 1 the carbine fired on every
+#     weapon register and BACKFILLED the exact point-blank damage the round-4
+#     range-band falloff stripped from the mortar — the sniper's DMG-OUT barely
+#     moved (59->62) and 0% brawler win-rate held. cooldown 3 cuts sustained
+#     point-blank output ~66% so the carbine stays a real occasional close-range
+#     answer without refunding the stripped damage, restoring the kill-conversion
+#     the range band was meant to create. It is still weak-but-real, never a
+#     primary — only its cadence is throttled here (damage/range/pressure/heat
+#     are unchanged from the round-4 carbine).
+#   PRESSURE: spend 1*5 = 5 per round; regen 5*5 = 25 per round -> net +20/round
+#             (steady draw 5/25 = 0.2x regen). The carbine alone never starves.
+#   HEAT:     add 1*3 = 3 per round; vent 4*5 = 20 per round -> net -17/round.
+#             Carbine-only fire trends the heat pool to 0; it never self-heats.
+#   c11 NON-LOCK: the max heat any plan can reach is the ceiling 28 (the
+#             overpressure_cooldown handler defers shots that would cross it). A
+#             carbine shot from the hottest reachable state vents first:
+#             heat_after_vent = max(28-4,0)=24, +3 = 27 < 28 -> ADMISSIBLE from
+#             every reachable heat. The carbine is therefore NEVER c11-locked,
+#             unlike the mortar (heat 20: from any heat>=12 it crosses 28 and is
+#             rate-taxed). That asymmetry is the point — the big guns are
+#             throttled, the carbine is the sustainable fallback.
+pressure_cost: 5
+heat_generated: 3
+# c11 throttle: 1 -> 3. Gates the carbine to ~1 fire per 3 ticks so it no longer
+# backfills the point-blank damage the round-4 range-band falloff strips from the
+# mortar. See the SUSTAINABILITY block above for the per-round arithmetic.
+cooldown_ticks: 3
+accuracy_curve:
+  - range: 0
+    hit_probability: 0.90
+  - range: 7
+    hit_probability: 0.80
+  - range: 14
+    hit_probability: 0.55
+target_class_effectiveness:
+  light: 1.0
+  medium: 0.85
+  heavy: 0.6
+damage_type: standard
+compatibility:
+  compatible_chassis_classes:
+    - medium
+    - heavy

@@ -1,28 +1,46 @@
+# Round-3 "Moves-Scaled Evasion" A/B — TREATMENT arm (evasion ON).
+#
+# The ONLY gameplay/behavioural difference from the round-2 comparison arm
+# (contracts_data/overlays/tactical_split_c11_qwen.yaml) is the single
+# `contracts.moves_scaled_evasion` binding below: each MOVEMENT register a mech
+# resolves in a card round raises its target_evasion for that round (harder to
+# hit while a shooter is aiming), capped, decaying to 0 on a round it stops to
+# shoot. Everything else — the c11 overpressure_cooldown handler, the round-2
+# 5.5x brawler weapon damage, the raised LLM budget, decks, personas, arena — is
+# identical, so this isolates EVASION as the one variable this round changes.
+# (The ledger/leaderboard/learning paths are namespaced to
+# tactical_split_moves_evasion_qwen so the two arms write separate sqlite
+# ledgers, exactly as the c11 A/B arms differ — that is bookkeeping, not
+# gameplay.)
+# Launch either arm with the same command:
+#   uv run so play --overlay contracts_data/overlays/<overlay>.yaml
+# then compare the two ledgers (WEAPON_FIRED hit_probability on the moving
+# brawler, blue/red DMG-OUT, shots-before-death, MATCH_ENDED win side).
 schema_version: "1"
 bus:
   kind: in_process
 event_ledger:
   kind: sqlite
-  path: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/events.sqlite3
+  path: ../../.onex_state/steel_onslaught/tactical_split_moves_evasion_qwen/events.sqlite3
   journal_mode: WAL
   check_same_thread: false
   transaction_mode: autocommit
   event_schema: canonical_event_v1
 leaderboard:
   kind: sqlite
-  path: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/leaderboard.sqlite3
+  path: ../../.onex_state/steel_onslaught/tactical_split_moves_evasion_qwen/leaderboard.sqlite3
   journal_mode: WAL
   check_same_thread: false
   transaction_mode: autocommit
   storage_schema: leaderboard_v1
 learning_artifacts:
   kind: filesystem_yaml
-  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/evaluations
-  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/lineage
-  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/experiments
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_moves_evasion_qwen/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_moves_evasion_qwen/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_moves_evasion_qwen/experiments
 evaluation_storage:
   kind: sqlite
-  root: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/evaluation_storage
+  root: ../../.onex_state/steel_onslaught/tactical_split_moves_evasion_qwen/evaluation_storage
   journal_mode: WAL
   check_same_thread: true
   transaction_mode: autocommit
@@ -68,7 +86,18 @@ contracts:
   balance_rule_pack:
     kind: card_programming_rules
     pack_id: rules.card_programming_v1
-    handler_ids: []
+    handler_ids: ["overpressure_cooldown"]
+  # Round-3 survivability knob (the ONLY gameplay difference vs the round-2 arm).
+  # Conservative starting numbers (see PR body for the hit-chance arithmetic):
+  # the brawler's hand quota is 3 movement/round, so a full-sprint approach round
+  # caps at 3 x 0.08 = 0.24 evasion, shaving the mortar's ~0.70 mid-approach hit
+  # chance to ~0.53 (~24% relative) while it is moving; a stationary brawler earns
+  # 0 and stays as easy to hit as before. Start LOW — the live battery decides if
+  # it needs to go up.
+  moves_scaled_evasion:
+    kind: moves_scaled_evasion
+    evasion_per_move: 0.08
+    cap: 0.24
 llm:
   providers:
     - kind: openai_compatible

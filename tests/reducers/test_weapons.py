@@ -16,6 +16,8 @@ Invariants verified:
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from steel_onslaught.match.rng import MatchRng
@@ -186,6 +188,168 @@ def test_resolve_hit_probability_reduced_by_evasion() -> None:
         base_accuracy=0.8, lock_confidence=1.0, target_evasion=0.5, accuracy_penalty=0.0
     )
     assert p_with_evasion < p_no_evasion
+
+
+@pytest.mark.unit
+def test_moves_scaled_evasion_zero_moves_is_zero() -> None:
+    """A stationary round (no movement register resolved) earns no evasion."""
+    from steel_onslaught.reducers.weapons import moves_scaled_evasion_bonus
+
+    assert moves_scaled_evasion_bonus(evasion_per_move=0.08, cap=0.24, moves_resolved=0) == 0.0
+    # A negative/degenerate count is treated as stationary, never a negative bonus.
+    assert moves_scaled_evasion_bonus(evasion_per_move=0.08, cap=0.24, moves_resolved=-1) == 0.0
+
+
+@pytest.mark.unit
+def test_moves_scaled_evasion_monotonic_then_capped() -> None:
+    """More resolved movement -> strictly more evasion, until the cap clamps it."""
+    from steel_onslaught.reducers.weapons import moves_scaled_evasion_bonus
+
+    per_move, cap = 0.08, 0.24
+    b1 = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=1)
+    b2 = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=2)
+    b3 = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=3)
+    b4 = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=4)
+
+    assert b1 == pytest.approx(0.08)
+    assert b2 == pytest.approx(0.16)
+    assert b3 == pytest.approx(0.24)
+    assert b1 < b2 < b3  # strictly increasing while below the cap
+    assert b3 == pytest.approx(cap)  # exactly the ceiling at the 3-move hand quota
+    assert b4 == pytest.approx(cap)  # never exceeds the cap, no matter how many moves
+
+
+@pytest.mark.unit
+def test_more_moves_lower_hit_chance_than_stationary() -> None:
+    """The mechanic's whole point: more movement -> higher evasion -> lower hit
+    chance; a stationary target keeps the un-modified hit chance."""
+    from steel_onslaught.reducers.weapons import (
+        moves_scaled_evasion_bonus,
+        resolve_hit_probability,
+    )
+
+    base_evasion, base_accuracy, lock = 0.0, 0.70, 1.0  # mortar mid-approach ~0.70
+    per_move, cap = 0.08, 0.24
+
+    def hit_chance(moves: int) -> float:
+        bonus = moves_scaled_evasion_bonus(evasion_per_move=per_move, cap=cap, moves_resolved=moves)
+        return resolve_hit_probability(
+            base_accuracy=base_accuracy,
+            lock_confidence=lock,
+            target_evasion=min(1.0, base_evasion + bonus),
+            accuracy_penalty=0.0,
+        )
+
+    stationary = hit_chance(0)
+    sprint = hit_chance(3)
+
+    assert stationary == pytest.approx(0.70)  # unchanged when it stops to shoot
+    assert sprint == pytest.approx(0.70 * (1 - 0.24))  # 0.532: ~24% relative cut
+    assert sprint < stationary
+    # Monotonic across the approach: each extra resolved move lowers hit chance.
+    assert hit_chance(0) > hit_chance(1) > hit_chance(2) > hit_chance(3)
+
+
+# ---------------------------------------------------------------------------
+# Round-4 close-range accuracy falloff (the range band)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_close_range_multiplier_no_penalty_at_or_beyond_band() -> None:
+    """At/beyond the band distance the multiplier is exactly 1.0 (no penalty)."""
+    from steel_onslaught.reducers.weapons import close_range_accuracy_multiplier
+
+    assert (
+        close_range_accuracy_multiplier(distance=20, band_distance=20, point_blank_multiplier=0.30)
+        == 1.0
+    )
+    assert (
+        close_range_accuracy_multiplier(distance=50, band_distance=20, point_blank_multiplier=0.30)
+        == 1.0
+    )
+
+
+@pytest.mark.unit
+def test_close_range_multiplier_floor_at_point_blank() -> None:
+    """At (or below) distance 0 the multiplier is the point-blank floor."""
+    from steel_onslaught.reducers.weapons import close_range_accuracy_multiplier
+
+    assert close_range_accuracy_multiplier(
+        distance=0, band_distance=20, point_blank_multiplier=0.30
+    ) == pytest.approx(0.30)
+    # Degenerate negative distance clamps to the floor, never below it.
+    assert close_range_accuracy_multiplier(
+        distance=-4, band_distance=20, point_blank_multiplier=0.30
+    ) == pytest.approx(0.30)
+
+
+@pytest.mark.unit
+def test_close_range_multiplier_monotonic_and_bounded() -> None:
+    """The gradient is monotonic non-decreasing in distance and bounded to
+    [floor, 1.0] across the whole close band (no ledge, never a bonus)."""
+    from steel_onslaught.reducers.weapons import close_range_accuracy_multiplier
+
+    band, floor = 20, 0.30
+    values = [
+        close_range_accuracy_multiplier(
+            distance=d, band_distance=band, point_blank_multiplier=floor
+        )
+        for d in range(0, band + 1)
+    ]
+    # Bounded.
+    assert all(floor <= v <= 1.0 for v in values)
+    # Monotonic non-decreasing (each step never lowers the multiplier).
+    assert all(a <= b for a, b in pairwise(values))
+    # Strictly increasing across the interior of the band (no flat ledge).
+    assert values[0] < values[band // 2] < values[band - 1] < values[band]
+    # The published shipped cells (band 20, floor 0.30).
+    assert values[0] == pytest.approx(0.30)
+    assert values[10] == pytest.approx(0.65)
+    assert values[20] == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_close_range_multiplier_composes_with_evasion_clamped() -> None:
+    """Falloff (a curve multiplier) composed with evasion (a 1 - evasion term)
+    can only lower a hit chance, and the product stays clamped in [0, 1]."""
+    from steel_onslaught.reducers.weapons import (
+        close_range_accuracy_multiplier,
+        moves_scaled_evasion_bonus,
+        resolve_hit_probability,
+    )
+
+    base_accuracy, lock = 0.80, 1.0  # mortar curve clamps to 0.80 below range 20
+    # d = 12 (scout MG range), full-sprint scout: both mechanics active at once.
+    mult = close_range_accuracy_multiplier(
+        distance=12, band_distance=20, point_blank_multiplier=0.30
+    )
+    evasion = moves_scaled_evasion_bonus(evasion_per_move=0.14, cap=0.42, moves_resolved=3)
+
+    both = resolve_hit_probability(
+        base_accuracy=base_accuracy * mult,
+        lock_confidence=lock,
+        target_evasion=min(1.0, evasion),
+        accuracy_penalty=0.0,
+    )
+    falloff_only = resolve_hit_probability(
+        base_accuracy=base_accuracy * mult,
+        lock_confidence=lock,
+        target_evasion=0.0,
+        accuracy_penalty=0.0,
+    )
+    neither = resolve_hit_probability(
+        base_accuracy=base_accuracy,
+        lock_confidence=lock,
+        target_evasion=0.0,
+        accuracy_penalty=0.0,
+    )
+
+    # Each mechanic lowers the hit chance; composed is the lowest; all clamped.
+    assert both < falloff_only < neither
+    assert 0.0 <= both <= 1.0
+    # Exact composed value: 0.80 * 0.72 (mult@12) * (1 - 0.42) = 0.334...
+    assert both == pytest.approx(0.80 * 0.72 * (1 - 0.42))
 
 
 @pytest.mark.unit

@@ -1,4 +1,4 @@
-"""Hermetic validation of the ten fixed, unbound card data files."""
+"""Hermetic validation of the eleven fixed, unbound card data files."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ _CARD_DIR = Path(__file__).resolve().parents[2] / "contracts_data/cards"
 _CARD_FILES = (
     "attack_fire_primary.yaml",
     "attack_fire_secondary.yaml",
+    "attack_fire_tertiary.yaml",
     "movement_advance.yaml",
     "movement_flank_left.yaml",
     "movement_flank_right.yaml",
@@ -38,6 +39,7 @@ def test_fixed_card_files_validate_without_a_production_catalog() -> None:
     assert tuple(card.id for card in cards) == (
         "card.attack.fire_primary",
         "card.attack.fire_secondary",
+        "card.attack.fire_tertiary",
         "card.movement.advance",
         "card.movement.flank_left",
         "card.movement.flank_right",
@@ -55,6 +57,7 @@ def test_fixed_card_files_validate_without_a_production_catalog() -> None:
 def test_fixed_card_data_stays_power_neutral_and_action_mapped() -> None:
     cards = tuple(_load_card(filename) for filename in _CARD_FILES)
     expected_categories = (
+        SOCardCategory.ATTACK,
         SOCardCategory.ATTACK,
         SOCardCategory.ATTACK,
         SOCardCategory.MOVEMENT,

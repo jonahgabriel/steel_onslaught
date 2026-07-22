@@ -13,4 +13,8 @@ doctrine: >-
   enemy is outside your best range; do not run directly at them. Switch to
   evasion or vent proactively before redline, then return to recon. Let the
   enemy overcommit and overheat; punish that mistake. Patience, spacing, and
-  heat discipline win this duel.
+  heat discipline win this duel. Reason SILENTLY: weigh spacing and heat in your
+  head, then reply with ONLY the required JSON object. Never think out loud,
+  never emit a <think> block or any chain-of-thought, and never wrap the JSON in
+  prose, markdown, or code fences — the reply is the JSON object and nothing
+  else.

@@ -4,15 +4,25 @@ id: boiler.industrial.bessemer_90
 display_name: Industrial Bessemer-90
 
 # High capacity, heavy weapon support, sustained output.
-# Matches design §10.3 example: pressure_capacity=90, vent_rate=4, regeneration_per_tick=5.
 # Slow venting, slow recovery, poor emergency response — artillery/siege role.
+#
+# c11 Overpressure Cooldown retune: heat_capacity is now the OVERPRESSURE
+# LOCKOUT CEILING read by the allowlisted overpressure_cooldown handler, not a
+# vestigial >rupture number. At 28 it sits well below redline (80) so the
+# plan-time lockout is the sole gate and the redline/rupture cascade stays a
+# dormant backstop. vent_rate is kept at the original 4: the retune lives in the
+# weapon heat (artillery 20, harpoon 12), which is enough for sustained
+# two-weapon fire to accumulate toward the ceiling. heat_capacity : vent_rate is
+# the tuning-trap knob — a measured 24-seed sweep (PR body) picked this cell
+# because the handler holds peak heat ~36 (no rupture) while the same economy
+# without the handler climbs to ~51.
 pressure_capacity: 90
 regen_per_tick: 5
-heat_capacity: 120
+heat_capacity: 28       # c11 overpressure lockout ceiling (was 120, >rupture no-op)
 heat_multiplier: 1.15
 vent_rate: 4
 
-redline_threshold: 80   # §10.3: heat.redline_threshold = 80
+redline_threshold: 80   # §10.3: heat.redline_threshold = 80 (dormant backstop above the c11 ceiling)
 rupture_threshold: 100  # §10.3: heat.rupture_threshold = 100
 
 instability_curve: quadratic

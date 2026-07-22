@@ -90,6 +90,7 @@ def _observation(*, tick: int = 3, match_id: str = _MATCH_ID) -> ModelSOPilotObs
         regeneration_per_tick=3,
         heat_current=20,
         heat_redline_threshold=80,
+        heat_capacity=100,
         heat_rupture_threshold=100,
         heat_vent_rate=5,
         status_redline=False,

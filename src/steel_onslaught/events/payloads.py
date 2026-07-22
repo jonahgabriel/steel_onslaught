@@ -255,6 +255,13 @@ class ModelSOWeaponFiredPayload(_ClosedPayload):
     hit_probability: StrictFloat = Field(ge=0.0, le=1.0)
     pressure_cost: StrictInt = Field(ge=0)
     heat_generated: StrictInt = Field(ge=0)
+    # Round-4 range-band observability: the close-range accuracy multiplier that
+    # was folded into ``hit_probability`` for this shot (1.0 == no falloff, either
+    # because the range-band binding is OFF, the weapon is short-range, or the
+    # target was at/beyond the band).  A value < 1.0 is a falsifiable witness that
+    # the long-weapon close-range falloff fired at this distance.  Defaulted so
+    # pre-round-4 ledger events (which never carried it) still validate on replay.
+    close_range_mult: StrictFloat = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class ModelSOHitResult(_ClosedPayload):

@@ -505,14 +505,15 @@ def test_semantic_failure_reaches_a_classified_terminal_not_a_stall(cadence: str
     assert ended[0].payload["reason"] == "provider_semantic_failure"
     assert ended[0].payload["winner_id"] is None
 
-    # Bounded retry: three same-model attempts (one initial + two reprompts)
-    # for the first-programmed seat, each producing durable failed evidence,
-    # before the match terminates. This is the "retries then terminate" proof.
+    # Bounded retry: four same-model attempts (one initial + three reprompts,
+    # the balance-round-2 default) for the first-programmed seat, each producing
+    # durable failed evidence, before the match terminates. This is the
+    # "retries then terminate" proof — the loop stays bounded (never a stall).
     failed = [
         event for event in ledger.events if event.event_type is SOEventType.LLM_COMPLETION_FAILED
     ]
-    assert client.calls == 3
-    assert len(failed) == 3
+    assert client.calls == 4
+    assert len(failed) == 4
     for event in failed:
         assert event.payload["reason_code"] == "invalid_response"
         assert event.payload["semantic_failure_code"] == "invalid_action_parameters"

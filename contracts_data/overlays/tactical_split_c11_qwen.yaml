@@ -1,28 +1,39 @@
+# c11 "Overpressure Cooldown" A/B — TREATMENT arm.
+#
+# Byte-for-byte identical to tactical_split_v1_qwen.yaml (the BASELINE arm)
+# except: (1) balance_rule_pack.handler_ids enables the overpressure_cooldown
+# lockout, and (2) the ledger/leaderboard/learning paths are namespaced to
+# tactical_split_c11_qwen so the two arms write separate sqlite ledgers.
+# Both overlays load the SAME (c11-retuned) weapon/boiler contracts; the only
+# behavioural difference is the handler. Launch either with the same command:
+#   uv run so play --overlay contracts_data/overlays/<overlay>.yaml
+# then compare the two ledgers (DMG-OUT, WEAPON_FIRED, BOILER_UPDATED heat,
+# REGISTER_RESOLVED vents, MATCH_ENDED). See the PR body for the metric queries.
 schema_version: "1"
 bus:
   kind: in_process
 event_ledger:
   kind: sqlite
-  path: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/events.sqlite3
+  path: ../../.onex_state/steel_onslaught/tactical_split_c11_qwen/events.sqlite3
   journal_mode: WAL
   check_same_thread: false
   transaction_mode: autocommit
   event_schema: canonical_event_v1
 leaderboard:
   kind: sqlite
-  path: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/leaderboard.sqlite3
+  path: ../../.onex_state/steel_onslaught/tactical_split_c11_qwen/leaderboard.sqlite3
   journal_mode: WAL
   check_same_thread: false
   transaction_mode: autocommit
   storage_schema: leaderboard_v1
 learning_artifacts:
   kind: filesystem_yaml
-  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/evaluations
-  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/lineage
-  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/experiments
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_c11_qwen/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_c11_qwen/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_c11_qwen/experiments
 evaluation_storage:
   kind: sqlite
-  root: ../../.onex_state/steel_onslaught/tactical_split_v1_qwen/evaluation_storage
+  root: ../../.onex_state/steel_onslaught/tactical_split_c11_qwen/evaluation_storage
   journal_mode: WAL
   check_same_thread: true
   transaction_mode: autocommit
@@ -68,7 +79,7 @@ contracts:
   balance_rule_pack:
     kind: card_programming_rules
     pack_id: rules.card_programming_v1
-    handler_ids: []
+    handler_ids: ["overpressure_cooldown"]
 llm:
   providers:
     - kind: openai_compatible

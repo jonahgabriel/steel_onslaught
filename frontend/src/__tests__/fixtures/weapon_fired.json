@@ -15,7 +15,8 @@
     "target_id": "mech.b.01",
     "hit_probability": 0.65,
     "pressure_cost": 4,
-    "heat_generated": 6
+    "heat_generated": 6,
+    "close_range_mult": 1.0
   },
   "envelope": {
     "message_id": "c1c7f8a5-e3a3-550f-a840-efd93ae197e8",

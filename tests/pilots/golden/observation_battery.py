@@ -130,6 +130,7 @@ def _make_boiler(spec: _BoilerSpec, heat: int, pressure: int) -> ModelSOBoilerSt
         regeneration_per_tick=5,
         heat_current=heat,
         heat_redline_threshold=spec.redline,
+        heat_capacity=spec.rupture,
         heat_rupture_threshold=spec.rupture,
         heat_vent_rate=5,
         status_redline=heat >= spec.redline,

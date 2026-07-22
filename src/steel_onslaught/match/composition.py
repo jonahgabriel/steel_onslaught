@@ -38,6 +38,8 @@ from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOCardCatalogBinding,
     ModelSOCardProgrammerBinding,
+    ModelSOCloseRangeFalloffBinding,
+    ModelSOMovesEvasionBinding,
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOStubLlmProviderBinding,
 )
@@ -355,6 +357,12 @@ class RuntimeDependencies:
     # A human prompt edit is a decision input; recording it here is what keeps
     # replay honest about what the mechs were actually told.
     prompt_provenance: ModelSOMatchPromptProvenance | None = None
+    # Round-3 moves-scaled evasion policy selected by the overlay.  None => the
+    # mechanic is off (the comparison arm), so hit resolution is unchanged.
+    moves_evasion: ModelSOMovesEvasionBinding | None = None
+    # Round-4 close-range accuracy falloff on long weapons.  None => the mechanic
+    # is off (the comparison arm), so every weapon keeps a 1.0 multiplier.
+    close_range_falloff: ModelSOCloseRangeFalloffBinding | None = None
 
     def __post_init__(self) -> None:
         if self.card_cadence not in {"atomic", "paced"}:
@@ -1552,6 +1560,12 @@ def build_runtime_dependencies(
                     f"available pack is {rule_registry.pack_id!r}"
                 )
             rule_handler_ids = tuple(rule_binding.handler_ids)
+        moves_evasion = overlay.contracts.moves_scaled_evasion
+        if moves_evasion is not None and (
+            card_binding is None or not card_binding.card_mode_enabled
+        ):
+            raise ValueError("moves_scaled_evasion requires an explicitly enabled card catalog")
+        close_range_falloff = overlay.contracts.close_range_falloff
         if card_binding is not None and card_binding.programmers:
             if card_programmers is not None:
                 raise ValueError(
@@ -1611,6 +1625,8 @@ def build_runtime_dependencies(
                 card_adapter.rule_provenance if card_adapter is not None else None
             ),
             prompt_provenance=llm.prompt_provenance,
+            moves_evasion=moves_evasion,
+            close_range_falloff=close_range_falloff,
         )
     except Exception:
         if owns_llm:
@@ -2022,6 +2038,8 @@ def assemble_match_with_dependencies(
         prompt_provenance=dependencies.prompt_provenance,
         card_adapter=card_adapter,
         card_cadence=dependencies.card_cadence,
+        moves_evasion=dependencies.moves_evasion,
+        close_range_falloff=dependencies.close_range_falloff,
         progress_gate=resolved_progress_gate,
     )
     scoring = ReducerScoring(

@@ -21,7 +21,11 @@ from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, SOPlanSource
 from steel_onslaught.llm.personas import Persona
-from steel_onslaught.llm.programming import LLMProgrammingPilot
+from steel_onslaught.llm.programming import (
+    _DEFAULT_SEMANTIC_RETRY_LIMIT,
+    LLMProgrammingPilot,
+    programming_system_prompt,
+)
 from steel_onslaught.llm.schemas import (
     LlmResponse,
     LlmSemanticExhaustedError,
@@ -91,6 +95,7 @@ def _observation() -> ModelSOProgrammingObservation:
         regeneration_per_tick=5,
         heat_current=10,
         heat_redline_threshold=80,
+        heat_capacity=100,
         heat_rupture_threshold=100,
         heat_vent_rate=5,
         status_redline=False,
@@ -243,6 +248,40 @@ def test_programming_request_carries_typed_evidence_and_card_context() -> None:
     ]
     assert [entry["available_copies"] for entry in context["legal_hand"]] == [1, 1, 1]
     assert "ONLY legal card IDs" in request.system_prompt
+
+
+def test_programming_prompt_surfaces_heat_capacity_and_thermal_lockout() -> None:
+    """c11 legibility: the pilot MUST see heat_capacity and the derived thermal
+    overpressure read in its decision inputs, or the vent window goes unused."""
+
+    client = _ResponseClient(_response())
+    pilot = LLMProgrammingPilot(client=client, persona=_persona())
+
+    program_for_seat(pilot, _observation())
+
+    request = client.requests[0]
+    context = json.loads(request.user_prompt)
+    own = context["own_observation"]
+    # The raw boiler carries the ceiling, and a derived thermal block pre-computes
+    # the overpressure decision so the LLM can time the vent/rush.
+    assert "heat_capacity" in own["boiler"]
+    thermal = own["thermal"]
+    assert set(thermal) == {
+        "heat_current",
+        "heat_capacity",
+        "heat_headroom",
+        "heat_vent_rate",
+        "next_shot_heat",
+        "next_shot_locks_out",
+        "ticks_to_vent_lockout",
+    }
+    assert thermal["heat_capacity"] == own["boiler"]["heat_capacity"]
+    assert (
+        thermal["heat_headroom"] == own["boiler"]["heat_capacity"] - own["boiler"]["heat_current"]
+    )
+    assert isinstance(thermal["next_shot_locks_out"], bool)
+    # The instruction block explains what the flag means.
+    assert "next_shot_locks_out" in request.system_prompt
 
 
 def test_split_programming_request_uses_partition_descriptor_before_provider_call() -> None:
@@ -405,6 +444,104 @@ def test_default_failure_policy_exhausts_bounded_retries_on_invalid_plans(
     assert client.requests[2].persona == "opportunist.repair.2"
     for repair in client.requests[1:]:
         assert "REJECTED" in repair.system_prompt
+
+
+def test_programming_instructions_forbid_reasoning_wrappers() -> None:
+    """The code-owned output contract explicitly forbids the `<think>`/
+    chain-of-thought/markdown-fence wrappers that drive the sniper-specific
+    ``provider_semantic_failure`` on a reasoning gateway — while preserving the
+    existing strict-plan anchors so the fix does not loosen the contract."""
+
+    prompt = programming_system_prompt(_persona())
+    # New strict-output prohibitions (the reasoning-wrapper fix).
+    assert "<think>" in prompt
+    assert "chain-of-thought" in prompt
+    assert "code fences" in prompt
+    assert "return only the JSON object" in prompt
+    # Existing anchors are still present (unchanged contract surface).
+    assert "registers" in prompt
+    assert "ONLY legal card IDs" in prompt
+    assert "next_shot_locks_out" in prompt
+
+
+def test_parser_strips_a_reasoning_wrapper_before_extracting_the_plan() -> None:
+    """A reasoning gateway that leaks a `<think>` chain-of-thought (carrying its
+    OWN braces) before the JSON still yields a valid plan on the FIRST
+    completion.  Without the strip the inner brace defeats the first-'{'/last-'}'
+    extraction and the whole match aborts on ``malformed_json``."""
+
+    reasoning = (
+        "<think>The sniper holds standoff. Draft register "
+        '{"register_index": 9, "card_id": "card.wrong"} then reconsider.</think>\n'
+    )
+    client = _ResponseClient(reasoning + _response())
+    pilot = LLMProgrammingPilot(client=client, persona=_persona())
+
+    plan = program_for_seat(pilot, _observation())
+
+    assert plan.plan_source is SOPlanSource.LLM
+    assert tuple(register.register_index for register in plan.registers) == (0, 2)
+    # Parsed on the first attempt: no repair reprompt was needed.
+    assert len(client.requests) == 1
+
+
+def test_reasoning_only_response_still_reaches_a_terminal() -> None:
+    """#115 guarantee under the stricter contract: a provider that answers every
+    time with a `<think>` block but no JSON object never freezes — the bounded
+    repair budget is spent and the DISTINCT ``LlmSemanticExhaustedError``
+    (``malformed_json``) terminal is raised, one real completion per attempt."""
+
+    client = _ResponseClient("<think>I am still weighing spacing and heat.</think>")
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+    )
+
+    with pytest.raises(LlmSemanticExhaustedError) as excinfo:
+        program_for_seat(pilot, _observation())
+
+    assert excinfo.value.semantic_failure_code == "malformed_json"
+    # 1 initial attempt + the bounded reprompt budget, all real completions.
+    assert len(client.requests) == _DEFAULT_SEMANTIC_RETRY_LIMIT + 1
+    assert excinfo.value.attempts == _DEFAULT_SEMANTIC_RETRY_LIMIT + 1
+
+
+def test_default_semantic_retry_budget_is_three_extra_attempts() -> None:
+    """Balance round 2 (abort-rate cut): the default reprompt budget is raised
+    from 2 to 3 so a verbose live provider gets one more self-correction chance
+    before the match ends on ``provider_semantic_failure``."""
+
+    assert _DEFAULT_SEMANTIC_RETRY_LIMIT == 3
+
+
+def test_default_pilot_uses_the_raised_budget_before_exhausting() -> None:
+    """A pilot built without an explicit limit reprompts the raised number of
+    times (retry_limit + 1 = 4 total provider calls) and still reaches the
+    classified terminal — the #115 stall guarantee holds under the larger
+    budget (the loop is bounded, never infinite)."""
+
+    client = _ResponseClient("this is not a json object at all")
+    # No semantic_retry_limit kwarg -> the shipped default is used.
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+    )
+
+    with pytest.raises(LlmSemanticExhaustedError) as excinfo:
+        program_for_seat(pilot, _observation())
+
+    # 1 initial attempt + 3 bounded reprompts = 4 real provider completions.
+    assert len(client.requests) == 4
+    assert excinfo.value.attempts == 4
+    assert excinfo.value.semantic_failure_code == "malformed_json"
+    assert client.requests[0].persona == "opportunist"
+    assert [req.persona for req in client.requests[1:]] == [
+        "opportunist.repair.1",
+        "opportunist.repair.2",
+        "opportunist.repair.3",
+    ]
 
 
 def test_default_policy_retry_recovers_when_the_model_self_corrects() -> None:

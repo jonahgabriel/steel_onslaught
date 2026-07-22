@@ -1,0 +1,26 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.deck"
+id: "deck.weapon.sniper_v1"
+display_name: "Weapon Deck (Sniper, round-4 carbine)"
+# Round-4 sniper weapon pool: identical to deck.weapon.v1 plus card.attack.
+# fire_tertiary so the sniper can actually fire its third hardpoint (the
+# close-in defense carbine). This deck is used ONLY by the sniper seat in the
+# composed range-band overlay; the brawler keeps deck.weapon.v1, so the brawler
+# never draws (and wastes a register on) an inert fire_tertiary. Keeping the
+# carbine card off the shared deck is what preserves the A/B: the baseline arm
+# is byte-identical because nothing in it references this deck.
+hand_size: 3
+register_count: 3
+cards:
+  - card_id: "card.attack.fire_primary"
+    count: 8
+  - card_id: "card.attack.fire_secondary"
+    count: 6
+  - card_id: "card.attack.fire_tertiary"
+    count: 6
+  - card_id: "card.vent.emergency_vent"
+    count: 4
+  - card_id: "card.special.mode_assault"
+    count: 2
+  - card_id: "card.special.mode_evasion"
+    count: 2

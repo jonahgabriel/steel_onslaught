@@ -90,6 +90,7 @@ def _boiler_state(
         regeneration_per_tick=3,
         heat_current=heat,
         heat_redline_threshold=redline,
+        heat_capacity=rupture,
         heat_rupture_threshold=rupture,
         heat_vent_rate=5,
         status_redline=heat >= redline,

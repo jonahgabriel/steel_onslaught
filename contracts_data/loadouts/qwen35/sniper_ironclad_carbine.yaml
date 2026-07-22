@@ -1,0 +1,40 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.qwen35_sniper_ironclad_carbine
+chassis_id: chassis.heavy.ironclad_mk1
+boiler_id: boiler.industrial.bessemer_90
+pilot_id: pilot.llm.qwen35_sniper
+# Round-4 sniper loadout: the round-3 sniper (mortar slot 0, harpoon slot 1) plus
+# a third hardpoint — the close-in defense carbine at slot 2 (fired by
+# card.attack.fire_tertiary from deck.weapon.sniper_v1). The long weapons
+# (mortar range 50, harpoon range 30) both suffer the round-4 close-range
+# falloff; the carbine (range 14) is exempt and sustainable, so the sniper keeps
+# real close-range counterplay without the mortar's point-blank ledge.
+#
+# Budget (validate_loadout_budgets is authoritative; the block below is
+# informational): weapons cost 1 slot each and 0 mass, sensors 1 slot, gizmos
+# their declared slots. slots_used = 3 weapons + 2 sensors + 2 gizmos = 7 <= 8
+# max_module_slots. mass unchanged (weapons are 0 mass) at 12 <= 160. Steady
+# pressure draw unchanged (weapons draw 0; firing is event-based). All axes pass.
+modules:
+  weapons:
+    - weapon.siege.artillery_mortar
+    - weapon.heavy.harpoon_gun
+    - weapon.light.defense_carbine
+  sensors:
+    - sensor.long_range_radar
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.cooling.emergency_condenser
+    - gizmo.efficiency.efficient_regulator
+budgets:
+  points_used: 96
+  points_max: 100
+  mass_used: 112
+  mass_max: 160
+  slots_used: 7
+  slots_max: 8
+  expected_heat_peak: 22
+  expected_signature: 92

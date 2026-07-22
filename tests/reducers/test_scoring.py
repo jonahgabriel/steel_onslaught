@@ -118,6 +118,7 @@ def _make_boiler(mech_id: str) -> ModelSOBoilerState:
         regeneration_per_tick=4,
         heat_current=0,
         heat_redline_threshold=70,
+        heat_capacity=_RUPTURE_THRESHOLD,
         heat_rupture_threshold=_RUPTURE_THRESHOLD,
         heat_vent_rate=2,
         status_redline=False,

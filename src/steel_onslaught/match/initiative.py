@@ -66,7 +66,15 @@ def initiative_score(mech: ModelSOMechRuntimeState) -> int:
     if mech.overloaded:
         score -= _OVERLOAD_PENALTY
 
-    return score
+    # Initiative is a non-negative quantity: a maximally-penalized mech (a heavy
+    # chassis both redlined AND overloaded scores 10 - 8 - 15 = -13) floors at 0
+    # ("acts last / slowest"), it never goes negative. Before the c11 heat
+    # retune made boilers actually reach the overload cascade, this floor was
+    # academic; now it keeps a legitimately-cooking sniper from violating the
+    # ``ModelSOCardSeatRequest.initiative`` (ge=0) contract. Relative ordering is
+    # preserved among non-floored mechs; ties at the floor break on the seeded
+    # RNG sub-seed like any other tie.
+    return max(0, score)
 
 
 def order_by_initiative(

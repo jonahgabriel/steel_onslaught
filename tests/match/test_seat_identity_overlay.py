@@ -122,6 +122,7 @@ def _pilot_observation(
         regeneration_per_tick=5,
         heat_current=10,
         heat_redline_threshold=80,
+        heat_capacity=100,
         heat_rupture_threshold=100,
         heat_vent_rate=5,
         status_redline=False,
