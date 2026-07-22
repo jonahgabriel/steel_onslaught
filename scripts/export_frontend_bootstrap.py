@@ -1,5 +1,12 @@
 #!/usr/bin/env python
-"""Atomically generate Vite's validated public binding from an application overlay."""
+"""Atomically generate Vite's REPLAY-ONLY public binding from an overlay.
+
+This exporter never binds a command gateway, so the deck it produces cannot
+issue a Start Match command: it is the authority for ``so serve`` replay decks
+(and the browser proof-of-life) only.  To PLAY a match, run ``so play``, which
+serves its own bootstrap — including the command gateway — from the live match
+server.
+"""
 
 from __future__ import annotations
 
@@ -85,7 +92,14 @@ def export_frontend_bootstrap(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "REPLAY ONLY: the exported document has no command_gateway, so the "
+            "deck it configures cannot start a match. Use `so play` to play."
+        ),
+    )
     parser.add_argument("--overlay", required=True, type=Path)
     parser.add_argument(
         "--roster",

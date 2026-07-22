@@ -9,7 +9,9 @@ client, secret resolver, or provider discovery is performed here.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
+import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,6 +112,10 @@ from steel_onslaught.match.composition import (
 )
 from steel_onslaught.match.runner import MatchIdentity
 from steel_onslaught.match.state import ModelSOMatchState
+from steel_onslaught.pilots.inspection import (
+    project_effective_prompts,
+    project_rule_catalog,
+)
 
 BrowserLiveProviderCapability = (
     ProcessLocalOneShotLiveProviderCapability
@@ -1811,6 +1817,11 @@ def _configured_browser_server(
             overlay,
             roster=roster,
             model_catalog=model_catalog,
+            # Carry the operator prompt/rule inspection projections so the
+            # browser workbench can render (and derive overlay edits for) the
+            # exact effective prompts this overlay flies with, before a match.
+            prompt_provenance=project_effective_prompts(overlay),
+            rule_catalog=project_rule_catalog(overlay),
         ),
         gateway=None,
         bus=None,
@@ -1867,218 +1878,73 @@ def configured_live_browser_server(
     )
 
 
-async def _serve_browser_play(server: BrowserPlayServer, *, bootstrap_output: Path | None) -> None:
-    await server.start()
-    try:
-        payload = server.bootstrap.model_dump_json(indent=2) + "\n"
-        if bootstrap_output is not None:
-            bootstrap_output.write_text(payload, encoding="utf-8")
-        click.echo(f"bootstrap_url: {server.bootstrap_url}")
-        click.echo(f"events_url: {server.event_url}")
-        click.echo(f"commands_url: {server.command_url}")
-        await asyncio.Event().wait()
-    finally:
-        await server.stop()
+# ---------------------------------------------------------------------------
+# Zero-configuration launch defaults
+# ---------------------------------------------------------------------------
+#
+# Every launch input below has a working repository-relative default so a fresh
+# clone can run ``so play`` with no flags at all.  The defaults are resolved
+# from the checkout that ships this module, never from the process working
+# directory or an environment variable, and every one of them remains
+# overridable on the command line.
+
+DEFAULT_OVERLAY_RELATIVE = "contracts_data/overlays/tactical_split_v1_qwen.yaml"
+DEFAULT_CATALOG_INDEX_RELATIVE = "contracts_data/model_catalogs/configured_v1.yaml"
+DEFAULT_SESSION_RELATIVE = "contracts_data/sessions/local_operator.yaml"
+DEFAULT_RED_LOADOUT_RELATIVE = "contracts_data/loadouts/llm_qwen35_berserker.yaml"
+DEFAULT_BLUE_LOADOUT_RELATIVE = "contracts_data/loadouts/qwen35/sniper_ironclad.yaml"
+DEFAULT_BOOTSTRAP_OUTPUT_RELATIVE = "frontend/.steel-onslaught-bootstrap.generated.json"
+DEFAULT_SEED = 7
+#: The overlay's own ``frontend_transport.websocket_url`` port.  Binding it by
+#: default keeps a stale generated bootstrap pointing at the process that is
+#: actually running instead of silently drifting onto an ephemeral port.
+DEFAULT_PORT = 8765
+DEFAULT_ORIGIN = "http://localhost:5173"
+FRONTEND_DEV_URL = "http://localhost:5173"
 
 
-@click.command(name="play")
-@click.option(
-    "--overlay",
-    "overlay_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-)
-@click.option(
-    "--roster",
-    "roster_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=False,
-    help="Explicit player roster; mutually exclusive with --catalog-index.",
-)
-@click.option(
-    "--catalog-index",
-    "catalog_index_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=False,
-    help="Explicit multi-provider catalog source index; mutually exclusive with --roster.",
-)
-@click.option(
-    "--session",
-    "session_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-)
-@click.option(
-    "--loadout-red",
-    "red_loadout_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-)
-@click.option(
-    "--loadout-blue",
-    "blue_loadout_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-)
-@click.option("--seed", type=click.IntRange(min=0), required=True)
-@click.option(
-    "--max-ticks",
-    type=click.IntRange(min=1),
-    default=None,
-    help="Optional debug/test cap. Omit for normal winner-only matches.",
-)
-@click.option("--origin", default="http://localhost:5173", show_default=True)
-@click.option("--host", default="127.0.0.1", show_default=True)
-@click.option("--port", type=click.IntRange(min=0, max=65_535), default=0, show_default=True)
-@click.option("--bootstrap-output", type=click.Path(dir_okay=False, path_type=Path), default=None)
-def play_command(
-    overlay_path: Path,
-    roster_path: Path | None,
-    catalog_index_path: Path | None,
-    session_path: Path,
-    red_loadout_path: Path,
-    blue_loadout_path: Path,
-    seed: int,
-    max_ticks: int | None,
-    origin: str,
-    host: str,
-    port: int,
-    bootstrap_output: Path | None,
-) -> None:
-    """Run one configured, process-local browser match server."""
+def packaged_repository_root() -> Path:
+    """Return the checkout root that ships this module."""
 
-    server = _configured_browser_server(
-        overlay_path=overlay_path,
-        roster_path=roster_path,
-        catalog_index_path=catalog_index_path,
-        session_path=session_path,
-        red_loadout_path=red_loadout_path,
-        blue_loadout_path=blue_loadout_path,
-        seed=seed,
-        max_ticks=max_ticks,
-        origin=origin,
-        host=host,
-        port=port,
-    )
-    try:
-        asyncio.run(_serve_browser_play(server, bootstrap_output=bootstrap_output))
-    except KeyboardInterrupt:
-        click.echo("play interrupted", err=True)
+    return Path(__file__).resolve().parents[3]
 
 
-@click.command(name="play-live")
-@click.option(
-    "--overlay",
-    "overlay_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-)
-@click.option(
-    "--roster",
-    "roster_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=False,
-    help="Explicit player roster; mutually exclusive with --catalog-index.",
-)
-@click.option(
-    "--catalog-index",
-    "catalog_index_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=False,
-    help="Explicit multi-provider catalog source index; mutually exclusive with --roster.",
-)
-@click.option(
-    "--session",
-    "session_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-)
-@click.option(
-    "--loadout-red",
-    "red_loadout_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-)
-@click.option(
-    "--loadout-blue",
-    "blue_loadout_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    required=True,
-)
-@click.option("--seed", type=click.IntRange(min=0), required=True)
-@click.option(
-    "--max-ticks",
-    type=click.IntRange(min=1),
-    default=None,
-    help="Optional debug/test cap. Omit for the configured sudden-death horizon.",
-)
-@click.option("--origin", default="http://localhost:5173", show_default=True)
-@click.option("--host", default="127.0.0.1", show_default=True)
-@click.option("--port", type=click.IntRange(min=0, max=65_535), default=0, show_default=True)
-@click.option("--bootstrap-output", type=click.Path(dir_okay=False, path_type=Path), default=None)
-@click.option(
-    "--glm-api-key",
-    envvar="LLM_GLM_API_KEY",
-    required=False,
-    hide_input=True,
-    help="Injected GLM credential; defaults to LLM_GLM_API_KEY.",
-)
-@click.option(
-    "--openrouter-api-key",
-    envvar="OPENROUTER_API_KEY",
-    required=False,
-    hide_input=True,
-    help="Injected OpenRouter credential; defaults to OPENROUTER_API_KEY.",
-)
-@click.option(
-    "--gemini-api-key",
-    envvar="GEMINI_API_KEY",
-    required=False,
-    hide_input=True,
-    help="Injected Gemini credential; defaults to GEMINI_API_KEY.",
-)
-def play_live_command(
-    overlay_path: Path,
-    roster_path: Path | None,
-    catalog_index_path: Path | None,
-    session_path: Path,
-    red_loadout_path: Path,
-    blue_loadout_path: Path,
-    seed: int,
-    max_ticks: int | None,
-    origin: str,
-    host: str,
-    port: int,
-    bootstrap_output: Path | None,
-    glm_api_key: str | None,
-    openrouter_api_key: str | None,
-    gemini_api_key: str | None,
-) -> None:
-    """Run a browser match with explicitly injected provider authority.
+def packaged_default(relative: str) -> Path:
+    """Resolve one repository-relative launch default."""
 
-    Unlike ``so play``, this command is intentionally not stub-safe: it
-    requires at least one credential for the overlay's configured live
-    providers.  The browser roster selects which configured model/provider is
-    used; this command only injects credentials for the overlay's opaque secret
-    references.  The HTTP client is root-owned here and is never discovered by
-    runtime composition.
+    return packaged_repository_root() / relative
+
+
+def _resolved_launch_input(explicit: Path | None, relative: str, option: str) -> Path:
+    """Return an explicit launch input, or the packaged default for it."""
+
+    if explicit is not None:
+        return explicit
+    candidate = packaged_default(relative)
+    if not candidate.is_file():
+        raise click.ClickException(
+            f"{option} has no packaged default here: {candidate} does not exist. "
+            f"Pass {option} explicitly — a distribution installed outside a "
+            "checkout ships no contracts_data tree."
+        )
+    return candidate
+
+
+def _default_bootstrap_output() -> Path | None:
+    """Return the frontend's generated bootstrap path when a deck is present."""
+
+    candidate = packaged_default(DEFAULT_BOOTSTRAP_OUTPUT_RELATIVE)
+    return candidate if candidate.parent.is_dir() else None
+
+
+def _create_overlay_state_directories(overlay: ModelSOApplicationOverlay) -> None:
+    """Create the overlay's declared filesystem destinations.
+
+    The overlay owns its destinations; composition receives only the validated
+    overlay and never creates directories.  A launch is the process boundary
+    that may, so SQLite can open the ledger on a fresh clone.
     """
 
-    if not any((glm_api_key, openrouter_api_key, gemini_api_key)):
-        raise click.ClickException(
-            "provide at least one live credential via --glm-api-key, "
-            "--openrouter-api-key, or --gemini-api-key"
-        )
-    secret_resolver = _InjectedSecretResolver.from_cli(
-        glm_api_key=glm_api_key,
-        openrouter_api_key=openrouter_api_key,
-        gemini_api_key=gemini_api_key,
-    )
-
-    # The explicit live overlay owns its filesystem destinations.  Create
-    # those destinations at this process boundary so SQLite can open them;
-    # composition still receives only the validated, resolved overlay.
-    overlay = load_application_overlay(overlay_path)
     for directory in (
         overlay.event_ledger.path.parent,
         overlay.leaderboard.path.parent,
@@ -2088,6 +1954,114 @@ def play_live_command(
         overlay.evaluation_storage.root,
     ):
         directory.mkdir(parents=True, exist_ok=True)
+
+
+def _start_frontend_dev_server() -> subprocess.Popen[bytes] | None:
+    """Start the Vite deck beside the match server, or explain why it cannot.
+
+    The deck is started only after the bootstrap document has been written:
+    ``vite.config.ts`` reads that file at config load, so launching the two in
+    the other order is what produced a deck bound to a previous run's port.
+    """
+
+    frontend_dir = packaged_repository_root() / "frontend"
+    if not (frontend_dir / "package.json").is_file():
+        click.echo(f"frontend deck not found at {frontend_dir}; serving events only", err=True)
+        return None
+    if not (frontend_dir / "node_modules").is_dir():
+        click.echo(
+            f"frontend dependencies are missing; run `npm install --prefix {frontend_dir}` "
+            "then rerun, or pass --no-frontend",
+            err=True,
+        )
+        return None
+    return subprocess.Popen(["npm", "run", "dev"], cwd=frontend_dir)
+
+
+async def _serve_browser_play(
+    server: BrowserPlayServer,
+    *,
+    bootstrap_output: Path | None,
+    start_frontend: bool = False,
+) -> None:
+    await server.start()
+    frontend: subprocess.Popen[bytes] | None = None
+    try:
+        payload = server.bootstrap.model_dump_json(indent=2) + "\n"
+        if bootstrap_output is not None:
+            bootstrap_output.parent.mkdir(parents=True, exist_ok=True)
+            bootstrap_output.write_text(payload, encoding="utf-8")
+        click.echo(f"bootstrap_url: {server.bootstrap_url}")
+        click.echo(f"events_url: {server.event_url}")
+        click.echo(f"commands_url: {server.command_url}")
+        if start_frontend:
+            frontend = _start_frontend_dev_server()
+            if frontend is not None:
+                click.echo(f"deck: {FRONTEND_DEV_URL} — pick two pilots, then press START MATCH")
+        await asyncio.Event().wait()
+    finally:
+        if frontend is not None:
+            frontend.terminate()
+            try:
+                frontend.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                frontend.kill()
+        await server.stop()
+
+
+def _run_browser_play(
+    *,
+    command_label: str,
+    overlay_path: Path | None,
+    roster_path: Path | None,
+    catalog_index_path: Path | None,
+    session_path: Path | None,
+    red_loadout_path: Path | None,
+    blue_loadout_path: Path | None,
+    seed: int,
+    max_ticks: int | None,
+    origin: str,
+    host: str,
+    port: int,
+    bootstrap_output: Path | None,
+    start_frontend: bool,
+    glm_api_key: str | None,
+    openrouter_api_key: str | None,
+    gemini_api_key: str | None,
+) -> None:
+    """Resolve launch defaults, then serve one browser match session.
+
+    ``so play`` and ``so play-live`` are the same launch: the only difference
+    is whether the Vite deck is started alongside the match server.  Both bind
+    the overlay's live providers through the explicitly injected credential
+    resolver, so neither can compose a provider the operator did not supply.
+    """
+
+    overlay_path = _resolved_launch_input(overlay_path, DEFAULT_OVERLAY_RELATIVE, "--overlay")
+    if roster_path is None and catalog_index_path is None:
+        catalog_index_path = _resolved_launch_input(
+            None, DEFAULT_CATALOG_INDEX_RELATIVE, "--catalog-index"
+        )
+    session_path = _resolved_launch_input(session_path, DEFAULT_SESSION_RELATIVE, "--session")
+    red_loadout_path = _resolved_launch_input(
+        red_loadout_path, DEFAULT_RED_LOADOUT_RELATIVE, "--loadout-red"
+    )
+    blue_loadout_path = _resolved_launch_input(
+        blue_loadout_path, DEFAULT_BLUE_LOADOUT_RELATIVE, "--loadout-blue"
+    )
+    if bootstrap_output is None:
+        bootstrap_output = _default_bootstrap_output()
+
+    secret_resolver = _InjectedSecretResolver.from_cli(
+        glm_api_key=glm_api_key,
+        openrouter_api_key=openrouter_api_key,
+        gemini_api_key=gemini_api_key,
+    )
+
+    # The launch owns its filesystem destinations.  Create them at this
+    # process boundary so SQLite can open the ledger; composition still
+    # receives only the validated, resolved overlay.
+    _create_overlay_state_directories(load_application_overlay(overlay_path))
 
     try:
         server = configured_live_browser_server(
@@ -2106,18 +2080,256 @@ def play_live_command(
             http_transport=_UrllibJsonTransport(),
         )
         try:
-            asyncio.run(_serve_browser_play(server, bootstrap_output=bootstrap_output))
+            asyncio.run(
+                _serve_browser_play(
+                    server,
+                    bootstrap_output=bootstrap_output,
+                    start_frontend=start_frontend,
+                )
+            )
         except KeyboardInterrupt:
-            click.echo("play-live interrupted", err=True)
+            click.echo(f"{command_label} interrupted", err=True)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            raise click.ClickException(
+                f"port {port} on {host} is already in use — another match server is "
+                f"still running. Stop it (`lsof -ti tcp:{port} | xargs kill`) or pass "
+                "--port with a free port."
+            ) from exc
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
 
+def _launch_options(command: Any) -> Any:
+    """Attach the shared, fully defaulted launch options to a launch command."""
+
+    options = (
+        click.option(
+            "--overlay",
+            "overlay_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            default=None,
+            help=f"Application overlay; defaults to {DEFAULT_OVERLAY_RELATIVE}.",
+        ),
+        click.option(
+            "--roster",
+            "roster_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            default=None,
+            help="Explicit player roster; mutually exclusive with --catalog-index.",
+        ),
+        click.option(
+            "--catalog-index",
+            "catalog_index_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            default=None,
+            help=(
+                "Multi-provider catalog source index; mutually exclusive with --roster. "
+                f"Defaults to {DEFAULT_CATALOG_INDEX_RELATIVE} when no roster is given."
+            ),
+        ),
+        click.option(
+            "--session",
+            "session_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            default=None,
+            help=f"Authenticated operator session; defaults to {DEFAULT_SESSION_RELATIVE}.",
+        ),
+        click.option(
+            "--loadout-red",
+            "red_loadout_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            default=None,
+            help=f"Red launch loadout; defaults to {DEFAULT_RED_LOADOUT_RELATIVE}.",
+        ),
+        click.option(
+            "--loadout-blue",
+            "blue_loadout_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            default=None,
+            help=f"Blue launch loadout; defaults to {DEFAULT_BLUE_LOADOUT_RELATIVE}.",
+        ),
+        click.option("--seed", type=click.IntRange(min=0), default=DEFAULT_SEED, show_default=True),
+        click.option(
+            "--max-ticks",
+            type=click.IntRange(min=1),
+            default=None,
+            help="Optional debug/test cap. Omit for the configured sudden-death horizon.",
+        ),
+        click.option("--origin", default=DEFAULT_ORIGIN, show_default=True),
+        click.option("--host", default="127.0.0.1", show_default=True),
+        click.option(
+            "--port",
+            type=click.IntRange(min=0, max=65_535),
+            default=DEFAULT_PORT,
+            show_default=True,
+        ),
+        click.option(
+            "--bootstrap-output",
+            type=click.Path(dir_okay=False, path_type=Path),
+            default=None,
+            help=(
+                "Where to write the deck's generated bootstrap; defaults to "
+                f"{DEFAULT_BOOTSTRAP_OUTPUT_RELATIVE}."
+            ),
+        ),
+        click.option(
+            "--glm-api-key",
+            envvar="LLM_GLM_API_KEY",
+            required=False,
+            hide_input=True,
+            help="Injected GLM credential; defaults to LLM_GLM_API_KEY.",
+        ),
+        click.option(
+            "--openrouter-api-key",
+            envvar="OPENROUTER_API_KEY",
+            required=False,
+            hide_input=True,
+            help="Injected OpenRouter credential; defaults to OPENROUTER_API_KEY.",
+        ),
+        click.option(
+            "--gemini-api-key",
+            envvar="GEMINI_API_KEY",
+            required=False,
+            hide_input=True,
+            help="Injected Gemini credential; defaults to GEMINI_API_KEY.",
+        ),
+    )
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+@click.command(name="play")
+@_launch_options
+@click.option(
+    "--frontend/--no-frontend",
+    "start_frontend",
+    default=True,
+    show_default=True,
+    help="Start the Vite deck beside the match server.",
+)
+def play_command(
+    overlay_path: Path | None,
+    roster_path: Path | None,
+    catalog_index_path: Path | None,
+    session_path: Path | None,
+    red_loadout_path: Path | None,
+    blue_loadout_path: Path | None,
+    seed: int,
+    max_ticks: int | None,
+    origin: str,
+    host: str,
+    port: int,
+    bootstrap_output: Path | None,
+    glm_api_key: str | None,
+    openrouter_api_key: str | None,
+    gemini_api_key: str | None,
+    start_frontend: bool,
+) -> None:
+    """Play a match in the browser. Every option has a working default.
+
+    With no flags this serves the packaged 60x60 split-deck overlay through the
+    configured multi-provider catalog, writes the deck's bootstrap document, and
+    starts the Vite deck on http://localhost:5173.  Provider credentials are
+    injected from the documented environment variables; the browser roster
+    still decides which configured model takes each seat, and no match begins
+    until the browser issues its Start Match command.
+    """
+
+    _run_browser_play(
+        command_label="play",
+        overlay_path=overlay_path,
+        roster_path=roster_path,
+        catalog_index_path=catalog_index_path,
+        session_path=session_path,
+        red_loadout_path=red_loadout_path,
+        blue_loadout_path=blue_loadout_path,
+        seed=seed,
+        max_ticks=max_ticks,
+        origin=origin,
+        host=host,
+        port=port,
+        bootstrap_output=bootstrap_output,
+        start_frontend=start_frontend,
+        glm_api_key=glm_api_key,
+        openrouter_api_key=openrouter_api_key,
+        gemini_api_key=gemini_api_key,
+    )
+
+
+@click.command(name="play-live")
+@_launch_options
+@click.option(
+    "--frontend/--no-frontend",
+    "start_frontend",
+    default=False,
+    show_default=True,
+    help="Start the Vite deck beside the match server.",
+)
+def play_live_command(
+    overlay_path: Path | None,
+    roster_path: Path | None,
+    catalog_index_path: Path | None,
+    session_path: Path | None,
+    red_loadout_path: Path | None,
+    blue_loadout_path: Path | None,
+    seed: int,
+    max_ticks: int | None,
+    origin: str,
+    host: str,
+    port: int,
+    bootstrap_output: Path | None,
+    glm_api_key: str | None,
+    openrouter_api_key: str | None,
+    gemini_api_key: str | None,
+    start_frontend: bool,
+) -> None:
+    """Serve a browser match without starting the deck (alias of ``so play``).
+
+    This is the scripted form of ``so play``: identical launch composition and
+    identical defaults, but it never spawns the Vite dev server, so an operator
+    who already runs the deck (or drives the sockets directly) keeps ownership
+    of that process.
+    """
+
+    _run_browser_play(
+        command_label="play-live",
+        overlay_path=overlay_path,
+        roster_path=roster_path,
+        catalog_index_path=catalog_index_path,
+        session_path=session_path,
+        red_loadout_path=red_loadout_path,
+        blue_loadout_path=blue_loadout_path,
+        seed=seed,
+        max_ticks=max_ticks,
+        origin=origin,
+        host=host,
+        port=port,
+        bootstrap_output=bootstrap_output,
+        start_frontend=start_frontend,
+        glm_api_key=glm_api_key,
+        openrouter_api_key=openrouter_api_key,
+        gemini_api_key=gemini_api_key,
+    )
+
+
 __all__ = [
+    "DEFAULT_BLUE_LOADOUT_RELATIVE",
+    "DEFAULT_BOOTSTRAP_OUTPUT_RELATIVE",
+    "DEFAULT_CATALOG_INDEX_RELATIVE",
+    "DEFAULT_OVERLAY_RELATIVE",
+    "DEFAULT_PORT",
+    "DEFAULT_RED_LOADOUT_RELATIVE",
+    "DEFAULT_SEED",
+    "DEFAULT_SESSION_RELATIVE",
     "BrowserPlayServer",
     "BrowserPlaySession",
     "configured_live_browser_server",
     "launch_browser_play_session",
+    "packaged_default",
+    "packaged_repository_root",
     "play_command",
     "play_live_command",
 ]

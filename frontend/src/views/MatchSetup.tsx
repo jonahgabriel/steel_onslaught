@@ -19,6 +19,8 @@ import type {
   PublicPlayerOption,
 } from "../lib/application";
 import type { BrowserActionIntent, BrowserHumanTurnPrompt } from "../lib/command_gateway";
+import type { OverlayFragment } from "../lib/prompt_rules";
+import PromptRulesWorkbench from "./PromptRulesWorkbench";
 
 export interface MatchStartIntent {
   readonly expected_overlay_sha256: string;
@@ -130,8 +132,17 @@ export default function MatchSetup({
 }: MatchSetupProps): React.JSX.Element {
   const roster = bootstrap.player_roster;
   const catalog = bootstrap.model_catalog;
+  const promptProvenance = bootstrap.prompt_provenance;
+  const ruleCatalog = bootstrap.rule_catalog;
   const [redOptionId, setRedOptionId] = useState(() => defaultOptionId(roster, "red", catalog));
   const [blueOptionId, setBlueOptionId] = useState(() => defaultOptionId(roster, "blue", catalog));
+  // The derived overlay fragment for any pending prompt/rule edits. It is the
+  // exact fragment `so prompts set` / `so rules set` emit; an edit takes effect
+  // only through the overlay -> composition -> MATCH_STARTED provenance path,
+  // which is what keeps an edited prompt recorded in the ledger and
+  // replay-detectable rather than mutating a live match out of band.
+  const [editedFragment, setEditedFragment] = useState<OverlayFragment | null>(null);
+  const pendingPromptEdits = editedFragment?.persona_overrides ?? [];
 
   if (roster === null) {
     return (
@@ -193,6 +204,14 @@ export default function MatchSetup({
               onChange={setBlueOptionId}
             />
           </div>
+          {pendingPromptEdits.length > 0 ? (
+            <p className="so-pending-prompt-edits" data-testid="pending-prompt-edits">
+              {pendingPromptEdits.length} prompt edit
+              {pendingPromptEdits.length === 1 ? "" : "s"} pending (
+              {pendingPromptEdits.map((override) => override.persona_id).join(", ")}). Saved edits
+              run through the overlay and are recorded in MATCH_STARTED.
+            </p>
+          ) : null}
           <button type="submit" disabled={!ready || starting}>
             {capability === undefined || !gatewayEnabled
               ? "START DISABLED"
@@ -203,6 +222,16 @@ export default function MatchSetup({
                   : "START MATCH"}
           </button>
         </form>
+      ) : null}
+      {!matchStarted && promptProvenance !== null && ruleCatalog !== null ? (
+        <details className="so-prompt-rules pd-panel" data-testid="prompt-rules-workbench">
+          <summary>PROMPT &amp; RULE WORKBENCH</summary>
+          <PromptRulesWorkbench
+            provenance={promptProvenance}
+            catalog={ruleCatalog}
+            onFragmentChange={setEditedFragment}
+          />
+        </details>
       ) : null}
       {humanPrompt !== null &&
       humanPrompt !== undefined &&

@@ -58,6 +58,20 @@ _DEMO_OVERLAY = _ROOT / "contracts_data/overlays/tactical_split_v1_qwen.yaml"
 _CORRELATION_ID = UUID("4c2d5f8a-1111-4d2e-9a55-000000000001")
 
 
+class _UnusedSecretResolver:
+    """Satisfy the overlay's ``injected`` resolver kind for its keyless provider.
+
+    The split overlay declares ``secret_resolver.kind: injected`` so the browser
+    catalog launch can bind the catalog's secret-bearing GLM seats. Its own sole
+    provider (``qwen35``) is keyless (``secret_ref: null``), so composition never
+    calls ``resolve`` here — but it does require a resolver capability to exist.
+    Any actual resolution attempt is a wiring bug, so this one fails loudly.
+    """
+
+    def resolve(self, reference: object) -> str:
+        raise AssertionError(f"keyless split overlay resolved a secret: {reference!r}")
+
+
 class _PlanTransport:
     """Answer every completion with a plan built from the prompt's own hand."""
 
@@ -193,7 +207,9 @@ def _requested_personas_by_seat(overlay: ModelSOApplicationOverlay) -> dict[str,
     snapshot = load_card_runtime_snapshot(card_binding)
     registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
     events: list[ModelSOEventEnvelope] = []
-    llm = build_llm_dependencies(overlay, http_transport=_PlanTransport())
+    llm = build_llm_dependencies(
+        overlay, http_transport=_PlanTransport(), secret_resolver=_UnusedSecretResolver()
+    )
     try:
         observer = LedgerLlmCompletionObserver(
             correlation_id=_CORRELATION_ID,
@@ -266,7 +282,9 @@ def test_collapsed_seat_overlay_fails_closed_before_binding_a_provider() -> None
         }
     )
     registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
-    llm = build_llm_dependencies(overlay, http_transport=_PlanTransport())
+    llm = build_llm_dependencies(
+        overlay, http_transport=_PlanTransport(), secret_resolver=_UnusedSecretResolver()
+    )
     try:
         with pytest.raises(SeatIdentityError, match="does not match the declared seat archetype"):
             build_card_programmers(
@@ -304,7 +322,9 @@ def test_same_persona_on_both_seats_fails_closed() -> None:
         }
     )
     registry = load_pilot_registry(overlay.contracts.pilot_registry_dir)
-    llm = build_llm_dependencies(overlay, http_transport=_PlanTransport())
+    llm = build_llm_dependencies(
+        overlay, http_transport=_PlanTransport(), secret_resolver=_UnusedSecretResolver()
+    )
     try:
         with pytest.raises(SeatIdentityError, match="distinct card programmer identities"):
             build_card_programmers(

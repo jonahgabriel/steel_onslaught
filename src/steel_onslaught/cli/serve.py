@@ -57,6 +57,8 @@ from steel_onslaught.ledger.protocol import QueryableEventLedger, ReplayEventCat
 from steel_onslaught.match.composition import (
     load_application_overlay,
 )
+from steel_onslaught.pilots.persona_prompts import ModelSOMatchPromptProvenance
+from steel_onslaught.pilots.programming import ModelSOCardRuleCatalogProjection
 
 DEFAULT_WS_HOST = "127.0.0.1"
 DEFAULT_WS_PORT = 8765
@@ -70,6 +72,8 @@ def build_frontend_bootstrap(
     roster: ModelSOPlayerRosterBinding | None = None,
     model_catalog: ModelSOModelCatalog | None = None,
     command_gateway: ModelSOFrontendCommandGatewayBinding | None = None,
+    prompt_provenance: ModelSOMatchPromptProvenance | None = None,
+    rule_catalog: ModelSOCardRuleCatalogProjection | None = None,
 ) -> ModelSOFrontendBootstrap:
     """Project explicit launch authority and optional catalog metadata.
 
@@ -77,6 +81,12 @@ def build_frontend_bootstrap(
     roster, its deterministic roster projection is used for the existing
     dropdown/command contract; callers may still pass a roster explicitly and
     retain full control over the launch authority.
+
+    ``prompt_provenance``/``rule_catalog`` are the read-only inspection
+    projections the browser prompt/rule workbench renders before a match.  They
+    are computed by the caller (which already holds the loaded overlay) so this
+    builder stays pure and filesystem-free; omitting them leaves a replay-only
+    or older bundle unchanged.
     """
     if roster is not None and model_catalog is not None:
         projected_roster = model_catalog.to_roster_binding()
@@ -92,6 +102,8 @@ def build_frontend_bootstrap(
         player_roster=roster.public_projection() if roster is not None else None,
         model_catalog=model_catalog.public_projection() if model_catalog is not None else None,
         command_gateway=command_gateway,
+        prompt_provenance=prompt_provenance,
+        rule_catalog=rule_catalog,
     )
 
 

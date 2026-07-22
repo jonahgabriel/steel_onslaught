@@ -27,7 +27,11 @@ from steel_onslaught.contracts.player_selection import (
     Side,
 )
 from steel_onslaught.contracts.split_deck import ModelSOCardDeckPolicy
-from steel_onslaught.pilots.persona_prompts import ModelSOPersonaPromptOverride
+from steel_onslaught.pilots.persona_prompts import (
+    ModelSOMatchPromptProvenance,
+    ModelSOPersonaPromptOverride,
+)
+from steel_onslaught.pilots.programming import ModelSOCardRuleCatalogProjection
 
 
 class _ClosedBinding(BaseModel):
@@ -413,6 +417,20 @@ class ModelSOFrontendBootstrap(_ClosedBinding):
     # player_roster remains the launch authority and is intentionally kept
     # compatible with older browser bundles.
     model_catalog: ModelSOModelCatalogProjection | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    # Read-only operator inspection surfaces for the browser prompt/rule
+    # workbench.  Both are the SAME typed projections ``so prompts show --json``
+    # and ``so rules list --json`` emit, so a browser edit derives the identical
+    # overlay fragment the CLI would, and the effective-prompt digest shown here
+    # equals the one the runner records in MATCH_STARTED.  Null keeps older
+    # browser bundles (and replay-only decks) working unchanged.
+    prompt_provenance: ModelSOMatchPromptProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    rule_catalog: ModelSOCardRuleCatalogProjection | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )

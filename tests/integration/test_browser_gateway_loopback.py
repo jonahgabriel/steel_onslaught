@@ -1063,3 +1063,109 @@ async def test_server_start_replay_runs_match_and_forwards_authoritative_prompt(
     assert lifecycle_order[:2] == ["start", "run"]
     assert run_started.is_set()
     assert server.closed
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_no_match_events_are_emitted_before_a_start_command() -> None:
+    """The match must not begin until the browser issues Start Match.
+
+    The reported defect was a match that started on server bring-up — events
+    streaming to the deck before the operator pressed START. The launch is
+    session-factory driven and only ``_admit_start`` invokes it, so a connected
+    receive-only event socket must stay silent until a start command lands, and
+    only then observe MATCH_STARTED as the first frame.
+    """
+    import asyncio
+    import json
+
+    import websockets
+
+    from steel_onslaught.bus.in_process import InProcessEventBus
+
+    fixture = Path(__file__).parents[2] / "frontend/src/__tests__/fixtures/match_started.json"
+    started = ModelSOEventEnvelope.model_validate_json(fixture.read_text(encoding="utf-8"))
+
+    bus = InProcessEventBus()
+
+    class Gateway:
+        runtime = None
+
+        def start_match(self, request: ModelSOBrowserStartMatchRequest, **_: object) -> object:
+            return ModelSOBrowserStartAccepted(
+                command_id=request.command.command_id,
+                command_sha256="d" * 64,
+                match_id=request.match_id,
+                overlay_sha256="a" * 64,
+                roster_sha256="b" * 64,
+            )
+
+    class Session:
+        match_id = started.match_id
+        gateway = Gateway()
+        launch_provenance = SimpleNamespace(seat_assignments=())
+        stack = SimpleNamespace(bus=bus, runtime=None)
+        human_inbox = SimpleNamespace()
+
+        def run(self) -> None:
+            # The real runner publishes MATCH_STARTED as its first act; a stub
+            # runner that only publishes the canonical opening frame is enough
+            # to prove admission — not bring-up — is what begins the stream.
+            bus.publish(started)
+
+        def close(self) -> None:
+            del self
+
+    def session_factory(*_args: object, **_kwargs: object) -> object:
+        return Session()
+
+    server = BrowserPlayServer(
+        bootstrap=_bootstrap(),
+        gateway=None,
+        bus=None,
+        authenticate=lambda origin: (
+            (_PRINCIPAL, _SESSION) if origin == "http://localhost:5173" else None
+        ),
+        port=0,
+        session_factory=session_factory,  # type: ignore[arg-type]
+    )
+    await server.start()
+    try:
+        async with websockets.connect(server.event_url) as events:
+            # Before any Start Match command, the runner has never been invoked,
+            # so the event stream must produce nothing.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(events.recv(), timeout=1.0)
+            assert server._session is None
+            assert server._event_history == []
+
+            async with websockets.connect(
+                server.command_url,
+                additional_headers={"Origin": "http://localhost:5173"},
+            ) as commands:
+                await commands.send(
+                    json.dumps(
+                        {
+                            "schema_version": "1",
+                            "kind": "steel_onslaught.browser_start_intent",
+                            "request_id": str(_START_ID),
+                            "intent": {
+                                "expected_overlay_sha256": "1" * 64,
+                                "roster_id": "roster.browser",
+                                "expected_roster_sha256": "2" * 64,
+                                "selections": [
+                                    {"side": "red", "option_id": "player_option.browser_human"},
+                                    {"side": "blue", "option_id": "player_option.local_stub"},
+                                ],
+                            },
+                        }
+                    )
+                )
+                start_response = json.loads(await asyncio.wait_for(commands.recv(), timeout=2))
+                assert start_response["outcome"] == "accepted"
+                first_frame = json.loads(await asyncio.wait_for(events.recv(), timeout=5))
+                assert first_frame["event_type"] == "match_started"
+                assert first_frame["tick"] == 0
+                assert first_frame["sequence_in_tick"] == 0
+    finally:
+        await server.stop()

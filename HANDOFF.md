@@ -1,8 +1,14 @@
 # Steel Onslaught — Handoff Document
 
-> **Branch:** `feat/armor-degrading-pool` (16 commits, uncommitted: provider registry + cross-model pilots)
-> **Python:** 3.12.12 (aligned with OmniNode workspace)
-> **Status:** Game runs, ONEX restructured, LLM pilots working, learning loop wired, cross-model matches proven live.
+> **HISTORICAL — do not follow the shell recipes below as current truth.** This
+> document captures the 2026-07-02 restructure state. Several commands it shows
+> (`so run --ledger-path`, `so serve --ledger`, `PROVIDER_ENDPOINTS`,
+> `client_http.py`) **no longer exist**. For how to actually run and play the
+> game today, see [`README.md`](README.md) — that is the maintained, verified
+> source of truth. The "How to run things" section below has been corrected to
+> the live command surface; the rest is retained as design provenance only.
+>
+> **Python:** 3.12 (aligned with OmniNode workspace)
 
 ## What's built and working
 
@@ -160,38 +166,32 @@ The operator asked about fanning out research agents using GLM models. The z.ai 
 
 ## How to run things
 
+These are the **live** command signatures (corrected from the stale recipes
+this doc originally shipped). `--overlay` is required by `so run`/`so serve`;
+the ledger path is chosen by the overlay, not a `--ledger`/`--ledger-path`
+flag (those never existed on the current CLI).
+
 ```bash
-# Heuristic match
-uv run so run --loadout-a contracts_data/loadouts/example_aggressive_light.yaml \
-              --loadout-b contracts_data/loadouts/example_predictive_heavy.yaml \
-              --seed 42 --max-ticks 200 --ledger-path /tmp/m.sqlite --no-color
+# PLAY a match in the browser — zero flags. Serves the 60x60 split-deck board
+# through every configured model and starts the deck at http://localhost:5173.
+# Provider credentials come from ~/.omnibase/.env (LLM_GLM_API_KEY, etc.).
+uv run so play
 
-# LLM match (stub)
-uv run so run --loadout-a contracts_data/loadouts/example_llm_berserker_light.yaml \
-              --loadout-b contracts_data/loadouts/example_llm_sniper_light.yaml \
-              --seed 42 --max-ticks 30 --no-color
+# Same launch without auto-starting the Vite deck (scripted / already-running deck).
+uv run so play-live
 
-# LLM match (real models on AI PC)
-uv run so run --loadout-a contracts_data/loadouts/llm_qwen35_berserker.yaml \
+# Headless CLI match (text projection to stdout), overlay-selected ledger.
+uv run so run --overlay contracts_data/overlays/standard_v1_qwen.yaml \
+              --loadout-a contracts_data/loadouts/llm_qwen35_berserker.yaml \
               --loadout-b contracts_data/loadouts/llm_qwen27_sniper.yaml \
-              --seed 7 --max-ticks 20 --ledger-path /tmp/m.sqlite --no-color
+              --seed 7
 
-# Stream to frontend
-uv run so serve --ledger /tmp/m.sqlite --match <id> --tick-delay 0.5
+# Replay a recorded match to the browser deck (replay-only; cannot start a match).
+uv run so serve --overlay contracts_data/overlays/standard_v1_qwen.yaml --match <id>
 # Then open http://localhost:5173/
 
-# Learning loop
-uv run so learn --archetype aggressive --parent contracts_data/pilots/template_aggressive.yaml \
-    --strategy hill_climb --master-seed 42 --budget 16 --seeds 8 --holdout 2 \
-    --base-loadout contracts_data/loadouts/example_aggressive_light.yaml \
-    --max-ticks 200 --workdir /tmp/so_learn
-
-# LLM tuner
-uv run so learn --archetype aggressive --parent contracts_data/pilots/template_aggressive.yaml \
-    --strategy grid --generator llm --llm-arm llm_off --llm-provider stub \
-    --master-seed 42 --budget 6 --seeds 2 --holdout 2 \
-    --base-loadout contracts_data/loadouts/example_aggressive_light.yaml \
-    --max-ticks 120 --workdir /tmp/so_tuner
+# Learning loop (see `uv run so learn --help` for the current flag set).
+uv run so learn --help
 ```
 
 ## Architecture summary
