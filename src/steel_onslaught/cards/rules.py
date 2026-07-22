@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -19,6 +20,8 @@ from steel_onslaught.contracts.card import SOCardCategory
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, ModelSOPlanRegister
 from steel_onslaught.pilots.programming import (
     CardProgrammingRuleHandler,
+    ModelSOCardRuleCatalogProjection,
+    ModelSOCardRuleHandlerDescriptor,
     ModelSOCardRuleHandlerMetadata,
     ModelSOCardRulePackProvenance,
     ModelSOProgrammingObservation,
@@ -27,6 +30,34 @@ from steel_onslaught.pilots.programming import (
 
 class CardProgrammingRuleError(ValueError):
     """A rule registry or plugin violated its explicit typed boundary."""
+
+
+def _descriptor(
+    *,
+    handler_id: str,
+    version: str,
+    implementation: str,
+    display_name: str,
+    description: str,
+) -> ModelSOCardRuleHandlerDescriptor:
+    """Build one handler's identity plus its operator-facing description.
+
+    The implementation digest is derived from the fully qualified class name
+    and version so a rename or a version bump is a different identity, while
+    editing the human description can never change match provenance.
+    """
+
+    return ModelSOCardRuleHandlerDescriptor(
+        metadata=ModelSOCardRuleHandlerMetadata(
+            handler_id=handler_id,
+            version=version,
+            implementation_sha256=hashlib.sha256(
+                f"{implementation}:{version}".encode()
+            ).hexdigest(),
+        ),
+        display_name=display_name,
+        description=description,
+    )
 
 
 def _pack_digest(pack_id: str, handlers: tuple[ModelSOCardRuleHandlerMetadata, ...]) -> str:
@@ -98,6 +129,37 @@ class CardProgrammingRuleRegistry:
                 ) from exc
         return tuple(selected)
 
+    def catalog(self, handler_ids: Sequence[str] = ()) -> ModelSOCardRuleCatalogProjection:
+        """Enumerate every installed rule with its human description.
+
+        This is the discovery surface an operator (CLI or browser) reads to
+        decide what to turn on.  ``select`` remains the only *authority*: the
+        selection is still validated and fails closed on an unknown id.  A
+        handler that ships no descriptor is a packaging bug and is rejected
+        here rather than silently rendered as a blank row.
+        """
+
+        descriptors: list[ModelSOCardRuleHandlerDescriptor] = []
+        for handler in self.handlers:
+            descriptor = getattr(handler, "descriptor", None)
+            if not isinstance(descriptor, ModelSOCardRuleHandlerDescriptor):
+                raise CardProgrammingRuleError(
+                    f"card rule handler {handler.metadata.handler_id!r} does not expose a typed "
+                    "ModelSOCardRuleHandlerDescriptor"
+                )
+            if descriptor.metadata != handler.metadata:
+                raise CardProgrammingRuleError(
+                    f"card rule handler {handler.metadata.handler_id!r} descriptor metadata "
+                    "differs from its provenance metadata"
+                )
+            descriptors.append(descriptor)
+        selected = tuple(handler.metadata.handler_id for handler in self.select(handler_ids))
+        return ModelSOCardRuleCatalogProjection(
+            pack_id=self.pack_id,
+            available=tuple(descriptors),
+            enabled_handler_ids=selected,
+        )
+
     def provenance(self, handler_ids: Sequence[str] = ()) -> ModelSOCardRulePackProvenance:
         """Return the content-addressed identity of a selected rule pack."""
 
@@ -119,13 +181,18 @@ class PreferAttackCardsRuleHandler:
     attack card, the proposal is returned unchanged.
     """
 
-    metadata: ModelSOCardRuleHandlerMetadata = ModelSOCardRuleHandlerMetadata(
+    descriptor: ModelSOCardRuleHandlerDescriptor = _descriptor(
         handler_id="prefer_attack_cards",
         version="v1.0.0",
-        implementation_sha256=hashlib.sha256(
-            b"steel_onslaught.cards.rules.PreferAttackCardsRuleHandler:v1.0.0"
-        ).hexdigest(),
+        implementation="steel_onslaught.cards.rules.PreferAttackCardsRuleHandler",
+        display_name="Fire-dense programming",
+        description=(
+            "Replace non-attack registers with unused attack cards from the dealt hand, "
+            "so a round trends toward shooting instead of maneuvering. No-op when the "
+            "hand holds no unused attack card."
+        ),
     )
+    metadata: ModelSOCardRuleHandlerMetadata = descriptor.metadata
 
     def apply(
         self,
@@ -170,18 +237,210 @@ class PreferAttackCardsRuleHandler:
         )
 
 
+class EnsureMovementCardRuleHandler:
+    """Guarantee every programmed round retains one movement card.
+
+    An LLM card programmer is free to choose a coherent plan, and a perfectly
+    valid response can fill every register with attack/vent cards.  That makes
+    a match collapse into a stationary exchange even when the dealt hand holds
+    flank and reposition options.  This opt-in rule preserves the programmer's
+    plan whenever it already moves; otherwise it replaces only the last
+    register with the highest-priority unused movement card in the hand.
+
+    The transform is pure, deterministic, and bounded to the immutable hand
+    snapshot.  It does not alter card definitions or movement physics.
+    """
+
+    descriptor: ModelSOCardRuleHandlerDescriptor = _descriptor(
+        handler_id="ensure_movement_card",
+        version="v1.0.0",
+        implementation="steel_onslaught.cards.rules.EnsureMovementCardRuleHandler",
+        display_name="Movement variety",
+        description=(
+            "Guarantee at least one movement card per round: if the proposed plan has none, "
+            "swap the last register for the highest-priority unused movement card in the "
+            "hand. No-op when the plan already moves or the hand has no movement card."
+        ),
+    )
+    metadata: ModelSOCardRuleHandlerMetadata = descriptor.metadata
+
+    def apply(
+        self,
+        observation: ModelSOProgrammingObservation,
+        proposed_plan: ModelSOPlanCommittedPayload,
+    ) -> ModelSOPlanCommittedPayload:
+        hand_cards = {card.id: card for card in observation.hand_cards}
+        if any(
+            hand_cards[register.card_id].category is SOCardCategory.MOVEMENT
+            for register in proposed_plan.registers
+        ):
+            return proposed_plan
+
+        used = {register.card_id for register in proposed_plan.registers}
+        movement_cards = sorted(
+            (
+                card
+                for card in hand_cards.values()
+                if card.category is SOCardCategory.MOVEMENT and card.id not in used
+            ),
+            key=lambda card: (-card.priority, str(card.id)),
+        )
+        if not movement_cards or not proposed_plan.registers:
+            return proposed_plan
+
+        replacement_index = len(proposed_plan.registers) - 1
+        replacement_id = movement_cards[0].id
+        registers = tuple(
+            ModelSOPlanRegister(
+                register_index=register.register_index,
+                card_id=replacement_id if index == replacement_index else register.card_id,
+            )
+            for index, register in enumerate(proposed_plan.registers)
+        )
+        return _restamp(proposed_plan, registers, self.metadata.handler_id)
+
+
+class CloseTheGapRuleHandler:
+    """Forbid retreating while the enemy is outside every weapon's reach.
+
+    Long-range standoff is a legitimate doctrine, but a plan that backs away
+    while already out of range cannot produce a shot for either side, which is
+    the stalemate shape a large arena makes easy.  When the latest sensor
+    reading puts the enemy beyond this mech's longest weapon range, this rule
+    swaps ``away_from_enemy`` movement registers for available
+    ``toward_enemy`` movement cards from the same hand.
+
+    The band is read from the immutable observation (weapon ranges and the
+    newest sensor reading), never from card names, a provider, or reducer
+    state, so the rule needs no extra injected policy contract to be
+    discoverable and selectable.  If the hand cannot supply enough approach
+    cards, the registers it cannot legally repair are left untouched rather
+    than aborting a live match on a hand-composition accident.
+    """
+
+    descriptor: ModelSOCardRuleHandlerDescriptor = _descriptor(
+        handler_id="close_the_gap",
+        version="v1.0.0",
+        implementation="steel_onslaught.cards.rules.CloseTheGapRuleHandler",
+        display_name="No retreat out of range",
+        description=(
+            "While the newest sensor reading puts the enemy beyond this mech's longest "
+            "weapon range, swap away-from-enemy movement registers for available "
+            "toward-enemy cards. No-op in range, without sensor contact, or without a "
+            "legal approach card."
+        ),
+    )
+    metadata: ModelSOCardRuleHandlerMetadata = descriptor.metadata
+
+    @staticmethod
+    def _latest_enemy_distance(observation: ModelSOProgrammingObservation) -> float | None:
+        readings = observation.pilot_observation.enemy_observations
+        if not readings:
+            return None
+        newest = max(readings, key=lambda reading: (reading.tick, reading.enemy_mech_id))
+        return newest.distance_estimate
+
+    @staticmethod
+    def _longest_weapon_range(observation: ModelSOProgrammingObservation) -> int | None:
+        weapons = observation.pilot_observation.weapons
+        if not weapons:
+            return None
+        return max(weapon.range for weapon in weapons)
+
+    def apply(
+        self,
+        observation: ModelSOProgrammingObservation,
+        proposed_plan: ModelSOPlanCommittedPayload,
+    ) -> ModelSOPlanCommittedPayload:
+        distance = self._latest_enemy_distance(observation)
+        reach = self._longest_weapon_range(observation)
+        if distance is None or reach is None or distance <= float(reach):
+            return proposed_plan
+
+        hand_cards = {card.id: card for card in observation.hand_cards}
+
+        def _direction(card_id: str) -> str | None:
+            card = hand_cards[card_id]
+            if card.category is not SOCardCategory.MOVEMENT:
+                return None
+            return card.effect.direction
+
+        retreat_indices = [
+            position
+            for position, register in enumerate(proposed_plan.registers)
+            if _direction(register.card_id) == "away_from_enemy"
+        ]
+        if not retreat_indices:
+            return proposed_plan
+
+        remaining: Counter[str] = Counter(str(card_id) for card_id in observation.hand)
+        remaining.subtract(str(register.card_id) for register in proposed_plan.registers)
+        approach_ids: list[str] = []
+        for card in sorted(hand_cards.values(), key=lambda item: (-item.priority, str(item.id))):
+            if card.category is not SOCardCategory.MOVEMENT:
+                continue
+            if card.effect.direction != "toward_enemy":
+                continue
+            approach_ids.extend([str(card.id)] * max(0, remaining[str(card.id)]))
+        if not approach_ids:
+            return proposed_plan
+
+        replacements = dict(zip(retreat_indices, approach_ids, strict=False))
+        registers = tuple(
+            ModelSOPlanRegister(
+                register_index=register.register_index,
+                card_id=replacements.get(position, register.card_id),
+            )
+            for position, register in enumerate(proposed_plan.registers)
+        )
+        if registers == proposed_plan.registers:
+            return proposed_plan
+        return _restamp(proposed_plan, registers, self.metadata.handler_id)
+
+
+def _restamp(
+    proposed_plan: ModelSOPlanCommittedPayload,
+    registers: tuple[ModelSOPlanRegister, ...],
+    handler_id: str,
+) -> ModelSOPlanCommittedPayload:
+    """Rebuild a plan with an appended rule note, preserving authorship."""
+
+    rule_note = f"rule:{handler_id}"
+    rationale = proposed_plan.rationale
+    rationale = rule_note if not rationale else f"{rationale}; {rule_note}"
+    return ModelSOPlanCommittedPayload(
+        seat=proposed_plan.seat,
+        registers=registers,
+        rationale=rationale,
+        confidence=proposed_plan.confidence,
+        # A rule adjusts the plan; it never changes who authored it.
+        plan_source=proposed_plan.plan_source,
+    )
+
+
 def default_rule_registry() -> CardProgrammingRuleRegistry:
-    """Build the application allowlist without enabling any rule by default."""
+    """Build the application allowlist without enabling any rule by default.
+
+    Installation is not activation: every handler here is discoverable through
+    ``catalog()`` but stays inert until an overlay (or the ``so tune`` writer)
+    names it in ``balance_rule_pack.handler_ids``.
+    """
 
     return CardProgrammingRuleRegistry(
         pack_id="rules.card_programming_v1",
-        handlers=(PreferAttackCardsRuleHandler(),),
+        handlers=(
+            PreferAttackCardsRuleHandler(),
+            EnsureMovementCardRuleHandler(),
+            CloseTheGapRuleHandler(),
+        ),
     )
 
 
 __all__ = [
     "CardProgrammingRuleError",
     "CardProgrammingRuleRegistry",
+    "CloseTheGapRuleHandler",
+    "EnsureMovementCardRuleHandler",
     "PreferAttackCardsRuleHandler",
     "default_rule_registry",
 ]

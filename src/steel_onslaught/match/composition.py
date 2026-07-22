@@ -105,7 +105,7 @@ from steel_onslaught.llm.effect import (
 )
 from steel_onslaught.llm.personas import PersonaRegistry
 from steel_onslaught.llm.pilot import LLMPilot, LlmPilotFailurePolicy
-from steel_onslaught.llm.programming import LLMProgrammingPilot
+from steel_onslaught.llm.programming import PROGRAMMING_INSTRUCTIONS_SHA256, LLMProgrammingPilot
 from steel_onslaught.llm.schemas import (
     ModelSOLlmPilotSelection,
     ProtocolHttpTransport,
@@ -147,6 +147,11 @@ from steel_onslaught.match.state import ModelSOMatchState, SOMatchEndReason, SOM
 from steel_onslaught.pilots.aggressive import AggressivePilot
 from steel_onslaught.pilots.defensive import DefensivePilot
 from steel_onslaught.pilots.human import HumanPilot
+from steel_onslaught.pilots.persona_prompts import (
+    ModelSOMatchPromptProvenance,
+    apply_prompt_overrides,
+    build_match_prompt_provenance,
+)
 from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.programming import (
     ModelSOCardRulePackProvenance,
@@ -346,6 +351,10 @@ class RuntimeDependencies:
     card_cadence: Literal["atomic", "paced"] = "atomic"
     # Content-addressed selected rule pack copied into MATCH_STARTED.
     card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None
+    # Content-addressed effective persona prompts copied into MATCH_STARTED.
+    # A human prompt edit is a decision input; recording it here is what keeps
+    # replay honest about what the mechs were actually told.
+    prompt_provenance: ModelSOMatchPromptProvenance | None = None
 
     def __post_init__(self) -> None:
         if self.card_cadence not in {"atomic", "paced"}:
@@ -401,6 +410,10 @@ class LlmDependencies:
     pilot_factory: ProtocolPilotFactory
     tuner_generator: ProtocolTunerGenerator
     closer: ProtocolResourceCloser
+    # Effective (post-override) prompt identity for every persona this overlay
+    # can bind.  It is a decision input, so it travels with the dependency
+    # graph and is written into MATCH_STARTED by the runner.
+    prompt_provenance: ModelSOMatchPromptProvenance | None = None
 
     def close(self) -> None:
         self.closer.close()
@@ -463,6 +476,7 @@ class LiveMatchStack:
     card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None
     card_adapter: CardRunnerAdapter | None = None
     card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None
+    prompt_provenance: ModelSOMatchPromptProvenance | None = None
     _launch_provenance: ModelSOMatchLaunchProvenance | None = None
     _human_inbox: ProcessLocalHumanLoopbackCoordinator | None = None
 
@@ -496,6 +510,32 @@ class LiveMatchStack:
         if self._human_inbox is None:
             raise RuntimeError("match stack has no process-local human seat")
         return self._human_inbox
+
+
+def project_effective_prompt_provenance(
+    overlay: ModelSOApplicationOverlay,
+) -> ModelSOMatchPromptProvenance:
+    """Return the effective, post-override prompt identity for one overlay.
+
+    This is the read-only projection an operator inspection surface renders,
+    and it carries the full prompt *text* (unlike the redacted ledger form the
+    runner broadcasts).  Each persona's ``prompt_sha256`` here equals the hash
+    the runner records in MATCH_STARTED for the same overlay, so an operator
+    can read the exact text a match's recorded hash binds.  It is confined to
+    the composition root because loading the persona contract directory
+    (``PersonaRegistry.load``) is filesystem I/O.
+    """
+
+    authored = PersonaRegistry.load(overlay.llm.personas_dir)
+    effective, overridden = apply_prompt_overrides(
+        authored.as_mapping(),
+        overlay.llm.persona_overrides,
+    )
+    return build_match_prompt_provenance(
+        effective,
+        overridden_persona_ids=overridden,
+        programming_instructions_sha256=PROGRAMMING_INSTRUCTIONS_SHA256,
+    )
 
 
 def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
@@ -1291,7 +1331,25 @@ def build_llm_dependencies(
             raise ValueError("llm.secret_resolver kind 'injected' requires a resolver capability")
         resolved_secrets = secret_resolver
 
-    persona_registry = PersonaRegistry.load(overlay.llm.personas_dir)
+    # Human-editable prompts: an overlay may replace a persona's doctrine
+    # without editing the persona contract or any code.  The override is
+    # applied here, once, so every pilot and programmer built from this graph
+    # flies the same effective prompt, and the effective prompt is recorded.
+    authored_registry = PersonaRegistry.load(overlay.llm.personas_dir)
+    effective_personas, overridden_persona_ids = apply_prompt_overrides(
+        authored_registry.as_mapping(),
+        overlay.llm.persona_overrides,
+    )
+    persona_registry = PersonaRegistry(effective_personas)
+    # Ledger/broadcast form: only the binding hash per persona travels into
+    # MATCH_STARTED, never the raw prompt text (sanitization gate). The full
+    # text is reconstructable from the overlay via project_effective_prompt_*.
+    prompt_provenance = build_match_prompt_provenance(
+        effective_personas,
+        overridden_persona_ids=overridden_persona_ids,
+        programming_instructions_sha256=PROGRAMMING_INSTRUCTIONS_SHA256,
+        include_text=False,
+    )
     http_providers = tuple(
         provider
         for provider in providers
@@ -1352,6 +1410,7 @@ def build_llm_dependencies(
             pilot_factory=pilot_factory,
             tuner_generator=LlmTunerGenerator(client_factory),
             closer=closer,
+            prompt_provenance=prompt_provenance,
         )
     except Exception:
         closer.close()
@@ -1551,6 +1610,7 @@ def build_runtime_dependencies(
             card_rule_pack_provenance=(
                 card_adapter.rule_provenance if card_adapter is not None else None
             ),
+            prompt_provenance=llm.prompt_provenance,
         )
     except Exception:
         if owns_llm:
@@ -1959,6 +2019,7 @@ def assemble_match_with_dependencies(
         launch_provenance=launch_provenance,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
         card_rule_pack_provenance=dependencies.card_rule_pack_provenance,
+        prompt_provenance=dependencies.prompt_provenance,
         card_adapter=card_adapter,
         card_cadence=dependencies.card_cadence,
         progress_gate=resolved_progress_gate,
@@ -1977,6 +2038,7 @@ def assemble_match_with_dependencies(
             card_catalog=dependencies.card_catalog,
             card_runtime_snapshot=dependencies.card_runtime_snapshot,
             card_rule_pack_provenance=dependencies.card_rule_pack_provenance,
+            prompt_provenance=dependencies.prompt_provenance,
             validate_card_events=(card_adapter is not None and card_adapter.registers_enabled),
         ),
     )
@@ -2023,6 +2085,7 @@ def assemble_match_with_dependencies(
         card_catalog=dependencies.card_catalog,
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
         card_rule_pack_provenance=dependencies.card_rule_pack_provenance,
+        prompt_provenance=dependencies.prompt_provenance,
         card_adapter=card_adapter,
     )
 

@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from steel_onslaught.contracts.card_learning import ModelSOCardLearningMetric
 from steel_onslaught.events.payloads import ModelSOPlayerScore
+from steel_onslaught.pilots.persona_prompts import ModelSOMatchPromptProvenance
 from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 
 
@@ -43,6 +44,12 @@ class ModelSOAfterMatchLearningEvidence(BaseModel):
     decision_action_counts: Mapping[str, StrictInt]
     decision_reason_counts: Mapping[str, StrictInt]
     card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    # The effective persona prompts the match flew with.  Learning that
+    # compares two runs must be able to see that the prompt changed.
+    prompt_provenance: ModelSOMatchPromptProvenance | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )

@@ -217,6 +217,10 @@ _APPROVED_CALLS = Counter(
             "steel_onslaught.llm.personas.PersonaRegistry.load",
         ): 1,
         (
+            "project_effective_prompt_provenance",
+            "steel_onslaught.llm.personas.PersonaRegistry.load",
+        ): 1,
+        (
             "build_llm_dependencies",
             "steel_onslaught.match.composition.ApplicationPilotFactory",
         ): 1,

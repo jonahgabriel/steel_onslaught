@@ -23,6 +23,7 @@ from steel_onslaught.cli.balance import balance_command
 from steel_onslaught.cli.experiment import learn_experiment_command
 from steel_onslaught.cli.learn import learn_command
 from steel_onslaught.cli.play import play_command, play_live_command
+from steel_onslaught.cli.prompts import prompts_command, rules_command
 from steel_onslaught.cli.serve import serve_command
 from steel_onslaught.match.composition import load_application_overlay
 from steel_onslaught.projections.cli.renderer import CliTextRenderer
@@ -43,6 +44,8 @@ main.add_command(learn_experiment_command)
 main.add_command(adaptation_command)
 main.add_command(play_command)
 main.add_command(play_live_command)
+main.add_command(prompts_command)
+main.add_command(rules_command)
 
 
 @main.command(name="run")

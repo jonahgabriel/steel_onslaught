@@ -27,6 +27,7 @@ from steel_onslaught.contracts.player_selection import (
     Side,
 )
 from steel_onslaught.contracts.split_deck import ModelSOCardDeckPolicy
+from steel_onslaught.pilots.persona_prompts import ModelSOPersonaPromptOverride
 
 
 class _ClosedBinding(BaseModel):
@@ -318,6 +319,21 @@ class ModelSOLlmBindings(_ClosedBinding):
     model_identities: tuple[ModelSOModelIdentityBinding, ...]
     personas_dir: Path
     secret_resolver: SecretResolverBinding
+    # Human-editable prompt surface.  An override replaces one persona's
+    # authored doctrine (and optionally its temperature) without editing the
+    # persona contract file or any code.  The effective prompt is recorded in
+    # MATCH_STARTED provenance, so an edit here cannot escape the evidence.
+    persona_overrides: tuple[ModelSOPersonaPromptOverride, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+    )
+
+    @model_validator(mode="after")
+    def _persona_overrides_are_unique(self) -> Self:
+        persona_ids = [override.persona_id for override in self.persona_overrides]
+        if len(persona_ids) != len(set(persona_ids)):
+            raise ValueError("persona_overrides must declare each persona_id at most once")
+        return self
 
     @model_validator(mode="after")
     def _valid_provider_and_model_identity_ids(self) -> Self:
@@ -421,6 +437,7 @@ __all__ = [
     "ModelSOModelIdentityBinding",
     "ModelSONoSecretResolverBinding",
     "ModelSOOpenAICompatibleProviderBinding",
+    "ModelSOPersonaPromptOverride",
     "ModelSOSQLiteEvaluationStorageBinding",
     "ModelSOSQLiteEventLedgerBinding",
     "ModelSOSQLiteLeaderboardBinding",

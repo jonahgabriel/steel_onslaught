@@ -250,6 +250,26 @@ export interface SOCardRulePackProvenance {
   content_sha256: string;
 }
 
+export interface SOEffectivePromptProvenance {
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.effective_prompt";
+  persona_id: string;
+  display_name: string;
+  source: "contract" | "operator_override";
+  temperature: number;
+  prompt_sha256: string;
+  /** Absent in the browser-broadcast ledger form; only the binding hash travels. */
+  prompt_text?: string;
+}
+
+export interface SOMatchPromptProvenance {
+  schema_version: "0.1.0";
+  kind: "steel_onslaught.match_prompt_provenance";
+  prompts: SOEffectivePromptProvenance[];
+  programming_instructions_sha256: string;
+  content_sha256: string;
+}
+
 export interface SOHumanDecisionSource {
   kind: "human";
   input_source: "browser_command";
@@ -280,6 +300,7 @@ export interface MatchStartedPayload {
   launch_provenance?: SOMatchLaunchProvenance;
   card_runtime_provenance?: SOCardRuntimeProvenance;
   card_rule_pack_provenance?: SOCardRulePackProvenance;
+  prompt_provenance?: SOMatchPromptProvenance;
 }
 
 export type SORuntimeStatus = "ready" | "running" | "paused" | "ended" | "failed";
@@ -1385,6 +1406,98 @@ function parseCardRulePackProvenance(value: unknown, context: string): SOCardRul
   };
 }
 
+function parsePromptProvenance(value: unknown, context: string): SOMatchPromptProvenance {
+  const record = asRecord(value, context);
+  rejectUnknown(
+    record,
+    ["schema_version", "kind", "prompts", "programming_instructions_sha256", "content_sha256"],
+    context,
+  );
+  const prompts = record["prompts"];
+  if (!Array.isArray(prompts)) {
+    fail(context, 'field "prompts" must be an array');
+  }
+  return {
+    schema_version: exactString(
+      record["schema_version"],
+      "0.1.0",
+      `${context}.schema_version`,
+    ) as "0.1.0",
+    kind: exactString(
+      record["kind"],
+      "steel_onslaught.match_prompt_provenance",
+      `${context}.kind`,
+    ) as "steel_onslaught.match_prompt_provenance",
+    prompts: prompts.map((prompt, index) => {
+      const promptContext = `${context}.prompts[${index}]`;
+      const promptRecord = asRecord(prompt, promptContext);
+      rejectUnknown(
+        promptRecord,
+        [
+          "schema_version",
+          "kind",
+          "persona_id",
+          "display_name",
+          "source",
+          "temperature",
+          "prompt_sha256",
+          "prompt_text",
+        ],
+        promptContext,
+      );
+      const source = str(promptRecord, "source", promptContext);
+      if (source !== "contract" && source !== "operator_override") {
+        fail(promptContext, 'field "source" must be contract or operator_override');
+      }
+      const hasText = "prompt_text" in promptRecord;
+      return {
+        schema_version: exactString(
+          promptRecord["schema_version"],
+          "0.1.0",
+          `${promptContext}.schema_version`,
+        ) as "0.1.0",
+        kind: exactString(
+          promptRecord["kind"],
+          "steel_onslaught.effective_prompt",
+          `${promptContext}.kind`,
+        ) as "steel_onslaught.effective_prompt",
+        persona_id: nonEmptyString(promptRecord["persona_id"], `${promptContext}.persona_id`),
+        display_name: nonEmptyString(promptRecord["display_name"], `${promptContext}.display_name`),
+        source,
+        temperature: num(promptRecord, "temperature", promptContext),
+        prompt_sha256: patternString(
+          promptRecord["prompt_sha256"],
+          /^[0-9a-f]{64}$/,
+          "a lowercase SHA-256 digest",
+          `${promptContext}.prompt_sha256`,
+        ),
+        // The ledger form is redacted (hash only); accept and preserve text
+        // only when an inspection projection includes it.
+        ...(hasText
+          ? {
+              prompt_text: nonEmptyString(
+                promptRecord["prompt_text"],
+                `${promptContext}.prompt_text`,
+              ),
+            }
+          : {}),
+      };
+    }),
+    programming_instructions_sha256: patternString(
+      record["programming_instructions_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.programming_instructions_sha256`,
+    ),
+    content_sha256: patternString(
+      record["content_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.content_sha256`,
+    ),
+  };
+}
+
 function parseDecisionSource(value: unknown, context: string): SODecisionSource {
   const record = asRecord(value, context);
   const kind = record["kind"];
@@ -1730,6 +1843,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         "launch_provenance",
         "card_runtime_provenance",
         "card_rule_pack_provenance",
+        "prompt_provenance",
       ],
       context,
     );
@@ -1790,6 +1904,10 @@ const PAYLOAD_PARSERS: PayloadParsers = {
             `${context}.card_rule_pack_provenance`,
           )
         : undefined;
+    const promptProvenance =
+      "prompt_provenance" in record
+        ? parsePromptProvenance(record["prompt_provenance"], `${context}.prompt_provenance`)
+        : undefined;
     return {
       seed: nonNegativeInt(record, "seed", context),
       max_ticks: nullablePositiveInt(record, "max_ticks", context),
@@ -1802,6 +1920,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       ...(cardRulePackProvenance === undefined
         ? {}
         : { card_rule_pack_provenance: cardRulePackProvenance }),
+      ...(promptProvenance === undefined ? {} : { prompt_provenance: promptProvenance }),
     };
   },
   runtime_status_changed: (value, context) => {
