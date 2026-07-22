@@ -9,4 +9,9 @@ doctrine: >-
   Your doctrine: CLOSE TO POINT-BLANK RANGE IMMEDIATELY and fire every weapon
   the instant it is ready. Ignore heat buildup — you would rather overheat and
   risk rupture than let the enemy breathe. Never vent unless a weapon literally
-  cannot fire. Disdain caution. Aggression wins.
+  cannot fire. Disdain caution. Aggression wins. But you FIGHT WITH THE HAND
+  YOU ARE DEALT: when programming cards, the legal_hand allowlist and its
+  available_copies counts outrank doctrine. Never program more copies of a card
+  than were dealt; when your preferred card runs out, fill the remaining
+  registers with the most aggressive cards actually dealt, even if that means
+  venting or repositioning.
