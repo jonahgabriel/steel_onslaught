@@ -77,32 +77,28 @@ sources:
         catalog_option_id: player_option.gemini_sniper
       - source_option_id: player_option.gemini_opportunist
         catalog_option_id: player_option.gemini_opportunist
+# Neither seat declares `allowed_option_ids`, which means "every option this
+# catalog configures". That is deliberate: a curated per-seat subset is what
+# hid most configured models from one dropdown or the other, and it silently
+# went stale every time a source was added. The allow-list mechanism is still
+# there and still enforced by the command authority -- a deployment that must
+# fence a seat names the subset explicitly -- it just is not the default any
+# more. Seat identity, not the allow-list, is what keeps a mirror out: two
+# seats may never resolve to the same (provider, persona), while the same
+# persona on two different models is an admitted, and the most informative,
+# contest.
+# The DEFAULT seat options are the keyless local Qwen35 models so a bare
+# `so play` starts a real match with zero configuration: neither default needs
+# an API key (the qwen35 provider binding carries `secret_ref: null`). GLM,
+# OpenRouter, and Gemini remain fully SELECTABLE for either seat -- they are just
+# no longer the zero-config default, because they fail at match start without an
+# injected key. The two defaults keep distinct personas (berserker vs sniper) so
+# the pair satisfies the (provider, persona) seat-identity guard without needing
+# mirror_match_mode.
 seats:
   - side: red
     loadout_id: loadout.live.glm_sniper_ironclad
-    default_option_id: player_option.glm_sniper
-    allowed_option_ids:
-      - player_option.human_operator
-      - player_option.qwen35_model
-      - player_option.qwen35_sniper
-      - player_option.qwen27_model
-      - player_option.qwen27_opportunist
-      - player_option.glm_sniper
-      - player_option.openrouter_human_sniper
-      - player_option.openrouter_sniper
-      - player_option.gemini_human_sniper
-      - player_option.gemini_sniper
+    default_option_id: player_option.qwen35_model
   - side: blue
     loadout_id: loadout.live.glm_opportunist_hunter
-    default_option_id: player_option.glm_opportunist
-    allowed_option_ids:
-      - player_option.human_operator
-      - player_option.qwen35_model
-      - player_option.qwen35_sniper
-      - player_option.qwen27_model
-      - player_option.qwen27_opportunist
-      - player_option.glm_opportunist
-      - player_option.openrouter_human_opportunist
-      - player_option.openrouter_opportunist
-      - player_option.gemini_human_opportunist
-      - player_option.gemini_opportunist
+    default_option_id: player_option.qwen35_sniper

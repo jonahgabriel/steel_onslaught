@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,13 @@ from pydantic import ValidationError
 from scripts.export_frontend_bootstrap import export_frontend_bootstrap
 from steel_onslaught.cli.serve import build_frontend_bootstrap
 from steel_onslaught.commands.authority import canonical_overlay_sha256
-from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from steel_onslaught.contracts.application import (
+    ModelSOApplicationOverlay,
+    ModelSOOpenAICompatibleProviderBinding,
+)
 from steel_onslaught.contracts.model_catalog import (
+    CatalogSeatIdentity,
+    CatalogSeatIdentityError,
     ModelSOModelCatalog,
     ModelSOModelCatalogModelOption,
     build_model_catalog,
@@ -24,7 +30,7 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOPlayerRosterBinding,
     ModelSOSeatLaunchPolicy,
 )
-from steel_onslaught.match.composition import load_model_catalog
+from steel_onslaught.match.composition import load_application_overlay, load_model_catalog
 from tests.overlay import complete_test_overlay
 
 _HASHES = {
@@ -53,7 +59,14 @@ def _revalidate_catalog(catalog: ModelSOModelCatalog, **updates: object) -> Mode
     return ModelSOModelCatalog.model_validate_json(json.dumps(raw))
 
 
-def _source_roster(provider: str) -> ModelSOPlayerRosterBinding:
+def _source_roster(provider: str, *, twin: bool = False) -> ModelSOPlayerRosterBinding:
+    """Build a one- or two-option source roster for ``provider``.
+
+    ``twin`` adds a second option with the *same* provider and the *same*
+    persona under a different option id, which is the only way to express an
+    unannounced mirror once the pairing rule is ``(provider, persona)``.
+    """
+
     persona = {
         "qwen35": "berserker",
         "glm": "opportunist",
@@ -67,21 +80,33 @@ def _source_roster(provider: str) -> ModelSOPlayerRosterBinding:
         persona_id=persona,
         input_source="llm_completion",
     )
+    options: tuple[ModelSOModelPlayerOptionBinding, ...] = (option,)
+    if twin:
+        options = (
+            option,
+            option.model_copy(
+                update={
+                    "option_id": f"player_option.{provider}.twin",
+                    "display_name": f"{provider.upper()} TWIN",
+                }
+            ),
+        )
+    option_ids = tuple(entry.option_id for entry in options)
     return ModelSOPlayerRosterBinding(
         schema_version="1",
         kind="steel_onslaught.player_roster",
         roster_id=f"roster.{provider}",
-        options=(option,),
+        options=options,
         seats=(
             ModelSOSeatLaunchPolicy(
                 side="red",
                 loadout_id=f"loadout.{provider}.red",
-                allowed_option_ids=(option.option_id,),
+                allowed_option_ids=option_ids,
             ),
             ModelSOSeatLaunchPolicy(
                 side="blue",
                 loadout_id=f"loadout.{provider}.blue",
-                allowed_option_ids=(option.option_id,),
+                allowed_option_ids=option_ids,
             ),
         ),
     )
@@ -136,7 +161,7 @@ def _catalog() -> ModelSOModelCatalog:
         "gemini": "gemini-2.5-flash",
     }
     for provider, provider_model in configured_models.items():
-        source = _source_roster(provider)
+        source = _source_roster(provider, twin=provider == "qwen27")
         sources.append(
             model_catalog_source_from_roster(
                 overlay_id=f"overlay.{provider}",
@@ -240,6 +265,94 @@ def test_configured_local_qwen_pairings_are_asymmetric_without_mirror(
 
 
 @pytest.mark.unit
+def test_every_configured_option_is_selectable_for_either_seat() -> None:
+    """The shipped catalog offers every configured option to both seats.
+
+    The allow-list mechanism is still present and still explicit in the built
+    catalog -- it is materialized, not deleted -- it simply defaults to every
+    option instead of a hand-curated per-seat subset.
+    """
+
+    catalog = load_model_catalog(_CONTRACTS_DATA / "model_catalogs/configured_v1.yaml")
+    every_option_id = tuple(option.option_id for option in catalog.options)
+    assert len(every_option_id) == len(set(every_option_id))
+
+    for seat in catalog.seats:
+        assert seat.allowed_option_ids == every_option_id, seat.side
+        # A materialized seat must still be able to seat every option it offers.
+        for option_id in every_option_id:
+            assert seat.loadout_for_option(option_id).startswith("loadout.")
+
+    roster_seats = catalog.to_roster_binding().seats
+    assert all(seat.allowed_option_ids == every_option_id for seat in roster_seats)
+
+    projection = catalog.public_projection()
+    assert tuple(option.option_id for option in projection.options) == every_option_id
+
+
+@pytest.mark.unit
+def test_widened_catalog_admits_cross_model_pairings_and_rejects_only_mirrors() -> None:
+    """Every pairing is admitted except the ones that are one decision-maker."""
+
+    catalog = load_model_catalog(_CONTRACTS_DATA / "model_catalogs/configured_v1.yaml")
+    option_ids = [option.option_id for option in catalog.options]
+    identities = {
+        option.option_id: (
+            (option.human_identity_id, "human")
+            if option.kind == "human"
+            else (option.provider_binding_id, option.persona_id)
+        )
+        for option in catalog.options
+    }
+
+    for red_option_id, blue_option_id in product(option_ids, option_ids):
+        mirrored = identities[red_option_id] == identities[blue_option_id]
+        if mirrored:
+            with pytest.raises(CatalogSeatIdentityError) as rejection:
+                catalog.pairing_provenance(
+                    red_option_id=red_option_id,
+                    blue_option_id=blue_option_id,
+                )
+            assert rejection.value.error_code == "seat_identity_conflict"
+            continue
+        pairing = catalog.pairing_provenance(
+            red_option_id=red_option_id,
+            blue_option_id=blue_option_id,
+        )
+        assert pairing.red_seat_identity != pairing.blue_seat_identity
+
+    # The headline case: one persona, two different models, both seats.
+    cross_model = catalog.pairing_provenance(
+        red_option_id="player_option.qwen35_sniper",
+        blue_option_id="player_option.gemini_sniper",
+    )
+    assert cross_model.red_role_id == cross_model.blue_role_id == "sniper"
+    assert cross_model.red_programmer_source_id == "qwen35"
+    assert cross_model.blue_programmer_source_id == "gemini"
+
+
+@pytest.mark.unit
+def test_mirror_selection_is_classified_as_a_seat_identity_conflict() -> None:
+    """A rejected mirror reads as a seat conflict, never as an auth failure."""
+
+    catalog = load_model_catalog(_CONTRACTS_DATA / "model_catalogs/configured_v1.yaml")
+    with pytest.raises(CatalogSeatIdentityError) as rejection:
+        catalog.pairing_provenance(
+            red_option_id="player_option.glm_sniper",
+            blue_option_id="player_option.glm_sniper",
+        )
+
+    failure = rejection.value
+    assert failure.error_code == "seat_identity_conflict"
+    assert failure.red == failure.blue == CatalogSeatIdentity("glm-5.2", "sniper")
+    message = str(failure)
+    assert "sniper" in message
+    assert "glm-5.2" in message
+    for auth_shaped in ("unauthorized", "forbidden", "secret", "token", "credential"):
+        assert auth_shaped not in message.lower()
+
+
+@pytest.mark.unit
 def test_catalog_index_exports_existing_bootstrap_roster_and_metadata(tmp_path: Path) -> None:
     overlay_path = _CONTRACTS_DATA / "overlays/live_glm_cards.yaml"
     output_path = tmp_path / "frontend_bootstrap.json"
@@ -251,12 +364,61 @@ def test_catalog_index_exports_existing_bootstrap_roster_and_metadata(tmp_path: 
     assert bootstrap.player_roster is not None
     assert bootstrap.player_roster.roster_id == "roster.configured_models"
     assert bootstrap.model_catalog is not None
+    # The zero-config default is the keyless local Qwen35 pair, so a bare
+    # `so play` starts without an injected API key.
     assert bootstrap.model_catalog.default_option_ids == (
-        "player_option.glm_sniper",
-        "player_option.glm_opportunist",
+        "player_option.qwen35_model",
+        "player_option.qwen35_sniper",
     )
     assert bootstrap.model_catalog.mirror_match_mode is False
     assert output_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_zero_config_default_pair_is_keyless_and_distinct() -> None:
+    """A bare ``so play`` must start a real match with no injected API key.
+
+    The zero-config default seats resolve to the keyless local Qwen35 models
+    with distinct personas, so the default pairing both needs no secret and
+    satisfies the ``(provider, persona)`` seat-identity guard without
+    mirror_match_mode. GLM/OpenRouter/Gemini stay selectable -- only the DEFAULT
+    moved off the key-bound GLM pair that broke a keyless launch at match start.
+    """
+    catalog = load_model_catalog(_CONTRACTS_DATA / "model_catalogs/configured_v1.yaml")
+    red_default = catalog.seats[0].default_option_id
+    blue_default = catalog.seats[1].default_option_id
+    assert red_default is not None and blue_default is not None
+
+    options = {option.option_id: option for option in catalog.options}
+    red, blue = options[red_default], options[blue_default]
+    assert isinstance(red, ModelSOModelCatalogModelOption)
+    assert isinstance(blue, ModelSOModelCatalogModelOption)
+
+    # Both defaults are the keyless local Qwen35 provider with distinct personas.
+    assert red.provider_binding_id == "qwen35"
+    assert blue.provider_binding_id == "qwen35"
+    assert red.persona_id != blue.persona_id
+
+    # The default pairing is admitted -> distinct (provider, persona) seat
+    # identity without mirror_match_mode; a mirror would raise here.
+    assert catalog.mirror_match_mode is False
+    pairing = catalog.pairing_provenance(red_option_id=red_default, blue_option_id=blue_default)
+    assert (pairing.red_programmer_source_id, pairing.red_role_id) != (
+        pairing.blue_programmer_source_id,
+        pairing.blue_role_id,
+    )
+
+    # Keyless: the qwen35 provider binding declares no secret_ref in its source
+    # overlay, unlike the GLM default it replaced (secret://llm/glm).
+    overlay = load_application_overlay(_CONTRACTS_DATA / "overlays/standard_v1_qwen.yaml")
+    providers = {provider.provider_id: provider for provider in overlay.llm.providers}
+    qwen_provider = providers["qwen35"]
+    assert isinstance(qwen_provider, ModelSOOpenAICompatibleProviderBinding)
+    assert qwen_provider.secret_ref is None
+
+    # The widened catalog is intact: every keyed provider stays selectable, the
+    # DEFAULT simply is no longer one of them.
+    assert "player_option.glm_sniper" in set(catalog.seats[0].allowed_option_ids)
+    assert "player_option.glm_opportunist" in set(catalog.seats[1].allowed_option_ids)
 
 
 @pytest.mark.unit
@@ -264,6 +426,7 @@ def test_catalog_merges_human_and_configured_provider_options() -> None:
     catalog = _catalog()
     assert [option.kind for option in catalog.options] == [
         "human",
+        "model",
         "model",
         "model",
         "model",
@@ -455,7 +618,7 @@ def test_catalog_rejects_duplicate_options_and_invalid_selection() -> None:
 
 
 @pytest.mark.unit
-def test_catalog_rejects_duplicate_default_roles_and_allows_explicit_mirror_mode() -> None:
+def test_catalog_rejects_duplicate_default_identity_and_allows_explicit_mirror_mode() -> None:
     catalog = _catalog()
     duplicate_defaults = (
         catalog.seats[0].model_copy(update={"default_option_id": "player_option.glm.pilot"}),
@@ -464,12 +627,14 @@ def test_catalog_rejects_duplicate_default_roles_and_allows_explicit_mirror_mode
     with pytest.raises(ValidationError, match="duplicate default option"):
         _revalidate_catalog(catalog, seats=duplicate_defaults)
 
-    duplicate_roles = (
+    # Two distinct options that are the same provider AND the same persona are
+    # one decision-maker, so they are still an unannounced mirror.
+    duplicate_identity = (
         catalog.seats[0].model_copy(update={"default_option_id": "player_option.qwen27.pilot"}),
-        catalog.seats[1].model_copy(update={"default_option_id": "player_option.openrouter.pilot"}),
+        catalog.seats[1].model_copy(update={"default_option_id": "player_option.qwen27.twin"}),
     )
-    with pytest.raises(ValidationError, match="duplicate default role"):
-        _revalidate_catalog(catalog, seats=duplicate_roles)
+    with pytest.raises(ValidationError, match="duplicate default seat identity"):
+        _revalidate_catalog(catalog, seats=duplicate_identity)
 
     mirror = _revalidate_catalog(
         catalog,
@@ -485,11 +650,47 @@ def test_catalog_rejects_duplicate_default_roles_and_allows_explicit_mirror_mode
 
 
 @pytest.mark.unit
-def test_catalog_rejects_duplicate_default_loadout_even_for_different_roles() -> None:
+def test_catalog_admits_one_persona_across_two_providers_as_defaults() -> None:
+    """Sniper-vs-sniper across two models is the contest, not a mirror."""
+
     catalog = _catalog()
-    duplicate_loadouts = (
+    cross_model_snipers = (
+        catalog.seats[0].model_copy(update={"default_option_id": "player_option.qwen27.pilot"}),
+        catalog.seats[1].model_copy(update={"default_option_id": "player_option.openrouter.pilot"}),
+    )
+    widened = _revalidate_catalog(catalog, seats=cross_model_snipers)
+
+    pairing = widened.pairing_provenance(
+        red_option_id="player_option.qwen27.pilot",
+        blue_option_id="player_option.openrouter.pilot",
+    )
+    assert pairing.red_role_id == pairing.blue_role_id == "sniper"
+    assert pairing.red_programmer_source_id == "qwen27"
+    assert pairing.blue_programmer_source_id == "openrouter"
+    assert pairing.mirror_match_mode is False
+
+
+@pytest.mark.unit
+def test_catalog_admits_two_seats_that_share_one_loadout() -> None:
+    """Loadout symmetry is no longer a mirror condition.
+
+    While the catalog shipped one curated pairing, an identical loadout on both
+    seats was rejected.  With every option offered to both seats that rejects
+    legitimate pairings (a human option and the model option that shares its
+    source loadout), and two identical mechs flown by two different models is a
+    controlled comparison rather than a mirror.  Seat identity is the rule now.
+    """
+
+    catalog = _catalog()
+    shared_loadout = (
         catalog.seats[0],
         catalog.seats[1].model_copy(update={"loadout_id": catalog.seats[0].loadout_id}),
     )
-    with pytest.raises(ValidationError, match="duplicate default loadout"):
-        _revalidate_catalog(catalog, seats=duplicate_loadouts)
+    widened = _revalidate_catalog(catalog, seats=shared_loadout)
+
+    pairing = widened.pairing_provenance(
+        red_option_id="player_option.glm.pilot",
+        blue_option_id="player_option.qwen35.pilot",
+    )
+    assert pairing.red_loadout_id == pairing.blue_loadout_id
+    assert pairing.red_seat_identity != pairing.blue_seat_identity

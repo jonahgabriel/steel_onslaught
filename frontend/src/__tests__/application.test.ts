@@ -177,6 +177,7 @@ describe("frontend application bootstrap", () => {
             kind: "human",
             option_id: "player_option.browser_human",
             display_name: "Browser Operator",
+            human_identity_id: "human_identity.local_operator",
           },
           {
             kind: "model",
@@ -185,6 +186,7 @@ describe("frontend application bootstrap", () => {
             model_identity_id: "model_identity.glm",
             provider_binding_id: "glm-5.2",
             provider_model: "glm-5.2",
+            persona_id: "opportunist",
           },
         ],
       },
