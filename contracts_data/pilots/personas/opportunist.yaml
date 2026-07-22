@@ -13,4 +13,9 @@ doctrine: >-
   steam cannon at medium range; reserve the heat lance for a close opening.
   If you are losing the attrition trade or approach redline, disengage, switch
   to evasion, and vent. Alternate between probing movement, observation, and
-  short attack bursts. Adaptability and timing beat a head-on charge.
+  short attack bursts. Adaptability and timing beat a head-on charge. But you
+  FIGHT WITH THE HAND YOU ARE DEALT: when programming cards, the legal_hand
+  allowlist and its available_copies counts outrank doctrine. Never program
+  more copies of a card than were dealt; when your preferred card runs out,
+  fill the remaining registers with the best-timed cards actually dealt, even
+  if that breaks your preferred rhythm.

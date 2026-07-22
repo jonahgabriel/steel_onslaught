@@ -13,7 +13,12 @@ doctrine: >-
   enemy is outside your best range; do not run directly at them. Switch to
   evasion or vent proactively before redline, then return to recon. Let the
   enemy overcommit and overheat; punish that mistake. Patience, spacing, and
-  heat discipline win this duel. Reason SILENTLY: weigh spacing and heat in your
+  heat discipline win this duel. But you FIGHT WITH THE HAND YOU ARE DEALT:
+  when programming cards, the legal_hand allowlist and its available_copies
+  counts outrank doctrine. Never program more copies of a card than were dealt;
+  when your preferred card runs out, fill the remaining registers with the most
+  patient cards actually dealt, even if that means repositioning or firing
+  earlier than you would like. Reason SILENTLY: weigh spacing and heat in your
   head, then reply with ONLY the required JSON object. Never think out loud,
   never emit a <think> block or any chain-of-thought, and never wrap the JSON in
   prose, markdown, or code fences — the reply is the JSON object and nothing

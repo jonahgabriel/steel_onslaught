@@ -130,6 +130,55 @@ def test_load_persona_rejects_unknown_missing_and_coerced_fields(tmp_path: Path,
         load_persona(path)
 
 
+_DEALT_HAND_MARKERS = (
+    "FIGHT WITH THE HAND YOU ARE DEALT",
+    "available_copies",
+    "Never program more copies of a card than were dealt",
+)
+
+# Identity anchors per shipped persona.  A NEW shipped persona must add its
+# anchor here — the matrix test below fails loudly on an unknown id, so the
+# dealt-hand discipline can never be skipped for a persona nobody thought
+# about (the berserker was exactly that persona before #120).
+_IDENTITY_ANCHORS = {
+    "berserker": "RECKLESS BERSERKER",
+    "card_opportunist": "counter-puncher",
+    "opportunist": "OPPORTUNIST",
+    "sniper": "METHODICAL SNIPER",
+}
+
+_SHIPPED_PERSONA_IDS = sorted(PersonaRegistry.load(_SHIPPED_PERSONAS).as_mapping())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("persona_id", _SHIPPED_PERSONA_IDS)
+def test_every_shipped_persona_carries_dealt_hand_discipline(persona_id: str) -> None:
+    """Seat-generic closure of the #120 over-copy trap at the doctrine layer.
+
+    The live RED-brawler abort was doctrine overriding the dealt-hand multiset
+    (berserker ``advance`` x5 against one dealt copy).  Only berserker.yaml was
+    amended in #120; every other persona with a preference structure (sniper's
+    patience, the opportunists' timing plays) can be tempted into the same
+    over-copy the moment its preferred card is short-dealt.  This matrix loads
+    the registry DYNAMICALLY, so any future shipped persona automatically
+    enters it and cannot ship without (1) the dealt-hand discipline, (2) a
+    declared identity anchor, and (3) the terminal JSON output contract."""
+
+    registry = PersonaRegistry.load(_SHIPPED_PERSONAS)
+    assert persona_id in _IDENTITY_ANCHORS, (
+        f"new shipped persona {persona_id!r} must declare an identity anchor "
+        "in _IDENTITY_ANCHORS and carry the dealt-hand discipline"
+    )
+    prompt = " ".join(registry.require(persona_id).system_prompt.split())
+    # Behavioural identity preserved.
+    assert _IDENTITY_ANCHORS[persona_id] in prompt
+    # Dealt-hand discipline present (the invalid_action_parameters closure).
+    for marker in _DEALT_HAND_MARKERS:
+        assert marker in prompt, f"{persona_id} doctrine is missing {marker!r}"
+    # The fixed JSON output contract still terminates the prompt verbatim.
+    assert registry.require(persona_id).system_prompt.endswith(JSON_INSTRUCTION)
+
+
 @pytest.mark.unit
 def test_shipped_berserker_persona_carries_dealt_hand_discipline() -> None:
     """The live RED-brawler abort driver: on a hand whose doctrine-preferred

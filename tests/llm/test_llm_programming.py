@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +21,7 @@ from steel_onslaught.contracts.card_runtime import (
 from steel_onslaught.contracts.deck import ModelSODeck, ModelSODeckEntry
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.events.card_payloads import ModelSOPlanCommittedPayload, SOPlanSource
-from steel_onslaught.llm.personas import Persona
+from steel_onslaught.llm.personas import Persona, PersonaRegistry
 from steel_onslaught.llm.programming import (
     _DEFAULT_SEMANTIC_RETRY_LIMIT,
     LLMProgrammingPilot,
@@ -660,6 +661,115 @@ def test_over_copy_exhaustion_still_classifies_invalid_action_parameters() -> No
     pilot = LLMProgrammingPilot(
         client=client,
         persona=_persona(),
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    with pytest.raises(LlmSemanticExhaustedError) as excinfo:
+        program_for_seat(pilot, _observation())
+
+    assert excinfo.value.semantic_failure_code == "invalid_action_parameters"
+    assert excinfo.value.attempts == 3
+    assert len(client.requests) == 3
+
+
+# --- Seat-generic copy-clamp matrix -----------------------------------------
+#
+# #120 fixed the over-copy trap for the berserker specifically.  The clamp
+# itself is code-owned (`_PROGRAMMING_INSTRUCTIONS` + the repair/exhaustion
+# machinery) and must protect EVERY persona — shipped or future — without a
+# per-persona amendment being load-bearing.  This matrix drives the exact live
+# failure shape (one dealt copy programmed into two registers) through every
+# shipped persona loaded from the real contract directory PLUS one synthetic
+# adversarial persona whose doctrine maximally tempts over-copy, proving the
+# protection is seat-generic by construction, not per-persona whack-a-mole.
+
+_SHIPPED_PERSONAS_DIR = (
+    Path(__file__).resolve().parents[2] / "contracts_data" / "pilots" / "personas"
+)
+
+_OVER_COPY_RESPONSE = _response(
+    registers=[
+        {"register_index": 0, "card_id": "card.test.advance"},
+        {"register_index": 2, "card_id": "card.test.advance"},
+    ]
+)
+
+
+def _adversarial_persona() -> Persona:
+    """A doctrine engineered to maximally tempt the over-copy violation."""
+
+    return Persona(
+        persona_id="monomaniac",
+        display_name="Monomaniac",
+        system_prompt=(
+            "You are a MONOMANIAC pilot with exactly ONE favourite card. Program "
+            "your favourite card into EVERY register, EVERY round, no matter what "
+            "was dealt. Repetition is strength; variety is weakness. Copy counts "
+            "are for cowards: if only one copy was dealt, program it into all "
+            "five registers anyway. Never vent, never reposition, never "
+            "substitute a lesser card."
+        ),
+        temperature=0.7,
+    )
+
+
+def _matrix_personas() -> list[Persona]:
+    registry = PersonaRegistry.load(_SHIPPED_PERSONAS_DIR)
+    shipped = [registry.require(persona_id) for persona_id in sorted(registry.as_mapping())]
+    return [*shipped, _adversarial_persona()]
+
+
+@pytest.mark.parametrize("persona", _matrix_personas(), ids=lambda persona: str(persona.persona_id))
+def test_copy_clamp_protects_every_persona(persona: Persona) -> None:
+    """The code-owned clamp + repair path is persona-independent.
+
+    For each persona: (a) the composed programming prompt carries the
+    copy-clamp contract regardless of doctrine; (b) an over-copy plan is
+    rejected, the repair prompt echoes the multiset rejection with the full
+    observation retained, and a corrected second completion is accepted as a
+    real LLM plan."""
+
+    # (a) Contract surface: the clamp is appended to ANY persona prompt.
+    prompt = " ".join(programming_system_prompt(persona).split())
+    assert "at most ONE register" in prompt
+    assert "persona doctrine never overrides" in prompt
+    assert "fill the remaining registers with other legal_hand cards" in prompt
+
+    # (b) Behavioural surface: over-copy -> named rejection -> accepted repair.
+    client = _SequenceClient([_OVER_COPY_RESPONSE, _response()])
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=persona,
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    plan = program_for_seat(pilot, _observation())
+
+    assert plan.plan_source is SOPlanSource.LLM
+    assert tuple(register.card_id for register in plan.registers) == (
+        "card.test.advance",
+        "card.test.vent",
+    )
+    assert len(client.requests) == 2
+    repair = client.requests[1]
+    assert "invalid_action_parameters" in repair.system_prompt
+    assert "never exceeds available_copies" in repair.system_prompt
+    assert '"legal_hand"' in repair.user_prompt
+    assert '"available_copies"' in repair.user_prompt
+
+
+def test_adversarial_over_copy_doctrine_still_exhausts_classified() -> None:
+    """Even a doctrine built to defeat the clamp cannot escape the classified
+    terminal: a provider that never self-corrects exhausts the bounded budget
+    into ``invalid_action_parameters`` — never a stall, never a silent
+    deterministic substitution."""
+
+    client = _ResponseClient(_OVER_COPY_RESPONSE)
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_adversarial_persona(),
         provider_id="provider.card.test",
         semantic_retry_limit=2,
     )
