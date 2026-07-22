@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections import Counter
 from typing import Literal
 from uuid import UUID
@@ -121,9 +122,11 @@ entries: do not copy ids from the deck description or persona instructions.
 Duplicate an id only up to its ``available_copies`` count. Before emitting,
 check every register against that allowlist and replace any unavailable tactic
 with an available card. Never assign a card to a locked register. Do not add
-fields, prose, markdown, or comments. Keep rationale to twelve words or fewer.
-Emit the JSON object as the first character of the response and stop
-immediately after its closing brace.
+fields, prose, comments, markdown, or code fences. Do not think out loud,
+emit a <think> block, or include any chain-of-thought: decide silently and
+return only the JSON object. Keep rationale to twelve words or fewer. Emit
+the JSON object as the first character of the response and stop immediately
+after its closing brace.
 """.strip()
 
 # The card-programming instruction block is code-owned and deliberately NOT
@@ -140,6 +143,26 @@ def programming_system_prompt(persona: Persona) -> str:
     """Return the exact system prompt one whole-round programmer will send."""
 
     return f"{persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}"
+
+
+# Reasoning gateways (e.g. Qwen "thinking" models) may prefix the JSON object
+# with a ``<think>...</think>`` chain-of-thought span.  That span routinely
+# contains its own braces (the model drafting register JSON while reasoning),
+# which defeats the first-'{'/last-'}' extraction below and surfaces as a
+# ``malformed_json`` semantic failure — the sniper-specific abort driver, since
+# the verbose sniper persona invites more chain-of-thought than the terse
+# brawler.  The programming/repair instructions and the persona now forbid the
+# span, but a reasoning model can still leak one, so we strip any *complete*
+# ``<think>`` spans before extracting the object.  An unterminated span is left
+# untouched: that is a truncated (``finish_reason=length``) completion, which is
+# a distinct boundary terminal and must not be silently repaired here.
+_REASONING_WRAPPER_PATTERN = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_reasoning_wrapper(text: str) -> str:
+    """Remove complete ``<think>...</think>`` reasoning spans from provider text."""
+
+    return _REASONING_WRAPPER_PATTERN.sub("", text).strip()
 
 
 def _error_detail(exc: BaseException, *, limit: int = 240) -> str:
@@ -302,7 +325,9 @@ def _serialize_repair_observation(observation: ModelSOProgrammingObservation) ->
 _PROGRAMMING_REPAIR_INSTRUCTIONS = (
     "Return ONLY compact JSON with keys registers, confidence, rationale. "
     "Use each free register exactly once, use only hand_card_ids, and keep "
-    "rationale under twelve words. No reasoning, prose, markdown, or extra keys."
+    "rationale under twelve words. No reasoning, prose, markdown, or extra "
+    "keys. Do NOT think out loud, emit a <think> block or any chain-of-thought, "
+    "or wrap the JSON in code fences."
 )
 
 # Additional same-model reprompts after the first rejected plan.  Two extra
@@ -538,10 +563,12 @@ class LLMProgrammingPilot:
                 parsed = _ModelSOLlmProgrammingResponse.model_validate_json(response.text)
             except (ValidationError, ValueError, TypeError):
                 # A few OpenAI-compatible reasoning gateways wrap an otherwise
-                # complete JSON object in a short markdown/thought prefix.
-                # Strip only that wrapper; the inner object remains subject to
-                # the closed response model and the canonical plan validator.
-                text = response.text.strip()
+                # complete JSON object in a markdown/thought prefix.  Strip any
+                # complete <think> reasoning span first (it can carry its own
+                # braces that would defeat the extraction), then take the outer
+                # object.  The inner object remains subject to the closed
+                # response model and the canonical plan validator.
+                text = _strip_reasoning_wrapper(response.text)
                 start = text.find("{")
                 end = text.rfind("}")
                 if start < 0 or end <= start:
