@@ -2546,9 +2546,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       heat_generated: nonNegativeInt(record, "heat_generated", context),
       // Known-but-optional (round 4): default 1.0 for pre-round-4 events.
       close_range_mult:
-        "close_range_mult" in record
-          ? boundedNum(record, "close_range_mult", context, 0, 1)
-          : 1,
+        "close_range_mult" in record ? boundedNum(record, "close_range_mult", context, 0, 1) : 1,
     };
   },
   hit_resolved: (value, context) => {
