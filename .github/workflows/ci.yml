@@ -60,6 +60,12 @@ jobs:
       - name: Frontend lint
         run: npm run lint
         working-directory: frontend
+      # Full typecheck (tsc --noEmit, root tsconfig): covers src/__tests__,
+      # which tsconfig.build.json excludes from the build step. Without this,
+      # test-file type drift recurs silently (the class of errors fixed in #127).
+      - name: Frontend typecheck
+        run: npm run typecheck
+        working-directory: frontend
       - name: Frontend tests
         run: npm test
         working-directory: frontend
