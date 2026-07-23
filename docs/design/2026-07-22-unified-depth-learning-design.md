@@ -2,6 +2,7 @@
 
 **Date:** 2026-07-22
 **Status:** DESIGN — docs only, no code. P1 from the 2026-07-22 session handoff. Gated on operator review.
+**Rev 2 (2026-07-22, post-build reconciliation):** Phase 1 learning spine SHIPPED (#123 @ `7dc970e`); D-GATE-0 MEASURED (#122 @ `830dc0b`, CONDITIONAL); Phase 0 preconditions DONE (#119/#120/#121/#124); reviewed and amended by the operator gate this session. Rev 2 facts are OBSERVED, cited to PR numbers + merge SHAs.
 **Scope:** ONE design covering the depth decision space (over-deal → utility cards → drafting → objectives/keywords/arena) AND the live learning loop wired over that space. Deliberately not two documents: the learning loop's efficacy rides on the depth decision space, so their seams are designed together.
 **Inputs:** `docs/design/2026-07-22-heat-drafting-deckbuilder-design.md` and `docs/plans/2026-07-21-steel-onslaught-finish-plan.md` (both currently ride the `docs/so-finish-plan` branch, PR #108 — not yet on `main`); the 2026-07-22 session handoff (same branch); PR #117 (merged); source readback of the learning modules cited below.
 
@@ -14,15 +15,15 @@
 1. **The over-deal foundation is MERGED on `main`.** PR #117 (`feat(cards): over-deal the hand so pilots select which cards to program`) merged as `2e6a31e` (read live via `gh pr view 117` this session). It consists of: a new overlay `contracts_data/overlays/tactical_split_overdeal_v1_qwen.yaml` (deal 8 = 4 movement + 4 weapon, program 5, deliberately balanced 4/4 so identity emerges from SELECTION, not the deal), an over-deal prompt block plus an explicit `selection` observation field (`hand_size` / `program_count` / `discard_unprogrammed` / `over_dealt`) in `src/steel_onslaught/llm/programming.py`, and `tests/match/test_overdeal_card_selection.py`. Zero engine changes — `hand_quota` was already the declarative deal count, and the validators already permit `register_count <= hand_size` (`src/steel_onslaught/contracts/split_deck.py:70-71`, `src/steel_onslaught/contracts/deck.py:61-65`).
 2. **The over-deal thesis is empirically validated** (handoff §3, measured on live Qwen): on the same balanced 4/4 hand, brawler keeps ADVANCE 0.94 vs sniper 0.30, and dumps dead VENT cards at 0.11 vs random 0.62. Selection is intentful and archetype-divergent. This is the Phase-A gate of the heat-drafting design, cleared.
 3. **The balance stop is final** (finish plan, `## 2026-07-21 session update`): four measured live-Qwen single-lever rounds on the 60-vs-160 fixed-deck duel — r1 heat-lockout, r2 ×5.5 brawler damage, r3 moves-scaled evasion sweep, r4/r4b sniper range-band + carbine throttle — moved brawler median DMG-OUT ~2 → ~50 and survival ~4×, but win-rate pooled ~5% (1/43). Pre-agreed decision triggered: **no fifth single-lever round.** Balance re-emerges from depth or it does not; the fixed-deck knob program is closed.
-4. **The live learning path is dead code — three specific blockers** (`learning-adaptation-01/02/03` in the finish-plan audit register):
-   - **01 — never instantiated, never admitted.** `LiveLearningCoordinator` is defined at `src/steel_onslaught/learning/live.py:65`; `begin_match` at `live.py:82` has **no production caller**. The production composition constructs the after-match handler WITHOUT a promotion port: `src/steel_onslaught/match/composition.py:2066-2069` passes only `ledger=` and `artifacts=`, so `AfterMatchLearningHandler.promotion` stays at its `None` default (`src/steel_onslaught/learning/after_match.py:42`) and the `if self.promotion is not None:` branch at `after_match.py:61-62` never executes. Additionally, **no concrete `LiveLearningEvaluator` exists anywhere** — the protocol at `live.py:26-34` has zero implementations in `src/` or `tests/` (grep this session; `learning/duel_evaluator.py` and `learning/fake_evaluator.py` implement the *offline* evaluator protocol with a different signature: `evaluate(candidate_params, parent_params, seeds)`).
-   - **02 — no promotion event.** `SOEventType` (`src/steel_onslaught/events/envelope.py:15-62`) has no `POLICY_PROMOTED` member. Where promotion happens at all it is the in-memory mutation `self.current_policy = next_policy` (`live.py:162`) plus YAML lineage files — not durable, not replayable, ordering recorded nowhere.
-   - **03 — the admission↔terminal seam is broken as-typed.** `LiveLearningPromotionPort` (`live.py:37-42`) exposes ONLY `handle_after_match`, but the concrete coordinator raises `"match ... must be admitted before terminal evidence"` for any match not admitted via `begin_match` (`live.py:104-109`). Wiring the coordinator into `AfterMatchLearningHandler.promotion` as-is would therefore **raise on every scored match**.
-5. **The offline evidence path works.** `AfterMatchLearningHandler.handle` (`after_match.py:46-63`) fires on `MATCH_SCORED`, reprojects the full ledger stream through `project_match_learning_evidence` (`src/steel_onslaught/learning/post_match.py:36`), and persists a strict evidence artifact. The projector is **fail-closed on event vocabulary**: an event type absent from its payload map raises `"no payload contract registered"` (`post_match.py:66-67`). This is a live trap for any new event type — see §4.2.
+4. **The live learning path was dead code — three specific blockers, ALL CLOSED by #123 @ `7dc970e` (OBSERVED, Rev 2).** Historical diagnosis preserved below (`learning-adaptation-01/02/03` in the finish-plan audit register):
+   - **01 — never instantiated, never admitted. CLOSED by #123 (`7dc970e`).** `LiveLearningCoordinator` is defined at `src/steel_onslaught/learning/live.py:65`; `begin_match` at `live.py:82` had **no production caller**. The production composition constructed the after-match handler WITHOUT a promotion port: `src/steel_onslaught/match/composition.py:2066-2069` passed only `ledger=` and `artifacts=`, so `AfterMatchLearningHandler.promotion` stayed at its `None` default (`src/steel_onslaught/learning/after_match.py:42`) and the `if self.promotion is not None:` branch at `after_match.py:61-62` never executed. **CORRECTION (Rev 2):** the claim "no concrete `LiveLearningEvaluator` exists anywhere — zero implementations in `src/` or `tests/`" was **refuted** — `tests/learning/test_live.py:88` (`_Evaluator`) and `:188` (`_FlakyEvaluator`) implemented the live protocol all along; the name-grep was blind to Protocol structural typing. `src/` now has `WinDamageDifferentialEvaluator` (#123). (`learning/duel_evaluator.py` and `learning/fake_evaluator.py` do implement the *offline* evaluator protocol with a different signature: `evaluate(candidate_params, parent_params, seeds)` — that part stands.)
+   - **02 — no promotion event. CLOSED by #123 (`7dc970e`).** `SOEventType` (`src/steel_onslaught/events/envelope.py:15-62`) had no `POLICY_PROMOTED` member. Where promotion happened at all it was the in-memory mutation `self.current_policy = next_policy` (`live.py:162`) plus YAML lineage files — not durable, not replayable, ordering recorded nowhere.
+   - **03 — the admission↔terminal seam was broken as-typed. CLOSED by #123 (`7dc970e`).** `LiveLearningPromotionPort` (`live.py:37-42`) exposed ONLY `handle_after_match`, but the concrete coordinator raises `"match ... must be admitted before terminal evidence"` for any match not admitted via `begin_match` (`live.py:104-109`). Wiring the coordinator into `AfterMatchLearningHandler.promotion` as-was would therefore have **raised on every scored match**.
+5. **The offline evidence path works.** `AfterMatchLearningHandler.handle` (`after_match.py:46-63`) fires on `MATCH_SCORED`, reprojects the full ledger stream through `project_match_learning_evidence` (`src/steel_onslaught/learning/post_match.py:36`), and persists a strict evidence artifact. The projector is **fail-closed on event vocabulary**: an event type absent from its payload map raises `"no payload contract registered"` (`post_match.py:64-65` — Rev 2 corrects the earlier off-by-two `66-67` citation). This is a live trap for any new event type — see §4.2.
 6. **`ModelSOCard.heat_cost` exists and is inert**: declared at `src/steel_onslaught/contracts/card.py:71`; its only other reference is the prompt serializer (`src/steel_onslaught/llm/programming.py`, ~line 120). Heat-as-card-currency was designed in and never wired (heat-drafting design §0, re-confirmed by grep this session).
 7. **Card state has never been folded.** The canonical match fold handles non-card events; the card lifecycle members (`HAND_DEALT`, `PLAN_COMMITTED`, `REGISTER_RESOLVED`, `CARDS_DISCARDED`, `envelope.py:59-62`) are recorded and replay-validated but are fold no-ops (comment at `envelope.py:56-58`; heat-drafting design §1.2). Drafting requires the first-ever fold of card composition state.
 8. **Terrain premise, corrected** (finish plan): obstacles DO block movement and weapon LOS today (88% of shots blocked). The defect is layout quality — 336 symmetric-scatter cells that help nobody. The fix is asymmetric cover in a NEW versioned arena, never an edit to `foundry_60` (old replays must stay valid).
-9. **Residual abort:** with the sniper JSON fix proven on #116, a RED brawler `invalid_action_parameters` abort is the dominant abort class (handoff §3). Owned by a separate lane; this design treats it as a precondition for clean batteries, not a deliverable.
+9. **Residual abort: CLOSED (OBSERVED, Rev 2).** Historical diagnosis: with the sniper JSON fix proven on #116, a RED brawler `invalid_action_parameters` abort was the dominant abort class (handoff §3); this design treated it as a precondition for clean batteries, not a deliverable. Closure: #120 (`8f9f0e7`) root-caused it — doctrine overrode the dealt-hand multiset; #121 (`f1fd18e`) made the protection seat-generic (all 4 personas + a dynamic registry matrix + a synthetic adversarial persona); #124 (`fd05bb9`) battery: **0 aborts of any class in 840/840 completions, 30/30 real gameplay terminals** (vs the 33.9% non-gameplay baseline). The clean-battery precondition for every gate in §5 is met.
 
 ---
 
@@ -83,6 +84,8 @@ Deal shape: extend the split-deck quota with a third pile rather than diluting m
 - **Objective-based victory:** contested objective cells award VP per controlled round; a match ends when a side reaches the VP threshold. The tick cap (1000) becomes a **failsafe only** — a match ending on the clock is an anomaly to report, not a normal terminal. This gives the brawler a *reason and a way to close* that is not "out-damage a 160 HP ironclad": board control converts mobility into points.
 - **Asymmetric matchups become legitimate:** with VP victory, archetypes stop needing symmetric kill-power. The sniper defends zones at range; the brawler contests them up close. Balance is then a property of the objective layout + card pool, which is exactly where the depth program tunes.
 
+**OBSERVED (Rev 2):** BLUE won 30/30 terminals on merged-main over-deal balance (#124 @ `fd05bb9`, n=30 battery). That is the strongest measured motivation for objective-based victory yet recorded, and it feeds the §6 sequencing-note option to pull Phase 4 ahead.
+
 ### 3.5 Heavy / Assault keywords (Phase 2.5, 40K-derived)
 
 **DESIGN.** Two closed card/loadout keywords modifying resolution:
@@ -102,6 +105,8 @@ These are asymmetry levers expressed as *rules*, not stat knobs — they change 
 
 ### 4.1 What closes each blocker
 
+**Rev 2:** all three closures below shipped in #123 @ `7dc970e` substantially as specified — deviations and dispositions in §4.6.
+
 | Blocker | Closure (DESIGN) |
 |---|---|
 | `learning-adaptation-01` (dead code) | Composition instantiates one `LiveLearningCoordinator` per live stack, seeded from a genesis policy; a first concrete `LiveLearningEvaluator` ships (§4.4); the coordinator is passed as `promotion=` at `match/composition.py:2066-2069`. |
@@ -114,6 +119,7 @@ These are asymmetry levers expressed as *rules*, not stat knobs — they change 
 
 ```
 ModelSOPolicyPromotedPayload:
+  kind: Literal["steel_onslaught.policy_promoted"]  # discriminator (Rev 2 — shipped in #123, accepted §4.6a)
   match_id: str                    # must equal envelope.match_id (validator)
   policy_id: str                   # new policy id (ModelSOLiveLearningPolicy.policy_id shape)
   archetype: str                   # promoted archetype; matches admitted policy archetype
@@ -131,9 +137,9 @@ Deliberately **hash-carrying, not parameter-carrying**: raw `parameters` live in
 **Four registration sites, all fail-closed if missed (first three OBSERVED as mechanisms, the fourth must be probed at build):**
 
 1. `SOEventType` member — **append-only** to preserve protocol ordering (the card-lifecycle members document exactly this discipline, `envelope.py:56-58`).
-2. **Payload authority census.** `project_match_learning_evidence` raises `"no payload contract registered"` for any unregistered event type (`post_match.py:66-67`). Trap: the FIRST projection of a promoting match happens at `MATCH_SCORED` delivery, *before* `POLICY_PROMOTED` is appended — it passes. Any later reprojection of that stream (process restart, idempotence re-entry, offline analysis) then fails closed. The payload model MUST land in the census (`events/payloads.py` / the projector map at `post_match.py:30-33`) **in the same PR** that adds the member.
+2. **Payload authority census.** `project_match_learning_evidence` raises `"no payload contract registered"` for any unregistered event type (`post_match.py:64-65` — Rev 2 corrects the earlier off-by-two `66-67` citation). Trap: the FIRST projection of a promoting match happens at `MATCH_SCORED` delivery, *before* `POLICY_PROMOTED` is appended — it passes. Any later reprojection of that stream (process restart, idempotence re-entry, offline analysis) then fails closed. The payload model MUST land in the census (`events/payloads.py` / the projector map at `post_match.py:30-33`) **in the same PR** that adds the member.
 3. **Canonical match fold:** `POLICY_PROMOTED` is a fold no-op for match state (like the card lifecycle members) — it is cross-match policy state, folded by the learning boot path, not by `MatchStateFold`.
-4. **Post-terminal append legality.** Whether any ledger/replay validator asserts `MATCH_SCORED` is stream-final is **UNVERIFIED this session**. Build-time probe required: if an events-after-terminal invariant exists, it gets an explicit, tested carve-out for the learning appendix — never a silent relaxation.
+4. **Post-terminal append legality. RESOLVED (OBSERVED, Rev 2 — #123 @ `7dc970e`): post-terminal append is LEGAL.** Historical framing: whether any ledger/replay validator asserted `MATCH_SCORED` is stream-final was UNVERIFIED at Rev 1; a build-time probe was required. Resolution: #123's E2E proved reprojection passes the fail-closed census and `verify_replay_validity` is TRUE with the `POLICY_PROMOTED` appendix.
 
 ### 4.3 The admission↔terminal seam contract
 
@@ -160,6 +166,17 @@ Deliberately **hash-carrying, not parameter-carrying**: raw `parameters` live in
 - `MATCH_STARTED` gains per-seat **policy provenance**: `{policy_id, spec_hash, generation, source_lineage_digest}` (closed-model extension, registered in the payload census like §4.2 item 2). This binds every decision in a match's ledger to the policy that shaped it — without it, "a promotion changed a later decision" is unfalsifiable.
 - Efficacy is measured with the SAME instruments that validated #117: keep-rates vs random, category selection distributions, and later the Phase-B draft metrics. That is the concrete sense in which learning "rides on" the depth space.
 
+### 4.6 Build reconciliation — #123 deviations, dispositions (Rev 2, OBSERVED @ `7dc970e`)
+
+Phase 1 shipped in #123. Each deviation from the design as written, with the operator-gate disposition:
+
+- **(a) Payload discriminator.** The payload carries a `kind` discriminator `Literal["steel_onslaught.policy_promoted"]` — **ACCEPTED**; the §4.2 payload block is updated to include it (9 fields).
+- **(b) Envelope subject.** The envelope subject is the wildcard `*/*`, not per-seat — **ACCEPTED interim**; per-seat subject folds into the L-GATE-2 scope.
+- **(c) First concrete evaluator.** `WinDamageDifferentialEvaluator` (deterministic damage-differential + decisive-win, bounded) is the first concrete evaluator, superseding the "scripted double" as stage 1 of §4.4 — `SelectionOutcomeEvaluator` remains the L-GATE-2 real evaluator.
+- **(d) Lineage evidence seeds.** Live lineage evidence seeds are match-digest sample identifiers with `p_value=1.0` / `decisive_n=1` (no significance claim) — **ACCEPTED for the spine**; significance discipline lands with `SelectionOutcomeEvaluator`.
+- **(e) Provenance + consumption still OPEN.** `MATCH_STARTED` policy provenance was NOT shipped, and policy parameters still have NO live consumer — this **remains OPEN** and is exactly the L-GATE-2 work package (§4.5 unchanged and still the honest gap).
+- **(f) Genesis invariant.** Genesis-change-after-promotions fails closed — **ACCEPTED as invariant**.
+
 ---
 
 ## 5. Kill-gates and probes
@@ -168,10 +185,10 @@ Every increment gets a measured go/no-go, mirroring the four-round balance disci
 
 | Gate | Before | Question | Go threshold | Evidence surface |
 |---|---|---|---|---|
-| **L-GATE-1** wiring proof | Phase 1 exit | Does the spine work without judgment? | Scored match with coordinator wired does NOT raise; scripted promotion yields `POLICY_PROMOTED` in the ledger; **reprojection** of the promoting stream passes; replay validity green | ledger readback + reprojection run + replay assert |
+| **L-GATE-1** wiring proof — **PASSED (Rev 2, #123 @ `7dc970e`)** | Phase 1 exit | Does the spine work without judgment? | Scored match with coordinator wired does NOT raise; scripted promotion yields `POLICY_PROMOTED` in the ledger; **reprojection** of the promoting stream passes; replay validity green. **Result:** scored match no raise; `POLICY_PROMOTED` in ledger ordered after + caused-by `MATCH_SCORED`; double-fold + fresh-composition rehydration identical; live keyless smoke promoted `generation=1` for real | ledger readback + reprojection run + replay assert |
 | **L-GATE-2** policy efficacy | Phase 1 done | Does a promotion change a later decision, auditably? | Next-match selection metrics shift in the parameterized direction vs pre-promotion baseline; `MATCH_STARTED` provenance cites the new `policy_id`; chain verifies event→lineage→replay | before/after adaptation battery on live Qwen |
 | **U-GATE** utility counterplay | Phase 2 exit | Is counterplay used intentfully and does it bite? | Utility keep-rate > chance (per #117 methodology); measurable engagement effect (e.g. sniper aimed hit-rate under smoke drops; flare breaks lock in replay); no coherence regression; **no balance knob touched** | utility battery, winner-side distribution reported |
-| **D-GATE-0** draw-through pre-measure | ANY drafting code | Do acquired cards even get drawn? | Zero-code ledger measurement of rounds/match vs deck-cycle length projects ≥~50% draw-through at the chosen starting-deck size | existing ledgers; a numbers memo, no code |
+| **D-GATE-0** draw-through pre-measure — **MEASURED, CONDITIONAL (Rev 2, #122 @ `830dc0b`)** | ANY drafting code | Do acquired cards even get drawn? | Zero-code ledger measurement of rounds/match vs deck-cycle length projects ≥~50% draw-through at the chosen starting-deck size. **Result:** P(drawn)=0.62, P(played)=0.45 aggregate vs the ≥~50% bar; first-cycle buys clear at 0.69–0.70; two quantified rescues — ~10-card small starting deck → P(played)≥~0.6 through phase 9, or acquired-to-top-of-draw → P(drawn)~1.0 | measured via `scripts/measure_draw_through.py` over existing ledgers (#122) |
 | **D-GATE-1..5** drafting Phase B | Phase 3 exit | The five falsifiable heat-design gates | draw-through ≥~50% measured; model-draft > random-draft; composition divergence > 0; buy-vs-win NOT monotonic; drafted-match replay identical | draft battery + replay assert (heat design §5) |
 | **O-GATE** objectives | Phase 4 exit | Do matches end on play, not clock? | ≥95% of battery matches end on VP threshold or elimination; tick-cap failsafe is reported as anomaly; winner-side distribution reported; brawler win-rate **observed** (hypothesis: moves off ~5% floor without knob tuning) | objective battery + terminal-class scorecard |
 
@@ -183,28 +200,30 @@ Every increment gets a measured go/no-go, mirroring the four-round balance disci
 
 Seams are named field-by-field per the define-and-match discipline; every phase lands its cross-boundary regression test WITH the feature, not after.
 
-### Phase 0 — preconditions (other lanes; not this design's deliverables)
+### Phase 0 — preconditions (other lanes; not this design's deliverables) — **DONE (Rev 2, OBSERVED)**
 
 - **DONE (OBSERVED):** #117 merged (`2e6a31e`).
-- **In flight:** sniper-JSON fix split from #116; RED brawler `invalid_action_parameters` abort root-cause. Dirty batteries poison every gate above; Phase 1+ batteries assume these land.
+- **DONE (Rev 2, OBSERVED):** sniper-JSON strict-output fix merged as #119 (`b3a5377`); RED brawler `invalid_action_parameters` abort root-caused and fixed as #120 (`8f9f0e7`, dealt-hand clamp), made seat-generic by #121 (`f1fd18e`); batteries proven clean by #124 (`fd05bb9`): 0 aborts in 840/840 completions, 30/30 real gameplay terminals (§0.9). The clean-battery precondition for Phase 1+ gates is met.
 
 ### Phase 1 — learning spine (starts immediately; independent of new depth mechanics)
 
 Runs over the EXISTING over-deal space — no new game mechanics required, which is why it can start first.
 
-| Seam | Contract |
-|---|---|
-| Event | `SOEventType.POLICY_PROMOTED = "policy_promoted"` (append-only) |
-| Payload | `ModelSOPolicyPromotedPayload` — 8 fields as specified in §4.2, `extra="forbid"`, frozen |
-| Census | payload registered in the authority census + projector map (same PR — §4.2 trap) |
-| Fold | canonical fold no-op; learning boot path folds the chain (generation ordering) |
-| Port | `LiveLearningPromotionPort` = `begin_match` + `handle_after_match` |
-| Composition | admission call + `promotion=` injection at `composition.py:2066-2069`; boot-time policy rehydration (genesis when chain empty) |
-| Provenance | `MATCH_STARTED` payload + per-seat `policy_provenance {policy_id, spec_hash, generation, source_lineage_digest}` |
-| Evaluator | scripted double first; then `SelectionOutcomeEvaluator` over search + duel + promotion machinery |
-| Regression | cross-boundary test driving admission → live match → terminal → promotion → ledger append → REPROJECTION → replay; plus the post-terminal-append legality probe (§4.2 item 4) |
+| Seam | Contract | Rev 2 status |
+|---|---|---|
+| Event | `SOEventType.POLICY_PROMOTED = "policy_promoted"` (append-only) | **DONE @ `7dc970e`** (#123) |
+| Payload | `ModelSOPolicyPromotedPayload` — 9 fields as specified in §4.2 (incl. `kind` discriminator, §4.6a), `extra="forbid"`, frozen | **DONE @ `7dc970e`** (#123) |
+| Census | payload registered in the authority census + projector map (same PR — §4.2 trap) | **DONE @ `7dc970e`** (#123) |
+| Fold | canonical fold no-op; learning boot path folds the chain (generation ordering) | **DONE @ `7dc970e`** (#123) |
+| Port | `LiveLearningPromotionPort` = `begin_match` + `handle_after_match` | **DONE @ `7dc970e`** (#123) |
+| Composition | admission call + `promotion=` injection at `composition.py:2066-2069`; boot-time policy rehydration (genesis when chain empty) | **DONE @ `7dc970e`** (#123) |
+| Provenance | `MATCH_STARTED` payload + per-seat `policy_provenance {policy_id, spec_hash, generation, source_lineage_digest}` | **OPEN — L-GATE-2 package** (parallel lane this session; §4.6e) |
+| Evaluator | first concrete evaluator (`WinDamageDifferentialEvaluator` shipped, superseding the scripted double — §4.6c); then `SelectionOutcomeEvaluator` over search + duel + promotion machinery | stage 1 **DONE @ `7dc970e`** (#123); `SelectionOutcomeEvaluator` **OPEN — L-GATE-2 package** |
+| Regression | cross-boundary test driving admission → live match → terminal → promotion → ledger append → REPROJECTION → replay; plus the post-terminal-append legality probe (§4.2 item 4, now RESOLVED) | **DONE @ `7dc970e`** (#123) |
 
-**Acceptance evidence (live-measured):** L-GATE-1, then L-GATE-2.
+**Acceptance evidence (live-measured):** L-GATE-1 **PASSED (Rev 2, #123)**; L-GATE-2 remaining.
+
+**Rev 2 residual:** the frontend transport carve-out branches (accept-once-after-scored / reject-before-scored / reject-repeat) shipped untested in #123 — covered by a parallel lane this session.
 
 ### Phase 2 — utility cards (parallel-eligible with Phase 1 after seam review)
 
@@ -242,7 +261,7 @@ Per the heat-drafting design §5, adopted unchanged; seams restated for the matc
 | Fold | first fold of card composition: owned-multiset ⊕ acquisitions; supply depletion state |
 | Invariants | conservation rebase from static `deck.card_multiset()` to `static ⊕ folded_acquisitions` (loci per heat design: `round.py:198-204`, `replay/card_round.py:292-295`) |
 | Shuffle | composition-keyed seeded RNG reproduces automatically once composition is folded (heat design §1.4) — contingent on fold-before-shuffle ordering, pinned |
-| Discipline | ≤1 buy/round; acquired-to-discard; small starting deck per D-GATE-0; double-tax as catalog authoring invariant |
+| Discipline | ≤1 buy/round; acquired-to-discard; **small starting deck (~10 cards) is a HARD requirement per D-GATE-0 (Rev 2 — P(played)≥~0.6 through phase 9 at that size), with acquired-to-top-of-draw as the fallback dial (P(drawn)~1.0)**; double-tax as catalog authoring invariant |
 | Census | payload registered |
 | Regression | the mandatory fold-then-reshuffle cross-boundary replay test (heat design §2.3) |
 
@@ -261,17 +280,17 @@ Per the heat-drafting design §5, adopted unchanged; seams restated for the matc
 
 **Acceptance evidence:** O-GATE battery on the new arena, brawler-vs-sniper, winner-side distribution + terminal-class scorecard.
 
-**Sequencing note (DESIGN):** 1 → 2 → 2.5 → 3 → 4 is the dependency-honest default, and Phase 1 must land first so every later phase's batteries are learning-instrumented (policy provenance in every ledger). If U-GATE passes but the brawler observable stays flat, Phase 4 may be pulled ahead of Phase 3 — objectives are the strongest "reason to close" lever (finish-plan action 7) and D-GATE-0 might force a drafting redesign anyway. That reorder is a gate-driven decision, not a preference.
+**Sequencing note (DESIGN):** 1 → 2 → 2.5 → 3 → 4 is the dependency-honest default, and Phase 1 must land first so every later phase's batteries are learning-instrumented (policy provenance in every ledger). If U-GATE passes but the brawler observable stays flat, Phase 4 may be pulled ahead of Phase 3 — objectives are the strongest "reason to close" lever (finish-plan action 7) and D-GATE-0 might force a drafting redesign anyway. That reorder is a gate-driven decision, not a preference. **Rev 2:** the BLUE 30/30 terminal sweep on merged-main balance (#124, §3.4) is fresh measured weight behind the pull-Phase-4-ahead option, and D-GATE-0's CONDITIONAL result (§5) confirms drafting carries a hard precondition (small starting deck or top-of-draw) either way.
 
 ---
 
 ## 7. Speculation register (explicitly NOT established)
 
 1. That utility cards produce measurable counterplay at current model capability — U-GATE exists because this is unproven.
-2. That draw-through clears ~50% at any acceptable starting-deck size — D-GATE-0 exists because this is unmeasured (the flagged make-or-break risk).
+2. That draw-through clears ~50% at any acceptable starting-deck size — **resolved CONDITIONAL by #122 (`830dc0b`)**: aggregate P(drawn)=0.62 / P(played)=0.45 vs the ≥~50% bar; first-cycle buys clear at 0.69–0.70; it clears only under a rescue (~10-card small starting deck → P(played)≥~0.6 through phase 9, or acquired-to-top-of-draw → P(drawn)~1.0). The conditional discipline is now a HARD Phase 3 requirement (§6).
 3. That prompt-rendered policy parameters shift live-Qwen selection behavior measurably — L-GATE-2 exists because no live policy consumer has ever run.
 4. That objective play moves brawler win-rate off the ~5% floor — the O-GATE observable; the depth thesis's falsifiable core.
-5. That post-terminal ledger appends are legal today — §4.2 item 4, must be probed at build time.
+5. That post-terminal ledger appends are legal today — **RESOLVED by #123 (`7dc970e`)**: legal; reprojection passes the fail-closed census and `verify_replay_validity` is TRUE with the `POLICY_PROMOTED` appendix (§4.2 item 4).
 6. The "berserker runs hot / sniper runs cool" ambient-heat asymmetry both heat-design sources assumed — flagged unverified there (heat design §0), still unverified; Phase 3 pricing must not depend on it.
 
 Each item above is paired with the gate or probe that resolves it. Nothing in this design asks for trust in an unmeasured claim.
