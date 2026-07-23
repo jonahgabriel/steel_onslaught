@@ -70,10 +70,113 @@ Falsifiability note: P3 is the depth thesis's falsifiable core (design §7
 item 4). Whatever the number is, it is reported; a flat win-rate is a
 recorded finding that forces a design review, never a knob round (§2).
 
-## Results
+## Results (n = 30, seeds 5001–5030, all completed, all replay-valid)
 
-_(appended after the battery ran; predictions above unedited)_
+### Terminal-class scorecard (the gate metric)
+
+| Class | Count | Fraction |
+|---|---|---|
+| `vp_threshold` | **0** | 0.0% |
+| `elimination` | **30** | 100.0% |
+| `tick_cap` | 0 | 0.0% |
+| `abort` | 0 | 0.0% |
+
+Every terminal was `last_mech_standing` with `victory_kind=elimination`
+(cross-tab `last_mech_standing/elimination: 30`). Play-terminal fraction
+**1.00 >= 0.95** — the gate's numeric bar is met, with zero clock endings.
+
+### Winner side and the brawler observable
+
+- Winners: **blue (sniper) 30/30**. Draws: 0.
+- **Brawler (red) win-rate: 0/30 = 0.0%** — decided-match rate 0.0%.
+  The depth-thesis observable did **NOT** move off the floor (baselines:
+  0/30 in #124, ~5% pooled knob rounds). Reported, not tuned (§2).
+
+### Match length
+
+- `duration_ticks`: min 11 / median 31 / mean 30.0 / max 59.
+- Markedly **shorter** than #124 on symmetric `foundry_60` (range 21–103,
+  median 66): on the asym arena the sniper kills roughly twice as fast.
+  The obstacle-free mid-lane is working exactly as authored — as the
+  sniper's E-W kill corridor — and the brawler walks it to reach
+  objectives.
+
+### Objective-contest metrics
+
+- Matches with >= 1 `OBJECTIVE_SCORED` award: **7/30**; 19 awards total.
+- Per objective: `east_gate` 12 awards (blue 9 / red 3, 1 control change);
+  `west_yard` 5 awards (red 5, 0 changes); `north_works` 2 awards (blue 2,
+  0 changes). Total control changes: **1** (matches with any: 1/30).
+- Max single-side VP in any match: **8 of the 15 threshold** (blue,
+  east_gate camp, seed 5002). Red's best: 4 (west_yard hold, seed 5022).
+- `vp_threshold` margins: none (no VP terminals).
+
+### Abort classes and completion health
+
+- Abort-class terminals: **0** (no `aborted` / `aborted_runaway` /
+  `provider_semantic_failure`).
+- `llm_completion_failed`: **11 events across 10/30 matches** — all
+  `semantic_failure_code=invalid_action_parameters`
+  (`reason_code=invalid_response`, `finish_reason=stop`), blue 6/207
+  requests (2.9%), red 5/206 (2.4%); 2.7 per 100 completions overall.
+  All eleven recovered on the bounded first retry: 413 requested = 402
+  resolved + 11 failed; **402/402 committed plans `plan_source=llm`**,
+  zero deterministic fallback.
+- This is a **regression signal vs #124's 0/840** on the same seats and
+  loadouts (symmetric arena, pre-objective prompts): the class #120/#121
+  drove to zero is back at ~2.7% under the objective observation/prompt
+  block. Root cause not established here — recorded as a follow-up
+  finding, not hidden inside a green scorecard.
+
+### Prediction grades
+
+| # | Prediction | Outcome | Grade |
+|---|---|---|---|
+| P1 | >= 95% play terminals; 0 tick_cap; 0 abort terminals | 100% / 0 / 0 | **CORRECT** |
+| P2 | `vp_threshold` modal, 50–85% | 0% — never fired | **WRONG** |
+| P3 | brawler 15–40% of decided | 0% | **WRONG** |
+| P4 | blue majority | blue 30/30 | CORRECT |
+| P5 | median ticks 20–60; max < 200 | median 31; max 59 | CORRECT |
+| P6 | west_yard red-majority, east_gate blue-majority, north_works most contested, >= 30% of matches with a control change | first two held; north_works had 0 changes; 1/30 (3.3%) matches with a change | **MOSTLY WRONG** |
+| P7 | 0 failed completions, 0 abort terminals | 0 abort terminals, but 11 failed completions | **HALF WRONG** |
+| P8 | loser on the board in >= 60% of VP matches; median margin <= 8 | vacuous — no VP matches | N/A |
+
+3 correct, 4 wrong or partly wrong, 1 vacuous. The misses all point the
+same direction: kill speed dominates VP accumulation far harder than
+predicted.
 
 ## Verdict
 
-_(appended after the battery ran)_
+**O-GATE: CONDITIONAL PASS.**
+
+- **The letter of the gate passes**: 30/30 matches ended on play, zero on
+  the clock, zero aborts. "Do matches end on play, not clock?" — yes,
+  unambiguously.
+- **The pass is vacuous with respect to the new mechanism**: 0/30 matches
+  ended on `vp_threshold`; the maximum VP any side banked was 8 of 15.
+  Reaching the threshold requires ~15 held ticks after arrival; the median
+  match is over (by kill) at tick 31, and the asym layout made the kill
+  *faster* than on `foundry_60` (median 31 vs 66). At these parameters the
+  VP victory path is live, observed scoring, and **unreachable in
+  practice**. A clean "PASS" stamp would certify a mechanism that never
+  decided a match.
+- **The brawler observable is flat: 0/30.** The depth hypothesis —
+  objectives move brawler win-rate off the ~5% floor without knob tuning —
+  is **not supported** at these settings. Objectives gave red a reason to
+  close but neither protection while closing nor time to convert board
+  control into points; red held `west_yard` in 2 matches (max 4 VP) and
+  died mid-lane in the rest. Per §5 fail semantics this is a **recorded
+  finding that forces a design review**, not a knob round. The review
+  levers are objective-layer design (§3.4 names layout + thresholds as
+  exactly where the depth program tunes): VP threshold vs realistic match
+  length, VP accrual rate, objective placement relative to cover (red's
+  covered north corridor leads to `north_works`, which red never scored),
+  or Phase-2 utility counterplay (smoke) landing before O-GATE re-measure.
+- **Regression finding**: `invalid_action_parameters` completion failures
+  recurred at ~2.7/100 completions (0/840 in #124) under the objective
+  prompt block, fully absorbed by the bounded retry. Needs root-cause
+  before the next battery treats completion health as solved.
+
+Raw data: `.onex_state/steel_onslaught/ogate_objectives_battery/`
+(`battery_raw.jsonl`, `battery_summary.json`, `events.sqlite3`) — gitignored,
+retained in the `so-ogate` worktree.
