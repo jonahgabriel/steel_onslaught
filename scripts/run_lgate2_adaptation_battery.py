@@ -352,14 +352,14 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
     promote = _run_phase(
         "promote",
         max_value=3.0,
-        seeds=[4100 + index for index in range(1, _MAX_PROMOTE_ATTEMPTS + 1)],
+        seeds=[4100 + index for index in range(1, args.promote_attempts + 1)],
         stop_on_promotion=True,
     )
     promotion = next((row["policy_promoted"] for row in promote if row["policy_promoted"]), None)
     if promotion is None:
         print(
             "FINDING: no promotion occurred within "
-            f"{_MAX_PROMOTE_ATTEMPTS} promote-phase matches; L-GATE-2 not exercised",
+            f"{args.promote_attempts} promote-phase matches; L-GATE-2 not exercised",
             flush=True,
         )
         return 1
@@ -515,6 +515,12 @@ def main() -> int:
     parser.add_argument("--n", type=int, default=10, help="matches per before/after phase")
     parser.add_argument(
         "--step", type=float, default=0.25, help="aggression perturbation per promotion"
+    )
+    parser.add_argument(
+        "--promote-attempts",
+        type=int,
+        default=_MAX_PROMOTE_ATTEMPTS,
+        help="promote-phase match budget (the evaluator needs a decisive learner win to fire)",
     )
     parser.add_argument(
         "--state-root",

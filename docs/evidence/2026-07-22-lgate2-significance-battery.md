@@ -117,7 +117,34 @@ RUN B — spine predictions:
 | B3 | If promoted: the next admission (confirm match) flies the generation-1 policy — provenance equality asserted hard. |
 | B4 | Interpretive limit, stated in advance: in card mode both duel sides' register programming is qwen (same personas); candidate and parent differ only in deterministic pilot-spec parameters, so duel outcomes may be dominated by LLM variance → draws and declines are plausible and legitimate. |
 
-## RUN A results
+## RUN A attempt 1 (red seat): structural finding, no promotion possible
+
+The red-seat run executed 30 baseline + 5 promote matches and terminated with
+the driver's own FINDING: **the red berserker lost all 35 matches to the blue
+sniper** (`winner=player.blue` 35/35), and `win_damage_differential_v1`
+promotes only on a decisive learner win with positive damage differential —
+so the red-seat lane **cannot fire L-GATE-2's promotion at all** on this
+overlay. Two further pre-registered risk notes materialized immediately in
+the red baseline: red attack keep-rate is ALSO ceilinged (1.0 in every
+match, P1 risk note) and red vent keep-rate sits at the 0.0 floor (P3 floor
+note) — the hoped-for red-seat keep-rate headroom does not exist. Raw data
+retained: `.onex_state/steel_onslaught/lgate2_red_seat_attempt/`
+(35 rows, gitignored lane, worktree `SO-L2SIG`).
+
+**Fallback, declared before the rerun:** re-run RUN A on the **blue sniper
+seat** with step 0.5 and n=30 — the seat that demonstrably can win (21/21
+in #126), preserving single-knob attribution against the #126 battery
+(same seat, same instruments; ONLY the step 0.25 → 0.5 and n 10 → 30
+change). All six pre-registered directional predictions above carry to the
+blue rerun **unchanged** (they are directions of the aggression guidance,
+not seat-specific); the P1 ceiling note is already known to bind for blue
+(attack keep 0.997 baseline in #126) and P3's floor note is known for blue
+(vent keep 0.0 baseline in #126, and it moved +8.3pp AGAINST direction
+there — P3 stays "decrease or stay at floor", which is exactly what makes
+it a real test). Driver knob added for the structural finding:
+`--promote-attempts` (promote-phase match budget).
+
+## RUN A results (blue seat, step 0.5, n=30+30)
 
 _(filled in after the run — see git history: predictions committed first)_
 
