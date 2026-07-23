@@ -21,7 +21,7 @@ import type { WeaponClass } from "../assets/theme";
 import type { EnvelopeHandler } from "../lib/event_stream";
 import { displayNameOf, mechStateOf } from "../lib/gauges";
 import { weaponClassOf } from "../lib/weapons";
-import type { SOEventEnvelope, SOMechRuntimeState, SOPosition } from "../types";
+import type { SOArenaObjective, SOEventEnvelope, SOMechRuntimeState, SOPosition } from "../types";
 
 /**
  * Grid dimension used ONLY before `match_started` arrives — an empty holding
@@ -86,6 +86,12 @@ export interface ArenaState {
   mechs: Record<string, ArenaMech>;
   /** Static obstacle cells carried by the authoritative arena snapshot. */
   obstacles: SOPosition[];
+  /** Objective cells carried by the authoritative arena snapshot (Phase 4). */
+  objectives: SOArenaObjective[];
+  /** VP finish line from the arena contract; null on objective-free arenas. */
+  vpThreshold: number | null;
+  /** Latest cumulative VP per player (from objective_scored). */
+  vpTotals: Record<string, number>;
   /** Grid dimension from the arena contract (`arena.size`). */
   gridCells: number;
   trails: Record<string, TrailPoint[]>;
@@ -101,6 +107,9 @@ export interface ArenaState {
 export const ARENA_INITIAL_STATE: ArenaState = {
   mechs: {},
   obstacles: [],
+  objectives: [],
+  vpThreshold: null,
+  vpTotals: {},
   gridCells: PLACEHOLDER_GRID_CELLS,
   trails: {},
   tracers: [],
@@ -170,8 +179,18 @@ export function arenaReduce(state: ArenaState, action: ArenaAction): ArenaState 
       for (const m of envelope.payload.mechs) mechs[m.mech_id] = mechFromRuntime(m);
       const obstacles = envelope.payload.arena.obstacles;
       const gridCells = envelope.payload.arena.size;
-      return { ...ARENA_INITIAL_STATE, mechs, obstacles, gridCells };
+      return {
+        ...ARENA_INITIAL_STATE,
+        mechs,
+        obstacles,
+        gridCells,
+        objectives: envelope.payload.arena.objectives,
+        vpThreshold: envelope.payload.arena.vp_threshold,
+      };
     }
+
+    case "objective_scored":
+      return { ...state, vpTotals: { ...envelope.payload.cumulative_vp } };
 
     case "movement_resolved": {
       const mech = state.mechs[envelope.subject.mech_id];
@@ -632,6 +651,29 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
           </g>
         ))}
 
+        {/* objective cells (Phase 4) — brass diamonds under the units so a
+            mech standing on a scoring cell stays legible. */}
+        {state.objectives.map((objective) => (
+          <g
+            key={`objective-${objective.objective_id}`}
+            data-testid="arena-objective"
+            data-objective-id={objective.objective_id}
+          >
+            <path
+              d={`M ${objective.cell.x + 0.5} ${objective.cell.y} L ${objective.cell.x + 1} ${
+                objective.cell.y + 0.5
+              } L ${objective.cell.x + 0.5} ${objective.cell.y + 1} L ${objective.cell.x} ${
+                objective.cell.y + 0.5
+              } Z`}
+              fill="var(--brass, #b08d3f)"
+              stroke="var(--seam)"
+              strokeWidth={1}
+              opacity={0.85}
+              vectorEffect="non-scaling-stroke"
+            />
+          </g>
+        ))}
+
         {/* movement trails — most recent brightest */}
         {mechs.map((mech) => {
           const trail = state.trails[mech.mechId] ?? [];
@@ -778,6 +820,18 @@ export default function ArenaView({ subscribe }: ArenaViewProps): React.JSX.Elem
           </div>
         );
       })}
+
+      {state.vpThreshold !== null ? (
+        <div className="pd-arena-vp" data-testid="vp-scoreboard" data-threshold={state.vpThreshold}>
+          {Object.entries(state.vpTotals)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([playerId, vp]) => (
+              <span key={playerId} data-testid="vp-counter" data-player={playerId} data-vp={vp}>
+                {displayNameOf(playerId)}: {vp}/{state.vpThreshold} VP
+              </span>
+            ))}
+        </div>
+      ) : null}
 
       {state.victoryWinnerId !== null ? (
         <div

@@ -39,6 +39,14 @@ class ModelSOAfterMatchLearningEvidence(BaseModel):
     duration_ticks: StrictInt = Field(gt=0)
     winner_player_id: str
     is_draw: StrictBool
+    # HOW the match ended (Phase 4): elimination vs vp_threshold vs the
+    # tick-cap anomaly.  ``None`` for draws and for pre-Phase-4 ledgers whose
+    # VICTORY_DECLARED carries no victory_kind — the projector never invents
+    # a classification the stream does not state.
+    victory_kind: Literal["elimination", "vp_threshold", "tick_cap_failsafe"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     scores: Mapping[str, ModelSOPlayerScore]
     event_counts: Mapping[str, StrictInt]
     decision_action_counts: Mapping[str, StrictInt]

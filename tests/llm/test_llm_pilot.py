@@ -15,11 +15,13 @@ from steel_onslaught.llm.pilot import LLMPilot
 from steel_onslaught.llm.schemas import LlmResponse, LlmUsage, ModelSOLlmCompletionRequest
 from steel_onslaught.llm.stub import StubLlmClient
 from steel_onslaught.pilots.schemas import (
+    ModelSOObjectiveView,
     ModelSOPilotDecision,
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
     ModelSOPosition,
     ModelSOSensorReading,
+    ModelSOVictoryPointsView,
     SOCompassDirection,
     SOPilotAction,
     SOPilotReasonCode,
@@ -89,6 +91,8 @@ def _observation(
     hp_percent: float = 80.0,
     has_line_of_sight_to_enemy: bool = False,
     blocked_directions: tuple[SOCompassDirection, ...] = (),
+    objectives: tuple[ModelSOObjectiveView, ...] = (),
+    victory_points: ModelSOVictoryPointsView | None = None,
 ) -> ModelSOPilotObservation:
     return ModelSOPilotObservation(
         match_id="m",
@@ -105,6 +109,8 @@ def _observation(
         under_sensor_lock=False,
         has_line_of_sight_to_enemy=has_line_of_sight_to_enemy,
         blocked_directions=blocked_directions,
+        objectives=objectives,
+        victory_points=victory_points,
         enemy_observations=[
             ModelSOSensorReading(
                 enemy_mech_id="mech.b",
@@ -843,3 +849,47 @@ def test_llm_pilot_satisfies_pilot_protocol() -> None:
 
     pilot = LLMPilot(client=StubLlmClient(model="stub"), persona=_persona("berserker"))
     assert isinstance(pilot, PilotProtocol)
+
+
+@pytest.mark.unit
+def test_objective_view_reaches_per_tick_llm_prompt() -> None:
+    """Phase 4: pilots must SEE the objectives, or O-GATE measures blindness."""
+
+    client = _RecordingClient()
+    pilot = LLMPilot(client=client, persona=_persona("berserker"))
+    pilot.decide(
+        _observation(
+            objectives=(
+                ModelSOObjectiveView(
+                    objective_id="objective.west_yard",
+                    cell=ModelSOPosition(x=18, y=30),
+                    vp_per_round=1,
+                    control="unclaimed",
+                    own_distance_chebyshev=14,
+                ),
+            ),
+            victory_points=ModelSOVictoryPointsView(own_vp=2, enemy_vp=5, vp_threshold=15),
+        )
+    )
+
+    assert client.request is not None
+    prompt = client.request.user_prompt
+    assert "--- OBJECTIVES" in prompt
+    assert "first to 15 VP wins" in prompt
+    assert "victory_points: you 2 vs enemy 5" in prompt
+    assert (
+        "objective.west_yard: cell=(18,30) vp_per_round=1 control=unclaimed your_distance=14"
+    ) in prompt
+
+
+@pytest.mark.unit
+def test_objective_free_per_tick_prompt_is_unchanged() -> None:
+    """No objectives -> no OBJECTIVES section: pre-Phase-4 prompts stay stable."""
+
+    client = _RecordingClient()
+    pilot = LLMPilot(client=client, persona=_persona("berserker"))
+    pilot.decide(_observation())
+
+    assert client.request is not None
+    assert "OBJECTIVES" not in client.request.user_prompt
+    assert "victory_points" not in client.request.user_prompt

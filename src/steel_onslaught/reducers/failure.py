@@ -517,6 +517,7 @@ class ReducerFailureCascade:
                 payload={
                     "winner_player_id": winner,
                     "reason": SOMatchEndReason.LAST_MECH_STANDING.value,
+                    "victory_kind": "elimination",
                 },
             )
 

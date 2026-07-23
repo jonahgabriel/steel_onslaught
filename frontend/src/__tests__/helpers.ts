@@ -28,6 +28,8 @@ export const TEST_ARENA: SOArenaSnapshot = {
   spawn_a: { x: 5, y: 5 },
   spawn_b: { x: 35, y: 35 },
   obstacles: [],
+  objectives: [],
+  vp_threshold: null,
   sudden_death_start_tick: null,
   sudden_death_damage_base: 8,
 };

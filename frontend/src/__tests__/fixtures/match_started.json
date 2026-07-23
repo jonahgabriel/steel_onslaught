@@ -164,8 +164,28 @@
       },
       "obstacles": [],
       "sudden_death_start_tick": null,
-      "sudden_death_damage_base": 8
+      "sudden_death_damage_base": 8,
+      "objectives": [
+        {
+          "objective_id": "objective.center_yard",
+          "cell": {
+            "x": 20,
+            "y": 20
+          },
+          "vp_per_round": 1
+        },
+        {
+          "objective_id": "objective.east_gate",
+          "cell": {
+            "x": 30,
+            "y": 12
+          },
+          "vp_per_round": 2
+        }
+      ],
+      "vp_threshold": 15
     },
+    "arena_contract_hash": "3d9e8f3d83568e103888eb8fe46aab72721b98f720b8b4d5e417f42392c5c55c",
     "launch_provenance": {
       "schema_version": "1",
       "kind": "steel_onslaught.match_launch_provenance",

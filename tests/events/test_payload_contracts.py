@@ -67,6 +67,7 @@ EXPECTED_CURRENT_CONSUMED_EVENT_TYPES = frozenset(
         SOEventType.MATCH_ENDED,
         SOEventType.MATCH_SCORED,
         SOEventType.POLICY_PROMOTED,
+        SOEventType.OBJECTIVE_SCORED,
     }
 )
 
@@ -104,7 +105,7 @@ def _assert_deeply_frozen(value: object) -> None:
 
 @pytest.mark.unit
 def test_current_consumed_payload_registry_has_exact_independent_census() -> None:
-    assert len(EXPECTED_CURRENT_CONSUMED_EVENT_TYPES) == 35
+    assert len(EXPECTED_CURRENT_CONSUMED_EVENT_TYPES) == 36
     assert set(CURRENT_CONSUMED_PAYLOAD_MODELS) == EXPECTED_CURRENT_CONSUMED_EVENT_TYPES
     assert set(SOEventType) - EXPECTED_CURRENT_CONSUMED_EVENT_TYPES == {
         SOEventType.MODE_TRANSITION_COMPLETED,
@@ -291,6 +292,9 @@ def test_current_match_started_cross_validates_roster_positions_against_arena(
     elif case == "obstacle":
         raw["arena"]["obstacles"] = [{"x": 6, "y": 5}]
         raw["mechs"][0]["position"] = {"x": 6, "y": 5}
+        # The arena was tampered with, so the self-verifying contract hash
+        # would (correctly) fire first; drop it to reach the roster check.
+        raw.pop("arena_contract_hash", None)
     elif case == "swapped-spawns":
         first = raw["mechs"][0]["position"]
         second = raw["mechs"][1]["position"]

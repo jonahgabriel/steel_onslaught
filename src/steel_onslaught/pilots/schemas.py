@@ -151,6 +151,34 @@ class ModelSOSensorReading(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ModelSOObjectiveView(BaseModel):
+    """One objective cell as the pilot sees it this tick (Phase 4).
+
+    ``control`` is viewer-relative (``own``/``enemy``/``contested``/
+    ``unclaimed``) and computed by the SAME rule the scoring fold uses
+    (``match.objectives``), so what the pilot is told about control can never
+    diverge from what actually scores.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    objective_id: str = Field(pattern=r"^objective\.[a-z][a-z0-9_]*$")
+    cell: ModelSOPosition
+    vp_per_round: int = Field(ge=1)
+    control: Literal["own", "enemy", "contested", "unclaimed"]
+    own_distance_chebyshev: int = Field(ge=0)
+
+
+class ModelSOVictoryPointsView(BaseModel):
+    """Match-level VP scoreboard as the pilot sees it this tick (Phase 4)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    own_vp: int = Field(ge=0)
+    enemy_vp: int = Field(ge=0)
+    vp_threshold: int = Field(gt=0)
+
+
 class ModelSOPilotObservation(BaseModel):
     """The full view passed to a pilot for one tick.
 
@@ -182,6 +210,22 @@ class ModelSOPilotObservation(BaseModel):
 
     # Enemy state as observed (noisy, possibly stale; newest last).
     enemy_observations: list[ModelSOSensorReading]
+
+    # Objective-victory view (Phase 4).  Empty/None on objective-free arenas,
+    # which keeps every pre-Phase-4 observation (and its serialized prompt)
+    # byte-identical.  Set together — validated below.
+    objectives: tuple[ModelSOObjectiveView, ...] = ()
+    victory_points: ModelSOVictoryPointsView | None = None
+
+    @model_validator(mode="after")
+    def _objective_view_is_paired(self) -> ModelSOPilotObservation:
+        if bool(self.objectives) != (self.victory_points is not None):
+            raise ValueError(
+                "objectives and victory_points must be set together "
+                "(a scoreboard without cells, or cells without a finish line, "
+                "is a half-configured objective view)"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------

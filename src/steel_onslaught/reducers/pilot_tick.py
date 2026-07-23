@@ -36,6 +36,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 from uuid import UUID
 
+from steel_onslaught.contracts.arena import ModelSOArenaObjective
 from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
 from steel_onslaught.contracts.weapon import ModelSOWeaponSpec, UnknownWeaponError
 from steel_onslaught.events.envelope import (
@@ -51,12 +52,15 @@ from steel_onslaught.events.payloads import (
     ModelSOWeaponFireIntentPayload,
 )
 from steel_onslaught.match.geometry import blocked_directions, line_of_sight_clear
+from steel_onslaught.match.objectives import classify_control
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import (
+    ModelSOObjectiveView,
     ModelSOPilotDecision,
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
     ModelSOSensorReading,
+    ModelSOVictoryPointsView,
     PilotProtocol,
     SOPilotAction,
 )
@@ -87,6 +91,45 @@ def _nearest_living_enemy(
     )
 
 
+def _objective_views(
+    mech: ModelSOMechRuntimeState,
+    state: ModelSOMatchState,
+    objectives: tuple[ModelSOArenaObjective, ...],
+) -> tuple[ModelSOObjectiveView, ...]:
+    """Viewer-relative objective views, deterministic by objective_id."""
+
+    return tuple(
+        ModelSOObjectiveView(
+            objective_id=objective.objective_id,
+            cell=objective.cell,
+            vp_per_round=objective.vp_per_round,
+            control=classify_control(objective.cell, state, viewer_player_id=mech.player_id),
+            own_distance_chebyshev=max(
+                abs(mech.position.x - objective.cell.x),
+                abs(mech.position.y - objective.cell.y),
+            ),
+        )
+        for objective in sorted(objectives, key=lambda item: item.objective_id)
+    )
+
+
+def _victory_points_view(
+    mech: ModelSOMechRuntimeState,
+    state: ModelSOMatchState,
+    vp_threshold: int,
+) -> ModelSOVictoryPointsView:
+    own_vp = state.vp_totals.get(mech.player_id, 0)
+    enemy_vp = max(
+        (vp for player, vp in state.vp_totals.items() if player != mech.player_id),
+        default=0,
+    )
+    return ModelSOVictoryPointsView(
+        own_vp=own_vp,
+        enemy_vp=enemy_vp,
+        vp_threshold=vp_threshold,
+    )
+
+
 def _build_observation(
     mech: ModelSOMechRuntimeState,
     state: ModelSOMatchState,
@@ -95,6 +138,8 @@ def _build_observation(
     *,
     obstacles: frozenset[tuple[int, int]],
     arena_size: int,
+    objectives: tuple[ModelSOArenaObjective, ...] = (),
+    vp_threshold: int | None = None,
 ) -> ModelSOPilotObservation:
     """Build the observation passed to a pilot for one tick."""
     # Weapon views — empty if no weapon_cooldowns recorded on the mech.
@@ -165,6 +210,16 @@ def _build_observation(
             obstacles=obstacles,
         ),
         enemy_observations=enemy_readings,
+        objectives=(
+            _objective_views(mech, state, objectives)
+            if objectives and vp_threshold is not None
+            else ()
+        ),
+        victory_points=(
+            _victory_points_view(mech, state, vp_threshold)
+            if objectives and vp_threshold is not None
+            else None
+        ),
     )
 
 
@@ -176,12 +231,18 @@ def build_pilot_observation(
     *,
     obstacles: frozenset[tuple[int, int]],
     arena_size: int,
+    objectives: tuple[ModelSOArenaObjective, ...] = (),
+    vp_threshold: int | None = None,
 ) -> ModelSOPilotObservation:
     """Build one canonical pilot observation for an injected runtime seam.
 
     The ordinary pilot reducer and the opt-in card programmer must observe the
     same immutable state.  Keep this wrapper public rather than making the
     card runner reach into the reducer's private implementation.
+
+    ``objectives``/``vp_threshold`` come from the arena contract (Phase 4);
+    when empty/None the observation is byte-identical to the pre-objective
+    shape, so objective-free prompts never change.
     """
 
     return _build_observation(
@@ -191,6 +252,8 @@ def build_pilot_observation(
         weapon_specs,
         obstacles=obstacles,
         arena_size=arena_size,
+        objectives=objectives,
+        vp_threshold=vp_threshold,
     )
 
 
@@ -269,6 +332,8 @@ class ReducerPilotTick:
         event_factory: EventFactory,
         obstacles: frozenset[tuple[int, int]],
         arena_size: int,
+        objectives: tuple[ModelSOArenaObjective, ...] = (),
+        vp_threshold: int | None = None,
     ) -> None:
         self._match_id = match_id
         self._correlation_id = correlation_id
@@ -280,6 +345,8 @@ class ReducerPilotTick:
         self._weapon_specs = weapon_specs
         self._obstacles = obstacles
         self._arena_size = arena_size
+        self._objectives = objectives
+        self._vp_threshold = vp_threshold
 
     @property
     def state(self) -> ModelSOMatchState:
@@ -328,6 +395,8 @@ class ReducerPilotTick:
             self._weapon_specs,
             obstacles=self._obstacles,
             arena_size=self._arena_size,
+            objectives=self._objectives,
+            vp_threshold=self._vp_threshold,
         )
         decision = pilot.decide(observation)
 

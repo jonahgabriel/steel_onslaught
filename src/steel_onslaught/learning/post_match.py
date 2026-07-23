@@ -20,6 +20,7 @@ from steel_onslaught.events.payloads import (
     CURRENT_CONSUMED_PAYLOAD_MODELS,
     ModelSOMatchScoredPayload,
     ModelSOPilotDecisionPayload,
+    ModelSOVictoryDeclaredPayload,
 )
 from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
 
@@ -59,6 +60,7 @@ def project_match_learning_evidence(
     decisions: list[ModelSOPilotDecisionPayload] = []
     rule_pack_provenance = None
     prompt_provenance = None
+    victory_kind = None
     for event in stream:
         payload_model = _PROJECTED_PAYLOAD_MODELS.get(event.event_type)
         if payload_model is None:
@@ -67,6 +69,13 @@ def project_match_learning_evidence(
         if event.event_type is SOEventType.MATCH_STARTED:
             rule_pack_provenance = payload.card_rule_pack_provenance  # type: ignore[attr-defined]
             prompt_provenance = payload.prompt_provenance  # type: ignore[attr-defined]
+        if event.event_type is SOEventType.VICTORY_DECLARED:
+            if not isinstance(payload, ModelSOVictoryDeclaredPayload):
+                raise TypeError("VICTORY_DECLARED payload authority returned the wrong model")
+            # Phase 4: surface HOW the match ended so learning evidence can
+            # distinguish elimination / vp_threshold / the tick-cap anomaly.
+            # Pre-Phase-4 streams carry no victory_kind and stay None.
+            victory_kind = payload.victory_kind
         if event.event_type is SOEventType.MATCH_SCORED:
             if not isinstance(payload, ModelSOMatchScoredPayload):
                 raise TypeError("MATCH_SCORED payload authority returned the wrong model")
@@ -92,6 +101,7 @@ def project_match_learning_evidence(
         duration_ticks=score.duration_ticks,
         winner_player_id=score.winner_player_id,
         is_draw=score.is_draw,
+        victory_kind=victory_kind,
         scores=score.scores,
         event_counts=dict(sorted(event_counts.items())),
         decision_action_counts=dict(sorted(action_counts.items())),

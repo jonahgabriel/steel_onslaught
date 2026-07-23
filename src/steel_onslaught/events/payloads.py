@@ -20,7 +20,10 @@ from pydantic import (
     model_validator,
 )
 
-from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
+from steel_onslaught.contracts.arena import (
+    ModelSOCurrentLiveArenaSnapshot,
+    arena_contract_hash,
+)
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeProvenance
 from steel_onslaught.contracts.live_learning import ModelSOSeatPolicyProvenance
 from steel_onslaught.contracts.mode import (
@@ -62,6 +65,17 @@ WeaponFireRejectionReason = Literal[
     "target_not_alive",
     "target_not_found",
 ]
+
+SOVictoryKind = Literal["elimination", "vp_threshold", "tick_cap_failsafe"]
+"""HOW a victory terminal happened (Phase 4).
+
+``reason`` alone is ambiguous: ``last_mech_standing`` is emitted both by a
+real elimination and by the explicit tick-cap bound with a lone survivor.
+``victory_kind`` disambiguates so the evidence projector (and O-GATE) can
+classify terminals — a clock ending is an anomaly to report, never a normal
+outcome.  Optional on the wire because pre-Phase-4 ledgers do not carry it;
+every NEW emission sets it.
+"""
 
 
 class _ClosedPayload(BaseModel):
@@ -135,6 +149,27 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    # Canonical digest of the embedded arena/objective contract (Phase 4
+    # finish-line seam).  Self-verifying: when present it MUST equal the hash
+    # recomputed from ``arena`` — a mismatch is a provenance forgery, not a
+    # tolerable drift.  Optional only because pre-Phase-4 ledgers lack it;
+    # the runner stamps it on every new match.
+    arena_contract_hash: StrictStr | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def _arena_contract_hash_matches_arena(self) -> ModelSOMatchStartedPayload:
+        if self.arena_contract_hash is not None:
+            expected = arena_contract_hash(self.arena)
+            if self.arena_contract_hash != expected:
+                raise ValueError(
+                    "arena_contract_hash does not match the embedded arena snapshot "
+                    f"(claimed {self.arena_contract_hash!r}, computed {expected!r})"
+                )
+        return self
 
     @field_validator("launch_provenance", mode="before")
     @classmethod
@@ -478,6 +513,24 @@ class ModelSOMechDestroyedPayload(_ClosedPayload):
 class ModelSOVictoryDeclaredPayload(_ClosedPayload):
     winner_player_id: str
     reason: SOMatchEndReason
+    victory_kind: SOVictoryKind | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def _victory_kind_consistent_with_reason(self) -> ModelSOVictoryDeclaredPayload:
+        """``vp_threshold`` is one fact stated twice — the statements must agree."""
+
+        reason_is_vp = self.reason is SOMatchEndReason.VP_THRESHOLD
+        kind_is_vp = self.victory_kind == "vp_threshold"
+        if self.victory_kind is not None and reason_is_vp != kind_is_vp:
+            raise ValueError(
+                f"victory_kind {self.victory_kind!r} conflicts with reason {self.reason.value!r}"
+            )
+        if reason_is_vp and self.victory_kind is None:
+            raise ValueError("a vp_threshold victory must carry victory_kind='vp_threshold'")
+        return self
 
 
 class ModelSOMatchEndedPayload(_ClosedPayload):
@@ -555,6 +608,46 @@ class ModelSOMatchScoredPayload(_ClosedPayload):
         return {player_id: score.model_dump(mode="json") for player_id, score in scores.items()}
 
 
+class ModelSOObjectiveScoredPayload(_ClosedPayload):
+    """One controlled-round VP award for one objective (Phase 4).
+
+    Emitted by the canonical fold during MATCH_TICK when exactly one player
+    holds the objective (sole living mech presence within the control radius).
+    VP state folds from MATCH_TICK itself — this event is the durable,
+    projection-facing record of the award, a fold no-op on replay (the
+    BOILER_UPDATED discipline).  ``round_index`` is the scoring round, which
+    is the MATCH_TICK tick: one control evaluation per tick, matching the
+    atomic card cadence where one tick hosts one full card round.
+    """
+
+    kind: Literal["steel_onslaught.objective_scored"] = "steel_onslaught.objective_scored"
+    objective_id: StrictStr = Field(pattern=r"^objective\.[a-z][a-z0-9_]*$")
+    controlling_player_id: StrictStr = Field(min_length=1)
+    vp_awarded: StrictInt = Field(ge=1)
+    cumulative_vp: Mapping[str, StrictInt]
+    round_index: StrictInt = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _award_truth_is_consistent(self) -> ModelSOObjectiveScoredPayload:
+        if self.controlling_player_id not in self.cumulative_vp:
+            raise ValueError("cumulative_vp must include the controlling player")
+        negative = {player: vp for player, vp in self.cumulative_vp.items() if vp < 0}
+        if negative:
+            raise ValueError(f"cumulative_vp must be >= 0; got {negative}")
+        if self.cumulative_vp[self.controlling_player_id] < self.vp_awarded:
+            raise ValueError("the controlling player's cumulative_vp must include this award")
+        return self
+
+    @field_validator("cumulative_vp", mode="after")
+    @classmethod
+    def _freeze_cumulative_vp(cls, value: Mapping[str, int]) -> Mapping[str, int]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("cumulative_vp")
+    def _serialize_cumulative_vp(self, value: Mapping[str, int]) -> dict[str, int]:
+        return {player: vp for player, vp in sorted(value.items())}
+
+
 class ModelSOPolicyPromotedPayload(_ClosedPayload):
     """Durable promotion fact appended to the promoting match's stream.
 
@@ -622,6 +715,7 @@ CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = Mapping
         SOEventType.REGISTER_RESOLVED: ModelSORegisterResolvedPayload,
         SOEventType.CARDS_DISCARDED: ModelSOCardsDiscardedPayload,
         SOEventType.POLICY_PROMOTED: ModelSOPolicyPromotedPayload,
+        SOEventType.OBJECTIVE_SCORED: ModelSOObjectiveScoredPayload,
     }
 )
 
@@ -650,6 +744,7 @@ __all__ = [
     "ModelSOModeTransitionStartedPayload",
     "ModelSOMoveIntentPayload",
     "ModelSOMovementResolvedPayload",
+    "ModelSOObjectiveScoredPayload",
     "ModelSOPilotDecisionPayload",
     "ModelSOPilotKilledPayload",
     "ModelSOPlanCommittedPayload",
@@ -663,5 +758,6 @@ __all__ = [
     "ModelSOWeaponFireIntentPayload",
     "ModelSOWeaponFireRejectedPayload",
     "ModelSOWeaponFiredPayload",
+    "SOVictoryKind",
     "WeaponFireRejectionReason",
 ]

@@ -320,6 +320,26 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
             reading.model_dump(mode="json") for reading in pilot.enemy_observations
         ],
     }
+    # Objective-victory legibility (Phase 4).  Added ONLY when the arena
+    # declares objectives, so objective-free prompts stay byte-identical.
+    # Without this block the pilots literally cannot play toward VP: the
+    # O-GATE battery would measure blindness, not objective play.  The block
+    # is deterministic (views are pre-sorted by objective_id) and carries a
+    # self-describing rule line so no code-owned instruction text changes.
+    if pilot.objectives and pilot.victory_points is not None:
+        prompt_value["objectives"] = {
+            "rule": (
+                "Victory points win this match: hold an objective cell "
+                "(stand within 1 cell of it, uncontested by the enemy) to "
+                "score its vp_per_round each round; first side to reach "
+                "vp_threshold WINS immediately. Contested cells score for "
+                "nobody. Plan movement toward scoring or denying objectives."
+            ),
+            "vp_threshold": pilot.victory_points.vp_threshold,
+            "own_vp": pilot.victory_points.own_vp,
+            "enemy_vp": pilot.victory_points.enemy_vp,
+            "cells": [objective.model_dump(mode="json") for objective in pilot.objectives],
+        }
     return json.dumps(prompt_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 

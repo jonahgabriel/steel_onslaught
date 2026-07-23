@@ -78,6 +78,7 @@ from steel_onslaught.events.payloads import (
     ModelSOWeaponFiredPayload,
 )
 from steel_onslaught.immutable import freeze_mapping
+from steel_onslaught.match.objectives import objective_controller
 from steel_onslaught.match.state import (
     ModelSOMatchState,
     ModelSOMechRuntimeState,
@@ -230,6 +231,9 @@ class MatchStateFold:
         self._boilers: dict[str, ReducerBoiler] = {}
         self._mech_states: dict[str, ModelSOMechRuntimeState] = {}
         self._arena: ModelSOCurrentLiveArenaSnapshot | None = None
+        # Per-player VP, folded deterministically from MATCH_TICK over the
+        # arena's objectives (Phase 4).  Stays empty on objective-free arenas.
+        self._vp_totals: dict[str, int] = {}
         # Active emission buffer; set per `apply` call (commit-then-emit).
         self._sink: list[ModelSOEventEnvelope] | None = None
 
@@ -240,7 +244,12 @@ class MatchStateFold:
     @property
     def state(self) -> ModelSOMatchState:
         """Composite canonical state: lifecycle authority + mech detail."""
-        return self._lifecycle.state.model_copy(update={"mech_states": dict(self._mech_states)})
+        return self._lifecycle.state.model_copy(
+            update={
+                "mech_states": dict(self._mech_states),
+                "vp_totals": dict(self._vp_totals),
+            }
+        )
 
     def handle(self, event: ModelSOEventEnvelope) -> None:
         """``EventHandler``-shaped adapter for ``EventBus.subscribe``.
@@ -453,6 +462,12 @@ class MatchStateFold:
     def _on_match_started(self, payload: ModelSOMatchStartedPayload) -> None:
         self._arena = payload.arena
         self._mech_states = dict(self._lifecycle.state.mech_states)
+        # Objective arenas start every player at zero VP; objective-free
+        # arenas keep the historical empty mapping (replay identity).
+        if payload.arena.objectives:
+            self._vp_totals = {
+                player_id: 0 for player_id in sorted({mech.player_id for mech in payload.mechs})
+            }
         composite = self.state
         self._boilers = {
             mech_id: ReducerBoiler(
@@ -477,6 +492,94 @@ class MatchStateFold:
         working = self._advance_mode_transitions(event, working)
         working = self._failure.apply(event, working)
         self._mech_states = dict(working.mech_states)
+        self._score_objectives(event)
+
+    def _score_objectives(self, event: ModelSOEventEnvelope) -> None:
+        """Fold one objective-control scoring round (Phase 4, per MATCH_TICK).
+
+        Deterministic from folded positions: control is evaluated AFTER the
+        per-tick sub-reducers, so a mech the failure cascade just killed never
+        scores.  Runs only while both players still field a living mech — a
+        terminal emitted earlier this tick (rupture kill, mutual destruction)
+        is still in the sink un-folded, and scoring past it would race a
+        second terminal into the lifecycle's consistency guard.
+
+        VP state mutates HERE (the MATCH_TICK derivation), identically live
+        and on replay; the emitted ``OBJECTIVE_SCORED`` events are durable
+        telemetry that re-folds as a no-op, and the ``VICTORY_DECLARED``
+        threshold intent folds through the lifecycle exactly like the
+        elimination backstop's.  A threshold tie (both players reaching the
+        line with equal totals in the same round) declares nothing and play
+        continues until the totals diverge — deterministic, and never invents
+        a winner from an ordering accident.
+        """
+
+        arena = self._arena
+        if arena is None or not arena.objectives or arena.vp_threshold is None:
+            return
+        composite = self.state
+        if len(composite.surviving_player_ids()) < 2:
+            return
+
+        scored_any = False
+        for objective in sorted(arena.objectives, key=lambda item: item.objective_id):
+            controller = objective_controller(objective.cell, composite)
+            if controller is None:
+                continue
+            self._vp_totals[controller.player_id] = (
+                self._vp_totals.get(controller.player_id, 0) + objective.vp_per_round
+            )
+            scored_any = True
+            self._emit(
+                self._events.make(
+                    match_id=self._match_id,
+                    correlation_id=self._correlation_id,
+                    tick=event.tick,
+                    sequence_in_tick=0,  # bus re-stamps
+                    event_type=SOEventType.OBJECTIVE_SCORED,
+                    producer_node=_PRODUCER_NODE,
+                    subject=ModelSOEventSubject(
+                        mech_id=controller.mech_id,
+                        player_id=controller.player_id,
+                    ),
+                    payload={
+                        "objective_id": objective.objective_id,
+                        "controlling_player_id": controller.player_id,
+                        "vp_awarded": objective.vp_per_round,
+                        "cumulative_vp": {
+                            player: vp for player, vp in sorted(self._vp_totals.items())
+                        },
+                        "round_index": event.tick,
+                    },
+                )
+            )
+        if not scored_any:
+            return
+
+        threshold = arena.vp_threshold
+        leaders = [player for player, vp in sorted(self._vp_totals.items()) if vp >= threshold]
+        if not leaders:
+            return
+        best = max(self._vp_totals[player] for player in leaders)
+        winners = [player for player in leaders if self._vp_totals[player] == best]
+        if len(winners) != 1:
+            return  # exact tie at the line: keep playing until totals diverge
+        self._emit(
+            self._events.make(
+                match_id=self._match_id,
+                correlation_id=self._correlation_id,
+                tick=event.tick,
+                sequence_in_tick=0,  # bus re-stamps
+                event_type=SOEventType.VICTORY_DECLARED,
+                producer_node=_PRODUCER_NODE,
+                subject=_MATCH_SUBJECT,
+                payload={
+                    "winner_player_id": winners[0],
+                    "reason": SOMatchEndReason.VP_THRESHOLD.value,
+                    "victory_kind": "vp_threshold",
+                },
+            )
+        )
 
     def _on_movement_resolved(self, event: ModelSOEventEnvelope) -> None:
         if self._arena is None:
@@ -690,6 +793,7 @@ class MatchStateFold:
                 payload={
                     "winner_player_id": winner,
                     "reason": SOMatchEndReason.LAST_MECH_STANDING.value,
+                    "victory_kind": "elimination",
                 },
             )
         )

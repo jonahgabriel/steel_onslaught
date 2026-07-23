@@ -144,7 +144,11 @@ class ReducerMatchLifecycle:
             return
 
         # Bound reached: terminate. Single surviving player -> victory;
-        # otherwise a draw with no winner.
+        # otherwise a draw with no winner.  A clock ending is an ANOMALY, not
+        # a gameplay outcome (Phase 4): the victory keeps its historical
+        # ``last_mech_standing`` reason for fold/replay compatibility, but is
+        # classified ``tick_cap_failsafe`` so terminal scorecards can tell a
+        # real elimination from a match the clock had to end.
         survivors = state.surviving_player_ids()
         if len(survivors) == 1:
             winner = next(iter(survivors))
@@ -158,6 +162,7 @@ class ReducerMatchLifecycle:
                 {
                     "winner_player_id": winner,
                     "reason": SOMatchEndReason.LAST_MECH_STANDING.value,
+                    "victory_kind": "tick_cap_failsafe",
                 },
             )
             return

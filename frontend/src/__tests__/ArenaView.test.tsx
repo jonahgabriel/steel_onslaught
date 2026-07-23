@@ -433,6 +433,27 @@ describe("ArenaView", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("renders objective cells and live VP counters from the arena contract", async () => {
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    // The canonical match_started fixture carries two objectives + threshold 15.
+    await act(async () => {
+      socket.emit(fixtureText("match_started"));
+    });
+    expect(screen.getAllByTestId("arena-objective")).toHaveLength(2);
+    const scoreboard = screen.getByTestId("vp-scoreboard");
+    expect(scoreboard).toHaveAttribute("data-threshold", "15");
+
+    await act(async () => {
+      socket.emit(fixtureText("objective_scored"));
+    });
+    const counters = screen.getAllByTestId("vp-counter");
+    expect(counters).toHaveLength(2);
+    const byPlayer = new Map(counters.map((c) => [c.getAttribute("data-player"), c]));
+    expect(byPlayer.get("player.a")).toHaveAttribute("data-vp", "3");
+    expect(byPlayer.get("player.b")).toHaveAttribute("data-vp", "1");
+  });
 });
 
 describe("arena sprite placement", () => {

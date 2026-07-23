@@ -462,7 +462,7 @@ describe("MatchTransport — finished match stops with a REPLAY affordance (rule
       makeEnvelope("match_tick", {}, { matchId: "m", tick: 1 }),
       makeEnvelope(
         "victory_declared",
-        { winner_player_id: "player.red", reason: "pilot_killed" },
+        { winner_player_id: "player.red", reason: "pilot_killed", victory_kind: "elimination" },
         {
           matchId: "m",
           tick: 2,
@@ -819,7 +819,11 @@ describe("MatchTransport — projection integrity", () => {
     transport.ingest(
       makeEnvelope(
         "victory_declared",
-        { winner_player_id: "player.red", reason: "last_mech_standing" },
+        {
+          winner_player_id: "player.red",
+          reason: "last_mech_standing",
+          victory_kind: "elimination",
+        },
         { matchId: "m", tick: 1 },
       ),
     );

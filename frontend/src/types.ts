@@ -62,6 +62,7 @@ export const SO_EVENT_TYPES = [
   "register_resolved",
   "cards_discarded",
   "policy_promoted",
+  "objective_scored",
 ] as const;
 
 export type SOEventType = (typeof SO_EVENT_TYPES)[number];
@@ -80,6 +81,13 @@ export interface SOPosition {
   y: number;
 }
 
+/** Mirror of steel_onslaught.contracts.arena.ModelSOArenaObjective. */
+export interface SOArenaObjective {
+  objective_id: string;
+  cell: SOPosition;
+  vp_per_round: number;
+}
+
 export interface SOArenaSnapshot {
   schema_version: "0.1.0";
   kind: "steel_onslaught.arena_snapshot";
@@ -90,6 +98,9 @@ export interface SOArenaSnapshot {
   obstacles: SOPosition[];
   sudden_death_start_tick: number | null;
   sudden_death_damage_base: number;
+  /** Objective-victory contract (Phase 4); empty on objective-free arenas. */
+  objectives: SOArenaObjective[];
+  vp_threshold: number | null;
 }
 
 export type SOModeId = "recon" | "assault" | "evasion";
@@ -124,7 +135,14 @@ export type SOMatchEndReason =
   | "draw_mutual_destruction"
   | "aborted"
   | "aborted_runaway"
-  | "provider_semantic_failure";
+  | "provider_semantic_failure"
+  | "vp_threshold";
+
+/**
+ * HOW a victory happened (Phase 4).  Null on pre-Phase-4 streams whose
+ * VICTORY_DECLARED carries no classification.
+ */
+export type SOVictoryKind = "elimination" | "vp_threshold" | "tick_cap_failsafe";
 
 /** Mirror of steel_onslaught.contracts.boiler.ModelSOBoilerState. */
 export interface SOBoilerState {
@@ -313,6 +331,8 @@ export interface MatchStartedPayload {
   max_ticks: number | null;
   mechs: SOMechRuntimeState[];
   arena: SOArenaSnapshot;
+  /** Self-verifying sha256 of the arena contract (Phase 4); absent pre-Phase-4. */
+  arena_contract_hash?: string;
   launch_provenance?: SOMatchLaunchProvenance;
   card_runtime_provenance?: SOCardRuntimeProvenance;
   card_rule_pack_provenance?: SOCardRulePackProvenance;
@@ -545,6 +565,18 @@ export interface MechDestroyedPayload {
 export interface VictoryDeclaredPayload {
   winner_player_id: string;
   reason: SOMatchEndReason;
+  /** Null on pre-Phase-4 streams; always set by new emitters. */
+  victory_kind: SOVictoryKind | null;
+}
+
+/** Mirror of ModelSOObjectiveScoredPayload (Phase 4). */
+export interface ObjectiveScoredPayload {
+  kind: "steel_onslaught.objective_scored";
+  objective_id: string;
+  controlling_player_id: string;
+  vp_awarded: number;
+  cumulative_vp: Record<string, number>;
+  round_index: number;
 }
 
 export interface MatchEndedPayload {
@@ -704,6 +736,7 @@ export interface PayloadMap {
   match_ended: MatchEndedPayload;
   match_scored: MatchScoredPayload;
   policy_promoted: PolicyPromotedPayload;
+  objective_scored: ObjectiveScoredPayload;
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,7 +1081,8 @@ function parseEndReason(value: unknown, context: string): SOMatchEndReason {
     value === "draw_mutual_destruction" ||
     value === "aborted" ||
     value === "aborted_runaway" ||
-    value === "provider_semantic_failure"
+    value === "provider_semantic_failure" ||
+    value === "vp_threshold"
   ) {
     return value;
   }
@@ -1649,7 +1683,7 @@ function parseDecisionSource(value: unknown, context: string): SODecisionSource 
 
 function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
   const record = asRecord(value, context);
-  const fields = [
+  const requiredFields = [
     "schema_version",
     "kind",
     "arena_id",
@@ -1660,8 +1694,10 @@ function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
     "sudden_death_start_tick",
     "sudden_death_damage_base",
   ] as const;
-  rejectUnknown(record, fields, context);
-  requireFields(record, fields, context);
+  // Objective fields (Phase 4) are optional on the wire ONLY for pre-Phase-4
+  // ledgers; presence is paired-validated below.
+  rejectUnknown(record, [...requiredFields, "objectives", "vp_threshold"], context);
+  requireFields(record, requiredFields, context);
   if (record["schema_version"] !== "0.1.0") {
     fail(context, 'field "schema_version" must be "0.1.0"');
   }
@@ -1703,6 +1739,14 @@ function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
   if (cells.has(`${spawnA.x},${spawnA.y}`) || cells.has(`${spawnB.x},${spawnB.y}`)) {
     fail(context, "spawn points must not occupy obstacles");
   }
+  const objectives = parseArenaObjectives(record, cells, size, spawnA, spawnB, context);
+  const vpThreshold =
+    "vp_threshold" in record && record["vp_threshold"] !== null
+      ? positiveInt(record, "vp_threshold", context)
+      : null;
+  if (objectives.length > 0 !== (vpThreshold !== null)) {
+    fail(context, "objectives and vp_threshold must be declared together");
+  }
   return {
     schema_version: "0.1.0",
     kind: "steel_onslaught.arena_snapshot",
@@ -1713,7 +1757,62 @@ function parseArenaSnapshot(value: unknown, context: string): SOArenaSnapshot {
     obstacles,
     sudden_death_start_tick: suddenDeathStartTick,
     sudden_death_damage_base: suddenDeathDamageBase,
+    objectives,
+    vp_threshold: vpThreshold,
   };
+}
+
+function parseArenaObjectives(
+  record: Record<string, unknown>,
+  obstacleCells: Set<string>,
+  size: number,
+  spawnA: SOPosition,
+  spawnB: SOPosition,
+  context: string,
+): SOArenaObjective[] {
+  if (!("objectives" in record)) return [];
+  const raw = record["objectives"];
+  if (!Array.isArray(raw)) {
+    fail(context, 'field "objectives" must be an array');
+  }
+  const objectives = raw.map((value, index) => {
+    const objectiveContext = `${context}.objectives[${index}]`;
+    const objective = asRecord(value, objectiveContext);
+    rejectUnknown(objective, ["objective_id", "cell", "vp_per_round"], objectiveContext);
+    const objectiveId = str(objective, "objective_id", objectiveContext);
+    if (!/^objective\.[a-z][a-z0-9_]*$/.test(objectiveId)) {
+      fail(objectiveContext, 'field "objective_id" is not a valid objective slug');
+    }
+    const cell = parsePosition(objective["cell"], `${objectiveContext}.cell`);
+    if (cell.x < 0 || cell.y < 0 || cell.x >= size || cell.y >= size) {
+      fail(objectiveContext, "cell must lie inside the arena");
+    }
+    if (obstacleCells.has(`${cell.x},${cell.y}`)) {
+      fail(objectiveContext, "cell must not occupy an obstacle");
+    }
+    if (
+      (cell.x === spawnA.x && cell.y === spawnA.y) ||
+      (cell.x === spawnB.x && cell.y === spawnB.y)
+    ) {
+      fail(objectiveContext, "cell must not occupy a spawn point");
+    }
+    return {
+      objective_id: objectiveId,
+      cell,
+      vp_per_round: positiveInt(objective, "vp_per_round", objectiveContext),
+    };
+  });
+  const ids = new Set(objectives.map((objective) => objective.objective_id));
+  if (ids.size !== objectives.length) {
+    fail(context, 'field "objectives" contains duplicate objective ids');
+  }
+  const cellKeys = new Set(
+    objectives.map((objective) => `${objective.cell.x},${objective.cell.y}`),
+  );
+  if (cellKeys.size !== objectives.length) {
+    fail(context, 'field "objectives" contains duplicate objective cells');
+  }
+  return objectives;
 }
 
 function parseSubject(value: unknown, context: string): SOEventSubject {
@@ -1927,6 +2026,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         "max_ticks",
         "mechs",
         "arena",
+        "arena_contract_hash",
         "launch_provenance",
         "card_runtime_provenance",
         "card_rule_pack_provenance",
@@ -1974,6 +2074,15 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         fail(context, `mechs[${index}].position must equal arena.${spawnName}`);
       }
     }
+    const arenaContractHash =
+      "arena_contract_hash" in record && record["arena_contract_hash"] !== null
+        ? patternString(
+            record["arena_contract_hash"],
+            /^[0-9a-f]{64}$/,
+            "a lowercase SHA-256 digest",
+            `${context}.arena_contract_hash`,
+          )
+        : undefined;
     const launchProvenance =
       "launch_provenance" in record
         ? parseMatchLaunchProvenance(record["launch_provenance"], `${context}.launch_provenance`)
@@ -2015,6 +2124,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       max_ticks: nullablePositiveInt(record, "max_ticks", context),
       mechs: parsedMechs,
       arena,
+      ...(arenaContractHash === undefined ? {} : { arena_contract_hash: arenaContractHash }),
       ...(launchProvenance === undefined ? {} : { launch_provenance: launchProvenance }),
       ...(cardRuntimeProvenance === undefined
         ? {}
@@ -2682,11 +2792,74 @@ const PAYLOAD_PARSERS: PayloadParsers = {
   },
   victory_declared: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["winner_player_id", "reason"], context);
+    rejectUnknown(record, ["winner_player_id", "reason", "victory_kind"], context);
+    const reason = parseEndReason(record["reason"], `${context}.reason`);
+    let victoryKind: SOVictoryKind | null = null;
+    if ("victory_kind" in record && record["victory_kind"] !== null) {
+      const raw = record["victory_kind"];
+      if (raw !== "elimination" && raw !== "vp_threshold" && raw !== "tick_cap_failsafe") {
+        fail(context, `unknown victory_kind ${JSON.stringify(raw)}`);
+      }
+      victoryKind = raw;
+    }
+    // One fact stated twice must agree (mirror of the Python payload guard).
+    if (victoryKind !== null && (reason === "vp_threshold") !== (victoryKind === "vp_threshold")) {
+      fail(context, `victory_kind ${victoryKind} conflicts with reason ${reason}`);
+    }
+    if (reason === "vp_threshold" && victoryKind === null) {
+      fail(context, "a vp_threshold victory must carry victory_kind");
+    }
     return {
       winner_player_id: str(record, "winner_player_id", context),
-      reason: parseEndReason(record["reason"], `${context}.reason`),
+      reason,
+      victory_kind: victoryKind,
     };
+  },
+  objective_scored: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      [
+        "kind",
+        "objective_id",
+        "controlling_player_id",
+        "vp_awarded",
+        "cumulative_vp",
+        "round_index",
+      ],
+      context,
+    );
+    if (record["kind"] !== "steel_onslaught.objective_scored") {
+      fail(context, 'field "kind" must be "steel_onslaught.objective_scored"');
+    }
+    const objectiveId = str(record, "objective_id", context);
+    if (!/^objective\.[a-z][a-z0-9_]*$/.test(objectiveId)) {
+      fail(context, 'field "objective_id" is not a valid objective slug');
+    }
+    const cumulativeRecord = asRecord(record["cumulative_vp"], `${context}.cumulative_vp`);
+    const cumulative: Record<string, number> = {};
+    for (const [playerId, vp] of Object.entries(cumulativeRecord)) {
+      if (typeof vp !== "number" || !Number.isInteger(vp) || vp < 0) {
+        fail(context, `cumulative_vp[${playerId}] must be a non-negative integer`);
+      }
+      cumulative[playerId] = vp;
+    }
+    const parsed: ObjectiveScoredPayload = {
+      kind: "steel_onslaught.objective_scored",
+      objective_id: objectiveId,
+      controlling_player_id: str(record, "controlling_player_id", context),
+      vp_awarded: positiveInt(record, "vp_awarded", context),
+      cumulative_vp: cumulative,
+      round_index: positiveInt(record, "round_index", context),
+    };
+    const controllerVp = parsed.cumulative_vp[parsed.controlling_player_id];
+    if (controllerVp === undefined) {
+      fail(context, "cumulative_vp must include the controlling player");
+    }
+    if (controllerVp < parsed.vp_awarded) {
+      fail(context, "the controlling player's cumulative_vp must include this award");
+    }
+    return parsed;
   },
   match_ended: (value, context) => {
     const record = asRecord(value, context);
