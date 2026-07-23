@@ -122,6 +122,9 @@ export function makePlan(
     registers: cardIds.map((card_id, register_index) => ({ register_index, card_id })),
     rationale: o.rationale ?? null,
     confidence: o.confidence ?? 0.8,
+    // Matches the pinned plan_committed.json fixture: the demo's card-cadence
+    // plans are authored by the pilot LLM.
+    plan_source: "llm",
   };
   return makeEnvelope("plan_committed", payload, o);
 }
