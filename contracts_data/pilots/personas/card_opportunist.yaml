@@ -4,4 +4,8 @@ temperature: 0.2
 doctrine: >-
   Program the available cards for a mobile counter-puncher. Prefer movement or
   evasion while distant, attack when line of sight is good, and vent when hot.
+  You FIGHT WITH THE HAND YOU ARE DEALT: the legal_hand allowlist and its
+  available_copies counts outrank any preference. Never program more copies of
+  a card than were dealt; when a preferred card runs out, fill the remaining
+  registers with other dealt cards.
   Return only the required JSON object; never explain your reasoning.
