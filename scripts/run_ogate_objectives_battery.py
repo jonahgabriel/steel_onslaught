@@ -1,0 +1,331 @@
+"""O-GATE objectives battery on live keyless Qwen (design 2026-07-22 §5).
+
+Answers the gate's empirical question: **do matches end on play, not clock?**
+Runs N live matches on the Phase-4 objective arena ``foundry_60_asym_v1``
+(overlay ``tactical_split_overdeal_asym_v1_qwen.yaml``), red berserker
+(the brawler) vs blue sniper — the same seat/loadout pairing as every
+prior battery — and produces the terminal-class scorecard the O-GATE row
+requires:
+
+- terminal-class distribution (``vp_threshold`` / ``elimination`` /
+  ``tick_cap`` / ``abort``) — the gate passes iff >= 95% of matches end on
+  VP threshold or elimination;
+- winner-side distribution and the brawler win-rate (a REPORTED observable,
+  never a tuning target — design §2);
+- match-length distribution (``duration_ticks``);
+- objective-contest metrics read from ``OBJECTIVE_SCORED`` events: per-
+  objective award counts by side, control changes (consecutive awards of the
+  same objective by different players), and final VP margins;
+- abort classes (expected 0 per the #124 post-fix battery).
+
+``max_ticks`` is passed explicitly (default 1000) so the design's clock
+failsafe is the reachable anomaly class (``victory_kind=tick_cap_failsafe``
+or ``draw_max_ticks``) rather than the engine's ``aborted_runaway`` guard.
+
+Every match also verifies the Phase-4 provenance seam inline: MATCH_STARTED
+must carry ``arena_contract_hash`` equal to the recomputed digest of the
+shipped ``foundry_60_asym_v1`` contract.
+
+Run (defaults: n=30, seeds 5001..5030):
+
+    uv run python scripts/run_ogate_objectives_battery.py --n 30
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import statistics
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from steel_onslaught.contracts.arena import arena_contract_hash
+from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.events.payloads import (
+    ModelSOMatchScoredPayload,
+    ModelSOMatchStartedPayload,
+    ModelSOObjectiveScoredPayload,
+    ModelSOVictoryDeclaredPayload,
+)
+from steel_onslaught.llm.client_http import NoSecretResolver
+from steel_onslaught.match.composition import (
+    assemble_match_live,
+    load_application_overlay,
+    load_match_contract_catalog,
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_OVERLAY = _REPO_ROOT / "contracts_data/overlays/tactical_split_overdeal_asym_v1_qwen.yaml"
+_RED_LOADOUT = _REPO_ROOT / "contracts_data/loadouts/llm_qwen35_berserker.yaml"
+_BLUE_LOADOUT = _REPO_ROOT / "contracts_data/loadouts/qwen35/sniper_ironclad.yaml"
+_ARENA_ID = "foundry_60_asym_v1"
+
+_RED = "player.red"  # brawler (berserker) — the reported observable's seat
+_BLUE = "player.blue"  # sniper
+
+_ELIMINATION_REASONS = frozenset({"last_mech_standing", "pilot_killed", "draw_mutual_destruction"})
+
+
+def _lane_overlay(state_root: Path) -> ModelSOApplicationOverlay:
+    """Repoint every durable surface of the overlay into the battery lane."""
+    base = load_application_overlay(_OVERLAY)
+    return base.model_copy(
+        update={
+            "event_ledger": base.event_ledger.model_copy(
+                update={"path": state_root / "events.sqlite3"}
+            ),
+            "leaderboard": base.leaderboard.model_copy(
+                update={"path": state_root / "leaderboard.sqlite3"}
+            ),
+            "learning_artifacts": base.learning_artifacts.model_copy(
+                update={
+                    "evaluation_root": state_root / "evaluations",
+                    "lineage_root": state_root / "lineage",
+                    "experiment_root": state_root / "experiments",
+                }
+            ),
+            "evaluation_storage": base.evaluation_storage.model_copy(
+                update={"root": state_root / "evaluation_storage"}
+            ),
+        }
+    )
+
+
+def _terminal_class(end_reason: str | None, victory_kind: str | None) -> str:
+    """The O-GATE scorecard class for one terminal.
+
+    Order matters: an explicit-cap victory keeps its historical
+    ``last_mech_standing`` reason but is classified by its
+    ``tick_cap_failsafe`` victory_kind, so the clock check precedes the
+    elimination check.
+    """
+    if end_reason == "vp_threshold":
+        return "vp_threshold"
+    if victory_kind == "tick_cap_failsafe" or end_reason == "draw_max_ticks":
+        return "tick_cap"
+    if end_reason in _ELIMINATION_REASONS:
+        return "elimination"
+    return "abort"  # aborted / aborted_runaway / provider_semantic_failure / unknown
+
+
+def _objective_metrics(
+    awards: list[ModelSOObjectiveScoredPayload],
+) -> dict[str, Any]:
+    per_objective: dict[str, dict[str, Any]] = {}
+    for payload in awards:
+        entry = per_objective.setdefault(
+            payload.objective_id,
+            {"awards": 0, "by_player": Counter(), "control_changes": 0, "last_controller": None},
+        )
+        entry["awards"] += 1
+        entry["by_player"][payload.controlling_player_id] += 1
+        if (
+            entry["last_controller"] is not None
+            and entry["last_controller"] != payload.controlling_player_id
+        ):
+            entry["control_changes"] += 1
+        entry["last_controller"] = payload.controlling_player_id
+    return {
+        objective_id: {
+            "awards": entry["awards"],
+            "by_player": dict(sorted(entry["by_player"].items())),
+            "control_changes": entry["control_changes"],
+        }
+        for objective_id, entry in sorted(per_objective.items())
+    }
+
+
+def _run_match(
+    overlay: ModelSOApplicationOverlay,
+    *,
+    seed: int,
+    max_ticks: int,
+    expected_arena_hash: str,
+) -> dict[str, Any]:
+    stack = assemble_match_live(
+        overlay=overlay,
+        red_loadout_path=_RED_LOADOUT,
+        blue_loadout_path=_BLUE_LOADOUT,
+        seed=seed,
+        max_ticks=max_ticks,
+        secret_resolver=NoSecretResolver(),  # keyless provider; composition owns the transport
+    )
+    try:
+        final = stack.runner.run()
+        events: tuple[ModelSOEventEnvelope, ...] = tuple(
+            stack.ledger.read_all(stack.identity.match_id)
+        )
+    finally:
+        stack.close()
+
+    scored: ModelSOMatchScoredPayload | None = None
+    victory_kind: str | None = None
+    awards: list[ModelSOObjectiveScoredPayload] = []
+    failed_completions = 0
+    for event in events:
+        if event.event_type is SOEventType.MATCH_STARTED:
+            started = ModelSOMatchStartedPayload.model_validate(event.payload)
+            assert started.arena.arena_id == _ARENA_ID, started.arena.arena_id
+            assert started.arena_contract_hash == expected_arena_hash, (
+                "arena_contract_hash provenance seam broken"
+            )
+        elif event.event_type is SOEventType.OBJECTIVE_SCORED:
+            awards.append(ModelSOObjectiveScoredPayload.model_validate(event.payload))
+        elif event.event_type is SOEventType.VICTORY_DECLARED:
+            victory_kind = ModelSOVictoryDeclaredPayload.model_validate(event.payload).victory_kind
+        elif event.event_type is SOEventType.LLM_COMPLETION_FAILED:
+            failed_completions += 1
+        elif event.event_type is SOEventType.MATCH_SCORED:
+            scored = ModelSOMatchScoredPayload.model_validate(event.payload)
+
+    assert scored is not None, f"match {stack.identity.match_id} did not score"
+    end_reason = final.end_reason.value if final.end_reason else None
+    vp_totals = {player: int(vp) for player, vp in sorted(final.vp_totals.items())}
+    return {
+        "seed": seed,
+        "match_id": stack.identity.match_id,
+        "end_reason": end_reason,
+        "victory_kind": victory_kind,
+        "terminal_class": _terminal_class(end_reason, victory_kind),
+        "winner_player_id": scored.winner_player_id,
+        "is_draw": scored.is_draw,
+        "duration_ticks": scored.duration_ticks,
+        "vp_totals": vp_totals,
+        "vp_margin": abs(vp_totals.get(_RED, 0) - vp_totals.get(_BLUE, 0)),
+        "first_award_tick": min((a.round_index for a in awards), default=None),
+        "objectives": _objective_metrics(awards),
+        "total_awards": len(awards),
+        "total_control_changes": sum(
+            entry["control_changes"] for entry in _objective_metrics(awards).values()
+        ),
+        "failed_completions": failed_completions,
+        "replay_validity": {
+            player: score.replay_validity for player, score in scored.scores.items()
+        },
+    }
+
+
+def _summarize(rows: list[dict[str, Any]], *, gate_threshold: float) -> dict[str, Any]:
+    n = len(rows)
+    classes = Counter(row["terminal_class"] for row in rows)
+    reason_kind = Counter(f"{row['end_reason']}/{row['victory_kind'] or '-'}" for row in rows)
+    winners = Counter("draw" if row["is_draw"] else str(row["winner_player_id"]) for row in rows)
+    decided = [row for row in rows if not row["is_draw"]]
+    brawler_wins = sum(1 for row in decided if row["winner_player_id"] == _RED)
+    ticks = sorted(row["duration_ticks"] for row in rows)
+    play_terminals = classes["vp_threshold"] + classes["elimination"]
+
+    objective_totals: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        for objective_id, entry in row["objectives"].items():
+            total = objective_totals.setdefault(
+                objective_id,
+                {"awards": 0, "by_player": Counter(), "control_changes": 0, "matches_scored": 0},
+            )
+            total["awards"] += entry["awards"]
+            total["by_player"].update(entry["by_player"])
+            total["control_changes"] += entry["control_changes"]
+            total["matches_scored"] += 1
+
+    vp_matches = [row for row in rows if row["terminal_class"] == "vp_threshold"]
+    return {
+        "n": n,
+        "terminal_classes": dict(sorted(classes.items())),
+        "end_reason_x_victory_kind": dict(sorted(reason_kind.items())),
+        "play_terminal_fraction": round(play_terminals / n, 4) if n else None,
+        "o_gate_pass": bool(n and play_terminals / n >= gate_threshold),
+        "winners": dict(sorted(winners.items())),
+        "brawler": {
+            "player_id": _RED,
+            "wins": brawler_wins,
+            "win_rate_all": round(brawler_wins / n, 4) if n else None,
+            "win_rate_decided": round(brawler_wins / len(decided), 4) if decided else None,
+        },
+        "duration_ticks": {
+            "min": ticks[0] if ticks else None,
+            "median": statistics.median(ticks) if ticks else None,
+            "mean": round(statistics.fmean(ticks), 1) if ticks else None,
+            "max": ticks[-1] if ticks else None,
+        },
+        "objectives": {
+            objective_id: {
+                "awards": total["awards"],
+                "by_player": dict(sorted(total["by_player"].items())),
+                "control_changes": total["control_changes"],
+                "matches_scored": total["matches_scored"],
+            }
+            for objective_id, total in sorted(objective_totals.items())
+        },
+        "matches_with_control_change": sum(1 for row in rows if row["total_control_changes"] > 0),
+        "vp_threshold_margins": sorted(row["vp_margin"] for row in vp_matches),
+        "failed_completions": sum(row["failed_completions"] for row in rows),
+        "all_replay_valid": all(
+            validity == 1 for row in rows for validity in row["replay_validity"].values()
+        ),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--n", type=int, default=30, help="battery size")
+    parser.add_argument("--seed-base", type=int, default=5000, help="seeds are base+1..base+n")
+    parser.add_argument(
+        "--max-ticks",
+        type=int,
+        default=1000,
+        help="explicit clock failsafe (design: tick cap is failsafe-only)",
+    )
+    parser.add_argument(
+        "--gate-threshold", type=float, default=0.95, help="O-GATE play-terminal fraction"
+    )
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=_REPO_ROOT / ".onex_state/steel_onslaught/ogate_objectives_battery",
+    )
+    parser.add_argument("--fresh", action="store_true", help="wipe the battery lane first")
+    args = parser.parse_args()
+
+    state_root = args.state_root.resolve()
+    if args.fresh and state_root.exists():
+        shutil.rmtree(state_root)
+    state_root.mkdir(parents=True, exist_ok=True)
+    raw_path = state_root / "battery_raw.jsonl"
+
+    expected_arena_hash = arena_contract_hash(
+        load_match_contract_catalog(_REPO_ROOT / "contracts_data").arenas[_ARENA_ID].to_snapshot()
+    )
+    overlay = _lane_overlay(state_root)
+
+    rows: list[dict[str, Any]] = []
+    for index in range(1, args.n + 1):
+        seed = args.seed_base + index
+        row = _run_match(
+            overlay, seed=seed, max_ticks=args.max_ticks, expected_arena_hash=expected_arena_hash
+        )
+        rows.append(row)
+        with raw_path.open("a", encoding="utf-8") as sink:
+            sink.write(json.dumps(row, sort_keys=True) + "\n")
+        print(
+            f"[{index}/{args.n}] seed={seed} match={row['match_id']} "
+            f"class={row['terminal_class']} reason={row['end_reason']} "
+            f"kind={row['victory_kind']} winner={row['winner_player_id']} "
+            f"ticks={row['duration_ticks']} vp={row['vp_totals']} "
+            f"awards={row['total_awards']} changes={row['total_control_changes']}",
+            flush=True,
+        )
+
+    summary = _summarize(rows, gate_threshold=args.gate_threshold)
+    summary_path = state_root / "battery_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    print(f"raw: {raw_path}\nsummary: {summary_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
