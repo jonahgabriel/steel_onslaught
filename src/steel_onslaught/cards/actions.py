@@ -20,6 +20,7 @@ from steel_onslaught.contracts.card import (
     SOCardCategory,
     SOCardDirection,
     SOCardSpeed,
+    SOUtilityKind,
 )
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.pilots.schemas import SOPilotAction
@@ -66,12 +67,22 @@ class ModelSOCardSpecialParameters(_ClosedCardActionModel):
     target_mode: ModeId
 
 
+class ModelSOCardUtilityParameters(_ClosedCardActionModel):
+    """Parameters for a utility card's battlefield-effect deployment (Phase 2)."""
+
+    kind: Literal["utility"] = "utility"
+    utility_kind: SOUtilityKind
+    radius: StrictInt = Field(ge=0)
+    duration_ticks: StrictInt = Field(ge=1)
+
+
 type ModelSOCardActionParameters = Annotated[
     ModelSOCardMovementParameters
     | ModelSOCardRotateParameters
     | ModelSOCardAttackParameters
     | ModelSOCardVentParameters
-    | ModelSOCardSpecialParameters,
+    | ModelSOCardSpecialParameters
+    | ModelSOCardUtilityParameters,
     Field(discriminator="kind"),
 ]
 
@@ -98,6 +109,7 @@ class ModelSOCardActionTranslation(_ClosedCardActionModel):
             "attack": (SOCardCategory.ATTACK, SOPilotAction.FIRE_WEAPON),
             "vent": (SOCardCategory.VENT, SOPilotAction.VENT),
             "special": (SOCardCategory.SPECIAL, SOPilotAction.SWITCH_MODE),
+            "utility": (SOCardCategory.UTILITY, SOPilotAction.DEPLOY_UTILITY),
         }
         expected_category, expected_action = expected[self.parameters.kind]
         if self.category is not expected_category or self.action is not expected_action:
@@ -155,6 +167,22 @@ class ModelSOCardActionTranslation(_ClosedCardActionModel):
                     )
                 parameters = ModelSOCardSpecialParameters(target_mode=effect.target_mode)
                 action = SOPilotAction.SWITCH_MODE
+            case SOCardCategory.UTILITY:
+                if (
+                    effect.utility_kind is None
+                    or effect.radius is None
+                    or effect.duration_ticks is None
+                ):
+                    raise CardActionCompileError(
+                        f"utility card {card.id!r} is missing utility_kind/radius/duration_ticks "
+                        "effect"
+                    )
+                parameters = ModelSOCardUtilityParameters(
+                    utility_kind=effect.utility_kind,
+                    radius=effect.radius,
+                    duration_ticks=effect.duration_ticks,
+                )
+                action = SOPilotAction.DEPLOY_UTILITY
         return cls(card_id=card.id, category=card.category, action=action, parameters=parameters)
 
 
@@ -173,6 +201,8 @@ def action_for_category(category: SOCardCategory) -> SOPilotAction:
             return SOPilotAction.VENT
         case SOCardCategory.SPECIAL:
             return SOPilotAction.SWITCH_MODE
+        case SOCardCategory.UTILITY:
+            return SOPilotAction.DEPLOY_UTILITY
     assert_never(category)
 
 
@@ -195,6 +225,7 @@ __all__ = [
     "ModelSOCardMovementParameters",
     "ModelSOCardRotateParameters",
     "ModelSOCardSpecialParameters",
+    "ModelSOCardUtilityParameters",
     "ModelSOCardVentParameters",
     "action_for_card",
     "action_for_category",

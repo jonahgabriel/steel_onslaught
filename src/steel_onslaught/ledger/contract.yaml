@@ -47,6 +47,7 @@ event_bus:
     - onex.evt.steel-onslaught.weapon-fire-intent.v1
     - onex.evt.steel-onslaught.mode-switch-intent.v1
     - onex.evt.steel-onslaught.vent-intent.v1
+    - onex.evt.steel-onslaught.utility-deploy-intent.v1
     - onex.evt.steel-onslaught.movement-resolved.v1
     - onex.evt.steel-onslaught.boiler-updated.v1
     - onex.evt.steel-onslaught.heat-redline-entered.v1
@@ -68,6 +69,7 @@ event_bus:
     - onex.evt.steel-onslaught.match-scored.v1
     - onex.evt.steel-onslaught.policy-promoted.v1
     - onex.evt.steel-onslaught.objective-scored.v1
+    - onex.evt.steel-onslaught.utility-deployed.v1
   publish_topics: []
 
 db_io:

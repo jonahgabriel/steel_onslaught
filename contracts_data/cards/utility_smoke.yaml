@@ -1,0 +1,15 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.utility.smoke"
+display_name: "Deploy Smoke"
+category: "utility"
+# Counterplay resolves in a band above vent (200) and below movement/attack, so
+# a deployed effect lands before the shots it is meant to spoil.
+priority: 300
+# Authored acquire price (Phase 3 heat-drafting). Inert until Phase 3 — every
+# existing card is 0; a non-zero value is valid (ge=0) and changes nothing today.
+heat_cost: 25
+effect:
+  utility_kind: "smoke"
+  radius: 1
+  duration_ticks: 2

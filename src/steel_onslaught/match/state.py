@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.immutable import FrozenMapping
+from steel_onslaught.match.utility_effects import ModelSOUtilityEffect
 from steel_onslaught.pilots.schemas import ModelSOPosition
 
 # ---------------------------------------------------------------------------
@@ -238,6 +239,12 @@ class ModelSOMatchState(BaseModel):
     # arena without objectives, so historical replays reproduce their exact
     # recorded state.
     vp_totals: dict[str, int] = Field(default_factory=dict)
+    # Deployed, still-active utility-card effects (Phase 2), folded from
+    # UTILITY_DEPLOYED and pruned per MATCH_TICK by ``expiry_tick``.  Empty for
+    # every match with no utility deployment, so historical replays reproduce
+    # their exact recorded state.  The weapon-fire resolver consults this for
+    # smoke LOS blocking, chaff targeting debuffs, and flare lock breaks.
+    active_utility_effects: tuple[ModelSOUtilityEffect, ...] = Field(default_factory=tuple)
 
     def player_ids(self) -> frozenset[str]:
         """Every player fielding a mech in this match (dead or alive)."""

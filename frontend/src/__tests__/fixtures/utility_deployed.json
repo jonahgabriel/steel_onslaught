@@ -1,0 +1,31 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01TTYDEPYED000000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "utility_deployed",
+  "payload": {
+    "kind": "steel_onslaught.utility_deployed",
+    "card_id": "card.utility.smoke",
+    "utility_kind": "smoke",
+    "origin": {
+      "x": 7,
+      "y": 6
+    },
+    "radius": 1,
+    "duration_ticks": 2
+  },
+  "envelope": {
+    "message_id": "2ff08500-ce80-565a-a4f0-504cc3f0e5e6",
+    "correlation_id": "216a8b7b-6339-56ff-86ef-1af3393f4562",
+    "causation_id": null,
+    "emitted_at": "2026-04-30T00:00:00Z",
+    "entity_id": "match.fixture.0001"
+  }
+}

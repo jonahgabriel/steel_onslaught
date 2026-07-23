@@ -23,6 +23,9 @@ _CARD_FILES = (
     "special_mode_assault.yaml",
     "special_mode_evasion.yaml",
     "special_mode_recon.yaml",
+    "utility_chaff.yaml",
+    "utility_flares.yaml",
+    "utility_smoke.yaml",
     "vent_emergency.yaml",
 )
 
@@ -45,10 +48,19 @@ def test_fixed_card_files_validate_without_a_production_catalog() -> None:
         "card.special.mode_assault",
         "card.special.mode_evasion",
         "card.special.mode_recon",
+        "card.utility.chaff",
+        "card.utility.flares",
+        "card.utility.smoke",
         "card.vent.emergency_vent",
     )
     assert len({card.priority for card in cards}) == len(cards)
-    assert all(card.heat_cost == 0 for card in cards)
+    # Movement/weapon/special cards stay power-neutral (heat comes from the
+    # weapon contract).  Utility cards author an acquire price (Phase 3 heat
+    # drafting) that stays inert until Phase 3 — a valid, non-zero heat_cost.
+    non_utility = tuple(card for card in cards if card.category is not SOCardCategory.UTILITY)
+    utility = tuple(card for card in cards if card.category is SOCardCategory.UTILITY)
+    assert all(card.heat_cost == 0 for card in non_utility)
+    assert all(card.heat_cost > 0 for card in utility)
 
 
 @pytest.mark.unit
@@ -64,6 +76,9 @@ def test_fixed_card_data_stays_power_neutral_and_action_mapped() -> None:
         SOCardCategory.SPECIAL,
         SOCardCategory.SPECIAL,
         SOCardCategory.SPECIAL,
+        SOCardCategory.UTILITY,
+        SOCardCategory.UTILITY,
+        SOCardCategory.UTILITY,
         SOCardCategory.VENT,
     )
     assert tuple(card.category for card in cards) == expected_categories

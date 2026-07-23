@@ -38,6 +38,7 @@ export const SO_EVENT_TYPES = [
   "weapon_fire_intent",
   "mode_switch_intent",
   "vent_intent",
+  "utility_deploy_intent",
   "movement_resolved",
   "boiler_updated",
   "heat_redline_entered",
@@ -63,6 +64,7 @@ export const SO_EVENT_TYPES = [
   "cards_discarded",
   "policy_promoted",
   "objective_scored",
+  "utility_deployed",
 ] as const;
 
 export type SOEventType = (typeof SO_EVENT_TYPES)[number];
@@ -444,6 +446,15 @@ export interface ModeSwitchIntentPayload {
 
 export type VentIntentPayload = Record<string, never>;
 
+export type SOUtilityKind = "smoke" | "chaff" | "flares";
+
+export interface UtilityDeployIntentPayload {
+  card_id: string;
+  utility_kind: SOUtilityKind;
+  radius: number;
+  duration_ticks: number;
+}
+
 export interface MovementResolvedPayload {
   from: SOPosition;
   to: SOPosition;
@@ -584,6 +595,16 @@ export interface MatchEndedPayload {
   winner_id: string | null;
 }
 
+/** Mirror of ModelSOUtilityDeployedPayload (Phase 2). */
+export interface UtilityDeployedPayload {
+  kind: "steel_onslaught.utility_deployed";
+  card_id: string;
+  utility_kind: SOUtilityKind;
+  origin: SOPosition;
+  radius: number;
+  duration_ticks: number;
+}
+
 export interface SOPlayerScore {
   victory: number;
   damage_dealt: number;
@@ -716,6 +737,7 @@ export interface PayloadMap {
   weapon_fire_intent: WeaponFireIntentPayload;
   mode_switch_intent: ModeSwitchIntentPayload;
   vent_intent: VentIntentPayload;
+  utility_deploy_intent: UtilityDeployIntentPayload;
   movement_resolved: MovementResolvedPayload;
   boiler_updated: BoilerUpdatedPayload;
   heat_redline_entered: HeatRedlinePayload;
@@ -737,6 +759,7 @@ export interface PayloadMap {
   match_scored: MatchScoredPayload;
   policy_promoted: PolicyPromotedPayload;
   objective_scored: ObjectiveScoredPayload;
+  utility_deployed: UtilityDeployedPayload;
 }
 
 // ---------------------------------------------------------------------------
@@ -2601,6 +2624,20 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     rejectUnknown(record, [], context);
     return {};
   },
+  utility_deploy_intent: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, ["card_id", "utility_kind", "radius", "duration_ticks"], context);
+    const utilityKind = record["utility_kind"];
+    if (utilityKind !== "smoke" && utilityKind !== "chaff" && utilityKind !== "flares") {
+      fail(context, 'field "utility_kind" must be smoke, chaff, or flares');
+    }
+    return {
+      card_id: str(record, "card_id", context),
+      utility_kind: utilityKind,
+      radius: nonNegativeInt(record, "radius", context),
+      duration_ticks: positiveInt(record, "duration_ticks", context),
+    };
+  },
   movement_resolved: (value, context) => {
     const record = asRecord(value, context);
     rejectUnknown(record, ["from", "to", "ticks_consumed", "pressure_consumed"], context);
@@ -2860,6 +2897,29 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       fail(context, "the controlling player's cumulative_vp must include this award");
     }
     return parsed;
+  },
+  utility_deployed: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      ["kind", "card_id", "utility_kind", "origin", "radius", "duration_ticks"],
+      context,
+    );
+    if (record["kind"] !== "steel_onslaught.utility_deployed") {
+      fail(context, 'field "kind" must be "steel_onslaught.utility_deployed"');
+    }
+    const utilityKind = record["utility_kind"];
+    if (utilityKind !== "smoke" && utilityKind !== "chaff" && utilityKind !== "flares") {
+      fail(context, 'field "utility_kind" must be smoke, chaff, or flares');
+    }
+    return {
+      kind: "steel_onslaught.utility_deployed",
+      card_id: str(record, "card_id", context),
+      utility_kind: utilityKind,
+      origin: parsePosition(record["origin"], `${context}.origin`),
+      radius: nonNegativeInt(record, "radius", context),
+      duration_ticks: positiveInt(record, "duration_ticks", context),
+    };
   },
   match_ended: (value, context) => {
     const record = asRecord(value, context);

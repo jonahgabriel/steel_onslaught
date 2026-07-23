@@ -23,6 +23,9 @@ from steel_onslaught.contracts.split_deck import ModelSOCardDeckPolicy
 
 _MOVEMENT_CATEGORIES = frozenset({SOCardCategory.MOVEMENT, SOCardCategory.ROTATE})
 _WEAPON_CATEGORIES = frozenset({SOCardCategory.ATTACK, SOCardCategory.VENT, SOCardCategory.SPECIAL})
+# Phase 2 — the third pile is category-exclusive to utility cards, so a utility
+# card cannot leak into the movement/weapon piles (and vice versa).
+_UTILITY_CATEGORIES = frozenset({SOCardCategory.UTILITY})
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +46,9 @@ class SplitDeckDealerAdapter:
             weapon = self.snapshot.require_deck(seat.weapon_deck_id)
             self._validate_partition(movement, _MOVEMENT_CATEGORIES, "movement")
             self._validate_partition(weapon, _WEAPON_CATEGORIES, "weapon")
+            if seat.utility_deck_id is not None:
+                utility = self.snapshot.require_deck(seat.utility_deck_id)
+                self._validate_partition(utility, _UTILITY_CATEGORIES, "utility")
 
     def deal_for_side(
         self,

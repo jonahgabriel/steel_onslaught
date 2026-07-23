@@ -69,6 +69,7 @@ def resolve_hit_probability(
     lock_confidence: float,
     target_evasion: float,
     accuracy_penalty: float,
+    target_targeting_debuff: float = 0.0,
 ) -> float:
     """Combine accuracy modifiers and clamp the result to [0, 1].
 
@@ -78,11 +79,22 @@ def resolve_hit_probability(
         target_evasion:   Target evasion value in [0, 1]; subtracts from result.
         accuracy_penalty: Multiplicative penalty from overload etc. in [0, 1];
                           applied as ``1 - accuracy_penalty`` multiplier.
+        target_targeting_debuff:
+                          Chaff aura on the target in [0, 1] (Phase 2), applied
+                          as a ``1 - target_targeting_debuff`` multiplier — it
+                          composes multiplicatively exactly like ``target_evasion``.
+                          Default ``0.0`` leaves the existing curve unchanged.
 
     Returns:
         Final hit probability clamped to [0, 1].
     """
-    raw = base_accuracy * lock_confidence * (1.0 - accuracy_penalty) * (1.0 - target_evasion)
+    raw = (
+        base_accuracy
+        * lock_confidence
+        * (1.0 - accuracy_penalty)
+        * (1.0 - target_evasion)
+        * (1.0 - target_targeting_debuff)
+    )
     return max(0.0, min(1.0, raw))
 
 

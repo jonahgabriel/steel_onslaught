@@ -35,18 +35,25 @@ class ModelSODeckHandQuota(_ClosedSplitDeckModel):
 
     movement: StrictInt = Field(ge=0)
     weapon: StrictInt = Field(ge=0)
+    # Third "utility" pile (Phase 2 — smoke/chaff/flares counterplay).
+    # ``default=0`` keeps every pre-Phase-2 overlay byte-valid: an overlay that
+    # omits ``utility`` parses unchanged and its ``hand_size`` is identical
+    # (``+0``), so ``register_count <= hand_size`` and every serialized total
+    # stay exactly as recorded.  A ``utility`` pile is only dealt once an
+    # overlay sets ``utility > 0`` AND the seat declares a ``utility_deck_id``.
+    utility: StrictInt = Field(ge=0, default=0)
 
     @model_validator(mode="after")
     def _requires_one_card(self) -> Self:
-        if self.movement + self.weapon < 1:
+        if self.movement + self.weapon + self.utility < 1:
             raise ValueError("deck hand quota must contain at least one card")
         return self
 
     @property
     def hand_size(self) -> int:
-        """Return the authoritative total represented by the two quotas."""
+        """Return the authoritative total represented by the pile quotas."""
 
-        return self.movement + self.weapon
+        return self.movement + self.weapon + self.utility
 
 
 class ModelSOSeatDeckPolicy(_ClosedSplitDeckModel):
@@ -60,13 +67,23 @@ class ModelSOSeatDeckPolicy(_ClosedSplitDeckModel):
     )
     movement_deck_id: DeckId
     weapon_deck_id: DeckId
+    # Optional third pile source (Phase 2).  ``None`` on every pre-Phase-2
+    # seat, so existing overlays stay byte-valid; required only when the seat's
+    # ``hand_quota.utility`` is positive (a utility quota with no source deck is
+    # a mis-authored overlay, not a silent no-op).
+    utility_deck_id: DeckId | None = None
     hand_quota: ModelSODeckHandQuota
     register_count: StrictInt = Field(ge=1)
 
     @model_validator(mode="after")
     def _decks_are_independent(self) -> Self:
-        if self.movement_deck_id == self.weapon_deck_id:
-            raise ValueError("movement_deck_id and weapon_deck_id must be distinct")
+        deck_ids = [self.movement_deck_id, self.weapon_deck_id]
+        if self.utility_deck_id is not None:
+            deck_ids.append(self.utility_deck_id)
+        if len(deck_ids) != len(set(deck_ids)):
+            raise ValueError("movement_deck_id, weapon_deck_id, utility_deck_id must be distinct")
+        if self.hand_quota.utility > 0 and self.utility_deck_id is None:
+            raise ValueError("a positive utility quota requires a utility_deck_id")
         if self.register_count > self.hand_quota.hand_size:
             raise ValueError("register_count cannot exceed the split-deck hand quota total")
         return self

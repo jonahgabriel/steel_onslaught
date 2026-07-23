@@ -1,0 +1,16 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.deck"
+id: "deck.utility.v1"
+display_name: "Utility Deck v1"
+# The third split-deck pile (Phase 2): smoke/chaff/flares counterplay only.
+# hand_size is the per-hand utility quota; register_count mirrors it because a
+# utility pile is dealt into the same over-deal selection as movement/weapon.
+hand_size: 2
+register_count: 2
+cards:
+  - card_id: "card.utility.smoke"
+    count: 4
+  - card_id: "card.utility.chaff"
+    count: 3
+  - card_id: "card.utility.flares"
+    count: 3
