@@ -271,6 +271,21 @@ export interface SOMatchPromptProvenance {
   content_sha256: string;
 }
 
+/**
+ * Mirror of ModelSOSeatPolicyProvenance: which live-learning policy snapshot
+ * one seat flew with (L-GATE-2). Genesis policies (generation 0) have no
+ * lineage record yet, so the digest is null exactly when generation is 0.
+ */
+export interface SOSeatPolicyProvenance {
+  schema_version: "1";
+  kind: "steel_onslaught.seat_policy_provenance";
+  player_id: string;
+  policy_id: string;
+  spec_hash: string;
+  generation: number;
+  source_lineage_digest: string | null;
+}
+
 export interface SOHumanDecisionSource {
   kind: "human";
   input_source: "browser_command";
@@ -302,6 +317,7 @@ export interface MatchStartedPayload {
   card_runtime_provenance?: SOCardRuntimeProvenance;
   card_rule_pack_provenance?: SOCardRulePackProvenance;
   prompt_provenance?: SOMatchPromptProvenance;
+  policy_provenance?: SOSeatPolicyProvenance[];
 }
 
 export type SORuntimeStatus = "ready" | "running" | "paused" | "ended" | "failed";
@@ -1517,6 +1533,58 @@ function parsePromptProvenance(value: unknown, context: string): SOMatchPromptPr
   };
 }
 
+function parseSeatPolicyProvenance(value: unknown, context: string): SOSeatPolicyProvenance {
+  const record = asRecord(value, context);
+  rejectUnknown(
+    record,
+    [
+      "schema_version",
+      "kind",
+      "player_id",
+      "policy_id",
+      "spec_hash",
+      "generation",
+      "source_lineage_digest",
+    ],
+    context,
+  );
+  const generation = nonNegativeInt(record, "generation", context);
+  const rawDigest = record["source_lineage_digest"];
+  const digest =
+    rawDigest === null || rawDigest === undefined
+      ? null
+      : patternString(
+          rawDigest,
+          /^[0-9a-f]{64}$/,
+          "a lowercase SHA-256 digest",
+          `${context}.source_lineage_digest`,
+        );
+  if (generation === 0 && digest !== null) {
+    fail(context, "a generation-0 (genesis) policy has no lineage record digest");
+  }
+  if (generation >= 1 && digest === null) {
+    fail(context, "a promoted policy (generation >= 1) requires source_lineage_digest");
+  }
+  return {
+    schema_version: exactString(record["schema_version"], "1", `${context}.schema_version`) as "1",
+    kind: exactString(
+      record["kind"],
+      "steel_onslaught.seat_policy_provenance",
+      `${context}.kind`,
+    ) as "steel_onslaught.seat_policy_provenance",
+    player_id: nonEmptyString(record["player_id"], `${context}.player_id`),
+    policy_id: nonEmptyString(record["policy_id"], `${context}.policy_id`),
+    spec_hash: patternString(
+      record["spec_hash"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.spec_hash`,
+    ),
+    generation,
+    source_lineage_digest: digest,
+  };
+}
+
 function parseDecisionSource(value: unknown, context: string): SODecisionSource {
   const record = asRecord(value, context);
   const kind = record["kind"];
@@ -1863,6 +1931,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         "card_runtime_provenance",
         "card_rule_pack_provenance",
         "prompt_provenance",
+        "policy_provenance",
       ],
       context,
     );
@@ -1927,6 +1996,20 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       "prompt_provenance" in record
         ? parsePromptProvenance(record["prompt_provenance"], `${context}.prompt_provenance`)
         : undefined;
+    let policyProvenance: SOSeatPolicyProvenance[] | undefined;
+    if ("policy_provenance" in record) {
+      const rawPolicy = record["policy_provenance"];
+      if (!Array.isArray(rawPolicy) || rawPolicy.length === 0) {
+        fail(context, 'field "policy_provenance" must be a non-empty array when present');
+      }
+      policyProvenance = rawPolicy.map((entry, index) =>
+        parseSeatPolicyProvenance(entry, `${context}.policy_provenance[${index}]`),
+      );
+      const seatIds = policyProvenance.map((entry) => entry.player_id);
+      if (new Set(seatIds).size !== seatIds.length) {
+        fail(context, 'field "policy_provenance" contains duplicate player_id values');
+      }
+    }
     return {
       seed: nonNegativeInt(record, "seed", context),
       max_ticks: nullablePositiveInt(record, "max_ticks", context),
@@ -1940,6 +2023,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         ? {}
         : { card_rule_pack_provenance: cardRulePackProvenance }),
       ...(promptProvenance === undefined ? {} : { prompt_provenance: promptProvenance }),
+      ...(policyProvenance === undefined ? {} : { policy_provenance: policyProvenance }),
     };
   },
   runtime_status_changed: (value, context) => {

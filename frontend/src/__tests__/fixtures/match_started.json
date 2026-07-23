@@ -201,7 +201,18 @@
           "input_source": "llm_completion"
         }
       ]
-    }
+    },
+    "policy_provenance": [
+      {
+        "schema_version": "1",
+        "kind": "steel_onslaught.seat_policy_provenance",
+        "player_id": "player.a",
+        "policy_id": "policy.aggressive.1111111122222222",
+        "spec_hash": "1111111122222222111111112222222211111111222222221111111122222222",
+        "generation": 1,
+        "source_lineage_digest": "5555555566666666555555556666666655555555666666665555555566666666"
+      }
+    ]
   },
   "envelope": {
     "message_id": "ec84dcf4-0385-5853-96ec-763be6e2bf4b",

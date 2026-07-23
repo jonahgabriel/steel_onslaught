@@ -58,7 +58,11 @@ from steel_onslaught.contracts.commands import ModelSOStartMatchCommand
 from steel_onslaught.contracts.deck import ModelSODeck
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
 from steel_onslaught.contracts.lineage import ModelSOLineageRecord, spec_hash
-from steel_onslaught.contracts.live_learning import ModelSOLiveLearningPolicy
+from steel_onslaught.contracts.live_learning import (
+    ModelSOLiveLearningPolicy,
+    ModelSOSeatPolicyProvenance,
+    seat_policy_provenance,
+)
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeTransition
 from steel_onslaught.contracts.model_catalog import (
@@ -86,13 +90,18 @@ from steel_onslaught.events.factory import Clock, EventFactory, IdentityProvider
 from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
 from steel_onslaught.learning.after_match import AfterMatchLearningHandler
 from steel_onslaught.learning.artifacts import LearningArtifactStore
+from steel_onslaught.learning.duel_evaluator import DuelEvaluator
 from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
     YamlFilesystemLearningArtifactStore,
 )
-from steel_onslaught.learning.live import LiveLearningCoordinator
+from steel_onslaught.learning.live import LiveLearningCoordinator, LiveLearningEvaluator
 from steel_onslaught.learning.live_evaluator import WinDamageDifferentialEvaluator
+from steel_onslaught.learning.promotion import ModelSOPromotionThresholds
 from steel_onslaught.learning.promotion_fold import rehydrate_current_policy
+from steel_onslaught.learning.protocols import ModelSONumericBound
+from steel_onslaught.learning.selection_outcome import SelectionOutcomeEvaluator
+from steel_onslaught.learning.spec_adapter import bounds_for_archetype
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.llm.client_http import (
@@ -110,6 +119,7 @@ from steel_onslaught.llm.effect import (
 )
 from steel_onslaught.llm.personas import PersonaRegistry
 from steel_onslaught.llm.pilot import LLMPilot, LlmPilotFailurePolicy
+from steel_onslaught.llm.policy_guidance import render_policy_guidance
 from steel_onslaught.llm.programming import PROGRAMMING_INSTRUCTIONS_SHA256, LLMProgrammingPilot
 from steel_onslaught.llm.schemas import (
     ModelSOLlmPilotSelection,
@@ -589,6 +599,11 @@ def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
         update={"root": resolved(overlay.evaluation_storage.root)}
     )
     llm = overlay.llm.model_copy(update={"personas_dir": resolved(overlay.llm.personas_dir)})
+    live_learning = overlay.live_learning
+    if live_learning is not None and live_learning.base_loadout_path is not None:
+        live_learning = live_learning.model_copy(
+            update={"base_loadout_path": resolved(live_learning.base_loadout_path)}
+        )
     return overlay.model_copy(
         update={
             "event_ledger": event_ledger,
@@ -597,6 +612,7 @@ def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
             "learning_artifacts": learning_artifacts,
             "evaluation_storage": evaluation_storage,
             "llm": llm,
+            "live_learning": live_learning,
         }
     )
 
@@ -1156,6 +1172,7 @@ def build_card_programmers(
     deck_policy: ModelSOCardDeckPolicy | None = None,
     observer: ProtocolLlmCompletionObserver | None = None,
     correlation_id: UUID | None = None,
+    policy_guidance_by_side: Mapping[str, str] | None = None,
 ) -> Mapping[str, ProgrammingPilot]:
     """Resolve explicit card seat bindings into fail-closed LLM programmers.
 
@@ -1177,6 +1194,14 @@ def build_card_programmers(
 
     if observer is not None and correlation_id is None:
         raise ValueError("observed card programmers require a match correlation_id")
+    if policy_guidance_by_side:
+        unknown_sides = set(policy_guidance_by_side) - {binding.side for binding in bindings}
+        if unknown_sides:
+            # A guidance block that cannot land on any bound programmer would
+            # silently un-consume the policy; refuse instead.
+            raise ValueError(
+                f"policy guidance targets unbound card programmer side(s): {sorted(unknown_sides)}"
+            )
 
     resolved: list[tuple[ModelSOCardProgrammerBinding, ModelSOLlmPilotParams]] = []
     bound_sides: set[str] = set()
@@ -1235,6 +1260,13 @@ def build_card_programmers(
             correlation_id=correlation_id,
             # Names the failing provider on a bounded-retry semantic terminal.
             provider_id=provider_id,
+            # The live-learning policy-guidance block for this seat, when the
+            # match's admitted policy governs it (L-GATE-2 consumption seam).
+            policy_guidance=(
+                policy_guidance_by_side.get(binding.side)
+                if policy_guidance_by_side is not None
+                else None
+            ),
         )
     return MappingProxyType(programmers)
 
@@ -1261,6 +1293,7 @@ class CardProgrammerFactory:
         *,
         identity: MatchIdentity,
         observer: ProtocolLlmCompletionObserver,
+        policy_guidance_by_side: Mapping[str, str] | None = None,
     ) -> Mapping[str, ProgrammingPilot]:
         return build_card_programmers(
             self.bindings,
@@ -1269,6 +1302,7 @@ class CardProgrammerFactory:
             deck_policy=self.deck_policy,
             observer=observer,
             correlation_id=identity.correlation_id,
+            policy_guidance_by_side=policy_guidance_by_side,
         )
 
 
@@ -1559,15 +1593,72 @@ def build_runtime_dependencies(
             def _persist_lineage(record: ModelSOLineageRecord) -> None:
                 learning_artifacts.write_lineage(record, recorded_at=clock.now())
 
-            live_learning = LiveLearningCoordinator(
-                current_policy=current_policy,
-                evaluator=WinDamageDifferentialEvaluator(
+            live_evaluator: LiveLearningEvaluator
+            if learning_binding.kind == "selection_outcome_v1":
+                # The evidence-driven judgment gated through the EXISTING
+                # offline duel path: DuelEvaluator over the composition-built
+                # duel executor (design 2026-07-22 §4.4 stage 2).
+                base_loadout_path = learning_binding.base_loadout_path
+                if base_loadout_path is None:  # contract validator enforces this
+                    raise ValueError("selection_outcome_v1 requires base_loadout_path")
+                # Fail closed at composition, not at the first terminal: the
+                # duel gate materializes real pilot specs (no parameter
+                # defaults), so the lane's parameters must be the archetype's
+                # complete spec-parameter set and the perturbed parameter must
+                # be a declared numeric bound.
+                archetype_bounds = bounds_for_archetype(learning_binding.archetype)
+                if set(genesis_parameters) != set(archetype_bounds):
+                    raise ValueError(
+                        "selection_outcome_v1 genesis_parameters must be the complete "
+                        f"{learning_binding.archetype!r} spec-parameter set; "
+                        f"missing={sorted(set(archetype_bounds) - set(genesis_parameters))} "
+                        f"extra={sorted(set(genesis_parameters) - set(archetype_bounds))}"
+                    )
+                perturbed_bound = archetype_bounds.get(learning_binding.parameter)
+                if not isinstance(perturbed_bound, ModelSONumericBound):
+                    raise ValueError(
+                        f"selection_outcome_v1 parameter {learning_binding.parameter!r} "
+                        f"must be a declared numeric bound of "
+                        f"{learning_binding.archetype!r}"
+                    )
+                threshold_overrides = learning_binding.thresholds
+                thresholds = (
+                    ModelSOPromotionThresholds()
+                    if threshold_overrides is None
+                    else ModelSOPromotionThresholds(**threshold_overrides.model_dump(mode="python"))
+                )
+                live_evaluator = SelectionOutcomeEvaluator(
+                    learning_player_id=learning_binding.learning_player_id,
+                    offline_evaluator=DuelEvaluator(
+                        archetype=learning_binding.archetype,
+                        base_loadout=load_loadout(base_loadout_path),
+                        max_ticks=learning_binding.duel_max_ticks,
+                        duel_executor=build_duel_executor_with_dependencies(
+                            overlay,
+                            evaluation_storage=build_evaluation_storage_allocator(overlay),
+                            llm_dependencies=llm,
+                        ),
+                        artifacts=learning_artifacts,
+                    ),
+                    parameter=learning_binding.parameter,
+                    step_multiplier=learning_binding.step_multiplier,
+                    n_search_seeds=learning_binding.n_search_seeds,
+                    n_holdout_seeds=learning_binding.n_holdout_seeds,
+                    thresholds=thresholds,
+                )
+            else:
+                live_evaluator = WinDamageDifferentialEvaluator(
                     learning_player_id=learning_binding.learning_player_id,
                     parameter=learning_binding.parameter,
                     step=learning_binding.step,
                     max_value=learning_binding.max_value,
-                ),
+                )
+
+            live_learning = LiveLearningCoordinator(
+                current_policy=current_policy,
+                evaluator=live_evaluator,
                 persist_lineage=_persist_lineage,
+                learning_player_id=learning_binding.learning_player_id,
             )
         resolved_pilot_registry = pilot_registry or load_pilot_registry(
             overlay.contracts.pilot_registry_dir
@@ -2036,6 +2127,43 @@ def assemble_match_with_dependencies(
             pilots[mech_b] = _resolved_pilot(
                 blue, loadout_path=blue_loadout_path, dependencies=match_dependencies
             )
+    # Live-learning admission half of the seam (learning-adaptation-03): the
+    # SAME coordinator instance that will receive this match's terminal
+    # evidence snapshots the policy BEFORE any per-match prompt or provenance
+    # surface is composed, so the admitted policy is exactly the policy this
+    # match flies with — recorded per-seat in MATCH_STARTED and rendered into
+    # the learning seat's programming prompt (L-GATE-2).
+    learning_artifacts = dependencies.learning_artifacts
+    live_learning = dependencies.live_learning
+    policy_provenance: tuple[ModelSOSeatPolicyProvenance, ...] | None = None
+    policy_guidance_by_side: dict[str, str] | None = None
+    if live_learning is not None:
+        if learning_artifacts is None:
+            raise ValueError(
+                "live learning requires learning_artifacts: promotions must be "
+                "durably lineage-backed, never memory-only"
+            )
+        learning_player_id = live_learning.learning_player_id
+        if learning_player_id is None:
+            raise ValueError(
+                "a composed live-learning coordinator must carry learning_player_id "
+                "so per-seat policy provenance and prompt guidance can be routed"
+            )
+        seat_player_ids = {f"player.{side_a}", f"player.{side_b}"}
+        if learning_player_id not in seat_player_ids:
+            raise ValueError(
+                f"learning_player_id {learning_player_id!r} does not match either seat "
+                f"of this match ({sorted(seat_player_ids)})"
+            )
+        policy_snapshot = live_learning.begin_match(identity.match_id)
+        policy_provenance = (
+            seat_policy_provenance(policy_snapshot.policy, player_id=learning_player_id),
+        )
+        policy_guidance_by_side = {
+            learning_player_id.removeprefix("player."): render_policy_guidance(
+                policy_snapshot.policy
+            )
+        }
     # Card programmers are an explicit overlay capability, but their
     # completion evidence is match-scoped.  Clone the adapter with observed
     # pilots after identity/factory/bus construction; keep the shared runtime
@@ -2045,6 +2173,7 @@ def assemble_match_with_dependencies(
         match_card_programmers = dependencies.card_programmer_factory.for_match(
             identity=identity,
             observer=match_observer,
+            policy_guidance_by_side=policy_guidance_by_side,
         )
         if card_adapter is not None:
             card_adapter = replace(card_adapter, programmers=match_card_programmers)
@@ -2067,6 +2196,7 @@ def assemble_match_with_dependencies(
         card_runtime_snapshot=dependencies.card_runtime_snapshot,
         card_rule_pack_provenance=dependencies.card_rule_pack_provenance,
         prompt_provenance=dependencies.prompt_provenance,
+        policy_provenance=policy_provenance,
         card_adapter=card_adapter,
         card_cadence=dependencies.card_cadence,
         progress_gate=resolved_progress_gate,
@@ -2108,13 +2238,6 @@ def assemble_match_with_dependencies(
 
     dependencies.bus.subscribe(_on_match_scored, event_types=[SOEventType.MATCH_SCORED])
 
-    learning_artifacts = dependencies.learning_artifacts
-    live_learning = dependencies.live_learning
-    if live_learning is not None and learning_artifacts is None:
-        raise ValueError(
-            "live learning requires learning_artifacts: promotions must be "
-            "durably lineage-backed, never memory-only"
-        )
     if learning_artifacts is not None:
         learning_handler = AfterMatchLearningHandler(
             ledger=dependencies.ledger,
@@ -2127,11 +2250,6 @@ def assemble_match_with_dependencies(
             learning_handler.handle,
             event_types=[SOEventType.MATCH_SCORED],
         )
-    if live_learning is not None:
-        # Admission half of the seam: the SAME coordinator instance that will
-        # receive this match's terminal evidence snapshots the policy now,
-        # before the runner can start (learning-adaptation-03).
-        live_learning.begin_match(identity.match_id)
     return LiveMatchStack(
         identity=identity,
         bus=dependencies.bus,

@@ -33,6 +33,7 @@ from uuid import UUID, uuid5
 
 from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
+from steel_onslaught.contracts.live_learning import ModelSOSeatPolicyProvenance
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.player_selection import (
     ModelSOMatchLaunchProvenance,
@@ -312,6 +313,18 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
                 roster_sha256="e" * 64,
                 seat_assignments=_SEAT_ASSIGNMENTS,
             ).model_dump(mode="json"),
+            # Per-seat live-learning policy provenance (L-GATE-2): the fixture
+            # carries one promoted-generation entry so the TS parser exercises
+            # the digest-required branch alongside the payload authority.
+            "policy_provenance": [
+                ModelSOSeatPolicyProvenance(
+                    player_id="player.a",
+                    policy_id="policy.aggressive.1111111122222222",
+                    spec_hash="1111111122222222" * 4,
+                    generation=1,
+                    source_lineage_digest="5555555566666666" * 4,
+                ).model_dump(mode="json"),
+            ],
         },
         SOEventType.RUNTIME_STATUS_CHANGED: ModelSORuntimeStatusPayload(
             status=SORuntimeStatus.RUNNING,

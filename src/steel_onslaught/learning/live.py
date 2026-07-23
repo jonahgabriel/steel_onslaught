@@ -90,6 +90,13 @@ class LiveLearningCoordinator:
     # write leaves the terminal retryable and never fields an unpersisted
     # policy.  None is only for tests that assert coordinator logic alone.
     persist_lineage: Callable[[ModelSOLineageRecord], None] | None = None
+    # The canonical player id (``player.<side>``) whose seat this policy lane
+    # governs.  Composition ALWAYS sets it (from the overlay binding) so match
+    # assembly can record per-seat policy provenance and route the policy
+    # guidance block to the right programmer; assembly fails closed when a
+    # wired coordinator is missing it.  None is only for tests that assert
+    # coordinator logic alone.
+    learning_player_id: str | None = None
     _active: dict[str, ModelSOLiveMatchPolicySnapshot] = field(
         default_factory=dict, init=False, repr=False
     )

@@ -24,3 +24,9 @@ node_modules/
 # Local LLM endpoint overlay — real private addresses, never committed.
 # The committed providers.local.yaml.example carries placeholder hosts.
 src/steel_onslaught/llm/providers.local.yaml
+
+# Durable battery/lane state (sqlite ledgers, lineage stores, evaluations)
+# written by live batteries and `so` runs. Never committed — and never staged:
+# a `git add -A` + pre-commit stash cycle over a LIVE WAL database corrupts it
+# mid-write (observed 2026-07-22 during the L-GATE-2 adaptation battery).
+.onex_state/
