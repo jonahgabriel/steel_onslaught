@@ -107,6 +107,31 @@ class ModelSOLiveMatchPolicySnapshot(BaseModel):
     policy: ModelSOLiveLearningPolicy
 
 
+class ModelSOContainedLearningFailure(BaseModel):
+    """A learning-lane evaluation failure contained at the after-match boundary.
+
+    When promotion evaluation runs, the live match terminal has ALREADY
+    happened — so an evaluation-runtime failure (LLM transport error, duel
+    battery abort, evaluator I/O) is a learning-lane fact, not a match fact.
+    The after-match handler records it as this typed outcome instead of
+    re-raising into the bus, where it would kill the live match (L-GATE-2
+    live-fire findings F1/F2).  Seam violations (un-admitted terminal,
+    evaluator/coordinator contract drift) are deliberately NOT representable
+    here: they raise ``LearningSeamViolationError`` and surface loudly.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    schema_version: Literal["1"] = "1"
+    kind: Literal["steel_onslaught.contained_learning_failure"] = (
+        "steel_onslaught.contained_learning_failure"
+    )
+    match_id: StrictStr = Field(min_length=1)
+    stage: Literal["promotion_evaluation"] = "promotion_evaluation"
+    error_type: StrictStr = Field(min_length=1)
+    message: StrictStr = Field(min_length=1)
+
+
 class ModelSOLiveLearningOutcome(BaseModel):
     """Terminal result of evaluating one completed match for promotion."""
 
@@ -130,6 +155,7 @@ class ModelSOLiveLearningOutcome(BaseModel):
 
 
 __all__ = [
+    "ModelSOContainedLearningFailure",
     "ModelSOLiveLearningOutcome",
     "ModelSOLiveLearningPolicy",
     "ModelSOLiveMatchPolicySnapshot",

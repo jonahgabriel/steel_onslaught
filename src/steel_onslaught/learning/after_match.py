@@ -21,11 +21,15 @@ error, never a silent skip.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import Lock
 
-from steel_onslaught.contracts.live_learning import ModelSOLiveLearningOutcome
+from steel_onslaught.contracts.live_learning import (
+    ModelSOContainedLearningFailure,
+    ModelSOLiveLearningOutcome,
+)
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -34,9 +38,15 @@ from steel_onslaught.events.envelope import (
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.events.payloads import ModelSOPolicyPromotedPayload
 from steel_onslaught.learning.artifacts import LearningArtifactStore
-from steel_onslaught.learning.live import LiveLearningPromotionPort
+from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
+from steel_onslaught.learning.live import (
+    LearningSeamViolationError,
+    LiveLearningPromotionPort,
+)
 from steel_onslaught.learning.post_match import project_match_learning_evidence
 from steel_onslaught.ledger.protocol import EventLedger
+
+_LOG = logging.getLogger(__name__)
 
 _PRODUCER_NODE = "node.learning.after_match"
 
@@ -66,7 +76,16 @@ class AfterMatchLearningHandler:
     emit: Callable[[ModelSOEventEnvelope], None] | None = None
     event_factory: EventFactory | None = None
     _processed_match_ids: set[str] = field(default_factory=set, init=False, repr=False)
+    _contained: list[ModelSOContainedLearningFailure] = field(
+        default_factory=list, init=False, repr=False
+    )
     _lock: Lock = field(default_factory=Lock, init=False, repr=False)
+
+    @property
+    def contained_failures(self) -> tuple[ModelSOContainedLearningFailure, ...]:
+        """Typed record of every learning failure contained at this boundary."""
+
+        return tuple(self._contained)
 
     def __post_init__(self) -> None:
         if self.promotion is not None and (self.emit is None or self.event_factory is None):
@@ -91,19 +110,74 @@ class AfterMatchLearningHandler:
             evidence = project_match_learning_evidence(tuple(self.ledger.read_all(event.match_id)))
             self.artifacts.write_after_match_evidence(evidence)
             if self.promotion is not None:
-                outcome = self.promotion.handle_after_match(evidence)
-                if outcome.status == "promoted":
-                    self._emit_policy_promoted(event, outcome)
+                self._evaluate_promotion_contained(event, evidence)
             self._processed_match_ids.add(event.match_id)
+
+    def _evaluate_promotion_contained(
+        self, event: ModelSOEventEnvelope, evidence: ModelSOAfterMatchLearningEvidence
+    ) -> None:
+        """Run the promotion gate; contain evaluation-runtime failures.
+
+        The match terminal has ALREADY happened when this runs (we are inside
+        the ``MATCH_SCORED`` delivery), so a learning failure is a
+        learning-lane fact, not a match fact — re-raising it into the bus
+        killed a live match in the L-GATE-2 live-fire run (findings F1/F2).
+        The split is deliberate and narrow:
+
+        - ``LearningSeamViolationError`` (un-admitted terminal, promoted
+          record contradicting the admitted policy) RE-RAISES: it means the
+          composition wiring or an evaluator contract is wrong, and hiding it
+          would turn the learning lane into a silent no-op.
+        - Every other exception (transport errors, ``DuelBatteryError``,
+          evaluator/store I/O) is contained: logged, recorded as a typed
+          ``ModelSOContainedLearningFailure``, and the gate DECLINES by
+          construction — no promotion is ever emitted on incomplete evidence.
+
+        Evidence projection/write stay OUTSIDE this containment on purpose:
+        a malformed ledger stream is a match-truth defect and a failed
+        artifact write must remain retryable (the match is not marked
+        processed), exactly as before.
+        """
+
+        assert self.promotion is not None  # caller guard
+        try:
+            outcome = self.promotion.handle_after_match(evidence)
+        except LearningSeamViolationError:
+            raise
+        except Exception as exc:
+            failure = ModelSOContainedLearningFailure(
+                match_id=event.match_id,
+                error_type=type(exc).__qualname__,
+                message=str(exc) or type(exc).__qualname__,
+            )
+            self._contained.append(failure)
+            _LOG.exception(
+                "contained learning failure after match %s (%s): the live match "
+                "terminal is unaffected and the policy was NOT advanced",
+                event.match_id,
+                failure.error_type,
+            )
+            return
+        if outcome.status == "promoted":
+            self._emit_policy_promoted(event, outcome)
 
     def _emit_policy_promoted(
         self, scored: ModelSOEventEnvelope, outcome: ModelSOLiveLearningOutcome
     ) -> None:
-        """Append the promotion fact, caused by the MATCH_SCORED envelope."""
+        """Append the promotion fact, caused by the MATCH_SCORED envelope.
+
+        Deliberately NOT inside the containment boundary: once the coordinator
+        has advanced its in-memory policy, a failure to emit POLICY_PROMOTED
+        would leave fielded state diverged from durable truth — silently
+        containing that would be a silent in-memory promotion, which is
+        forbidden.  Such a failure surfaces loudly.
+        """
 
         promoted = outcome.policy_after
         if promoted is None or promoted.source_lineage_digest is None:
-            raise ValueError("promoted outcome must carry a lineage-backed policy_after")
+            raise LearningSeamViolationError(
+                "promoted outcome must carry a lineage-backed policy_after"
+            )
         assert self.emit is not None and self.event_factory is not None  # __post_init__
         payload = ModelSOPolicyPromotedPayload(
             match_id=scored.match_id,

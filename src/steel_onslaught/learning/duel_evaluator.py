@@ -19,12 +19,30 @@ from steel_onslaught.learning.artifacts import (
 from steel_onslaught.learning.post_match import project_card_learning_metrics
 from steel_onslaught.learning.protocols import ModelSOSeedOutcome, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import spec_from_params
-from steel_onslaught.match.duel import DuelExecutor, ModelSOEvaluationStorageKey
+from steel_onslaught.llm.schemas import LlmTransportError
+from steel_onslaught.match.duel import DuelExecutor, DuelResult, ModelSOEvaluationStorageKey
 
 _SIDE_RED = "red"
 _SIDE_BLUE = "blue"
 
 _TEMPLATE_ID_FORMAT = "pilot.template.{archetype}"
+
+
+class DuelBatteryError(RuntimeError):
+    """One duel of an evaluation battery could not produce a result.
+
+    Raised after the bounded transport-retry budget is exhausted (or
+    immediately for a non-retryable transport error).  This is an
+    evaluation-RUNTIME failure, not a seam violation: the after-match handler
+    contains it, the gate never sees the incomplete battery, and declining is
+    the safe verdict — a candidate is never promoted on partial evidence
+    (L-GATE-2 live-fire finding F2).
+    """
+
+    def __init__(self, message: str, *, match_id: str, attempts: int) -> None:
+        super().__init__(message)
+        self.match_id = match_id
+        self.attempts = attempts
 
 
 def aggregate_pair(first: SOSeedWinner, second: SOSeedWinner) -> SOSeedWinner:
@@ -56,12 +74,25 @@ class DuelEvaluator:
         max_ticks: int,
         duel_executor: DuelExecutor,
         artifacts: LearningArtifactStore,
+        transport_retry_budget: int = 2,
     ) -> None:
+        if transport_retry_budget < 0:
+            raise ValueError("transport_retry_budget must be >= 0")
         self._archetype = archetype
         self._max_ticks = max_ticks
         self._base = base_loadout
         self._duel_executor = duel_executor
         self._artifacts = artifacts
+        # Bounded retry for RETRYABLE transport failures inside the battery,
+        # reusing the live LLM client's classification (LlmTransportError
+        # .retryable) rather than a second retry stack.  The live-play HTTP
+        # binding deliberately pins max_attempts=1 (a mid-match retry would
+        # stall live ticks); a duel battery has no such constraint, so the
+        # retry lives HERE, at duel granularity.  Each retry re-runs the
+        # whole deterministic duel against a FRESH evidence target (the
+        # storage allocator is exclusive-create; a failed attempt's partial
+        # ledger is retained as forensic evidence but contributes nothing).
+        self._transport_retry_budget = transport_retry_budget
         # Per-instance evaluate counter: each call gets its own subdirectory so
         # ledgers from distinct calls never collide and the gate evaluation's
         # ledgers can be retained as replay evidence.
@@ -182,23 +213,17 @@ class DuelEvaluator:
         """Run one duel; return (side-normalized winner, candidate_overloads,
         parent_overloads) for this duel alone."""
         parent_side = _SIDE_BLUE if candidate_side == _SIDE_RED else _SIDE_RED
-        match_id = f"match.learn.seed_{seed}.cand_{candidate_side}"
-        storage = ModelSOEvaluationStorageKey(
-            namespace=workspace.key,
-            duel=f"seed_{seed}_cand_{candidate_side}",
-        )
-        result = self._duel_executor(
-            loadout_a=loadout_red.loadout,
-            loadout_b=loadout_blue.loadout,
+        base_match_id = f"match.learn.seed_{seed}.cand_{candidate_side}"
+        base_duel_key = f"seed_{seed}_cand_{candidate_side}"
+        result = self._run_duel_with_bounded_retry(
+            workspace,
             seed=seed,
-            max_ticks=self._max_ticks,
-            storage=storage,
-            match_id=match_id,
-            loadout_path_a=loadout_red.path,
-            loadout_path_b=loadout_blue.path,
-            side_a=_SIDE_RED,
-            side_b=_SIDE_BLUE,
+            loadout_red=loadout_red,
+            loadout_blue=loadout_blue,
+            base_match_id=base_match_id,
+            base_duel_key=base_duel_key,
         )
+        match_id = result.final_state.match_id
         final = result.final_state
         if final.winner_id is None:
             winner = SOSeedWinner.DRAW
@@ -219,6 +244,64 @@ class DuelEvaluator:
             result.events, mech_id=f"mech.{parent_side}.01"
         )
         return winner, candidate_overloads, parent_overloads, candidate_metrics, parent_metrics
+
+    def _run_duel_with_bounded_retry(
+        self,
+        workspace: EvaluationWorkspace,
+        *,
+        seed: int,
+        loadout_red: MaterializedLoadout,
+        loadout_blue: MaterializedLoadout,
+        base_match_id: str,
+        base_duel_key: str,
+    ) -> DuelResult:
+        """One duel, retried on RETRYABLE transport errors within the budget.
+
+        Attempt N > 1 uses a ``.retryK``/``_retryK``-suffixed match id and
+        storage key so every attempt writes to a never-before-used evidence
+        target (the allocator is exclusive-create by contract).  A
+        non-retryable transport error, or budget exhaustion, raises
+        ``DuelBatteryError`` — the battery is incomplete and the gate must
+        DECLINE, never promote on partial evidence.
+        """
+
+        max_attempts = 1 + self._transport_retry_budget
+        last_error: LlmTransportError | None = None
+        for attempt in range(1, max_attempts + 1):
+            suffix = "" if attempt == 1 else f"retry{attempt - 1}"
+            match_id = base_match_id if not suffix else f"{base_match_id}.{suffix}"
+            storage = ModelSOEvaluationStorageKey(
+                namespace=workspace.key,
+                duel=base_duel_key if not suffix else f"{base_duel_key}_{suffix}",
+            )
+            try:
+                return self._duel_executor(
+                    loadout_a=loadout_red.loadout,
+                    loadout_b=loadout_blue.loadout,
+                    seed=seed,
+                    max_ticks=self._max_ticks,
+                    storage=storage,
+                    match_id=match_id,
+                    loadout_path_a=loadout_red.path,
+                    loadout_path_b=loadout_blue.path,
+                    side_a=_SIDE_RED,
+                    side_b=_SIDE_BLUE,
+                )
+            except LlmTransportError as exc:
+                last_error = exc
+                if not exc.retryable:
+                    raise DuelBatteryError(
+                        f"duel {match_id!r} failed with a non-retryable transport "
+                        f"error on attempt {attempt}: {exc}",
+                        match_id=base_match_id,
+                        attempts=attempt,
+                    ) from exc
+        raise DuelBatteryError(
+            f"duel {base_match_id!r} exhausted its transport retry budget "
+            f"({max_attempts} attempts): {last_error}",
+            match_id=base_match_id,
+            attempts=max_attempts,
+        ) from last_error
 
     @staticmethod
     def _count_overloads(events: tuple[ModelSOEventEnvelope, ...], *, mech_id: str) -> int:
