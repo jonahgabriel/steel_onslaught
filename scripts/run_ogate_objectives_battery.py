@@ -70,9 +70,9 @@ _BLUE = "player.blue"  # sniper
 _ELIMINATION_REASONS = frozenset({"last_mech_standing", "pilot_killed", "draw_mutual_destruction"})
 
 
-def _lane_overlay(state_root: Path) -> ModelSOApplicationOverlay:
+def _lane_overlay(state_root: Path, overlay_path: Path = _OVERLAY) -> ModelSOApplicationOverlay:
     """Repoint every durable surface of the overlay into the battery lane."""
-    base = load_application_overlay(_OVERLAY)
+    base = load_application_overlay(overlay_path)
     return base.model_copy(
         update={
             "event_ledger": base.event_ledger.model_copy(
@@ -146,13 +146,19 @@ def _run_match(
     max_ticks: int,
     expected_arena_hash: str,
 ) -> dict[str, Any]:
+    # Keyless composition owns the transport regardless.  A ``none`` overlay
+    # (the combined asym+utility overlay) rejects an injected resolver and lets
+    # composition build its own ``NoSecretResolver``; an ``injected`` overlay
+    # (the asym-only default) requires one to be supplied.  Selecting by the
+    # declared binding kind keeps both overlays launchable from one driver.
+    secret_resolver = None if overlay.llm.secret_resolver.kind == "none" else NoSecretResolver()
     stack = assemble_match_live(
         overlay=overlay,
         red_loadout_path=_RED_LOADOUT,
         blue_loadout_path=_BLUE_LOADOUT,
         seed=seed,
         max_ticks=max_ticks,
-        secret_resolver=NoSecretResolver(),  # keyless provider; composition owns the transport
+        secret_resolver=secret_resolver,
     )
     try:
         final = stack.runner.run()
@@ -269,8 +275,20 @@ def _summarize(rows: list[dict[str, Any]], *, gate_threshold: float) -> dict[str
     }
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--overlay",
+        type=Path,
+        default=_OVERLAY,
+        help=(
+            "application overlay for the battery (default: the asym objective "
+            "overlay). Pass the combined asym+utility overlay "
+            "(tactical_split_overdeal_utility_asym_v1_qwen.yaml) to measure "
+            "whether utility counterplay lets the brawler contest VP. Must still "
+            "resolve arena foundry_60_asym_v1."
+        ),
+    )
     parser.add_argument("--n", type=int, default=30, help="battery size")
     parser.add_argument("--seed-base", type=int, default=5000, help="seeds are base+1..base+n")
     parser.add_argument(
@@ -288,7 +306,11 @@ def main() -> int:
         default=_REPO_ROOT / ".onex_state/steel_onslaught/ogate_objectives_battery",
     )
     parser.add_argument("--fresh", action="store_true", help="wipe the battery lane first")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
 
     state_root = args.state_root.resolve()
     if args.fresh and state_root.exists():
@@ -299,7 +321,7 @@ def main() -> int:
     expected_arena_hash = arena_contract_hash(
         load_match_contract_catalog(_REPO_ROOT / "contracts_data").arenas[_ARENA_ID].to_snapshot()
     )
-    overlay = _lane_overlay(state_root)
+    overlay = _lane_overlay(state_root, args.overlay.resolve(strict=True))
 
     rows: list[dict[str, Any]] = []
     for index in range(1, args.n + 1):
