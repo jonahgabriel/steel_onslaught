@@ -1,6 +1,6 @@
 {
   "schema_version": "0.1.0",
-  "event_id": "01VCTRYDECARED000000000000",
+  "event_id": "01BJECTVESCRED000000000000",
   "match_id": "match.fixture.0001",
   "tick": 7,
   "sequence_in_tick": 0,
@@ -9,14 +9,20 @@
     "mech_id": "mech.a.01",
     "player_id": "player.a"
   },
-  "event_type": "victory_declared",
+  "event_type": "objective_scored",
   "payload": {
-    "winner_player_id": "player.a",
-    "reason": "last_mech_standing",
-    "victory_kind": "elimination"
+    "kind": "steel_onslaught.objective_scored",
+    "objective_id": "objective.center_yard",
+    "controlling_player_id": "player.a",
+    "vp_awarded": 1,
+    "cumulative_vp": {
+      "player.a": 3,
+      "player.b": 1
+    },
+    "round_index": 7
   },
   "envelope": {
-    "message_id": "f60a6c12-574c-5e01-a541-76d56831da9a",
+    "message_id": "8b759a11-3925-5b70-b4a7-1e3fcfbd9000",
     "correlation_id": "216a8b7b-6339-56ff-86ef-1af3393f4562",
     "causation_id": null,
     "emitted_at": "2026-04-30T00:00:00Z",

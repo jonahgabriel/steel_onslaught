@@ -1,0 +1,121 @@
+# Phase 4 objective-arena variant of the over-deal split-deck overlay.
+#
+# Identical to ``tactical_split_overdeal_v1_qwen.yaml`` EXCEPT the arena:
+# matches run on ``foundry_60_asym_v1`` (asymmetric cover corridors +
+# 3 objective cells + vp_threshold 15), so victory can end on VP as well as
+# elimination.  This is the O-GATE battery overlay (design section 5): the
+# battery measures whether matches end on play (vp_threshold/elimination)
+# rather than the clock, with brawler win-rate as a reported observable.
+#
+# Launch:
+#   so run --overlay contracts_data/overlays/tactical_split_overdeal_asym_v1_qwen.yaml \
+#          --loadout-a <red.yaml> --loadout-b <blue.yaml> --seed <n>
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_asym_v1_qwen/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_asym_v1_qwen/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_asym_v1_qwen/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_asym_v1_qwen/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_asym_v1_qwen/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_asym_v1_qwen/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v1
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          # Over-deal: deal 8 (4 movement + 4 weapon), program 5.
+          hand_quota:
+            movement: 4
+            weapon: 4
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          # Over-deal: deal 8 (4 movement + 4 weapon), program 5.
+          hand_quota:
+            movement: 4
+            weapon: 4
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # The catalog launch path merges secret-bearing providers (for example the
+    # GLM seats in contracts_data/model_catalogs/configured_v1.yaml) into this
+    # overlay's provider set.  Declaring ``none`` refused to bind them and made
+    # the default 60x60 split-deck board unlaunchable from the browser deck.
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

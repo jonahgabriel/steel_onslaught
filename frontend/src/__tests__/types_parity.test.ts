@@ -1216,4 +1216,144 @@ describe("types parity against Python-emitted fixtures", () => {
     expect(projected.payload.arena.sudden_death_start_tick).toBeNull();
     expect(projected.payload.arena.sudden_death_damage_base).toBe(8);
   });
+
+  // ------------------------------------------------------------------
+  // Phase 4 — objectives, victory_kind, arena_contract_hash
+  // ------------------------------------------------------------------
+
+  it("parses a pre-Phase-4 stream: no objectives, no hash, no victory_kind", () => {
+    const raw = loadFixture("match_started");
+    const payload = objectValue(raw["payload"], "match_started.payload");
+    const arena = objectValue(payload["arena"], "match_started.payload.arena");
+    delete arena["objectives"];
+    delete arena["vp_threshold"];
+    delete payload["arena_contract_hash"];
+    const parsed = parseEnvelope(raw);
+    if (parsed.event_type !== "match_started") throw new Error("wrong fixture event type");
+    expect(parsed.payload.arena.objectives).toEqual([]);
+    expect(parsed.payload.arena.vp_threshold).toBeNull();
+    expect(parsed.payload.arena_contract_hash).toBeUndefined();
+
+    const victory = loadFixture("victory_declared");
+    const victoryPayload = objectValue(victory["payload"], "victory_declared.payload");
+    delete victoryPayload["victory_kind"];
+    const parsedVictory = parseEnvelope(victory);
+    if (parsedVictory.event_type !== "victory_declared") throw new Error("wrong event type");
+    expect(parsedVictory.payload.victory_kind).toBeNull();
+  });
+
+  it("rejects half-configured objective arenas", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          objectValue(payload["arena"], "arena")["vp_threshold"] = null;
+        }),
+      ),
+    ).toThrow(/declared together/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const arena = objectValue(payload["arena"], "arena");
+          arena["objectives"] = [];
+        }),
+      ),
+    ).toThrow(/declared together/);
+  });
+
+  it("rejects malformed objective declarations", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const arena = objectValue(payload["arena"], "arena");
+          const objectives = arrayValue(arena["objectives"], "objectives");
+          objectValue(objectives[0], "objectives[0]")["objective_id"] = "not-a-slug";
+        }),
+      ),
+    ).toThrow(/objective slug/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const arena = objectValue(payload["arena"], "arena");
+          const objectives = arrayValue(arena["objectives"], "objectives");
+          objectValue(objectives[0], "objectives[0]")["cell"] = { x: 5, y: 5 };
+        }),
+      ),
+    ).toThrow(/spawn point/);
+  });
+
+  it("rejects an unknown victory_kind literal and a kind/reason conflict", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("victory_declared", (payload) => {
+          payload["victory_kind"] = "timeout";
+        }),
+      ),
+    ).toThrow(/victory_kind/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("victory_declared", (payload) => {
+          payload["victory_kind"] = "vp_threshold";
+        }),
+      ),
+    ).toThrow(/conflicts/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("victory_declared", (payload) => {
+          payload["reason"] = "vp_threshold";
+        }),
+      ),
+    ).toThrow(/conflicts/);
+  });
+
+  it("accepts a vp_threshold victory with a matching kind", () => {
+    const raw = loadFixture("victory_declared");
+    const payload = objectValue(raw["payload"], "victory_declared.payload");
+    payload["reason"] = "vp_threshold";
+    payload["victory_kind"] = "vp_threshold";
+    const parsed = parseEnvelope(raw);
+    if (parsed.event_type !== "victory_declared") throw new Error("wrong event type");
+    expect(parsed.payload.reason).toBe("vp_threshold");
+    expect(parsed.payload.victory_kind).toBe("vp_threshold");
+  });
+
+  it("rejects malformed arena_contract_hash spellings", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          payload["arena_contract_hash"] = "ABC123";
+        }),
+      ),
+    ).toThrow(/arena_contract_hash/);
+  });
+
+  it("rejects objective_scored award inconsistencies", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("objective_scored", (payload) => {
+          payload["cumulative_vp"] = { "player.b": 1 };
+        }),
+      ),
+    ).toThrow(/controlling player/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("objective_scored", (payload) => {
+          payload["cumulative_vp"] = { "player.a": -1 };
+        }),
+      ),
+    ).toThrow(/non-negative/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("objective_scored", (payload) => {
+          payload["bogus"] = 1;
+        }),
+      ),
+    ).toThrow(/bogus/);
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("objective_scored", (payload) => {
+          payload["vp_awarded"] = 0;
+        }),
+      ),
+    ).toThrow(/vp_awarded/);
+  });
 });

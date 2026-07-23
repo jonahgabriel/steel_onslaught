@@ -65,6 +65,12 @@ class SOEventType(StrEnum):
     # after MATCH_SCORED; a no-op for the canonical match fold — cross-match
     # policy state folds from it via learning.promotion_fold instead.
     POLICY_PROMOTED = "policy_promoted"
+    # Objective control scoring (Phase 4, append-only).  Emitted by the
+    # canonical fold once per objective per controlled round; VP state itself
+    # folds from MATCH_TICK (the same derivation live and on replay), so this
+    # member is telemetry for projections/frontends and a fold no-op when it
+    # arrives back from the ledger — the BOILER_UPDATED discipline.
+    OBJECTIVE_SCORED = "objective_scored"
 
 
 class ModelSOEventSubject(BaseModel):

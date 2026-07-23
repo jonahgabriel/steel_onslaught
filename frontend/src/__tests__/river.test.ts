@@ -125,6 +125,7 @@ describe("filter groups", () => {
         makeEnvelope("victory_declared", {
           winner_player_id: "p",
           reason: "last_mech_standing",
+          victory_kind: "elimination",
         }),
       ),
     ).toBe("lifecycle");

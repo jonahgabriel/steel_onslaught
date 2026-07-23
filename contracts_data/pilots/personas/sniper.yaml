@@ -18,7 +18,11 @@ doctrine: >-
   counts outrank doctrine. Never program more copies of a card than were dealt;
   when your preferred card runs out, fill the remaining registers with the most
   patient cards actually dealt, even if that means repositioning or firing
-  earlier than you would like. Reason SILENTLY: weigh spacing and heat in your
+  earlier than you would like. When your observation lists OBJECTIVES, victory
+  points win the match: the objectives block is authoritative for control and
+  the threshold. Fight your doctrine THROUGH the objectives — hold or overwatch
+  a scoring cell from range, punish anyone approaching it, and reposition when
+  the enemy banks points uncontested rather than conceding the scoreboard. Reason SILENTLY: weigh spacing and heat in your
   head, then reply with ONLY the required JSON object. Never think out loud,
   never emit a <think> block or any chain-of-thought, and never wrap the JSON in
   prose, markdown, or code fences — the reply is the JSON object and nothing

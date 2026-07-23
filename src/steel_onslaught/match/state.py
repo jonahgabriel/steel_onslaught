@@ -61,6 +61,12 @@ class SOMatchEndReason(StrEnum):
     ABORTED = "aborted"
     ABORTED_RUNAWAY = "aborted_runaway"
     PROVIDER_SEMANTIC_FAILURE = "provider_semantic_failure"
+    # Objective victory (Phase 4, append-only): a side reached the arena's
+    # ``vp_threshold`` by holding objective cells.  This is a normal gameplay
+    # outcome — board control converts mobility into points — and the ONLY
+    # intended non-elimination victory; a clock ending is a reported anomaly
+    # (``victory_kind=tick_cap_failsafe``), never a design terminal.
+    VP_THRESHOLD = "vp_threshold"
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +233,11 @@ class ModelSOMatchState(BaseModel):
     mech_states: dict[str, ModelSOMechRuntimeState] = Field(default_factory=dict)
     winner_id: str | None = Field(default=None, description="Winning player_id; None on draws")
     end_reason: SOMatchEndReason | None = None
+    # Per-player cumulative victory points, folded deterministically from
+    # MATCH_TICK over the arena's objective cells (Phase 4).  Empty for every
+    # arena without objectives, so historical replays reproduce their exact
+    # recorded state.
+    vp_totals: dict[str, int] = Field(default_factory=dict)
 
     def player_ids(self) -> frozenset[str]:
         """Every player fielding a mech in this match (dead or alive)."""
@@ -261,6 +272,13 @@ class ModelSOMatchState(BaseModel):
                     f"status={self.status.value!r}, winner_id={self.winner_id!r}, "
                     f"end_reason={self.end_reason!r}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _vp_totals_non_negative(self) -> ModelSOMatchState:
+        negative = {player: vp for player, vp in self.vp_totals.items() if vp < 0}
+        if negative:
+            raise ValueError(f"vp_totals must be >= 0; got {negative}")
         return self
 
     @model_validator(mode="after")

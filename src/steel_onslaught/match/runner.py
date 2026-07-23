@@ -34,7 +34,7 @@ from pydantic import ValidationError
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.cards.dealer import ModelSODealerScope, ModelSODeckState
 from steel_onslaught.cards.round import carry_forward_plans
-from steel_onslaught.contracts.arena import ModelSOArenaSpec
+from steel_onslaught.contracts.arena import ModelSOArenaSpec, arena_contract_hash
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
@@ -60,6 +60,7 @@ from steel_onslaught.events.payloads import (
     ModelSOMatchEndedPayload,
     ModelSOMoveIntentPayload,
     ModelSOSensorObservationPayload,
+    ModelSOVictoryDeclaredPayload,
     ModelSOWeaponFireIntentPayload,
     ModelSOWeaponFireRejectedPayload,
     WeaponFireRejectionReason,
@@ -382,6 +383,9 @@ class MatchRunner:
             "max_ticks": self._max_ticks,
             "mechs": [mech.model_dump(mode="json") for mech in mechs],
             "arena": self._arena.model_dump(mode="json"),
+            # Phase 4 finish-line seam: every new ledger names the exact
+            # arena/objective contract it flew on (self-verifying digest).
+            "arena_contract_hash": arena_contract_hash(self._arena),
         }
         if self._launch_provenance is not None:
             started_payload["launch_provenance"] = self._launch_provenance.model_dump(mode="json")
@@ -490,6 +494,8 @@ class MatchRunner:
                         event_factory=self._events,
                         obstacles=self._obstacles,
                         arena_size=self._arena_size,
+                        objectives=self._arena.objectives,
+                        vp_threshold=self._arena.vp_threshold,
                     ).apply(tick_event)
             except LlmCompletionBoundaryError:
                 # A live provider that exhausts its output budget or typed
@@ -651,6 +657,8 @@ class MatchRunner:
                 self._catalog.weapons,
                 obstacles=self._obstacles,
                 arena_size=self._arena_size,
+                objectives=self._arena.objectives,
+                vp_threshold=self._arena.vp_threshold,
             )
             seats.append(
                 ModelSOCardSeatRequest(
@@ -757,6 +765,8 @@ class MatchRunner:
                     self._catalog.weapons,
                     obstacles=self._obstacles,
                     arena_size=self._arena_size,
+                    objectives=self._arena.objectives,
+                    vp_threshold=self._arena.vp_threshold,
                 )
                 seats.append(
                     ModelSOCardSeatRequest(
@@ -913,13 +923,25 @@ class MatchRunner:
             and self._card_cadence == "paced"
             and self._card_active_round is not None
         ):
-            death_driven = event.event_type is SOEventType.VICTORY_DECLARED or (
-                ModelSOMatchEndedPayload.model_validate(event.payload).reason
-                is SOMatchEndReason.DRAW_MUTUAL_DESTRUCTION
-            )
+            if event.event_type is SOEventType.VICTORY_DECLARED:
+                # A VP-threshold victory closed the round because a side hit
+                # the objective finish line, not because a mech died — the
+                # canonical discard row must name the true cause.
+                victory_reason = ModelSOVictoryDeclaredPayload.model_validate(event.payload).reason
+                reason = (
+                    "vp_threshold"
+                    if victory_reason is SOMatchEndReason.VP_THRESHOLD
+                    else "decisive_death"
+                )
+            else:
+                death_driven = (
+                    ModelSOMatchEndedPayload.model_validate(event.payload).reason
+                    is SOMatchEndReason.DRAW_MUTUAL_DESTRUCTION
+                )
+                reason = "decisive_death" if death_driven else "max_ticks"
             self._cancel_active_card_round(
                 tick=event.tick,
-                reason="decisive_death" if death_driven else "max_ticks",
+                reason=reason,
                 emit_match_ended=False,
             )
 

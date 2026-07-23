@@ -31,7 +31,11 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid5
 
-from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
+from steel_onslaught.contracts.arena import (
+    ModelSOArenaObjective,
+    ModelSOCurrentLiveArenaSnapshot,
+    arena_contract_hash,
+)
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.live_learning import ModelSOSeatPolicyProvenance
 from steel_onslaught.contracts.mode import ModeId
@@ -279,22 +283,40 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
         scored_at=_EMITTED_AT,
         is_draw=False,
     )
+    # Phase 4: the canonical fixture arena carries objectives + vp_threshold
+    # so the TS parser exercises the objective-victory fields; the
+    # self-verifying ``arena_contract_hash`` is computed, never hand-written.
+    fixture_arena = ModelSOCurrentLiveArenaSnapshot(
+        schema_version="0.1.0",
+        kind="steel_onslaught.arena_snapshot",
+        arena_id="open_field",
+        size=40,
+        spawn_a=mech_a.position,
+        spawn_b=mech_b.position,
+        obstacles=(),
+        sudden_death_start_tick=None,
+        sudden_death_damage_base=8,
+        objectives=(
+            ModelSOArenaObjective(
+                objective_id="objective.center_yard",
+                cell=ModelSOPosition(x=20, y=20),
+                vp_per_round=1,
+            ),
+            ModelSOArenaObjective(
+                objective_id="objective.east_gate",
+                cell=ModelSOPosition(x=30, y=12),
+                vp_per_round=2,
+            ),
+        ),
+        vp_threshold=15,
+    )
     return {
         SOEventType.MATCH_STARTED: {
             "seed": 12345,
             "max_ticks": 200,
             "mechs": [mech_a.model_dump(mode="json"), mech_b.model_dump(mode="json")],
-            "arena": ModelSOCurrentLiveArenaSnapshot(
-                schema_version="0.1.0",
-                kind="steel_onslaught.arena_snapshot",
-                arena_id="open_field",
-                size=40,
-                spawn_a=mech_a.position,
-                spawn_b=mech_b.position,
-                obstacles=(),
-                sudden_death_start_tick=None,
-                sudden_death_damage_base=8,
-            ).model_dump(mode="json"),
+            "arena": fixture_arena.model_dump(mode="json"),
+            "arena_contract_hash": arena_contract_hash(fixture_arena),
             # The runner emits this on every authorized launch
             # (``tests/match/test_runner.py::
             # test_authorized_run_emits_exact_launch_provenance``), so the
@@ -468,8 +490,17 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
         SOEventType.VICTORY_DECLARED: {
             "winner_player_id": "player.a",
             "reason": "last_mech_standing",
+            "victory_kind": "elimination",
         },
         SOEventType.MATCH_ENDED: {"reason": "last_mech_standing", "winner_id": "player.a"},
+        SOEventType.OBJECTIVE_SCORED: {
+            "kind": "steel_onslaught.objective_scored",
+            "objective_id": "objective.center_yard",
+            "controlling_player_id": "player.a",
+            "vp_awarded": 1,
+            "cumulative_vp": {"player.a": 3, "player.b": 1},
+            "round_index": 7,
+        },
         SOEventType.MATCH_SCORED: scored.model_dump(mode="json"),
         SOEventType.POLICY_PROMOTED: {
             "kind": "steel_onslaught.policy_promoted",

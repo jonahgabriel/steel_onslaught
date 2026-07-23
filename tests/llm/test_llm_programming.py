@@ -25,6 +25,7 @@ from steel_onslaught.llm.personas import Persona, PersonaRegistry
 from steel_onslaught.llm.programming import (
     _DEFAULT_SEMANTIC_RETRY_LIMIT,
     LLMProgrammingPilot,
+    _serialize_programming_observation,
     programming_system_prompt,
 )
 from steel_onslaught.llm.schemas import (
@@ -35,10 +36,12 @@ from steel_onslaught.llm.schemas import (
 )
 from steel_onslaught.pilots.programming import ModelSOProgrammingObservation, program_for_seat
 from steel_onslaught.pilots.schemas import (
+    ModelSOObjectiveView,
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
     ModelSOPosition,
     ModelSOSensorReading,
+    ModelSOVictoryPointsView,
 )
 
 pytestmark = pytest.mark.unit
@@ -780,3 +783,68 @@ def test_adversarial_over_copy_doctrine_still_exhausts_classified() -> None:
     assert excinfo.value.semantic_failure_code == "invalid_action_parameters"
     assert excinfo.value.attempts == 3
     assert len(client.requests) == 3
+
+
+def _objective_observation() -> ModelSOProgrammingObservation:
+    """The same observation as ``_observation`` but on an objective arena."""
+
+    base = _observation()
+    pilot = base.pilot_observation.model_copy(
+        update={
+            "objectives": (
+                ModelSOObjectiveView(
+                    objective_id="objective.north_works",
+                    cell=ModelSOPosition(x=30, y=22),
+                    vp_per_round=1,
+                    control="enemy",
+                    own_distance_chebyshev=9,
+                ),
+                ModelSOObjectiveView(
+                    objective_id="objective.west_yard",
+                    cell=ModelSOPosition(x=18, y=30),
+                    vp_per_round=1,
+                    control="own",
+                    own_distance_chebyshev=1,
+                ),
+            ),
+            "victory_points": ModelSOVictoryPointsView(own_vp=4, enemy_vp=7, vp_threshold=15),
+        }
+    )
+    return base.model_copy(update={"pilot_observation": pilot})
+
+
+def test_objective_free_programming_prompt_has_no_objectives_block() -> None:
+    """Pre-Phase-4 prompt shape is preserved byte-for-byte off objective arenas."""
+
+    serialized = _serialize_programming_observation(_observation())
+    assert '"objectives"' not in serialized
+
+
+def test_objective_programming_prompt_block_is_deterministic_and_additive() -> None:
+    """The objectives block adds exactly one key, deterministically ordered."""
+
+    with_objectives = _serialize_programming_observation(_objective_observation())
+    without = _serialize_programming_observation(_observation())
+
+    parsed = json.loads(with_objectives)
+    block = parsed.pop("objectives")
+    # Additive-only: removing the block restores the objective-free prompt.
+    assert json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":")) == without
+
+    assert block["vp_threshold"] == 15
+    assert block["own_vp"] == 4
+    assert block["enemy_vp"] == 7
+    assert "first side to reach" in block["rule"]
+    assert [cell["objective_id"] for cell in block["cells"]] == [
+        "objective.north_works",
+        "objective.west_yard",
+    ]
+    assert block["cells"][1] == {
+        "objective_id": "objective.west_yard",
+        "cell": {"x": 18, "y": 30},
+        "vp_per_round": 1,
+        "control": "own",
+        "own_distance_chebyshev": 1,
+    }
+    # Deterministic: same observation, same bytes.
+    assert _serialize_programming_observation(_objective_observation()) == with_objectives

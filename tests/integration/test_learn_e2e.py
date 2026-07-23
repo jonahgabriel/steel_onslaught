@@ -160,6 +160,9 @@ _PINNED_EVENT_TYPES = frozenset(
         "match_ended",
         "policy_promoted",
         "match_scored",
+        # Phase 4 objective scoring (append-only member, census-registered
+        # payload — see tests/events/test_payload_contracts.py).
+        "objective_scored",
     }
 )
 

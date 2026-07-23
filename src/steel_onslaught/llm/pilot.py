@@ -121,6 +121,21 @@ def _serialize_observation(obs: ModelSOPilotObservation, *, persona_id: str) -> 
             "vent, or remain.",
         )
     )
+    if obs.objectives and obs.victory_points is not None:
+        # Objective-victory legibility (Phase 4).  Rendered ONLY on objective
+        # arenas so every objective-free prompt stays byte-identical.
+        vp = obs.victory_points
+        lines.append(
+            f"--- OBJECTIVES (hold a cell within 1, uncontested, to score; "
+            f"first to {vp.vp_threshold} VP wins) ---"
+        )
+        lines.append(f"victory_points: you {vp.own_vp} vs enemy {vp.enemy_vp}")
+        for objective in obs.objectives:
+            lines.append(
+                f"  - {objective.objective_id}: cell=({objective.cell.x},{objective.cell.y}) "
+                f"vp_per_round={objective.vp_per_round} control={objective.control} "
+                f"your_distance={objective.own_distance_chebyshev}"
+            )
     if obs.enemy_observations:
         lines.append("--- ENEMY (noisy sensor readings, newest last) ---")
         for r in obs.enemy_observations[-3:]:  # last 3 readings
