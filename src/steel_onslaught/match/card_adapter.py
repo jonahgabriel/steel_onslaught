@@ -28,6 +28,7 @@ from steel_onslaught.cards.actions import (
     ModelSOCardMovementParameters,
     ModelSOCardRotateParameters,
     ModelSOCardSpecialParameters,
+    ModelSOCardUtilityParameters,
     ModelSOCardVentParameters,
     compile_card_action,
 )
@@ -69,6 +70,7 @@ from steel_onslaught.events.envelope import SOEventType
 from steel_onslaught.events.payloads import (
     ModelSOEmptyPayload,
     ModelSOMoveIntentPayload,
+    ModelSOUtilityDeployIntentPayload,
     ModelSOWeaponFireIntentPayload,
 )
 from steel_onslaught.pilots.programming import (
@@ -151,6 +153,7 @@ class ModelSOCardIntentProjection(_ClosedCardAdapterModel):
         | ModelSOMoveIntentPayload
         | ModelSOWeaponFireIntentPayload
         | ModelSOModeSwitchIntentPayload
+        | ModelSOUtilityDeployIntentPayload
         | None
     ) = None
     outcome: SORegisterOutcome
@@ -413,6 +416,19 @@ class CardRunnerAdapter:
                         f"split-deck dealer could not fill the configured hand for seat "
                         f"{request.seat!r}"
                     )
+                # Phase 2 third pile: only carry the utility partition when the
+                # seat declares a utility deck AND a positive utility quota, so
+                # pre-Phase-2 split hands stay two-partition and byte-identical.
+                utility_partition: ModelSOHandPartitionPayload | None = None
+                if seat_policy.utility_deck_id is not None and seat_policy.hand_quota.utility > 0:
+                    utility_partition = ModelSOHandPartitionPayload(
+                        partition=SOCardPartition.UTILITY,
+                        deck_id=seat_policy.utility_deck_id,
+                        card_ids=split_result.utility_hand,
+                        requested_count=seat_policy.hand_quota.utility,
+                        deck_remaining=len(split_result.state.utility.draw_pile),
+                        reshuffled=split_result.utility_reshuffled,
+                    )
                 partitions = ModelSOHandPartitionsPayload(
                     movement=ModelSOHandPartitionPayload(
                         partition=SOCardPartition.MOVEMENT,
@@ -430,6 +446,7 @@ class CardRunnerAdapter:
                         deck_remaining=len(split_result.state.weapon.draw_pile),
                         reshuffled=split_result.weapon_reshuffled,
                     ),
+                    utility=utility_partition,
                 )
                 payload = ModelSOHandDealtPayload(
                     seat=request.seat,
@@ -439,8 +456,13 @@ class CardRunnerAdapter:
                     deck_remaining=(
                         len(split_result.state.movement.draw_pile)
                         + len(split_result.state.weapon.draw_pile)
+                        + len(split_result.state.utility.draw_pile)
                     ),
-                    reshuffled=(split_result.movement_reshuffled or split_result.weapon_reshuffled),
+                    reshuffled=(
+                        split_result.movement_reshuffled
+                        or split_result.weapon_reshuffled
+                        or split_result.utility_reshuffled
+                    ),
                     partitions=partitions,
                     register_count=seat_policy.register_count,
                 )
@@ -484,6 +506,8 @@ class CardRunnerAdapter:
                     seat_policy.movement_deck_id,
                     seat_policy.weapon_deck_id,
                 )
+                if seat_policy.utility_deck_id is not None:
+                    hand_deck_ids = (*hand_deck_ids, seat_policy.utility_deck_id)
             else:
                 register_count = self.card_round_runtime.snapshot.selected_deck.register_count
                 hand_deck_ids = ()
@@ -569,6 +593,7 @@ class CardRunnerAdapter:
                 "split-deck emissions require partition metadata and state"
             )
         partitions = deal.payload.partitions
+        utility_cards = () if partitions.utility is None else partitions.utility.card_ids
         return ModelSOSplitDeckState(
             movement=deal.split_state.movement.model_copy(
                 update={
@@ -583,6 +608,9 @@ class CardRunnerAdapter:
                         deal.split_state.weapon.discard_pile + partitions.weapon.card_ids
                     )
                 }
+            ),
+            utility=deal.split_state.utility.model_copy(
+                update={"discard_pile": (deal.split_state.utility.discard_pile + utility_cards)}
             ),
         )
 
@@ -642,7 +670,8 @@ class CardRunnerAdapter:
             ModelSOEmptyPayload
             | ModelSOMoveIntentPayload
             | ModelSOWeaponFireIntentPayload
-            | ModelSOModeSwitchIntentPayload,
+            | ModelSOModeSwitchIntentPayload
+            | ModelSOUtilityDeployIntentPayload,
         ]
         | None
     ):
@@ -677,6 +706,17 @@ class CardRunnerAdapter:
         if isinstance(parameters, ModelSOCardSpecialParameters):
             return SOEventType.MODE_SWITCH_INTENT, ModelSOModeSwitchIntentPayload(
                 target_mode=parameters.target_mode
+            )
+        if isinstance(parameters, ModelSOCardUtilityParameters):
+            # Phase 2 — the first card whose resolution changes the battlefield.
+            # Value-only: WHAT to deploy (kind/area/duration) and which card
+            # authored it; the runner stamps WHERE (the deploying mech's live
+            # cell) when it resolves this intent into UTILITY_DEPLOYED.
+            return SOEventType.UTILITY_DEPLOY_INTENT, ModelSOUtilityDeployIntentPayload(
+                card_id=translation.card_id,
+                utility_kind=parameters.utility_kind,
+                radius=parameters.radius,
+                duration_ticks=parameters.duration_ticks,
             )
         raise CardRunnerAdapterError(f"unsupported card action parameters: {parameters!r}")
 

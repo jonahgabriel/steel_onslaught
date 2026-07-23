@@ -678,6 +678,42 @@ class ModelSOPolicyPromotedPayload(_ClosedPayload):
         return self
 
 
+SOUtilityKind = Literal["smoke", "chaff", "flares"]
+"""Which counterplay effect a utility card deploys (Phase 2, design §3.2)."""
+
+
+class ModelSOUtilityDeployIntentPayload(_ClosedPayload):
+    """A resolved utility card's typed deploy intent (Phase 2, Stage A).
+
+    Value-only: it carries WHAT to deploy (kind, area, duration) and which card
+    authored it, but not WHERE — the origin is the deploying mech's live cell,
+    stamped by the runner when it resolves this intent into ``UTILITY_DEPLOYED``.
+    """
+
+    card_id: StrictStr = Field(min_length=1)
+    utility_kind: SOUtilityKind
+    radius: StrictInt = Field(ge=0)
+    duration_ticks: StrictInt = Field(ge=1)
+
+
+class ModelSOUtilityDeployedPayload(_ClosedPayload):
+    """One deployed battlefield-effect record (Phase 2, design §6 line 234).
+
+    Emitted by the runner when a utility card resolves; folded into
+    ``active_utility_effects`` with per-tick expiry.  ``origin`` is the
+    deploying mech's cell; ``radius`` its area; ``duration_ticks`` how long the
+    effect persists.  A fold-affecting, projection-facing record — the first
+    card whose resolution changes the battlefield.
+    """
+
+    kind: Literal["steel_onslaught.utility_deployed"] = "steel_onslaught.utility_deployed"
+    card_id: StrictStr = Field(min_length=1)
+    utility_kind: SOUtilityKind
+    origin: ModelSOPosition
+    radius: StrictInt = Field(ge=0)
+    duration_ticks: StrictInt = Field(ge=1)
+
+
 CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = MappingProxyType(
     {
         SOEventType.MATCH_STARTED: ModelSOMatchStartedPayload,
@@ -687,6 +723,7 @@ CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = Mapping
         SOEventType.WEAPON_FIRE_INTENT: ModelSOWeaponFireIntentPayload,
         SOEventType.MODE_SWITCH_INTENT: ModelSOModeSwitchIntentPayload,
         SOEventType.VENT_INTENT: ModelSOEmptyPayload,
+        SOEventType.UTILITY_DEPLOY_INTENT: ModelSOUtilityDeployIntentPayload,
         SOEventType.MECH_SPAWNED: ModelSOMechSpawnedPayload,
         SOEventType.MOVEMENT_RESOLVED: ModelSOMovementResolvedPayload,
         SOEventType.SENSOR_OBSERVATION: ModelSOSensorObservationPayload,
@@ -716,6 +753,7 @@ CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = Mapping
         SOEventType.CARDS_DISCARDED: ModelSOCardsDiscardedPayload,
         SOEventType.POLICY_PROMOTED: ModelSOPolicyPromotedPayload,
         SOEventType.OBJECTIVE_SCORED: ModelSOObjectiveScoredPayload,
+        SOEventType.UTILITY_DEPLOYED: ModelSOUtilityDeployedPayload,
     }
 )
 
@@ -754,10 +792,13 @@ __all__ = [
     "ModelSORuntimeStatusChangedPayload",
     "ModelSOScoredWinner",
     "ModelSOSensorObservationPayload",
+    "ModelSOUtilityDeployIntentPayload",
+    "ModelSOUtilityDeployedPayload",
     "ModelSOVictoryDeclaredPayload",
     "ModelSOWeaponFireIntentPayload",
     "ModelSOWeaponFireRejectedPayload",
     "ModelSOWeaponFiredPayload",
+    "SOUtilityKind",
     "SOVictoryKind",
     "WeaponFireRejectionReason",
 ]

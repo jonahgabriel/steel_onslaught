@@ -75,6 +75,7 @@ from steel_onslaught.events.payloads import (
     ModelSOMatchStartedPayload,
     ModelSOMechDestroyedPayload,
     ModelSOPilotKilledPayload,
+    ModelSOUtilityDeployedPayload,
     ModelSOWeaponFiredPayload,
 )
 from steel_onslaught.immutable import freeze_mapping
@@ -85,6 +86,7 @@ from steel_onslaught.match.state import (
     SOMatchEndReason,
     SOMatchStatus,
 )
+from steel_onslaught.match.utility_effects import ModelSOUtilityEffect, expire_effects
 from steel_onslaught.reducers.boiler import ReducerBoiler
 from steel_onslaught.reducers.failure import ReducerFailureCascade
 from steel_onslaught.reducers.lifecycle import ReducerMatchLifecycle
@@ -234,6 +236,10 @@ class MatchStateFold:
         # Per-player VP, folded deterministically from MATCH_TICK over the
         # arena's objectives (Phase 4).  Stays empty on objective-free arenas.
         self._vp_totals: dict[str, int] = {}
+        # Deployed, still-active utility effects (Phase 2), folded from
+        # UTILITY_DEPLOYED and pruned per MATCH_TICK by ``expiry_tick``.  Stays
+        # empty on matches with no utility deployment (replay identity).
+        self._active_utility_effects: list[ModelSOUtilityEffect] = []
         # Active emission buffer; set per `apply` call (commit-then-emit).
         self._sink: list[ModelSOEventEnvelope] | None = None
 
@@ -248,6 +254,7 @@ class MatchStateFold:
             update={
                 "mech_states": dict(self._mech_states),
                 "vp_totals": dict(self._vp_totals),
+                "active_utility_effects": tuple(self._active_utility_effects),
             }
         )
 
@@ -331,6 +338,8 @@ class MatchStateFold:
                 case SOEventType.PILOT_KILLED:
                     ModelSOPilotKilledPayload.model_validate(event.payload)
                     self._on_flag_drop(event, field="pilot_alive")
+                case SOEventType.UTILITY_DEPLOYED:
+                    self._on_utility_deployed(event)
                 case _:
                     pass  # intents, observations, telemetry: no state delta
         finally:
@@ -492,7 +501,35 @@ class MatchStateFold:
         working = self._advance_mode_transitions(event, working)
         working = self._failure.apply(event, working)
         self._mech_states = dict(working.mech_states)
+        # Prune expired utility effects before scoring — deterministic from the
+        # folded tick, identical live and on replay (R9).
+        self._active_utility_effects = list(
+            expire_effects(tuple(self._active_utility_effects), event.tick)
+        )
         self._score_objectives(event)
+
+    def _on_utility_deployed(self, event: ModelSOEventEnvelope) -> None:
+        """Fold a deployed utility card into the active-effects table (Phase 2).
+
+        The effect's ``expiry_tick`` is deployment tick + ``duration_ticks``, so
+        it bites from the deploying tick and is pruned in ``_on_match_tick`` once
+        that tick is reached — the same derivation live and on replay.
+        """
+
+        payload = ModelSOUtilityDeployedPayload.model_validate(event.payload)
+        self._active_utility_effects = [
+            *self._active_utility_effects,
+            ModelSOUtilityEffect(
+                kind=payload.utility_kind,
+                card_id=payload.card_id,
+                origin_x=payload.origin.x,
+                origin_y=payload.origin.y,
+                radius=payload.radius,
+                expiry_tick=event.tick + payload.duration_ticks,
+                owner_mech_id=event.subject.mech_id,
+                owner_player_id=event.subject.player_id,
+            ),
+        ]
 
     def _score_objectives(self, event: ModelSOEventEnvelope) -> None:
         """Fold one objective-control scoring round (Phase 4, per MATCH_TICK).

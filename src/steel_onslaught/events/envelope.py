@@ -32,6 +32,9 @@ class SOEventType(StrEnum):
     WEAPON_FIRE_INTENT = "weapon_fire_intent"
     MODE_SWITCH_INTENT = "mode_switch_intent"
     VENT_INTENT = "vent_intent"
+    # Utility-card deploy intent (Phase 2): a programmed utility card resolves to
+    # this typed intent; the runner validates it and publishes UTILITY_DEPLOYED.
+    UTILITY_DEPLOY_INTENT = "utility_deploy_intent"
     # Resolved state changes (canonical truth)
     MOVEMENT_RESOLVED = "movement_resolved"
     BOILER_UPDATED = "boiler_updated"
@@ -71,6 +74,13 @@ class SOEventType(StrEnum):
     # member is telemetry for projections/frontends and a fold no-op when it
     # arrives back from the ledger — the BOILER_UPDATED discipline.
     OBJECTIVE_SCORED = "objective_scored"
+    # Utility-card deployment (Phase 2, append-only).  The first card whose
+    # resolution changes the battlefield: smoke blocks LOS, chaff debuffs
+    # targeting, flares break a lock.  Folded into ``active_utility_effects``
+    # (per-tick expiry); a durable, projection-facing record consulted by the
+    # weapon-fire resolver.  Same append-only protocol-ordering discipline as
+    # the card-lifecycle and OBJECTIVE_SCORED members above.
+    UTILITY_DEPLOYED = "utility_deployed"
 
 
 class ModelSOEventSubject(BaseModel):

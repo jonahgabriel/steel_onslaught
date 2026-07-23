@@ -141,6 +141,7 @@ def test_pilot_action_enum_members() -> None:
         "SWITCH_MODE",
         "EMERGENCY_SHUTDOWN",
         "DISENGAGE",
+        "DEPLOY_UTILITY",
     }
 
 

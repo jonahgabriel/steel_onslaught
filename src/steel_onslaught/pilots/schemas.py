@@ -54,6 +54,7 @@ class SOPilotAction(StrEnum):
     SWITCH_MODE = "switch_mode"
     EMERGENCY_SHUTDOWN = "emergency_shutdown"
     DISENGAGE = "disengage"
+    DEPLOY_UTILITY = "deploy_utility"
 
 
 class SOPilotReasonCode(StrEnum):

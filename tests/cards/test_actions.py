@@ -34,6 +34,7 @@ _EXPECTED = {
     SOCardCategory.ATTACK: SOPilotAction.FIRE_WEAPON,
     SOCardCategory.VENT: SOPilotAction.VENT,
     SOCardCategory.SPECIAL: SOPilotAction.SWITCH_MODE,
+    SOCardCategory.UTILITY: SOPilotAction.DEPLOY_UTILITY,
 }
 
 

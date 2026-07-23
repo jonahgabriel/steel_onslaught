@@ -19,6 +19,7 @@ type SOCardDirection = Literal[
     "right",
 ]
 type SOCardSpeed = Literal["full"]
+type SOUtilityKind = Literal["smoke", "chaff", "flares"]
 
 
 class _ClosedCardModel(BaseModel):
@@ -33,6 +34,10 @@ class SOCardCategory(StrEnum):
     ATTACK = "attack"
     VENT = "vent"
     SPECIAL = "special"
+    # Phase 2 — active counterplay (smoke/chaff/flares).  The first cards whose
+    # resolution changes the battlefield; dealt from the split deck's third
+    # "utility" pile (``hand_quota.utility``) and partitioned separately.
+    UTILITY = "utility"
 
 
 def _effect_fields_for_category(category: SOCardCategory) -> frozenset[str]:
@@ -47,6 +52,8 @@ def _effect_fields_for_category(category: SOCardCategory) -> frozenset[str]:
             return frozenset()
         case SOCardCategory.SPECIAL:
             return frozenset(("target_mode",))
+        case SOCardCategory.UTILITY:
+            return frozenset(("utility_kind", "radius", "duration_ticks"))
     assert_never(category)
 
 
@@ -57,6 +64,12 @@ class ModelSOCardEffect(_ClosedCardModel):
     speed: SOCardSpeed | None = Field(default=None)
     weapon_slot: StrictInt | None = Field(default=None, ge=0)
     target_mode: ModeId | None = Field(default=None)
+    # Utility (Phase 2): which counterplay effect the card deploys, the area
+    # radius of the effect, and how long it persists once deployed.  All three
+    # are set together on a ``utility`` card and absent on every other category.
+    utility_kind: SOUtilityKind | None = Field(default=None)
+    radius: StrictInt | None = Field(default=None, ge=0)
+    duration_ticks: StrictInt | None = Field(default=None, ge=1)
 
 
 class ModelSOCard(_ClosedCardModel):
@@ -75,7 +88,15 @@ class ModelSOCard(_ClosedCardModel):
     def _effect_matches_category(self) -> Self:
         present = frozenset(
             name
-            for name in ("direction", "speed", "weapon_slot", "target_mode")
+            for name in (
+                "direction",
+                "speed",
+                "weapon_slot",
+                "target_mode",
+                "utility_kind",
+                "radius",
+                "duration_ticks",
+            )
             if getattr(self.effect, name) is not None
         )
         required = _effect_fields_for_category(self.category)
@@ -126,4 +147,5 @@ __all__ = [
     "SOCardCategory",
     "SOCardDirection",
     "SOCardSpeed",
+    "SOUtilityKind",
 ]

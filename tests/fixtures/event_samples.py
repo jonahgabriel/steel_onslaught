@@ -405,6 +405,12 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
         SOEventType.WEAPON_FIRE_INTENT: {"weapon_id": "module.weapon.machine_gun"},
         SOEventType.MODE_SWITCH_INTENT: {"target_mode": "assault"},
         SOEventType.VENT_INTENT: {},
+        SOEventType.UTILITY_DEPLOY_INTENT: {
+            "card_id": "card.utility.smoke",
+            "utility_kind": "smoke",
+            "radius": 1,
+            "duration_ticks": 2,
+        },
         SOEventType.MOVEMENT_RESOLVED: {
             "from": {"x": 5, "y": 5},
             "to": {"x": 7, "y": 6},
@@ -500,6 +506,14 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
             "vp_awarded": 1,
             "cumulative_vp": {"player.a": 3, "player.b": 1},
             "round_index": 7,
+        },
+        SOEventType.UTILITY_DEPLOYED: {
+            "kind": "steel_onslaught.utility_deployed",
+            "card_id": "card.utility.smoke",
+            "utility_kind": "smoke",
+            "origin": {"x": 7, "y": 6},
+            "radius": 1,
+            "duration_ticks": 2,
         },
         SOEventType.MATCH_SCORED: scored.model_dump(mode="json"),
         SOEventType.POLICY_PROMOTED: {

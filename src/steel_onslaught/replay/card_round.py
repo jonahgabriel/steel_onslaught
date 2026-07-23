@@ -229,10 +229,14 @@ def _validate_structure(
                 )
             if hand.hand_size != len(hand.card_ids):
                 raise CardRoundReplayError("split HAND_DEALT hand_size differs from card_ids")
-            partition_cards = (
+            # Phase 2 third pile: the utility partition is optional; include it
+            # in the conservation accounting only when the hand carries one.
+            partition_cards = [
                 (hand.partitions.movement, "movement"),
                 (hand.partitions.weapon, "weapon"),
-            )
+            ]
+            if hand.partitions.utility is not None:
+                partition_cards.append((hand.partitions.utility, "utility"))
             if sum(len(partition.card_ids) for partition, _ in partition_cards) != hand.hand_size:
                 raise CardRoundReplayError(
                     "split HAND_DEALT partitions do not account for the complete hand"

@@ -38,6 +38,7 @@ export const SO_EVENT_TYPES = [
   "weapon_fire_intent",
   "mode_switch_intent",
   "vent_intent",
+  "utility_deploy_intent",
   "movement_resolved",
   "boiler_updated",
   "heat_redline_entered",
@@ -63,6 +64,7 @@ export const SO_EVENT_TYPES = [
   "cards_discarded",
   "policy_promoted",
   "objective_scored",
+  "utility_deployed",
 ] as const;
 
 export type SOEventType = (typeof SO_EVENT_TYPES)[number];
@@ -444,6 +446,15 @@ export interface ModeSwitchIntentPayload {
 
 export type VentIntentPayload = Record<string, never>;
 
+export type SOUtilityKind = "smoke" | "chaff" | "flares";
+
+export interface UtilityDeployIntentPayload {
+  card_id: string;
+  utility_kind: SOUtilityKind;
+  radius: number;
+  duration_ticks: number;
+}
+
 export interface MovementResolvedPayload {
   from: SOPosition;
   to: SOPosition;
@@ -584,6 +595,16 @@ export interface MatchEndedPayload {
   winner_id: string | null;
 }
 
+/** Mirror of ModelSOUtilityDeployedPayload (Phase 2). */
+export interface UtilityDeployedPayload {
+  kind: "steel_onslaught.utility_deployed";
+  card_id: string;
+  utility_kind: SOUtilityKind;
+  origin: SOPosition;
+  radius: number;
+  duration_ticks: number;
+}
+
 export interface SOPlayerScore {
   victory: number;
   damage_dealt: number;
@@ -641,7 +662,7 @@ export type SOPlanSource =
   | "unspecified";
 
 export interface HandPartitionPayload {
-  partition: "movement" | "weapon";
+  partition: "movement" | "weapon" | "utility";
   deck_id: string;
   card_ids: string[];
   requested_count: number;
@@ -660,6 +681,8 @@ export interface HandDealtPayload {
   partitions?: {
     movement: HandPartitionPayload;
     weapon: HandPartitionPayload;
+    // Phase 2 third pile; only present when a utility quota was dealt.
+    utility?: HandPartitionPayload;
   };
   register_count?: number;
 }
@@ -716,6 +739,7 @@ export interface PayloadMap {
   weapon_fire_intent: WeaponFireIntentPayload;
   mode_switch_intent: ModeSwitchIntentPayload;
   vent_intent: VentIntentPayload;
+  utility_deploy_intent: UtilityDeployIntentPayload;
   movement_resolved: MovementResolvedPayload;
   boiler_updated: BoilerUpdatedPayload;
   heat_redline_entered: HeatRedlinePayload;
@@ -737,6 +761,7 @@ export interface PayloadMap {
   match_scored: MatchScoredPayload;
   policy_promoted: PolicyPromotedPayload;
   objective_scored: ObjectiveScoredPayload;
+  utility_deployed: UtilityDeployedPayload;
 }
 
 // ---------------------------------------------------------------------------
@@ -2298,10 +2323,12 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     let partitions: HandDealtPayload["partitions"];
     if (rawPartitions !== undefined) {
       const partitionRecord = asRecord(rawPartitions, `${context}.partitions`);
-      rejectUnknown(partitionRecord, ["movement", "weapon"], `${context}.partitions`);
+      // Phase 2 third pile: "utility" is optional and only present when a
+      // utility quota was dealt, so pre-Phase-2 hands stay two-partition.
+      rejectUnknown(partitionRecord, ["movement", "weapon", "utility"], `${context}.partitions`);
       const parsePartition = (
         value: unknown,
-        partition: "movement" | "weapon",
+        partition: "movement" | "weapon" | "utility",
       ): HandPartitionPayload => {
         const itemContext = `${context}.partitions.${partition}`;
         const item = asRecord(value, itemContext);
@@ -2327,14 +2354,27 @@ const PAYLOAD_PARSERS: PayloadParsers = {
           reshuffled: bool(item, "reshuffled", itemContext),
         };
       };
+      const utilityPartition =
+        partitionRecord["utility"] === undefined
+          ? undefined
+          : parsePartition(partitionRecord["utility"], "utility");
       partitions = {
         movement: parsePartition(partitionRecord["movement"], "movement"),
         weapon: parsePartition(partitionRecord["weapon"], "weapon"),
+        ...(utilityPartition === undefined ? {} : { utility: utilityPartition }),
       };
-      if (partitions.movement.requested_count + partitions.weapon.requested_count !== hand_size) {
+      const utilityCount = utilityPartition?.requested_count ?? 0;
+      if (
+        partitions.movement.requested_count + partitions.weapon.requested_count + utilityCount !==
+        hand_size
+      ) {
         fail(context, "partition counts must equal hand_size");
       }
-      const partitionIds = [...partitions.movement.card_ids, ...partitions.weapon.card_ids];
+      const partitionIds = [
+        ...partitions.movement.card_ids,
+        ...partitions.weapon.card_ids,
+        ...(utilityPartition?.card_ids ?? []),
+      ];
       if (partitionIds.join("\u0000") !== card_ids.join("\u0000")) {
         fail(context, "partitions must preserve card_ids order");
       }
@@ -2601,6 +2641,20 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     rejectUnknown(record, [], context);
     return {};
   },
+  utility_deploy_intent: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(record, ["card_id", "utility_kind", "radius", "duration_ticks"], context);
+    const utilityKind = record["utility_kind"];
+    if (utilityKind !== "smoke" && utilityKind !== "chaff" && utilityKind !== "flares") {
+      fail(context, 'field "utility_kind" must be smoke, chaff, or flares');
+    }
+    return {
+      card_id: str(record, "card_id", context),
+      utility_kind: utilityKind,
+      radius: nonNegativeInt(record, "radius", context),
+      duration_ticks: positiveInt(record, "duration_ticks", context),
+    };
+  },
   movement_resolved: (value, context) => {
     const record = asRecord(value, context);
     rejectUnknown(record, ["from", "to", "ticks_consumed", "pressure_consumed"], context);
@@ -2860,6 +2914,29 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       fail(context, "the controlling player's cumulative_vp must include this award");
     }
     return parsed;
+  },
+  utility_deployed: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      ["kind", "card_id", "utility_kind", "origin", "radius", "duration_ticks"],
+      context,
+    );
+    if (record["kind"] !== "steel_onslaught.utility_deployed") {
+      fail(context, 'field "kind" must be "steel_onslaught.utility_deployed"');
+    }
+    const utilityKind = record["utility_kind"];
+    if (utilityKind !== "smoke" && utilityKind !== "chaff" && utilityKind !== "flares") {
+      fail(context, 'field "utility_kind" must be smoke, chaff, or flares');
+    }
+    return {
+      kind: "steel_onslaught.utility_deployed",
+      card_id: str(record, "card_id", context),
+      utility_kind: utilityKind,
+      origin: parsePosition(record["origin"], `${context}.origin`),
+      radius: nonNegativeInt(record, "radius", context),
+      duration_ticks: positiveInt(record, "duration_ticks", context),
+    };
   },
   match_ended: (value, context) => {
     const record = asRecord(value, context);

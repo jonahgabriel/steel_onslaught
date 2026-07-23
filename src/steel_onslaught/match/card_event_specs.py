@@ -34,6 +34,7 @@ from steel_onslaught.events.envelope import ModelSOEventSubject, SOEventType
 from steel_onslaught.events.payloads import (
     ModelSOEmptyPayload,
     ModelSOMoveIntentPayload,
+    ModelSOUtilityDeployIntentPayload,
     ModelSOWeaponFireIntentPayload,
 )
 from steel_onslaught.match.card_adapter import (
@@ -71,6 +72,7 @@ CardRoundIntentPayload = (
     | ModelSOMoveIntentPayload
     | ModelSOWeaponFireIntentPayload
     | ModelSOModeSwitchIntentPayload
+    | ModelSOUtilityDeployIntentPayload
 )
 CardRoundSpecPayload = CardRoundLifecyclePayload | CardRoundIntentPayload
 
@@ -135,6 +137,7 @@ class ModelSOCardRoundEventSpec(_ClosedCardEventSpecModel):
                 SOEventType.WEAPON_FIRE_INTENT,
                 SOEventType.MODE_SWITCH_INTENT,
                 SOEventType.VENT_INTENT,
+                SOEventType.UTILITY_DEPLOY_INTENT,
             }:
                 raise CardRoundEventSpecError("INTENT specs require a canonical intent event type")
             if self.action is None:
@@ -349,6 +352,7 @@ class CardRoundEventSpecBuilder:
             SOEventType.WEAPON_FIRE_INTENT,
             SOEventType.MODE_SWITCH_INTENT,
             SOEventType.VENT_INTENT,
+            SOEventType.UTILITY_DEPLOY_INTENT,
         }:
             raise CardRoundEventSpecError(
                 f"unsupported projected intent event type {projection.event_type!r}"

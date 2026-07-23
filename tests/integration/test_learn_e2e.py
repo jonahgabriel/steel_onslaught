@@ -163,6 +163,10 @@ _PINNED_EVENT_TYPES = frozenset(
         # Phase 4 objective scoring (append-only member, census-registered
         # payload — see tests/events/test_payload_contracts.py).
         "objective_scored",
+        # Phase 2 utility cards (append-only members, census-registered
+        # payloads — see tests/events/test_payload_contracts.py).
+        "utility_deploy_intent",
+        "utility_deployed",
     }
 )
 

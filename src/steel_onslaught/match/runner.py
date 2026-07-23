@@ -34,6 +34,10 @@ from pydantic import ValidationError
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.cards.dealer import ModelSODealerScope, ModelSODeckState
 from steel_onslaught.cards.round import carry_forward_plans
+from steel_onslaught.cards.utility_handlers import (
+    UtilityResolutionRegistry,
+    default_utility_registry,
+)
 from steel_onslaught.contracts.arena import ModelSOArenaSpec, arena_contract_hash
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
@@ -60,6 +64,7 @@ from steel_onslaught.events.payloads import (
     ModelSOMatchEndedPayload,
     ModelSOMoveIntentPayload,
     ModelSOSensorObservationPayload,
+    ModelSOUtilityDeployIntentPayload,
     ModelSOVictoryDeclaredPayload,
     ModelSOWeaponFireIntentPayload,
     ModelSOWeaponFireRejectedPayload,
@@ -90,6 +95,11 @@ from steel_onslaught.match.state import (
     ModelSOMechRuntimeState,
     SOMatchEndReason,
     SOMatchStatus,
+)
+from steel_onslaught.match.utility_effects import (
+    chaff_targeting_debuff,
+    flare_lock_broken,
+    smoke_obstacle_cells,
 )
 from steel_onslaught.pilots.persona_prompts import ModelSOMatchPromptProvenance
 from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
@@ -171,6 +181,7 @@ _INTENT_EVENT_TYPES = [
     SOEventType.WEAPON_FIRE_INTENT,
     SOEventType.MODE_SWITCH_INTENT,
     SOEventType.VENT_INTENT,
+    SOEventType.UTILITY_DEPLOY_INTENT,
 ]
 
 
@@ -234,6 +245,7 @@ class MatchRunner:
         card_adapter: CardRunnerAdapter | None = None,
         card_cadence: Literal["atomic", "paced"] = "atomic",
         progress_gate: ProgressGate | None = None,
+        utility_handler_ids: tuple[str, ...] | None = None,
     ) -> None:
         self._identity = identity
         self._match_id = identity.match_id
@@ -255,6 +267,14 @@ class MatchRunner:
         self._facing_b = facing_b
         self._arena_size = self._arena.size
         self._obstacles = self._arena.obstacle_cells
+        # Allowlisted utility resolution handlers (Phase 2), selected fail-closed
+        # by the typed overlay (design §6 Handlers row).  ``utility_handler_ids``
+        # None keeps the full default pack (smoke/chaff/flares); a typed overlay
+        # ``utility_handler_pack`` narrows it to the named subset.  ``select``
+        # fails closed on unknown/duplicate/empty ids.
+        self._utility_registry: UtilityResolutionRegistry = default_utility_registry()
+        if utility_handler_ids is not None:
+            self._utility_registry = self._utility_registry.select(utility_handler_ids)
         self._sudden_death_start_tick = self._arena.sudden_death_start_tick
         self._sudden_death_damage_base = self._arena.sudden_death_damage_base
         if max_ticks is None and self._sudden_death_start_tick is None:
@@ -1154,6 +1174,8 @@ class MatchRunner:
                 self._resolve_mode_switch(intent, state, mech)
             case SOEventType.VENT_INTENT:
                 ModelSOEmptyPayload.model_validate(intent.payload)
+            case SOEventType.UTILITY_DEPLOY_INTENT:
+                self._resolve_utility(intent, state, mech)
             case _:
                 pass
 
@@ -1342,7 +1364,13 @@ class MatchRunner:
             )
             return
 
-        if not line_of_sight_clear(mech.position, target.position, self._obstacles):
+        # Smoke consult (Phase 2): active smoke areas join the static obstacle
+        # set for LOS only.  Empty when no smoke is active, so the union equals
+        # ``self._obstacles`` and no previously-clear shot changes.
+        los_obstacles = self._obstacles | smoke_obstacle_cells(
+            state.active_utility_effects, state.tick
+        )
+        if not line_of_sight_clear(mech.position, target.position, los_obstacles):
             self._bus.publish(
                 self._make_subject_event(
                     SOEventType.WEAPON_FIRED,
@@ -1369,11 +1397,23 @@ class MatchRunner:
             sensor_payload = ModelSOSensorObservationPayload.model_validate(observation.payload)
             if sensor_payload.enemy_mech_id == target.mech_id:
                 lock_confidence = max(lock_confidence, sensor_payload.confidence)
+        # Flare consult (Phase 2): an active flare on the locked mech spoils the
+        # lock (zeros lock_confidence, driving the aimed shot toward a miss)
+        # without touching the weapon's stats.  No active flare => unchanged.
+        if flare_lock_broken(state.active_utility_effects, target.mech_id, state.tick):
+            lock_confidence = 0.0
+        # Chaff consult (Phase 2): a targeting-debuff aura on the target folds
+        # multiplicatively into hit probability, exactly like evasion.  0.0 when
+        # the target carries no active chaff => existing curve unchanged.
+        chaff_debuff = chaff_targeting_debuff(
+            state.active_utility_effects, target.mech_id, state.tick
+        )
         hit_probability = resolve_hit_probability(
             base_accuracy,
             lock_confidence,
             target.evasion,
             mech.accuracy_penalty_next_fire,
+            chaff_debuff,
         )
         hit = roll_hit(
             rng=self._rng,
@@ -1469,6 +1509,39 @@ class MatchRunner:
                     payload={"cause": "weapon_damage", "source_mech_id": mech.mech_id},
                 )
             )
+
+    def _resolve_utility(
+        self,
+        intent: ModelSOEventEnvelope,
+        state: ModelSOMatchState,
+        mech: ModelSOMechRuntimeState,
+    ) -> None:
+        """Resolve a utility-deploy intent into a canonical UTILITY_DEPLOYED event.
+
+        Mirrors ``_resolve_mode_switch``: validate the typed intent, look up the
+        allowlisted resolution handler for its ``utility_kind`` (fail-closed on an
+        unselected kind), then publish the payload-validated event with
+        ``origin`` = the deploying mech's live cell.  Only the runner holds the
+        deploying cell and the bus, so this is the sole emit site.
+        """
+
+        payload = ModelSOUtilityDeployIntentPayload.model_validate(intent.payload)
+        handler = self._utility_registry.for_kind(payload.utility_kind)
+        deployed = handler.deploy(
+            card_id=payload.card_id,
+            radius=payload.radius,
+            duration_ticks=payload.duration_ticks,
+            origin=mech.position,
+        )
+        self._bus.publish(
+            self._make_subject_event(
+                SOEventType.UTILITY_DEPLOYED,
+                tick=state.tick,
+                mech=mech,
+                payload=deployed.model_dump(mode="json"),
+                caused_by_intent=intent,
+            )
+        )
 
     def _resolve_mode_switch(
         self,

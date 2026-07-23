@@ -1,0 +1,11 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.utility.flares"
+display_name: "Launch Flares"
+category: "utility"
+priority: 280
+heat_cost: 15
+effect:
+  utility_kind: "flares"
+  radius: 0
+  duration_ticks: 2

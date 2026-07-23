@@ -1,0 +1,11 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.utility.chaff"
+display_name: "Deploy Chaff"
+category: "utility"
+priority: 290
+heat_cost: 20
+effect:
+  utility_kind: "chaff"
+  radius: 0
+  duration_ticks: 2

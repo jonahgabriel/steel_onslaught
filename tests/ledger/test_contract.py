@@ -72,7 +72,7 @@ def test_adapter_read_after_uses_canonical_tick_order(
 
 
 @pytest.mark.unit
-def test_ledger_contract_subscribes_to_all_38_canonical_event_topics() -> None:
+def test_ledger_contract_subscribes_to_all_40_canonical_event_topics() -> None:
     contract = (
         Path(__file__).resolve().parents[2] / "src/steel_onslaught/ledger/contract.yaml"
     ).read_text(encoding="utf-8")
@@ -86,5 +86,5 @@ def test_ledger_contract_subscribes_to_all_38_canonical_event_topics() -> None:
         for event_type in SOEventType
     }
 
-    assert len(SOEventType) == 38
+    assert len(SOEventType) == 40
     assert topics == expected
