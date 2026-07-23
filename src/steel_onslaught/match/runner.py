@@ -39,6 +39,7 @@ from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
+from steel_onslaught.contracts.live_learning import ModelSOSeatPolicyProvenance
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
 from steel_onslaught.contracts.player_selection import ModelSOMatchLaunchProvenance, Side
@@ -228,6 +229,7 @@ class MatchRunner:
         card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
         card_rule_pack_provenance: ModelSOCardRulePackProvenance | None = None,
         prompt_provenance: ModelSOMatchPromptProvenance | None = None,
+        policy_provenance: tuple[ModelSOSeatPolicyProvenance, ...] | None = None,
         card_adapter: CardRunnerAdapter | None = None,
         card_cadence: Literal["atomic", "paced"] = "atomic",
         progress_gate: ProgressGate | None = None,
@@ -287,6 +289,18 @@ class MatchRunner:
         ):
             raise TypeError("prompt_provenance must be ModelSOMatchPromptProvenance when supplied")
         self._prompt_provenance = prompt_provenance
+        if policy_provenance is not None and (
+            not isinstance(policy_provenance, tuple)
+            or not policy_provenance
+            or not all(
+                isinstance(entry, ModelSOSeatPolicyProvenance) for entry in policy_provenance
+            )
+        ):
+            raise TypeError(
+                "policy_provenance must be a non-empty tuple of "
+                "ModelSOSeatPolicyProvenance when supplied"
+            )
+        self._policy_provenance = policy_provenance
         self._card_adapter = card_adapter
         if card_cadence not in {"atomic", "paced"}:
             raise ValueError("card_cadence must be 'atomic' or 'paced'")
@@ -384,6 +398,10 @@ class MatchRunner:
             )
         if self._prompt_provenance is not None:
             started_payload["prompt_provenance"] = self._prompt_provenance.model_dump(mode="json")
+        if self._policy_provenance is not None:
+            started_payload["policy_provenance"] = [
+                entry.model_dump(mode="json") for entry in self._policy_provenance
+            ]
         self._bus.publish(
             self._make_match_event(
                 SOEventType.MATCH_STARTED,

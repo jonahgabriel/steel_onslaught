@@ -142,10 +142,22 @@ PROGRAMMING_INSTRUCTIONS_SHA256 = hashlib.sha256(
 ).hexdigest()
 
 
-def programming_system_prompt(persona: Persona) -> str:
-    """Return the exact system prompt one whole-round programmer will send."""
+def programming_system_prompt(persona: Persona, *, policy_guidance: str | None = None) -> str:
+    """Return the exact system prompt one whole-round programmer will send.
 
-    return f"{persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}"
+    ``policy_guidance`` is the optional, code-rendered live-learning policy
+    block (see ``steel_onslaught.llm.policy_guidance``).  It composes AFTER
+    the code-owned instruction block so the wire contract stays first-class,
+    and its absence leaves the prompt byte-identical to the policy-free
+    composition — a match without a live-learning policy is unchanged.
+    """
+
+    base = f"{persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}"
+    if policy_guidance is None:
+        return base
+    if not policy_guidance.strip():
+        raise ValueError("policy_guidance must be omitted (None) rather than blank")
+    return f"{base}\n\n{policy_guidance}"
 
 
 # Reasoning gateways (e.g. Qwen "thinking" models) may prefix the JSON object
@@ -353,17 +365,27 @@ class LLMProgrammingPilot:
         correlation_id: UUID | None = None,
         provider_id: str | None = None,
         semantic_retry_limit: int = _DEFAULT_SEMANTIC_RETRY_LIMIT,
+        policy_guidance: str | None = None,
     ) -> None:
         if failure_policy not in ("raise", "fallback"):
             raise ValueError(f"unknown LLM programming failure policy: {failure_policy!r}")
         if semantic_retry_limit < 0:
             raise ValueError("semantic_retry_limit must not be negative")
+        if policy_guidance is not None and not policy_guidance.strip():
+            raise ValueError("policy_guidance must be omitted (None) rather than blank")
         self._client = client
         self._persona = persona
         self._failure_policy = failure_policy
         self._correlation_id = correlation_id
         self._provider_id = provider_id
         self._semantic_retry_limit = semantic_retry_limit
+        self._policy_guidance = policy_guidance
+
+    def system_prompt(self) -> str:
+        """The exact system prompt this programmer sends (persona + wire
+        contract + optional policy-guidance block)."""
+
+        return programming_system_prompt(self._persona, policy_guidance=self._policy_guidance)
 
     def program(self, observation: ModelSOProgrammingObservation) -> ModelSOPlanCommittedPayload:
         """Request, parse, and strictly validate one complete register plan."""
@@ -401,11 +423,12 @@ class LLMProgrammingPilot:
         self, observation: ModelSOProgrammingObservation
     ) -> ModelSOLlmCompletionRequest:
         # ``programming_system_prompt`` composes the (possibly operator-edited)
-        # persona doctrine with the code-owned JSON instruction block.  Using it
-        # here keeps the human-editable/recorded effective prompt seam intact
-        # while the bounded reprompt loop above owns semantic-stall recovery.
+        # persona doctrine with the code-owned JSON instruction block and the
+        # optional live-learning policy-guidance block.  Using it here keeps
+        # the human-editable/recorded effective prompt seam intact while the
+        # bounded reprompt loop above owns semantic-stall recovery.
         return ModelSOLlmCompletionRequest(
-            system_prompt=programming_system_prompt(self._persona),
+            system_prompt=self.system_prompt(),
             user_prompt=_serialize_programming_observation(observation),
             persona=self._persona.persona_id,
             # Card programming is a typed planning protocol.  Keep the

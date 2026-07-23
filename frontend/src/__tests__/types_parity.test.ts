@@ -660,6 +660,71 @@ describe("types parity against Python-emitted fixtures", () => {
     ).toThrow(/mechs\[0\]\.position must equal arena\.spawn_a/);
   });
 
+  it("parses per-seat policy provenance from the canonical fixture", () => {
+    const current = parseEnvelope(loadFixture("match_started"));
+    if (current.event_type !== "match_started") throw new Error("wrong current event type");
+    const provenance = current.payload.policy_provenance;
+    if (provenance === undefined) throw new Error("fixture must carry policy_provenance");
+    expect(provenance).toHaveLength(1);
+    expect(provenance[0]?.player_id).toBe("player.a");
+    expect(provenance[0]?.generation).toBe(1);
+    expect(provenance[0]?.source_lineage_digest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("rejects duplicate policy-provenance seats", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const entries = arrayValue(payload["policy_provenance"], "policy_provenance");
+          entries.push(JSON.parse(JSON.stringify(entries[0])));
+        }),
+      ),
+    ).toThrow(/duplicate player_id/);
+  });
+
+  it("rejects an empty policy-provenance array", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          payload["policy_provenance"] = [];
+        }),
+      ),
+    ).toThrow(/non-empty array/);
+  });
+
+  it("rejects a genesis policy-provenance entry carrying a lineage digest", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const entries = arrayValue(payload["policy_provenance"], "policy_provenance");
+          objectValue(entries[0], "policy_provenance[0]")["generation"] = 0;
+        }),
+      ),
+    ).toThrow(/genesis.*no lineage record digest/);
+  });
+
+  it("rejects a promoted policy-provenance entry without a lineage digest", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const entries = arrayValue(payload["policy_provenance"], "policy_provenance");
+          objectValue(entries[0], "policy_provenance[0]")["source_lineage_digest"] = null;
+        }),
+      ),
+    ).toThrow(/requires source_lineage_digest/);
+  });
+
+  it("rejects unknown fields inside a policy-provenance entry", () => {
+    expect(() =>
+      parseEnvelope(
+        corruptPayload("match_started", (payload) => {
+          const entries = arrayValue(payload["policy_provenance"], "policy_provenance");
+          objectValue(entries[0], "policy_provenance[0]")["unexpected"] = true;
+        }),
+      ),
+    ).toThrow(/unexpected/);
+  });
+
   it("projects only sanctioned fields for versioned historical replay", () => {
     const historicalStarted = corruptPayload("match_started", (payload) => {
       const mechs = arrayValue(payload["mechs"], "mechs");

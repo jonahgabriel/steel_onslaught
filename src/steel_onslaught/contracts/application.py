@@ -67,6 +67,22 @@ class ModelSOFilesystemLearningArtifactsBinding(_ClosedBinding):
     experiment_root: Path
 
 
+class ModelSOSelectionOutcomeThresholds(_ClosedBinding):
+    """Scalar promotion-threshold overrides for the ``selection_outcome_v1`` lane.
+
+    Field-for-field mirror of ``learning.promotion.ModelSOPromotionThresholds``
+    (same names, same defaults, same ranges) — the overlay contract layer does
+    not import the learning package, so the mirror is asserted by a parity
+    test instead of a shared import.
+    """
+
+    p_value_max: StrictFloat = Field(default=0.05, gt=0.0, le=1.0)
+    min_decisive_n: StrictInt = Field(default=10, ge=1)
+    max_overload_rate_increase: StrictFloat = Field(default=0.05, ge=0.0)
+    max_draw_rate: StrictFloat = Field(default=0.5, ge=0.0, le=1.0)
+    min_param_distance: StrictFloat = Field(default=0.05, ge=0.0, le=1.0)
+
+
 class ModelSOLiveLearningBinding(_ClosedBinding):
     """Opt-in live learning lane for one archetype's policy chain.
 
@@ -75,15 +91,51 @@ class ModelSOLiveLearningBinding(_ClosedBinding):
     ``POLICY_PROMOTED`` chain + lineage store instead (the event stream is
     the source of truth — changing genesis after promotions exist fails
     closed at composition).
+
+    Two evaluator kinds select the live judgment behind the same coordinator:
+
+    - ``win_damage_differential_v1`` — the deterministic single-match
+      judgment (``parameter``/``step``/``max_value`` govern the perturbation).
+    - ``selection_outcome_v1`` — evidence-driven proposal gated through the
+      offline duel machinery; requires ``base_loadout_path`` (the loadout
+      both duel sides field) and consumes ``duel_max_ticks`` /
+      ``n_search_seeds`` / ``n_holdout_seeds`` / ``step_multiplier`` /
+      ``thresholds`` (``parameter`` names the perturbed parameter; ``step``
+      and ``max_value`` are ignored — the archetype bounds lattice governs).
     """
 
-    kind: Literal["win_damage_differential_v1"]
+    kind: Literal["win_damage_differential_v1", "selection_outcome_v1"]
     archetype: StrictStr = Field(min_length=1)
     learning_player_id: StrictStr = Field(min_length=1)
     genesis_parameters: dict[str, StrictInt | StrictFloat | StrictStr] = Field(min_length=1)
     parameter: StrictStr = Field(min_length=1, default="aggression")
     step: StrictFloat = Field(gt=0, default=0.25)
     max_value: StrictFloat = Field(default=3.0)
+    # selection_outcome_v1 lane only:
+    base_loadout_path: Path | None = None
+    duel_max_ticks: StrictInt = Field(gt=0, default=200)
+    n_search_seeds: StrictInt = Field(ge=1, default=3)
+    n_holdout_seeds: StrictInt = Field(ge=1, default=2)
+    step_multiplier: StrictInt = Field(ge=1, default=1)
+    thresholds: ModelSOSelectionOutcomeThresholds | None = None
+
+    @model_validator(mode="after")
+    def _kind_matches_lane_fields(self) -> Self:
+        if self.kind == "selection_outcome_v1":
+            if self.base_loadout_path is None:
+                raise ValueError("selection_outcome_v1 requires base_loadout_path for its duels")
+        else:
+            if self.base_loadout_path is not None:
+                raise ValueError(
+                    "base_loadout_path is only consumed by selection_outcome_v1; "
+                    "remove it from a win_damage_differential_v1 binding"
+                )
+            if self.thresholds is not None:
+                raise ValueError(
+                    "thresholds are only consumed by selection_outcome_v1; "
+                    "remove them from a win_damage_differential_v1 binding"
+                )
+        return self
 
 
 class ModelSOSQLiteEvaluationStorageBinding(_ClosedBinding):
@@ -472,6 +524,7 @@ __all__ = [
     "ModelSOFrontendTransportBinding",
     "ModelSOInProcessBusBinding",
     "ModelSOInjectedSecretResolverBinding",
+    "ModelSOLiveLearningBinding",
     "ModelSOLlmBindings",
     "ModelSOLlmRetryBinding",
     "ModelSOModelCatalogProjection",
@@ -483,6 +536,7 @@ __all__ = [
     "ModelSOSQLiteEventLedgerBinding",
     "ModelSOSQLiteLeaderboardBinding",
     "ModelSOSecretRef",
+    "ModelSOSelectionOutcomeThresholds",
     "ModelSOStubLlmProviderBinding",
     "ModelSOSystemClockBinding",
     "ModelSOSystemIdentityBinding",

@@ -22,6 +22,7 @@ from pydantic import (
 
 from steel_onslaught.contracts.arena import ModelSOCurrentLiveArenaSnapshot
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeProvenance
+from steel_onslaught.contracts.live_learning import ModelSOSeatPolicyProvenance
 from steel_onslaught.contracts.mode import (
     ModeId,
     ModelSOModeSwitchIntentPayload,
@@ -126,6 +127,14 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    # Per-seat policy provenance (L-GATE-2): which live-learning policy each
+    # learning seat flew with.  Binds a match's decisions to the exact policy
+    # generation that shaped them; the adaptation battery and the promotion
+    # audit chain (POLICY_PROMOTED -> lineage -> replay) both anchor here.
+    policy_provenance: tuple[ModelSOSeatPolicyProvenance, ...] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("launch_provenance", mode="before")
     @classmethod
@@ -168,6 +177,30 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
             if isinstance(prompts, list):
                 normalized["prompts"] = tuple(prompts)
             return normalized
+        return value
+
+    @field_validator("policy_provenance", mode="before")
+    @classmethod
+    def _normalize_frozen_policy_provenance(cls, value: object) -> object:
+        if isinstance(value, list | tuple):
+            return tuple(
+                thaw_json_mapping(entry) if isinstance(entry, Mapping) else entry for entry in value
+            )
+        return value
+
+    @field_validator("policy_provenance", mode="after")
+    @classmethod
+    def _policy_provenance_seats_are_distinct(
+        cls, value: tuple[ModelSOSeatPolicyProvenance, ...] | None
+    ) -> tuple[ModelSOSeatPolicyProvenance, ...] | None:
+        if value is None:
+            return value
+        if not value:
+            raise ValueError("policy_provenance must not be an empty tuple; omit it instead")
+        player_ids = [entry.player_id for entry in value]
+        duplicates = sorted({pid for pid in player_ids if player_ids.count(pid) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate policy_provenance player_ids: {duplicates}")
         return value
 
     @field_validator("mechs", mode="before")

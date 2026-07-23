@@ -49,6 +49,51 @@ class ModelSOLiveLearningPolicy(BaseModel):
         return self
 
 
+class ModelSOSeatPolicyProvenance(BaseModel):
+    """Per-seat policy provenance recorded in ``MATCH_STARTED``.
+
+    Binds every decision in a match's ledger to the exact policy snapshot that
+    shaped it.  Without this record, "a promotion changed a later decision" is
+    unfalsifiable: nothing else ties a match to the policy generation it flew
+    with.  Genesis policies (generation 0) have no lineage record yet, so the
+    digest is required exactly when the generation is promoted (>= 1).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    schema_version: Literal["1"] = "1"
+    kind: Literal["steel_onslaught.seat_policy_provenance"] = (
+        "steel_onslaught.seat_policy_provenance"
+    )
+    player_id: StrictStr = Field(min_length=1)
+    policy_id: StrictStr = Field(min_length=1)
+    spec_hash: Sha256Digest
+    generation: StrictInt = Field(ge=0)
+    source_lineage_digest: Sha256Digest | None = None
+
+    @model_validator(mode="after")
+    def _digest_matches_generation(self) -> ModelSOSeatPolicyProvenance:
+        if self.generation == 0 and self.source_lineage_digest is not None:
+            raise ValueError("a generation-0 (genesis) policy has no lineage record digest")
+        if self.generation >= 1 and self.source_lineage_digest is None:
+            raise ValueError("a promoted policy (generation >= 1) requires source_lineage_digest")
+        return self
+
+
+def seat_policy_provenance(
+    policy: ModelSOLiveLearningPolicy, *, player_id: str
+) -> ModelSOSeatPolicyProvenance:
+    """Project one admitted policy snapshot into its seat provenance record."""
+
+    return ModelSOSeatPolicyProvenance(
+        player_id=player_id,
+        policy_id=policy.policy_id,
+        spec_hash=policy.spec_hash,
+        generation=policy.generation,
+        source_lineage_digest=policy.source_lineage_digest,
+    )
+
+
 class ModelSOLiveMatchPolicySnapshot(BaseModel):
     """The policy captured at match admission; it never changes in place."""
 
@@ -88,5 +133,7 @@ __all__ = [
     "ModelSOLiveLearningOutcome",
     "ModelSOLiveLearningPolicy",
     "ModelSOLiveMatchPolicySnapshot",
+    "ModelSOSeatPolicyProvenance",
     "Sha256Digest",
+    "seat_policy_provenance",
 ]

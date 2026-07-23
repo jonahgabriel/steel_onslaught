@@ -186,6 +186,10 @@ def test_current_payload_validation_preserves_canonical_json_keys(
             SOEventType.MATCH_SCORED,
             lambda payload: next(iter(payload["scores"].values())).__setitem__("unexpected", True),
         ),
+        (
+            SOEventType.MATCH_STARTED,
+            lambda payload: payload["policy_provenance"][0].__setitem__("unexpected", True),
+        ),
     ],
 )
 def test_nested_payload_models_reject_extra_fields(
@@ -329,6 +333,52 @@ def test_current_match_started_preserves_explicit_red_blue_sides() -> None:
     assert [mech.side for mech in validated.mechs] == ["red", "blue"]
     expected_fields = frozenset(ModelSOCurrentLiveMechSnapshot.model_fields)
     assert all(mech.model_fields_set == expected_fields for mech in validated.mechs)
+
+
+@pytest.mark.unit
+def test_match_started_policy_provenance_is_seat_unique_and_generation_consistent() -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    assert raw["policy_provenance"][0]["generation"] == 1
+
+    duplicated = {
+        **raw,
+        "policy_provenance": [raw["policy_provenance"][0], raw["policy_provenance"][0]],
+    }
+    with pytest.raises(ValidationError, match="duplicate policy_provenance player_ids"):
+        _validate(SOEventType.MATCH_STARTED, duplicated)
+
+    with pytest.raises(ValidationError, match="omit it instead"):
+        _validate(SOEventType.MATCH_STARTED, {**raw, "policy_provenance": []})
+
+    genesis_with_digest = {
+        **raw,
+        "policy_provenance": [{**raw["policy_provenance"][0], "generation": 0}],
+    }
+    with pytest.raises(ValidationError, match="genesis"):
+        _validate(SOEventType.MATCH_STARTED, genesis_with_digest)
+
+    promoted_without_digest = {
+        **raw,
+        "policy_provenance": [{**raw["policy_provenance"][0], "source_lineage_digest": None}],
+    }
+    with pytest.raises(ValidationError, match="requires source_lineage_digest"):
+        _validate(SOEventType.MATCH_STARTED, promoted_without_digest)
+
+
+@pytest.mark.unit
+def test_match_started_without_policy_provenance_omits_the_key_entirely() -> None:
+    sample = build_sample_envelopes()[SOEventType.MATCH_STARTED]
+    raw = sample.model_dump(mode="json")["payload"]
+    del raw["policy_provenance"]
+
+    validated = _validate(SOEventType.MATCH_STARTED, raw)
+
+    assert isinstance(validated, ModelSOMatchStartedPayload)
+    assert validated.policy_provenance is None
+    # Default-cold wire shape: a match with no live-learning policy emits a
+    # payload byte-identical to the pre-L-GATE-2 shape (no null-valued key).
+    assert "policy_provenance" not in validated.model_dump(mode="json")
 
 
 @pytest.mark.unit
