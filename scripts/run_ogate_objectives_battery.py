@@ -145,6 +145,8 @@ def _run_match(
     seed: int,
     max_ticks: int,
     expected_arena_hash: str,
+    red_loadout_path: Path = _RED_LOADOUT,
+    blue_loadout_path: Path = _BLUE_LOADOUT,
 ) -> dict[str, Any]:
     # Keyless composition owns the transport regardless.  A ``none`` overlay
     # (the combined asym+utility overlay) rejects an injected resolver and lets
@@ -154,8 +156,8 @@ def _run_match(
     secret_resolver = None if overlay.llm.secret_resolver.kind == "none" else NoSecretResolver()
     stack = assemble_match_live(
         overlay=overlay,
-        red_loadout_path=_RED_LOADOUT,
-        blue_loadout_path=_BLUE_LOADOUT,
+        red_loadout_path=red_loadout_path,
+        blue_loadout_path=blue_loadout_path,
         seed=seed,
         max_ticks=max_ticks,
         secret_resolver=secret_resolver,
@@ -289,6 +291,28 @@ def _build_parser() -> argparse.ArgumentParser:
             "resolve arena foundry_60_asym_v1."
         ),
     )
+    parser.add_argument(
+        "--red-loadout",
+        type=Path,
+        default=_RED_LOADOUT,
+        help=(
+            "red-seat loadout (pilot_id must resolve in the overlay's pilot "
+            "registry); default preserves the qwen35 berserker byte-for-byte. "
+            "Pass the qwen27 loadout (contracts_data/loadouts/qwen27/"
+            "berserker_scout.yaml) alongside the qwen27 overlay for cross-model B."
+        ),
+    )
+    parser.add_argument(
+        "--blue-loadout",
+        type=Path,
+        default=_BLUE_LOADOUT,
+        help=(
+            "blue-seat loadout (pilot_id must resolve in the overlay's pilot "
+            "registry); default preserves the qwen35 sniper byte-for-byte. "
+            "Pass the qwen27 loadout (contracts_data/loadouts/qwen27/"
+            "sniper_ironclad.yaml) alongside the qwen27 overlay for cross-model B."
+        ),
+    )
     parser.add_argument("--n", type=int, default=30, help="battery size")
     parser.add_argument("--seed-base", type=int, default=5000, help="seeds are base+1..base+n")
     parser.add_argument(
@@ -322,12 +346,19 @@ def main() -> int:
         load_match_contract_catalog(_REPO_ROOT / "contracts_data").arenas[_ARENA_ID].to_snapshot()
     )
     overlay = _lane_overlay(state_root, args.overlay.resolve(strict=True))
+    red_loadout_path = args.red_loadout.resolve(strict=True)
+    blue_loadout_path = args.blue_loadout.resolve(strict=True)
 
     rows: list[dict[str, Any]] = []
     for index in range(1, args.n + 1):
         seed = args.seed_base + index
         row = _run_match(
-            overlay, seed=seed, max_ticks=args.max_ticks, expected_arena_hash=expected_arena_hash
+            overlay,
+            seed=seed,
+            max_ticks=args.max_ticks,
+            expected_arena_hash=expected_arena_hash,
+            red_loadout_path=red_loadout_path,
+            blue_loadout_path=blue_loadout_path,
         )
         rows.append(row)
         with raw_path.open("a", encoding="utf-8") as sink:
