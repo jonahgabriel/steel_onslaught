@@ -65,6 +65,7 @@ from steel_onslaught.contracts.application import (
 )
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.payloads import (
+    ModelSOLlmCompletionResolvedPayload,
     ModelSOMatchScoredPayload,
     ModelSOMatchStartedPayload,
     ModelSOPolicyPromotedPayload,
@@ -73,6 +74,10 @@ from steel_onslaught.llm.client_http import NoSecretResolver
 from steel_onslaught.match.composition import assemble_match_live, load_application_overlay
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+# Defaults preserve the #126/#128 configuration (qwen35 on both seats).  All
+# three are CLI-selectable (``--overlay`` / ``--red-loadout`` / ``--blue-loadout``)
+# so the same battery can run under a different provider binding per the
+# cross-model design (docs/steel_onslaught cross-model design, prerequisite B1).
 _OVERLAY = _REPO_ROOT / "contracts_data/overlays/tactical_split_overdeal_v1_qwen.yaml"
 _RED_LOADOUT = _REPO_ROOT / "contracts_data/loadouts/llm_qwen35_berserker.yaml"
 _BLUE_LOADOUT = _REPO_ROOT / "contracts_data/loadouts/qwen35/sniper_ironclad.yaml"
@@ -122,9 +127,14 @@ def _base_overlay_updates(base: ModelSOApplicationOverlay, state_root: Path) -> 
 
 
 def _lane_overlay(
-    state_root: Path, *, max_value: float, learning_player: str, step: float
+    state_root: Path,
+    *,
+    overlay_path: Path,
+    max_value: float,
+    learning_player: str,
+    step: float,
 ) -> ModelSOApplicationOverlay:
-    base = load_application_overlay(_OVERLAY)
+    base = load_application_overlay(overlay_path)
     updates = _base_overlay_updates(base, state_root)
     updates["live_learning"] = ModelSOLiveLearningBinding(
         kind="win_damage_differential_v1",
@@ -141,7 +151,7 @@ def _lane_overlay(
 def _live_fire_overlay(
     state_root: Path, *, learning_player: str, args: argparse.Namespace
 ) -> ModelSOApplicationOverlay:
-    base = load_application_overlay(_OVERLAY)
+    base = load_application_overlay(args.overlay)
     updates = _base_overlay_updates(base, state_root)
     updates["live_learning"] = ModelSOLiveLearningBinding(
         kind="selection_outcome_v1",
@@ -149,7 +159,7 @@ def _live_fire_overlay(
         learning_player_id=learning_player,
         genesis_parameters=dict(_LIVE_FIRE_GENESIS),
         parameter=args.lf_parameter,
-        base_loadout_path=_RED_LOADOUT,
+        base_loadout_path=args.red_loadout,
         duel_max_ticks=args.lf_duel_max_ticks,
         n_search_seeds=args.lf_search_seeds,
         n_holdout_seeds=args.lf_holdout_seeds,
@@ -167,9 +177,43 @@ def _category(card_id: str, catalog: Any) -> str:
     return str(catalog.require(card_id).category.value)
 
 
+def _empty_content_counts(
+    events: tuple[ModelSOEventEnvelope, ...],
+) -> dict[str, dict[str, int]]:
+    """Per-provider count of RESOLVED completions with empty ``content``.
+
+    llama.cpp-style servers route chain-of-thought to ``reasoning_content`` and
+    can return an empty ``content`` on an otherwise-successful completion; the
+    strict wire contract reads only ``content``, so these are silent-empty
+    failures unless counted (cross-model design, prerequisite B4).  Keyed
+    ``provider_id -> finish_reason -> count`` so budget starvation
+    (``length``) is distinguishable from silent-empty success (``stop``).
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for event in events:
+        if event.event_type is not SOEventType.LLM_COMPLETION_RESOLVED:
+            continue
+        payload = ModelSOLlmCompletionResolvedPayload.model_validate(event.payload)
+        if payload.response_length == 0:
+            by_finish = counts.setdefault(payload.provider_id, {})
+            by_finish[payload.finish_reason] = by_finish.get(payload.finish_reason, 0) + 1
+    return counts
+
+
+def _merge_empty_content(
+    total: dict[str, dict[str, int]], row_counts: dict[str, dict[str, int]]
+) -> None:
+    for provider_id, by_finish in row_counts.items():
+        bucket = total.setdefault(provider_id, {})
+        for finish_reason, count in by_finish.items():
+            bucket[finish_reason] = bucket.get(finish_reason, 0) + count
+
+
 def _measure_match(
     overlay: ModelSOApplicationOverlay,
     *,
+    red_loadout_path: Path,
+    blue_loadout_path: Path,
     seed: int,
     phase: str,
     learning_player: str,
@@ -178,8 +222,8 @@ def _measure_match(
 ) -> dict[str, Any]:
     stack = assemble_match_live(
         overlay=overlay,
-        red_loadout_path=_RED_LOADOUT,
-        blue_loadout_path=_BLUE_LOADOUT,
+        red_loadout_path=red_loadout_path,
+        blue_loadout_path=blue_loadout_path,
         seed=seed,
         max_ticks=None,
         secret_resolver=NoSecretResolver(),  # keyless provider; composition owns the transport
@@ -260,6 +304,7 @@ def _measure_match(
             },
         },
         "failed_completions": failed_completions,
+        "empty_content_completions": _empty_content_counts(events),
         "policy_promoted": promoted,
     }
 
@@ -267,6 +312,10 @@ def _measure_match(
 def _summarize(rows: list[dict[str, Any]], *, learning_player: str) -> dict[str, Any]:
     def _mean(values: list[float]) -> float | None:
         return round(sum(values) / len(values), 4) if values else None
+
+    empty_content: dict[str, dict[str, int]] = {}
+    for row in rows:
+        _merge_empty_content(empty_content, row.get("empty_content_completions", {}))
 
     categories = sorted(
         {category for row in rows for category in row["learning_seat"]["keep_rates"]}
@@ -299,6 +348,7 @@ def _summarize(rows: list[dict[str, Any]], *, learning_player: str) -> dict[str,
             1 for row in rows if row["winner_player_id"] == learning_player and not row["is_draw"]
         ),
         "failed_completions": sum(row["failed_completions"] for row in rows),
+        "empty_content_completions": empty_content,
     }
 
 
@@ -310,12 +360,18 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
         phase: str, *, max_value: float, seeds: list[int], stop_on_promotion: bool
     ) -> list[dict[str, Any]]:
         overlay = _lane_overlay(
-            state_root, max_value=max_value, learning_player=learning_player, step=args.step
+            state_root,
+            overlay_path=args.overlay,
+            max_value=max_value,
+            learning_player=learning_player,
+            step=args.step,
         )
         phase_rows: list[dict[str, Any]] = []
         for seed in seeds:
             row = _measure_match(
                 overlay,
+                red_loadout_path=args.red_loadout,
+                blue_loadout_path=args.blue_loadout,
                 seed=seed,
                 phase=phase,
                 learning_player=learning_player,
@@ -415,6 +471,8 @@ def _run_live_fire(args: argparse.Namespace, state_root: Path, raw_path: Path) -
     def _one(seed: int, phase: str) -> dict[str, Any]:
         row = _measure_match(
             overlay,
+            red_loadout_path=args.red_loadout,
+            blue_loadout_path=args.blue_loadout,
             seed=seed,
             phase=phase,
             learning_player=learning_player,
@@ -508,9 +566,30 @@ def _run_live_fire(args: argparse.Namespace, state_root: Path, raw_path: Path) -
     return 0
 
 
-def main() -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("battery", "live-fire"), default="battery")
+    parser.add_argument(
+        "--overlay",
+        type=Path,
+        default=_OVERLAY,
+        help=(
+            "application overlay for every phase — carries BOTH seats' provider "
+            "bindings and the pilot registry, so this flag selects the model under test"
+        ),
+    )
+    parser.add_argument(
+        "--red-loadout",
+        type=Path,
+        default=_RED_LOADOUT,
+        help="red-seat loadout (pilot_id must resolve in the overlay's pilot registry)",
+    )
+    parser.add_argument(
+        "--blue-loadout",
+        type=Path,
+        default=_BLUE_LOADOUT,
+        help="blue-seat loadout (pilot_id must resolve in the overlay's pilot registry)",
+    )
     parser.add_argument("--seat", choices=tuple(_SEATS), default="blue", help="learning seat")
     parser.add_argument("--n", type=int, default=10, help="matches per before/after phase")
     parser.add_argument(
@@ -545,7 +624,14 @@ def main() -> int:
     parser.add_argument("--lf-min-decisive-n", type=int, default=1)
     parser.add_argument("--lf-p-value-max", type=float, default=1.0)
     parser.add_argument("--lf-max-draw-rate", type=float, default=1.0)
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = _build_parser().parse_args()
+    args.overlay = args.overlay.resolve(strict=True)
+    args.red_loadout = args.red_loadout.resolve(strict=True)
+    args.blue_loadout = args.blue_loadout.resolve(strict=True)
 
     state_root = args.state_root.resolve()
     if args.fresh and state_root.exists():
