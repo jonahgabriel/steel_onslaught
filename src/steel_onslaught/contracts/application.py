@@ -67,6 +67,25 @@ class ModelSOFilesystemLearningArtifactsBinding(_ClosedBinding):
     experiment_root: Path
 
 
+class ModelSOLiveLearningBinding(_ClosedBinding):
+    """Opt-in live learning lane for one archetype's policy chain.
+
+    ``genesis_parameters`` seed generation 0; once promotions exist in the
+    event ledger, composition rehydrates the current policy from the durable
+    ``POLICY_PROMOTED`` chain + lineage store instead (the event stream is
+    the source of truth — changing genesis after promotions exist fails
+    closed at composition).
+    """
+
+    kind: Literal["win_damage_differential_v1"]
+    archetype: StrictStr = Field(min_length=1)
+    learning_player_id: StrictStr = Field(min_length=1)
+    genesis_parameters: dict[str, StrictInt | StrictFloat | StrictStr] = Field(min_length=1)
+    parameter: StrictStr = Field(min_length=1, default="aggression")
+    step: StrictFloat = Field(gt=0, default=0.25)
+    max_value: StrictFloat = Field(default=3.0)
+
+
 class ModelSOSQLiteEvaluationStorageBinding(_ClosedBinding):
     """Evaluation-local event and projection storage selected by the operator."""
 
@@ -397,6 +416,10 @@ class ModelSOApplicationOverlay(_ClosedBinding):
     clock: ClockBinding
     identity: IdentityBinding
     frontend_transport: FrontendTransportBinding
+    # Opt-in: absent means the live learning lane stays cold (no coordinator,
+    # no admission, no promotion events).  Explicitly stripped on the offline
+    # duel executors so evaluation duels never feed the live chain.
+    live_learning: ModelSOLiveLearningBinding | None = None
 
 
 class ModelSOFrontendBootstrap(_ClosedBinding):

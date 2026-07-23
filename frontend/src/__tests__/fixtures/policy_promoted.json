@@ -1,0 +1,31 @@
+{
+  "schema_version": "0.1.0",
+  "event_id": "01PCYPRMTED000000000000000",
+  "match_id": "match.fixture.0001",
+  "tick": 7,
+  "sequence_in_tick": 0,
+  "producer_node": "node.fixture_emitter",
+  "subject": {
+    "mech_id": "mech.a.01",
+    "player_id": "player.a"
+  },
+  "event_type": "policy_promoted",
+  "payload": {
+    "kind": "steel_onslaught.policy_promoted",
+    "match_id": "match.fixture.0001",
+    "policy_id": "policy.aggressive.1111111122222222",
+    "archetype": "aggressive",
+    "generation": 1,
+    "spec_hash": "1111111122222222111111112222222211111111222222221111111122222222",
+    "parent_spec_hash": "3333333344444444333333334444444433333333444444443333333344444444",
+    "source_lineage_digest": "5555555566666666555555556666666655555555666666665555555566666666",
+    "evidence_scored_event_id": "01HZY3E9ZTAV5J6BQF8KM2WXSC"
+  },
+  "envelope": {
+    "message_id": "89e77e83-64d1-5556-8f53-066aadc0eae6",
+    "correlation_id": "216a8b7b-6339-56ff-86ef-1af3393f4562",
+    "causation_id": null,
+    "emitted_at": "2026-04-30T00:00:00Z",
+    "entity_id": "match.fixture.0001"
+  }
+}

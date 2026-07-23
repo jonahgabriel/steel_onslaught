@@ -66,6 +66,7 @@ event_bus:
     - onex.evt.steel-onslaught.victory-declared.v1
     - onex.evt.steel-onslaught.match-ended.v1
     - onex.evt.steel-onslaught.match-scored.v1
+    - onex.evt.steel-onslaught.policy-promoted.v1
   publish_topics: []
 
 db_io:

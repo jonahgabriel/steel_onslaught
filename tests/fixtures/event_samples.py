@@ -458,6 +458,17 @@ def _sample_payloads() -> dict[SOEventType, dict[str, Any]]:
         },
         SOEventType.MATCH_ENDED: {"reason": "last_mech_standing", "winner_id": "player.a"},
         SOEventType.MATCH_SCORED: scored.model_dump(mode="json"),
+        SOEventType.POLICY_PROMOTED: {
+            "kind": "steel_onslaught.policy_promoted",
+            "match_id": _MATCH_ID,
+            "policy_id": "policy.aggressive.1111111122222222",
+            "archetype": "aggressive",
+            "generation": 1,
+            "spec_hash": "1111111122222222" * 4,
+            "parent_spec_hash": "3333333344444444" * 4,
+            "source_lineage_digest": "5555555566666666" * 4,
+            "evidence_scored_event_id": "01HZY3E9ZTAV5J6BQF8KM2WXSC",
+        },
         **_card_event_payloads(),
     }
 

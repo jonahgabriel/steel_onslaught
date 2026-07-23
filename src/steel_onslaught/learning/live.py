@@ -9,6 +9,7 @@ future matches, but it cannot mutate any snapshot already admitted.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import RLock
 from typing import Protocol
@@ -35,7 +36,17 @@ class LiveLearningEvaluator(Protocol):
 
 
 class LiveLearningPromotionPort(Protocol):
-    """Port consumed by the after-match evidence handler."""
+    """Admission + terminal seam consumed by composition and the after-match
+    evidence handler.
+
+    ``begin_match`` MUST be called at match admission on the SAME instance
+    that later receives ``handle_after_match`` for that match — the concrete
+    coordinator fails closed on un-admitted terminals (the guard that was
+    blocker learning-adaptation-03 when the port exposed only the terminal
+    half).
+    """
+
+    def begin_match(self, match_id: str) -> ModelSOLiveMatchPolicySnapshot: ...
 
     def handle_after_match(
         self, evidence: ModelSOAfterMatchLearningEvidence
@@ -73,6 +84,12 @@ class LiveLearningCoordinator:
 
     current_policy: ModelSOLiveLearningPolicy
     evaluator: LiveLearningEvaluator
+    # Durable persistence for the promoted lineage record (the parameter
+    # truth the POLICY_PROMOTED event's digests resolve to).  Injected by
+    # composition; called BEFORE the in-memory policy advances so a failed
+    # write leaves the terminal retryable and never fields an unpersisted
+    # policy.  None is only for tests that assert coordinator logic alone.
+    persist_lineage: Callable[[ModelSOLineageRecord], None] | None = None
     _active: dict[str, ModelSOLiveMatchPolicySnapshot] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -148,6 +165,8 @@ class LiveLearningCoordinator:
                     reason="admitted_policy_is_no_longer_current",
                 )
             else:
+                if self.persist_lineage is not None:
+                    self.persist_lineage(record)
                 next_policy = _policy_from_record(
                     record,
                     generation=snapshot.policy.generation + 1,

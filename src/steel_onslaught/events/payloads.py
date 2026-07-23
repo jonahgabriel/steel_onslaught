@@ -522,6 +522,36 @@ class ModelSOMatchScoredPayload(_ClosedPayload):
         return {player_id: score.model_dump(mode="json") for player_id, score in scores.items()}
 
 
+class ModelSOPolicyPromotedPayload(_ClosedPayload):
+    """Durable promotion fact appended to the promoting match's stream.
+
+    Deliberately hash-carrying, not parameter-carrying: raw parameters live in
+    the promoted lineage record; this event carries the digests that make the
+    chain verifiable.  Audit path: ``source_lineage_digest`` resolves the
+    lineage record (parameters + evidence); ``evidence_scored_event_id``
+    resolves the MATCH_SCORED event whose evidence was evaluated; replaying
+    the promoting match reproduces the decision inputs.  Cross-match ordering
+    authority is ``generation`` + the ``parent_spec_hash`` chain, never wall
+    clock.
+    """
+
+    kind: Literal["steel_onslaught.policy_promoted"] = "steel_onslaught.policy_promoted"
+    match_id: StrictStr = Field(min_length=1)
+    policy_id: StrictStr = Field(min_length=1)
+    archetype: StrictStr = Field(min_length=1)
+    generation: StrictInt = Field(ge=1)
+    spec_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    parent_spec_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    source_lineage_digest: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_scored_event_id: StrictStr = Field(min_length=26, max_length=26)
+
+    @model_validator(mode="after")
+    def _chain_is_well_formed(self) -> ModelSOPolicyPromotedPayload:
+        if self.spec_hash == self.parent_spec_hash:
+            raise ValueError("a promotion must change the policy: spec_hash == parent_spec_hash")
+        return self
+
+
 CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = MappingProxyType(
     {
         SOEventType.MATCH_STARTED: ModelSOMatchStartedPayload,
@@ -558,6 +588,7 @@ CURRENT_CONSUMED_PAYLOAD_MODELS: Mapping[SOEventType, type[BaseModel]] = Mapping
         SOEventType.PLAN_COMMITTED: ModelSOPlanCommittedPayload,
         SOEventType.REGISTER_RESOLVED: ModelSORegisterResolvedPayload,
         SOEventType.CARDS_DISCARDED: ModelSOCardsDiscardedPayload,
+        SOEventType.POLICY_PROMOTED: ModelSOPolicyPromotedPayload,
     }
 )
 
@@ -590,6 +621,7 @@ __all__ = [
     "ModelSOPilotKilledPayload",
     "ModelSOPlanCommittedPayload",
     "ModelSOPlayerScore",
+    "ModelSOPolicyPromotedPayload",
     "ModelSORegisterResolvedPayload",
     "ModelSORuntimeStatusChangedPayload",
     "ModelSOScoredWinner",

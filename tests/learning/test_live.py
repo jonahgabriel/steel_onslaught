@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -21,8 +22,12 @@ from steel_onslaught.contracts.lineage import (
     meta_hash,
     spec_hash,
 )
-from steel_onslaught.contracts.live_learning import ModelSOLiveLearningPolicy
+from steel_onslaught.contracts.live_learning import (
+    ModelSOLiveLearningOutcome,
+    ModelSOLiveLearningPolicy,
+)
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.events.payloads import CURRENT_CONSUMED_PAYLOAD_MODELS, ModelSOPlayerScore
 from steel_onslaught.learning.after_match import AfterMatchLearningHandler
 from steel_onslaught.learning.artifacts import LearningArtifactStore
@@ -231,17 +236,45 @@ def test_after_match_promotion_port_is_terminal_only() -> None:
         def __init__(self) -> None:
             self.evidence: list[ModelSOAfterMatchLearningEvidence] = []
 
-        def handle_after_match(self, evidence: ModelSOAfterMatchLearningEvidence) -> object:
+        def handle_after_match(
+            self, evidence: ModelSOAfterMatchLearningEvidence
+        ) -> ModelSOLiveLearningOutcome:
             self.evidence.append(evidence)
-            return object()
+            return ModelSOLiveLearningOutcome(
+                match_id=evidence.match_id,
+                status="rejected",
+                policy_before=_policy({"aggression": 1.0}),
+                reason="terminal_only_double",
+            )
+
+    class _FixedClock:
+        def now(self) -> datetime:
+            return datetime(2026, 7, 22, tzinfo=UTC)
+
+    class _FixedIdentities:
+        def new_match_id(self) -> str:
+            return "match.fixed"
+
+        def new_correlation_id(self) -> UUID:
+            return UUID("00000000-0000-0000-0000-000000000002")
+
+        def new_event_id(self) -> str:
+            return "01HZY3E9ZTAV5J6BQF8KM2WXAA"
+
+        def new_message_id(self) -> UUID:
+            return UUID("00000000-0000-0000-0000-000000000003")
 
     promotion = _Promotion()
+    emitted: list[ModelSOEventEnvelope] = []
     handler = AfterMatchLearningHandler(
         ledger=cast(EventLedger, _Ledger()),
         artifacts=cast(LearningArtifactStore, _Artifacts()),
         promotion=cast(LiveLearningPromotionPort, promotion),
+        emit=emitted.append,
+        event_factory=EventFactory(clock=_FixedClock(), identities=_FixedIdentities()),
     )
     handler.handle(samples[SOEventType.MATCH_TICK])
     assert promotion.evidence == []
     handler.handle(samples[SOEventType.MATCH_SCORED])
     assert len(promotion.evidence) == 1
+    assert emitted == []  # a rejected outcome must not append a promotion event

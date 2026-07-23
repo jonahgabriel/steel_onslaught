@@ -60,6 +60,11 @@ class SOEventType(StrEnum):
     PLAN_COMMITTED = "plan_committed"
     REGISTER_RESOLVED = "register_resolved"
     CARDS_DISCARDED = "cards_discarded"
+    # Live-learning promotion (append-only, same protocol-ordering discipline
+    # as the card members above).  Appended to the PROMOTING match's stream
+    # after MATCH_SCORED; a no-op for the canonical match fold — cross-match
+    # policy state folds from it via learning.promotion_fold instead.
+    POLICY_PROMOTED = "policy_promoted"
 
 
 class ModelSOEventSubject(BaseModel):

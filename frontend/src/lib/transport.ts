@@ -98,6 +98,8 @@ interface MatchBuffer {
   complete: boolean;
   /** The sole `match_scored` scorecard has been ingested (before or after the terminal). */
   scored: boolean;
+  /** The sole `policy_promoted` learning appendix has been ingested (always after the score). */
+  promoted: boolean;
   lastOrder: readonly [tick: number, sequence: number, eventId: string] | null;
   llmRequests: Map<string, boolean>;
   runtimeStatus: RuntimeStatusChangedPayload | null;
@@ -245,6 +247,7 @@ export class MatchTransport {
         blueLabel: "",
         complete: false,
         scored: false,
+        promoted: false,
         lastOrder: null,
         llmRequests: new Map<string, boolean>(),
         runtimeStatus: null,
@@ -276,14 +279,20 @@ export class MatchTransport {
     }
     // Dedup a StrictMode / reconnect re-stream: the same envelope must never land
     // in the buffer twice (it would duplicate rows and corrupt tick boundaries).
-    // `match_scored` is the one legitimate post-terminal projection. On the
+    // `match_scored` is one legitimate post-terminal projection. On the
     // draw path the backend emits it AFTER `match_ended`: the ledger
     // subscriber is registered before the scoring reducer, the bus is
     // synchronous and dispatches in subscription order, and the scoring
     // reducer scores while HANDLING `match_ended`. Rejecting it killed the
-    // scorecard on every drawn match. Anything else after the terminal is
-    // still a projection defect.
-    if (buf.complete && !(env.event_type === "match_scored" && !buf.scored)) {
+    // scorecard on every drawn match. `policy_promoted` is the other: the
+    // live-learning appendix is emitted while HANDLING `match_scored`, so it
+    // is only legitimate once, after the score. Anything else after the
+    // terminal is still a projection defect.
+    if (
+      buf.complete &&
+      !(env.event_type === "match_scored" && !buf.scored) &&
+      !(env.event_type === "policy_promoted" && buf.scored && !buf.promoted)
+    ) {
       throw new ProjectionIntegrityError(`event ${env.event_id} arrived after match_ended`);
     }
     const order: readonly [number, number, string] = [env.tick, env.sequence_in_tick, env.event_id];
@@ -379,6 +388,15 @@ export class MatchTransport {
         throw new ProjectionIntegrityError(`match_scored repeated for ${matchId}`);
       }
       buf.scored = true;
+    }
+    if (env.event_type === "policy_promoted") {
+      if (!buf.scored) {
+        throw new ProjectionIntegrityError(`policy_promoted before match_scored for ${matchId}`);
+      }
+      if (buf.promoted) {
+        throw new ProjectionIntegrityError(`policy_promoted repeated for ${matchId}`);
+      }
+      buf.promoted = true;
     }
     if (env.event_type === "match_ended") {
       buf.complete = true;
