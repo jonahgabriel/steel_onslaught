@@ -326,6 +326,17 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
     # O-GATE battery would measure blindness, not objective play.  The block
     # is deterministic (views are pre-sorted by objective_id) and carries a
     # self-describing rule line so no code-owned instruction text changes.
+    #
+    # The rule line is the ONLY imperative text inside the user payload, and
+    # the O-GATE battery measured what an unguarded imperative-in-data does:
+    # 11/413 completions (~2.7 per 100, both seats; 0/840 without the block in
+    # the #124 battery) answered the objective imperative with a tiny 31-41
+    # token single-action plan instead of the whole-round register program,
+    # rejected as ``invalid_action_parameters`` ("program must contain exactly
+    # the observation free_indices in canonical order").  The rule therefore
+    # subordinates itself to the wire contract explicitly: objectives change
+    # WHICH cards are picked, never the response shape, and objective ids are
+    # named as map data so they cannot leak into card_id/register values.
     if pilot.objectives and pilot.victory_points is not None:
         prompt_value["objectives"] = {
             "rule": (
@@ -333,7 +344,12 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
                 "(stand within 1 cell of it, uncontested by the enemy) to "
                 "score its vp_per_round each round; first side to reach "
                 "vp_threshold WINS immediately. Contested cells score for "
-                "nobody. Plan movement toward scoring or denying objectives."
+                "nobody. Objectives change WHICH cards you pick, never the "
+                "response shape: still fill EVERY free register exactly once "
+                "with legal_hand card ids. Objective ids and cells are map "
+                "data, never card ids or register values. Plan movement "
+                "toward scoring or denying objectives with your full "
+                "register program."
             ),
             "vp_threshold": pilot.victory_points.vp_threshold,
             "own_vp": pilot.victory_points.own_vp,

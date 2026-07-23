@@ -848,3 +848,102 @@ def test_objective_programming_prompt_block_is_deterministic_and_additive() -> N
     }
     # Deterministic: same observation, same bytes.
     assert _serialize_programming_observation(_objective_observation()) == with_objectives
+
+
+# --- Objectives-block under-fill clamp ---------------------------------------
+#
+# The O-GATE battery (evidence: docs/evidence/2026-07-22-ogate-objectives-battery.md)
+# measured a NEW invalid_action_parameters class that #124 had at 0/840 without
+# the objectives block: 11/413 first-attempt completions (~2.7 per 100, blue 6 /
+# red 5) emitted a structurally valid but massively under-filled register plan
+# (31-41 completion tokens with finish_reason=stop, versus 89-119 for every one
+# of the 402 accepted 5-register plans) and were rejected with "program must
+# contain exactly the observation free_indices in canonical order" — proven from
+# the ledger by reconstructing the repair-prompt correction note (identical
+# 553-char note on all 11 repair requests).  The objectives rule line was the
+# only imperative text inside the user payload; the fix subordinates it to the
+# wire contract (objectives change WHICH cards, never the response shape).
+
+
+def test_objective_rule_subordinates_objectives_to_the_register_contract() -> None:
+    """The objectives rule line must re-anchor the whole-round wire contract.
+
+    An imperative rendered inside observation data competes with the code-owned
+    instruction block; the O-GATE ledger showed it winning ~2.7% of the time as
+    single-action under-filled plans.  The rule must therefore state that
+    objective play changes card CHOICE only and re-assert the full-register
+    requirement, and must name objective ids/cells as map data so they cannot
+    leak into card_id or register values.
+    """
+
+    serialized = _serialize_programming_observation(_objective_observation())
+    rule = json.loads(serialized)["objectives"]["rule"]
+    assert "never the response shape" in rule
+    assert "fill EVERY free register exactly once" in rule
+    assert "legal_hand card ids" in rule
+    assert "never card ids or register values" in rule
+    # The objective imperative survives, subordinated to the full program.
+    assert "scoring or denying objectives" in rule
+    # The victory rule the block exists to teach is intact.
+    assert "first side to reach" in rule
+
+
+_UNDER_FILLED_RESPONSE = _response(
+    registers=[{"register_index": 0, "card_id": "card.test.advance"}],
+    rationale="Advance toward the west yard objective.",
+)
+
+
+def test_under_filled_plan_rejects_then_repairs_on_objective_arena() -> None:
+    """The exact O-GATE failing shape: under-fill -> named rejection -> repair.
+
+    A structurally valid single-register plan against a two-free-register
+    objective observation must be rejected as ``invalid_action_parameters``
+    (never ``malformed_json``), the repair prompt must echo the exact
+    free_indices rejection with the full observation (legal_hand) retained,
+    and a corrected full plan on the bounded retry must be accepted as a real
+    LLM plan — the 11/11 first-retry recovery the O-GATE ledger recorded.
+    """
+
+    client = _SequenceClient([_UNDER_FILLED_RESPONSE, _response()])
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    plan = program_for_seat(pilot, _objective_observation())
+
+    assert plan.plan_source is SOPlanSource.LLM
+    assert tuple(register.register_index for register in plan.registers) == (0, 2)
+    assert len(client.requests) == 2
+    repair = client.requests[1]
+    assert "invalid_action_parameters" in repair.system_prompt
+    assert "free_indices in canonical order" in repair.system_prompt
+    assert "fills every free register exactly once" in repair.system_prompt
+    assert '"legal_hand"' in repair.user_prompt
+    # The repaired request still carries the subordinated objectives block.
+    assert '"objectives"' in repair.user_prompt
+    assert "never the response shape" in repair.user_prompt
+
+
+def test_under_fill_exhaustion_still_classifies_invalid_action_parameters() -> None:
+    """A provider that never grows the plan exhausts into the classified
+    ``invalid_action_parameters`` terminal — never a stall, never
+    ``malformed_json``."""
+
+    client = _ResponseClient(_UNDER_FILLED_RESPONSE)
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    with pytest.raises(LlmSemanticExhaustedError) as excinfo:
+        program_for_seat(pilot, _objective_observation())
+
+    assert excinfo.value.semantic_failure_code == "invalid_action_parameters"
+    assert excinfo.value.attempts == 3
+    assert len(client.requests) == 3
