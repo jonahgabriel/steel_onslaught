@@ -369,6 +369,21 @@ export class MatchTransport {
         );
       }
     }
+    // Validate the once-only score/promotion gates BEFORE committing the
+    // envelope: ingest is validate-then-commit, so a rejected projection is
+    // never buffered — the rAF pump keeps running after a fail-fast throw and
+    // would otherwise release the poisoned envelope downstream.
+    if (env.event_type === "match_scored" && buf.scored) {
+      throw new ProjectionIntegrityError(`match_scored repeated for ${matchId}`);
+    }
+    if (env.event_type === "policy_promoted") {
+      if (!buf.scored) {
+        throw new ProjectionIntegrityError(`policy_promoted before match_scored for ${matchId}`);
+      }
+      if (buf.promoted) {
+        throw new ProjectionIntegrityError(`policy_promoted repeated for ${matchId}`);
+      }
+    }
     this.seenMessages.set(messageId, content);
     buf.lastOrder = order;
     buf.events.push(env);
@@ -384,18 +399,9 @@ export class MatchTransport {
         .join("+");
     }
     if (env.event_type === "match_scored") {
-      if (buf.scored) {
-        throw new ProjectionIntegrityError(`match_scored repeated for ${matchId}`);
-      }
       buf.scored = true;
     }
     if (env.event_type === "policy_promoted") {
-      if (!buf.scored) {
-        throw new ProjectionIntegrityError(`policy_promoted before match_scored for ${matchId}`);
-      }
-      if (buf.promoted) {
-        throw new ProjectionIntegrityError(`policy_promoted repeated for ${matchId}`);
-      }
       buf.promoted = true;
     }
     if (env.event_type === "match_ended") {

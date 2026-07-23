@@ -93,6 +93,25 @@ function drawScorecard(matchId: string, tick: number, seq: number): SOEventEnvel
   );
 }
 
+/** The canonical live-learning appendix emitted while HANDLING `match_scored`. */
+function policyPromotion(matchId: string, tick: number, seq: number): SOEventEnvelope {
+  return makeEnvelope(
+    "policy_promoted",
+    {
+      kind: "steel_onslaught.policy_promoted",
+      match_id: matchId,
+      policy_id: "policy.aggressive.1111111122222222",
+      archetype: "aggressive",
+      generation: 1,
+      spec_hash: "1111111122222222111111112222222211111111222222221111111122222222",
+      parent_spec_hash: "3333333344444444333333334444444433333333444444443333333344444444",
+      source_lineage_digest: "5555555566666666555555556666666655555555666666665555555566666666",
+      evidence_scored_event_id: "01HZY3E9ZTAV5J6BQF8KM2WXSC",
+    },
+    { matchId, tick, seq },
+  );
+}
+
 /** A sink that mirrors a downstream fold: reset() clears, release() appends. */
 function recordingSink(): {
   sink: ReleaseSink;
@@ -937,5 +956,130 @@ describe("MatchTransport — projection integrity", () => {
     transport.frame(0);
     const scored = recorder.released.filter((env) => env.event_type === "match_scored");
     expect(scored).toHaveLength(1);
+  });
+});
+
+/**
+ * The `policy_promoted` transport carve-out (live learning loop).
+ *
+ * The learning appendix is emitted while the backend is HANDLING
+ * `match_scored`, so exactly one `policy_promoted` is legal per match, only
+ * after the score — including after `match_ended` on the draw path, where the
+ * score itself is a post-terminal projection. Everything else (before the
+ * score, or a second promotion) is a projection defect the transport must
+ * reject rather than buffer.
+ */
+describe("MatchTransport — policy_promoted gating", () => {
+  it("accepts exactly one policy_promoted after match_scored and releases it in order", () => {
+    const transport = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    const recorder = recordingSink();
+    transport.setSink(recorder.sink);
+    transport.ingest(started);
+    transport.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "draw_mutual_destruction", winner_id: null },
+        { matchId: "m", tick: 3 },
+      ),
+    );
+    transport.ingest(drawScorecard("m", 3, 1));
+    // The post-terminal, post-score appendix is legitimate and must buffer.
+    expect(() => transport.ingest(policyPromotion("m", 3, 2))).not.toThrow();
+    expect(transport.snapshot().matchComplete).toBe(true);
+
+    // The appendix reaches the fold sink exactly once, ordered after the score.
+    transport.goLive();
+    transport.frame(0);
+    expect(transport.snapshot().bufferedCount).toBe(4);
+    const promoted = recorder.released.filter((env) => env.event_type === "policy_promoted");
+    expect(promoted).toHaveLength(1);
+    const types = recorder.released.map((env) => env.event_type);
+    expect(types.indexOf("policy_promoted")).toBeGreaterThan(types.indexOf("match_scored"));
+  });
+
+  it("rejects policy_promoted before match_scored, pre- and post-terminal", () => {
+    // Pre-terminal: the stream is still running and no score exists yet.
+    const preTerminal = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    const preRecorder = recordingSink();
+    preTerminal.setSink(preRecorder.sink);
+    preTerminal.ingest(started);
+    expect(() => preTerminal.ingest(policyPromotion("m", 1, 0))).toThrow(
+      /policy_promoted before match_scored/,
+    );
+    // The rejected envelope never reaches the fold sink.
+    preTerminal.goLive();
+    preTerminal.frame(0);
+    expect(preRecorder.released.map((env) => env.event_type)).toEqual(["match_started"]);
+
+    // Post-terminal: without a score, the post-match_ended carve-out does not
+    // apply — the appendix is an ordinary post-terminal projection defect.
+    const postTerminal = new MatchTransport({ msPerTick: 500 });
+    const postRecorder = recordingSink();
+    postTerminal.setSink(postRecorder.sink);
+    postTerminal.ingest(started);
+    postTerminal.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "draw_mutual_destruction", winner_id: null },
+        { matchId: "m", tick: 3 },
+      ),
+    );
+    expect(() => postTerminal.ingest(policyPromotion("m", 3, 1))).toThrow(/after match_ended/);
+    postTerminal.goLive();
+    postTerminal.frame(0);
+    expect(postRecorder.released.map((env) => env.event_type)).toEqual([
+      "match_started",
+      "match_ended",
+    ]);
+  });
+
+  it("rejects a repeat policy_promoted after one was accepted", () => {
+    // Post-terminal draw path: once the appendix landed, the carve-out is
+    // spent — a second one is again an event after match_ended.
+    const postTerminal = new MatchTransport({ msPerTick: 500 });
+    const [started] = tickStream("m", 1);
+    if (started === undefined) throw new Error("missing match_started fixture");
+    const postRecorder = recordingSink();
+    postTerminal.setSink(postRecorder.sink);
+    postTerminal.ingest(started);
+    postTerminal.ingest(
+      makeEnvelope(
+        "match_ended",
+        { reason: "draw_mutual_destruction", winner_id: null },
+        { matchId: "m", tick: 3 },
+      ),
+    );
+    postTerminal.ingest(drawScorecard("m", 3, 1));
+    postTerminal.ingest(policyPromotion("m", 3, 2));
+    expect(() => postTerminal.ingest(policyPromotion("m", 3, 3))).toThrow(/after match_ended/);
+    // Exactly the one accepted appendix flows downstream — never the repeat.
+    postTerminal.goLive();
+    postTerminal.frame(0);
+    expect(
+      postRecorder.released.filter((env) => env.event_type === "policy_promoted"),
+    ).toHaveLength(1);
+    expect(postRecorder.released).toHaveLength(4);
+
+    // Pre-terminal victory path: the score precedes match_ended, so the repeat
+    // hits the once-only promotion gate directly.
+    const preTerminal = new MatchTransport({ msPerTick: 500 });
+    const preRecorder = recordingSink();
+    preTerminal.setSink(preRecorder.sink);
+    preTerminal.ingest(started);
+    preTerminal.ingest(drawScorecard("m", 1, 0));
+    preTerminal.ingest(policyPromotion("m", 1, 1));
+    expect(() => preTerminal.ingest(policyPromotion("m", 1, 2))).toThrow(
+      /policy_promoted repeated/,
+    );
+    preTerminal.goLive();
+    preTerminal.frame(0);
+    expect(preRecorder.released.filter((env) => env.event_type === "policy_promoted")).toHaveLength(
+      1,
+    );
+    expect(preRecorder.released).toHaveLength(3);
   });
 });
