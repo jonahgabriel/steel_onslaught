@@ -813,6 +813,60 @@ def _objective_observation() -> ModelSOProgrammingObservation:
     return base.model_copy(update={"pilot_observation": pilot})
 
 
+# --- Utility-surfacing confound fix (C) -------------------------------------
+#
+# The utility-battery ledger recorded qwen35 keeping drafted utility cards at
+# ~2-6% (red 7/406=0.0172, blue 23/406=0.0567 vs 0.50 chance).  Two removable
+# surfacing biases in this prompt caused it: the card definition serialized the
+# engine-only resolution ``priority`` (utility 280-300 < movement 400 < attack
+# 600) beside "place the strongest card in each register", teaching the model
+# to read the lowest-priority category as the weakest/discardable one; and
+# utility was the only category whose effect never stated its tactical payoff.
+# The fix removes ``priority`` from the model-facing surface for every category
+# and adds an authored ``description`` the utility cards populate.
+
+
+def test_card_definition_omits_priority_and_surfaces_description() -> None:
+    """The model-facing card definition must not leak resolution ``priority``
+    as a strength signal, and must surface an authored tactical description."""
+
+    from steel_onslaught.llm.programming import _card_definition
+
+    movement = _card("card.test.advance", SOCardCategory.MOVEMENT, 400)
+    utility = ModelSOCard(
+        schema_version="0.1.0",
+        kind="steel_onslaught.card",
+        id="card.utility.smoke",
+        display_name="Deploy Smoke",
+        category=SOCardCategory.UTILITY,
+        priority=300,
+        heat_cost=25,
+        description="Blocks enemy line-of-sight within the effect radius for its duration.",
+        effect=ModelSOCardEffect(utility_kind="smoke", radius=1, duration_ticks=2),
+    )
+
+    movement_def = _card_definition(movement)
+    utility_def = _card_definition(utility)
+
+    # FIX 1: ``priority`` is never serialized, for ANY category.
+    assert "priority" not in movement_def
+    assert "priority" not in utility_def
+
+    # FIX 2: an authored description reaches the utility card definition...
+    assert utility_def["description"] == (
+        "Blocks enemy line-of-sight within the effect radius for its duration."
+    )
+    # ...while a card without one omits the key entirely (byte-identical surface).
+    assert "description" not in movement_def
+
+
+def test_serialized_programming_prompt_never_leaks_priority() -> None:
+    """No card ``priority`` field survives into the whole-round prompt bytes."""
+
+    serialized = _serialize_programming_observation(_observation())
+    assert '"priority"' not in serialized
+
+
 def test_objective_free_programming_prompt_has_no_objectives_block() -> None:
     """Pre-Phase-4 prompt shape is preserved byte-for-byte off objective arenas."""
 

@@ -3,6 +3,7 @@ kind: "steel_onslaught.card"
 id: "card.utility.chaff"
 display_name: "Deploy Chaff"
 category: "utility"
+description: "Projects a targeting-debuff aura on this mech for its duration, degrading the enemy's aimed-fire hit chance against it."
 priority: 290
 heat_cost: 20
 effect:

@@ -3,6 +3,7 @@ kind: "steel_onslaught.card"
 id: "card.utility.smoke"
 display_name: "Deploy Smoke"
 category: "utility"
+description: "Blocks enemy line-of-sight within the effect radius for its duration, so aimed shots crossing the cloud are spoiled."
 # Counterplay resolves in a band above vent (200) and below movement/attack, so
 # a deployed effect lands before the shots it is meant to spoil.
 priority: 300

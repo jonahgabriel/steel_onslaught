@@ -83,6 +83,12 @@ class ModelSOCard(_ClosedCardModel):
     priority: StrictInt = Field(ge=0)
     heat_cost: StrictInt = Field(ge=0)
     effect: ModelSOCardEffect = Field(...)
+    # Optional human-readable tactical payoff, surfaced to a planning LLM when
+    # present.  Utility is the only category whose effect fields (utility_kind/
+    # radius/duration_ticks) do not themselves state the tactical outcome, so it
+    # is the category that authors this.  ``None`` by default keeps every other
+    # card (movement/weapon/vent) byte-identical.
+    description: StrictStr | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _effect_matches_category(self) -> Self:
