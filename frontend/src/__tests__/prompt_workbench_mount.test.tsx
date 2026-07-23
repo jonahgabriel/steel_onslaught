@@ -126,7 +126,9 @@ describe("PromptRulesWorkbench mounted on the setup screen", () => {
       screen.getByRole("button", { name: "START MATCH" }).closest("form") as HTMLFormElement,
     );
     expect(requestStart).toHaveBeenCalledTimes(1);
-    const intent = requestStart.mock.calls[0][0];
+    const call = requestStart.mock.calls[0];
+    if (!call) throw new Error("requestStart was never called");
+    const intent = call[0];
     expect(intent.selections).toEqual([
       { side: "red", option_id: "player_option.glm_model" },
       { side: "blue", option_id: "player_option.glm_model" },

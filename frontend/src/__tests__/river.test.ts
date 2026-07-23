@@ -318,6 +318,7 @@ describe("card-cadence reasoning is a decision, not lifecycle noise", () => {
       ],
       rationale: null,
       confidence: 0.5,
+      plan_source: "llm",
     });
     expect(planSequence(scrambled.payload.registers)).toBe("advance › fire primary");
     expect(orderedRegisters(scrambled.payload.registers).map((r) => r.register_index)).toEqual([
