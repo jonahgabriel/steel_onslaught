@@ -29,7 +29,9 @@ import itertools
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml  # type: ignore[import-untyped]
@@ -37,18 +39,25 @@ import yaml  # type: ignore[import-untyped]
 from steel_onslaught.contracts.application import ModelSOApplicationOverlay
 from steel_onslaught.contracts.lineage import ParamDict, spec_hash
 from steel_onslaught.contracts.pilot import ModelSOPilotSpec
-from steel_onslaught.learning.duel_evaluator import DuelEvaluator, aggregate_pair
+from steel_onslaught.learning.duel_evaluator import (
+    DuelBatteryError,
+    DuelEvaluator,
+    aggregate_pair,
+)
 from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
     YamlFilesystemLearningArtifactStore,
 )
 from steel_onslaught.learning.protocols import EvaluatorProtocol, SOSeedWinner
 from steel_onslaught.learning.spec_adapter import params_from_spec
+from steel_onslaught.llm.schemas import LlmTransportError
 from steel_onslaught.match.composition import (
     build_duel_executor,
     load_loadout,
     load_pilot_spec,
 )
+from steel_onslaught.match.duel import DuelResult, ModelSOEvaluationStorageKey
+from steel_onslaught.match.state import ModelSOMatchState, SOMatchEndReason, SOMatchStatus
 from tests.overlay import complete_test_overlay
 
 _BASE_LOADOUT = Path("contracts_data/loadouts/example_aggressive_light.yaml").resolve()
@@ -344,3 +353,146 @@ def test_no_writes_outside_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     created = [path for path in workdir.rglob("*") if path.is_file()]
     assert created
     assert all(path.is_relative_to(workdir) for path in created)
+
+
+# ---------------------------------------------------------------------------
+# 10. Bounded transport retry inside the battery (L-GATE-2 finding F2)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _RetryScriptedExecutor:
+    """Duel-executor double: raise scripted transport errors, then succeed.
+
+    ``errors`` is consumed one per call; when empty, the duel succeeds with
+    the CANDIDATE side (identified by its materialized ``cand`` loadout path)
+    winning, so retried batteries still aggregate decisively.
+    """
+
+    errors: list[LlmTransportError] = field(default_factory=list)
+    calls: list[tuple[str, ModelSOEvaluationStorageKey]] = field(default_factory=list)
+
+    def __call__(
+        self,
+        *,
+        loadout_a: Any,
+        loadout_b: Any,
+        seed: int,
+        max_ticks: int,
+        storage: ModelSOEvaluationStorageKey,
+        match_id: str,
+        loadout_path_a: Path | None,
+        loadout_path_b: Path | None,
+        side_a: str,
+        side_b: str,
+    ) -> DuelResult:
+        self.calls.append((match_id, storage))
+        if self.errors:
+            raise self.errors.pop(0)
+        assert loadout_path_a is not None
+        winner_side = side_a if ".cand_" in loadout_path_a.name else side_b
+        return DuelResult(
+            final_state=ModelSOMatchState(
+                match_id=match_id,
+                tick=1,
+                status=SOMatchStatus.ENDED,
+                seed=seed,
+                winner_id=f"player.{winner_side}",
+                end_reason=SOMatchEndReason.LAST_MECH_STANDING,
+            ),
+            events=(),
+        )
+
+
+def _retry_evaluator(
+    workdir: Path, executor: _RetryScriptedExecutor, *, budget: int = 2
+) -> DuelEvaluator:
+    return DuelEvaluator(
+        archetype="aggressive",
+        base_loadout=load_loadout(_BASE_LOADOUT),
+        max_ticks=10,
+        duel_executor=executor,
+        artifacts=YamlFilesystemLearningArtifactStore(
+            ModelSOFilesystemLearningArtifactsConfig(
+                evaluation_root=workdir,
+                lineage_root=workdir / "lineage",
+                experiment_root=workdir / "experiments",
+            )
+        ),
+        transport_retry_budget=budget,
+    )
+
+
+@pytest.mark.integration
+def test_retryable_transport_error_retries_against_fresh_evidence_targets(
+    tmp_path: Path,
+) -> None:
+    """One retryable failure: the duel is re-run once against a NEW match id
+    and storage key (the allocator is exclusive-create), and the battery
+    completes as if the flake never happened."""
+
+    executor = _RetryScriptedExecutor(errors=[LlmTransportError("transient", retryable=True)])
+    evaluator = _retry_evaluator(tmp_path / "work", executor)
+    parent = _template_params()
+
+    outcomes = evaluator.evaluate(_perturbed(parent), parent, [7])
+
+    assert [outcome.winner for outcome in outcomes] == [SOSeedWinner.CANDIDATE]
+    match_ids = [match_id for match_id, _ in executor.calls]
+    assert match_ids == [
+        "match.learn.seed_7.cand_red",
+        "match.learn.seed_7.cand_red.retry1",
+        "match.learn.seed_7.cand_blue",
+    ]
+    duel_keys = [storage.duel for _, storage in executor.calls]
+    assert duel_keys == [
+        "seed_7_cand_red",
+        "seed_7_cand_red_retry1",
+        "seed_7_cand_blue",
+    ]
+
+
+@pytest.mark.integration
+def test_transport_retry_budget_exhaustion_raises_duel_battery_error(
+    tmp_path: Path,
+) -> None:
+    """Budget of 2 => exactly 3 attempts, then a typed battery error whose
+    cause chain preserves the underlying transport failure."""
+
+    executor = _RetryScriptedExecutor(
+        errors=[LlmTransportError(f"attempt {n}", retryable=True) for n in (1, 2, 3, 4)]
+    )
+    evaluator = _retry_evaluator(tmp_path / "work", executor)
+    parent = _template_params()
+
+    with pytest.raises(DuelBatteryError, match="exhausted") as excinfo:
+        evaluator.evaluate(_perturbed(parent), parent, [7])
+
+    assert len(executor.calls) == 3
+    assert excinfo.value.attempts == 3
+    assert excinfo.value.match_id == "match.learn.seed_7.cand_red"
+    assert isinstance(excinfo.value.__cause__, LlmTransportError)
+
+
+@pytest.mark.integration
+def test_non_retryable_transport_error_fails_without_retry(tmp_path: Path) -> None:
+    """The live client's classification is reused verbatim: retryable=False
+    means retrying is wrong, so the battery errors on the first attempt."""
+
+    executor = _RetryScriptedExecutor(
+        errors=[LlmTransportError("invalid response contract", retryable=False)]
+    )
+    evaluator = _retry_evaluator(tmp_path / "work", executor)
+    parent = _template_params()
+
+    with pytest.raises(DuelBatteryError, match="non-retryable"):
+        evaluator.evaluate(_perturbed(parent), parent, [7])
+
+    assert len(executor.calls) == 1
+
+
+@pytest.mark.unit
+def test_negative_transport_retry_budget_is_rejected(tmp_path: Path) -> None:
+    executor = _RetryScriptedExecutor()
+    with pytest.raises(ValueError, match="transport_retry_budget"):
+        _retry_evaluator(tmp_path / "work", executor, budget=-1)

@@ -32,7 +32,11 @@ from steel_onslaught.events.payloads import CURRENT_CONSUMED_PAYLOAD_MODELS, Mod
 from steel_onslaught.learning.after_match import AfterMatchLearningHandler
 from steel_onslaught.learning.artifacts import LearningArtifactStore
 from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
-from steel_onslaught.learning.live import LiveLearningCoordinator, LiveLearningPromotionPort
+from steel_onslaught.learning.live import (
+    LearningSeamViolationError,
+    LiveLearningCoordinator,
+    LiveLearningPromotionPort,
+)
 from steel_onslaught.ledger.protocol import EventLedger
 from tests.fixtures.event_samples import build_sample_envelopes
 
@@ -278,3 +282,30 @@ def test_after_match_promotion_port_is_terminal_only() -> None:
     handler.handle(samples[SOEventType.MATCH_SCORED])
     assert len(promotion.evidence) == 1
     assert emitted == []  # a rejected outcome must not append a promotion event
+
+
+@pytest.mark.unit
+def test_unadmitted_terminal_raises_typed_seam_violation() -> None:
+    """The fail-closed admission guard carries the SEAM-VIOLATION type so the
+    after-match containment boundary re-raises it instead of swallowing it
+    (L-GATE-2 containment split): a wiring regression must stay loud."""
+
+    coordinator = LiveLearningCoordinator(
+        current_policy=_policy({"aggression": 1.0}), evaluator=_Evaluator([])
+    )
+    with pytest.raises(LearningSeamViolationError, match="must be admitted"):
+        coordinator.handle_after_match(_evidence("match.unadmitted"))
+
+
+@pytest.mark.unit
+def test_promoted_record_contract_drift_raises_typed_seam_violation() -> None:
+    """A promoted record whose parent contradicts the admitted policy is
+    evaluator contract drift — typed seam violation, never contained."""
+
+    coordinator = LiveLearningCoordinator(
+        current_policy=_policy({"aggression": 1.5}),
+        evaluator=_Evaluator([_record({"aggression": 2.0})]),
+    )
+    coordinator.begin_match("match.drift")
+    with pytest.raises(LearningSeamViolationError, match="parent does not match"):
+        coordinator.handle_after_match(_evidence("match.drift"))

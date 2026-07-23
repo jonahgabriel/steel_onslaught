@@ -24,6 +24,27 @@ from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
 from steel_onslaught.learning.lineage_store import record_digest
 
 
+class LearningSeamViolationError(ValueError):
+    """A learning-boundary CONTRACT was violated — wiring, not weather.
+
+    This is the loud half of the containment split introduced after the
+    L-GATE-2 live-fire crash (findings F1/F2):
+
+    - **Evaluation-runtime failures** (LLM transport errors, duel battery
+      aborts, evaluator/store I/O) are facts about the learning lane's
+      environment.  The after-match handler CONTAINS them — the live match
+      terminal already happened, so they must never re-raise into the bus.
+    - **Seam violations** (an un-admitted terminal, a promoted record that
+      contradicts the admitted policy, a promotion missing its lineage
+      backing) mean the COMPOSITION or an evaluator's contract is wrong.
+      Containing those would let a silently no-op learning lane masquerade as
+      a healthy one, so they carry this type and the handler re-raises them.
+
+    Subclasses ``ValueError`` so existing callers asserting ``ValueError``
+    keep holding.
+    """
+
+
 class LiveLearningEvaluator(Protocol):
     """Evaluate one completed match without owning runtime state."""
 
@@ -127,8 +148,10 @@ class LiveLearningCoordinator:
             snapshot = self._active.get(evidence.match_id)
             if snapshot is None:
                 if evidence.match_id in self._completed:
-                    raise ValueError(f"match {evidence.match_id!r} was already completed")
-                raise ValueError(
+                    raise LearningSeamViolationError(
+                        f"match {evidence.match_id!r} was already completed"
+                    )
+                raise LearningSeamViolationError(
                     f"match {evidence.match_id!r} must be admitted before terminal evidence"
                 )
 
@@ -151,17 +174,19 @@ class LiveLearningCoordinator:
                     reason="candidate_failed_promotion_gate",
                 )
             elif record.archetype != snapshot.policy.archetype:
-                raise ValueError(
+                raise LearningSeamViolationError(
                     "promoted candidate archetype does not match admitted policy: "
                     f"{record.archetype!r} != {snapshot.policy.archetype!r}"
                 )
             elif record.parent_hash != snapshot.policy.spec_hash:
-                raise ValueError(
+                raise LearningSeamViolationError(
                     "promoted candidate parent does not match admitted policy: "
                     f"{record.parent_hash!r} != {snapshot.policy.spec_hash!r}"
                 )
             elif record.spec_hash == snapshot.policy.spec_hash:
-                raise ValueError("promoted candidate must change the admitted policy")
+                raise LearningSeamViolationError(
+                    "promoted candidate must change the admitted policy"
+                )
             # A concurrent match may have promoted from a newer policy while
             # this snapshot was active.  Never roll that policy backwards.
             elif self.current_policy.spec_hash != snapshot.policy.spec_hash:
@@ -193,6 +218,7 @@ class LiveLearningCoordinator:
 
 
 __all__ = [
+    "LearningSeamViolationError",
     "LiveLearningCoordinator",
     "LiveLearningEvaluator",
     "LiveLearningPromotionPort",
