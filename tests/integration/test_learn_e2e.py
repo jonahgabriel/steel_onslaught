@@ -158,6 +158,7 @@ _PINNED_EVENT_TYPES = frozenset(
         "mech_destroyed",
         "victory_declared",
         "match_ended",
+        "policy_promoted",
         "match_scored",
     }
 )

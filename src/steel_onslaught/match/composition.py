@@ -57,6 +57,8 @@ from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.commands import ModelSOStartMatchCommand
 from steel_onslaught.contracts.deck import ModelSODeck
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
+from steel_onslaught.contracts.lineage import ModelSOLineageRecord, spec_hash
+from steel_onslaught.contracts.live_learning import ModelSOLiveLearningPolicy
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeTransition
 from steel_onslaught.contracts.model_catalog import (
@@ -88,6 +90,9 @@ from steel_onslaught.learning.filesystem_artifacts import (
     ModelSOFilesystemLearningArtifactsConfig,
     YamlFilesystemLearningArtifactStore,
 )
+from steel_onslaught.learning.live import LiveLearningCoordinator
+from steel_onslaught.learning.live_evaluator import WinDamageDifferentialEvaluator
+from steel_onslaught.learning.promotion_fold import rehydrate_current_policy
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.llm.client_http import (
@@ -325,6 +330,10 @@ class RuntimeDependencies:
     pilot_factory: ProtocolPilotFactory
     closer: ProtocolResourceCloser
     learning_artifacts: LearningArtifactStore | None = None
+    # One coordinator per process (overlay opt-in).  Composition admits every
+    # live match on it (begin_match) and wires it as the after-match promotion
+    # port, so admission and terminal always land on the SAME instance.
+    live_learning: LiveLearningCoordinator | None = None
     progress_gate: RuntimeProgressGate | None = None
     # Optional until the card/register runtime slice is activated.  When
     # configured, this is one immutable snapshot shared by the live
@@ -1529,6 +1538,37 @@ def build_runtime_dependencies(
                 experiment_root=overlay.learning_artifacts.experiment_root,
             )
         )
+        live_learning: LiveLearningCoordinator | None = None
+        learning_binding = overlay.live_learning
+        if learning_binding is not None:
+            genesis_parameters = dict(learning_binding.genesis_parameters)
+            genesis = ModelSOLiveLearningPolicy(
+                policy_id=f"policy.{learning_binding.archetype}.genesis",
+                archetype=learning_binding.archetype,
+                parameters=genesis_parameters,
+                spec_hash=spec_hash(learning_binding.archetype, genesis_parameters),
+                generation=0,
+            )
+            current_policy = rehydrate_current_policy(
+                ledger,
+                archetype=learning_binding.archetype,
+                genesis=genesis,
+                lineage_root=overlay.learning_artifacts.lineage_root,
+            )
+
+            def _persist_lineage(record: ModelSOLineageRecord) -> None:
+                learning_artifacts.write_lineage(record, recorded_at=clock.now())
+
+            live_learning = LiveLearningCoordinator(
+                current_policy=current_policy,
+                evaluator=WinDamageDifferentialEvaluator(
+                    learning_player_id=learning_binding.learning_player_id,
+                    parameter=learning_binding.parameter,
+                    step=learning_binding.step,
+                    max_value=learning_binding.max_value,
+                ),
+                persist_lineage=_persist_lineage,
+            )
         resolved_pilot_registry = pilot_registry or load_pilot_registry(
             overlay.contracts.pilot_registry_dir
         )
@@ -1601,6 +1641,7 @@ def build_runtime_dependencies(
             pilot_factory=llm.pilot_factory,
             closer=llm.closer if owns_llm else NoopResourceCloser(),
             learning_artifacts=learning_artifacts,
+            live_learning=live_learning,
             card_catalog=card_catalog,
             card_runtime_snapshot=card_runtime_snapshot,
             card_adapter=card_adapter,
@@ -1818,6 +1859,9 @@ def build_duel_executor_with_dependencies(
             update={
                 "event_ledger": ledger_binding,
                 "leaderboard": leaderboard_binding,
+                # Offline evaluation duels must never admit into, or promote
+                # through, the live learning chain.
+                "live_learning": None,
             }
         )
         dependencies = build_runtime_dependencies(
@@ -1877,6 +1921,9 @@ def build_pilot_duel_executor_with_dependencies(
                         "event_schema": claim.event_schema,
                     }
                 ),
+                # Offline adaptation duels must never admit into, or promote
+                # through, the live learning chain.
+                "live_learning": None,
                 "leaderboard": overlay.leaderboard.model_copy(
                     update={
                         "path": claim.path,
@@ -2062,15 +2109,29 @@ def assemble_match_with_dependencies(
     dependencies.bus.subscribe(_on_match_scored, event_types=[SOEventType.MATCH_SCORED])
 
     learning_artifacts = dependencies.learning_artifacts
+    live_learning = dependencies.live_learning
+    if live_learning is not None and learning_artifacts is None:
+        raise ValueError(
+            "live learning requires learning_artifacts: promotions must be "
+            "durably lineage-backed, never memory-only"
+        )
     if learning_artifacts is not None:
         learning_handler = AfterMatchLearningHandler(
             ledger=dependencies.ledger,
             artifacts=learning_artifacts,
+            promotion=live_learning,
+            emit=dependencies.bus.publish if live_learning is not None else None,
+            event_factory=dependencies.event_factory if live_learning is not None else None,
         )
         dependencies.bus.subscribe(
             learning_handler.handle,
             event_types=[SOEventType.MATCH_SCORED],
         )
+    if live_learning is not None:
+        # Admission half of the seam: the SAME coordinator instance that will
+        # receive this match's terminal evidence snapshots the policy now,
+        # before the runner can start (learning-adaptation-03).
+        live_learning.begin_match(identity.match_id)
     return LiveMatchStack(
         identity=identity,
         bus=dependencies.bus,

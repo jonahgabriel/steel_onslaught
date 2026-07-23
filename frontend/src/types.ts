@@ -61,6 +61,7 @@ export const SO_EVENT_TYPES = [
   "plan_committed",
   "register_resolved",
   "cards_discarded",
+  "policy_promoted",
 ] as const;
 
 export type SOEventType = (typeof SO_EVENT_TYPES)[number];
@@ -565,6 +566,23 @@ export interface MatchScoredPayload {
   is_draw: boolean;
 }
 
+/**
+ * Mirror of ModelSOPolicyPromotedPayload: the live-learning promotion fact
+ * appended to the promoting match's stream after match_scored.  Hash-carrying
+ * by design — parameters live in the lineage record the digests resolve to.
+ */
+export interface PolicyPromotedPayload {
+  kind: "steel_onslaught.policy_promoted";
+  match_id: string;
+  policy_id: string;
+  archetype: string;
+  generation: number;
+  spec_hash: string;
+  parent_spec_hash: string;
+  source_lineage_digest: string;
+  evidence_scored_event_id: string;
+}
+
 export type SORegisterOutcome = "resolved" | "auto_remain" | "heat_locked";
 export type SORegisterFillReason = "short_deck";
 /** Mirror of SOPlanSource: who actually authored a committed register plan. */
@@ -669,6 +687,7 @@ export interface PayloadMap {
   victory_declared: VictoryDeclaredPayload;
   match_ended: MatchEndedPayload;
   match_scored: MatchScoredPayload;
+  policy_promoted: PolicyPromotedPayload;
 }
 
 // ---------------------------------------------------------------------------
@@ -2705,6 +2724,52 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       loserScore.victory !== 0
     ) {
       fail(context, "decisive score winner truth is inconsistent");
+    }
+    return parsed;
+  },
+  policy_promoted: (value, context) => {
+    const record = asRecord(value, context);
+    rejectUnknown(
+      record,
+      [
+        "kind",
+        "match_id",
+        "policy_id",
+        "archetype",
+        "generation",
+        "spec_hash",
+        "parent_spec_hash",
+        "source_lineage_digest",
+        "evidence_scored_event_id",
+      ],
+      context,
+    );
+    if (record["kind"] !== "steel_onslaught.policy_promoted") {
+      fail(context, 'field "kind" must be "steel_onslaught.policy_promoted"');
+    }
+    const sha256 = (field: "spec_hash" | "parent_spec_hash" | "source_lineage_digest"): string => {
+      const digest = str(record, field, context);
+      if (!/^[0-9a-f]{64}$/.test(digest)) {
+        fail(context, `field "${field}" must be a lowercase sha256 hex digest`);
+      }
+      return digest;
+    };
+    const parsed: PolicyPromotedPayload = {
+      kind: "steel_onslaught.policy_promoted",
+      match_id: str(record, "match_id", context),
+      policy_id: str(record, "policy_id", context),
+      archetype: str(record, "archetype", context),
+      generation: positiveInt(record, "generation", context),
+      spec_hash: sha256("spec_hash"),
+      parent_spec_hash: sha256("parent_spec_hash"),
+      source_lineage_digest: sha256("source_lineage_digest"),
+      evidence_scored_event_id: str(record, "evidence_scored_event_id", context),
+    };
+    if (parsed.evidence_scored_event_id.length !== 26) {
+      fail(context, 'field "evidence_scored_event_id" must be a 26-char ULID');
+    }
+    if (parsed.spec_hash === parsed.parent_spec_hash) {
+      fail(context, "a promotion must change the policy: spec_hash == parent_spec_hash");
     }
     return parsed;
   },
