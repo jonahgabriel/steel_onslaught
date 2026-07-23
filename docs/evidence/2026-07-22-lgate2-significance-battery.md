@@ -146,12 +146,131 @@ it a real test). Driver knob added for the structural finding:
 
 ## RUN A results (blue seat, step 0.5, n=30+30)
 
-_(filled in after the run — see git history: predictions committed first)_
+Chain (audit half): **all green again** — promotion fired on the first
+promote-phase match (`match.01KY6BW8V49GWBMQ47P72VQ86P`, policy
+`policy.aggressive.70257e6d40a142ba`, spec
+`70257e6d…b6c3154`, lineage digest `1d0646c4…128389f2`), all 30 post
+matches flew generation 1 with exact provenance equality,
+`lineage_record_exists=true`, `all_replay_valid=true`, blue won 60/60
+learner matches, 2 failed completions total across 61 matches.
 
-## RUN B results
+Per-metric baseline vs post (Welch two-sided t, Cohen's d; positive diff =
+post higher). Predicted directions from the pre-registered table:
 
-_(filled in after the run)_
+| Metric | Pred. | Baseline (n) | Post (n) | Diff | d | t | df | p |
+|---|---|---|---|---|---|---|---|---|
+| keep attack | + (P1) | 0.9981 (30) | 0.9977 (30) | −0.0005 | −0.06 | −0.22 | 55.0 | 0.83 |
+| keep movement | **− (P2, primary)** | 0.4807 (30) | 0.4829 (30) | +0.0021 | +0.06 | +0.23 | 57.0 | 0.82 |
+| keep special | n/a (P4) | 0.6709 (30) | 0.6627 (30) | −0.0081 | −0.06 | −0.23 | 57.6 | 0.82 |
+| keep vent | − (P3) | 0.0292 (30) | 0.0743 (30) | **+0.0451** | **+0.51** | +1.98 | 51.0 | **0.053** |
+| share attack | **+ (P5, primary)** | 0.5155 (30) | 0.5056 (30) | **−0.0099** | **−0.48** | −1.84 | 54.2 | 0.072 |
+| share movement | − (P6) | 0.3846 (30) | 0.3863 (30) | +0.0017 | +0.06 | +0.23 | 57.0 | 0.82 |
+| share special | n/a | 0.0959 (30) | 0.0973 (30) | +0.0014 | +0.06 | +0.23 | 54.4 | 0.82 |
+| share vent | n/a | 0.0242 (5) | 0.0250 (13) | +0.0008 | +0.07 | +0.13 | 8.2 | 0.90 |
+
+- **Neither primary endpoint moved in the predicted direction.** P2
+  (movement keep) is a hard null (p=0.82, d=+0.06 wrong-signed); P5 (attack
+  planned share) is wrong-signed at d=−0.48, p=0.072.
+- **P1 ceiling and P3 floor notes both bound**, exactly as pre-registered:
+  attack keep 0.998 both phases; vent keep baseline near floor.
+- **The one near-significant movement is anti-directional and replicates
+  #126:** vent keep-rate ROSE +4.5pp after the aggression-up promotion
+  (d=+0.51, p=0.053), the same direction as #126's +8.3pp (t=3.15,
+  p≈0.006, n=10+10, step 0.25). Post-hoc (not pre-registered): Fisher's
+  combined p across the two independent batteries ≈ 0.003. Whatever the
+  promoted guidance does to qwen35's selection, its only detectable effect
+  is OPPOSITE to the declared aggression semantics.
+- Sensitivity: with n=30/30 and α=0.05 this battery has ~80% power for
+  d≈0.74; a small predicted-direction effect (d<0.5) could hide under the
+  nulls — but the observed point estimates are wrong-signed on 2 of the 3
+  informative metrics, in both batteries.
+
+Raw data (worktree `SO-L2SIG`, gitignored lane):
+`.onex_state/steel_onslaught/lgate2_significance_battery_blue/{battery_raw.jsonl,battery_summary.json}`
+(61 rows). Statistics: Welch t with Welch–Satterthwaite df, two-sided p via
+the regularized incomplete beta function (validated against reference
+values t=2.0/df=60→p=.0500, t=1.0/df=10→.3409, t=3.15/df=18→.0055);
+Cohen's d on pooled SD.
+
+## RUN B results (selection_outcome_v1, first live run)
+
+**Attempt 1 — crash, two structural findings.** The first live terminal
+fired the real evaluator; the search battery (eval_0001, 2 seeds × 2
+side-swapped duels, all real qwen35 card-programming matches) completed,
+then one holdout duel's LLM call raised `LlmTransportError`
+(retryable=true, overlay retry budget max_attempts=1) and the exception
+propagated UNCONTAINED through `DuelEvaluator → run_learning_loop →
+LiveLearningCoordinator.handle_after_match → AfterMatchLearningHandler →
+bus publish → MatchRunner tick`, killing the live match and the process
+(nested 4-deep ExceptionGroup). Findings, independent of the flake:
+- **F1:** the duel gate executes its entire LLM duel battery synchronously
+  inside the live match's `MATCH_SCORED` bus publish — minutes of LLM
+  traffic inside a bus subscriber, mid-tick.
+- **F2:** a single retryable transport error in one duel is fatal to the
+  live match; the coordinator's retry-safe snapshot design is not
+  exploited by any retry/containment layer in the live path.
+  Forensics retained: `.onex_state/steel_onslaught/lgate2_live_fire_attempt1/`.
+
+**Attempt 2 — full spine success, both live outcomes observed.**
+
+- Match 1 (`match.01KY6D31RD0ZDYNCQNKC3V3KJA`, seed 4301): red LOST →
+  evidence direction −1 → candidate `vent_at_heat_margin` 5→4 (reason
+  `selection_outcome:vent_at_heat_margin-1 … winner=player.blue,
+  learner=player.red, cards_planned=100/160 dealt`). Search battery
+  (eval_0001) + holdout gate (eval_0002) ran 8 real duels; holdout: 1
+  candidate-decisive + 1 draw → `decisive_n=1, win_rate_delta=0.5,
+  draw_rate=0.5, p_value=1.0` → **PROMOTED** under the declared relaxed
+  thresholds; `POLICY_PROMOTED` on the ledger
+  (`evidence_scored_event_id=01KY6D3S1XSFYVSX1NPXY7CP1Y`, policy
+  `policy.aggressive.3c9baf5678676237`, parent spec `5b19f451…b516fe`,
+  lineage digest `3585fbb0…bc35195e`); lineage record exists on disk with
+  `promotion.status=promoted`, `generator_id=live.selection_outcome.v1`.
+- Confirm match (seed 4400): a **fresh composition** rehydrated the
+  generation-1 policy purely from the durable `POLICY_PROMOTED` chain +
+  lineage store (production cross-process semantics) and flew it —
+  MATCH_STARTED provenance equality asserted hard (policy_id, spec_hash,
+  source_lineage_digest, generation=1). Its own terminal fired the gate
+  AGAIN (red lost again → 4→3 candidate); the search battery
+  (eval_0001_0002) ran and the gate **legitimately DECLINED** (no second
+  `POLICY_PROMOTED`, no crash). Both verdict classes of the real judgment
+  path are now live-observed.
+- Chain readback: `all_replay_valid=true`; 3 evaluation workspaces with
+  materialized candidate/parent pilot specs + pinned loadouts; 12 per-duel
+  sqlite ledgers under `evaluation_storage/`; 14 match records under
+  `evaluations/matches/`. Raw:
+  `.onex_state/steel_onslaught/lgate2_live_fire/{live_fire_raw.jsonl,live_fire_summary.json}`.
+
+Scope note (pre-registered as B4): RUN B proves the SPINE of the real
+judgment path — evidence-directed proposal, real duel gate, event-sourced
+promotion, durable rehydration, legitimate decline. It makes NO claim of
+policy quality: the thresholds were relaxed as declared, and the promoted
+record honestly carries `decisive_n=1, p_value=1.0`.
+
+Prediction scorecard: B1 ✔ (workspaces + specs + duel ledgers), B2 ✔ on
+attempt 2 (real verdicts both ways) but ✘ on attempt 1 (crash — F1/F2), B3
+✔ (confirm provenance equality), B4 ✔ (draws present; decline observed).
 
 ## Verdict on L-GATE-2 behavioral half
 
-_(filled in after the runs)_
+**FAILED at the tested operating points.** The audit half of L-GATE-2 stays
+PROVEN (#126, re-confirmed twice here). The behavioral half — "next-match
+selection metrics shift in the parameterized direction vs pre-promotion
+baseline" — is now answered by two independent live batteries (10+10 @
+step 0.25, #126; 30+30 @ step 0.5, this run): **no metric moved in the
+parameterized direction**; the only detectable movement (vent keep-rate,
+d≈+0.5) is OPPOSITE to the declared aggression semantics and replicates
+across both batteries. Promotion demonstrably changes the prompt (audit
+half) but does not steer qwen35's card selection the way the parameter
+semantics claim.
+
+What it would take to revisit: different guidance semantics/wording (the
+current block is one sentence of bias prose), a parameter whose semantics
+the model can actually express under the over-deal decision space (e.g.
+movement-pile biases — vent keep sits at the floor and attack keep at the
+ceiling, so the aggression axis has almost no live decision surface), or a
+non-prompt consumer (deterministic selection bias applied to legal_hand).
+Structural side-findings for follow-up: the red berserker seat can NEVER
+fire the win-gated `win_damage_differential_v1` lane (0/35 red wins —
+promotion requires a decisive learner win); `selection_outcome_v1` needs
+containment/async for its in-terminal duel battery (F1/F2) before it can
+be trusted unattended.
