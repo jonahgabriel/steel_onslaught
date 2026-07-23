@@ -207,13 +207,28 @@ def _card_definition(card: object) -> dict[str, object]:
     dumped = model_dump(mode="json")
     if not isinstance(dumped, dict):
         raise TypeError("card definition model_dump must be a mapping")
-    return {
+    # ``priority`` is deliberately NOT serialized here.  It is an internal
+    # simultaneous-resolution tiebreak (utility 280-300, movement 400, attack
+    # 600), never a strategic strength ranking, but a model that sees a field
+    # literally named "priority" next to "place the strongest card in each
+    # register" reads utility (lowest priority) as "weakest, discard".  The
+    # engine still owns priority for resolution ordering; the LLM-facing card
+    # surface must not leak it as a value signal for ANY category.
+    definition: dict[str, object] = {
         "id": dumped["id"],
         "category": dumped["category"],
-        "priority": dumped["priority"],
         "heat_cost": dumped["heat_cost"],
         "effect": dumped["effect"],
     }
+    # Optional human-readable tactical description: utility is the only category
+    # whose payoff is not otherwise stated by its effect fields, so when a card
+    # authors one, surface it so the model can weigh the card on its effect
+    # rather than pattern-matching the id string.  Absent for movement/weapon/
+    # vent cards, so their serialized definition stays byte-identical.
+    description = dumped.get("description")
+    if description is not None:
+        definition["description"] = description
+    return definition
 
 
 def _serialize_programming_observation(observation: ModelSOProgrammingObservation) -> str:
