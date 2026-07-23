@@ -227,6 +227,31 @@ class ModelSOBalanceRulePackBinding(_ClosedBinding):
         return self
 
 
+class ModelSOUtilityHandlerPackBinding(_ClosedBinding):
+    """Explicit allowlisted utility-resolution handler pack selection (Phase 2).
+
+    Mirrors ``ModelSOBalanceRulePackBinding`` but for the *resolution* phase:
+    which smoke/chaff/flares handlers a match may use.  ``handler_ids`` selects
+    a fail-closed subset of the canonical pack; an empty tuple is rejected so
+    an overlay that opts in must name at least one handler.  Overlays that omit
+    this binding keep the full default pack.
+    """
+
+    kind: Literal["utility_resolution_handlers"]
+    pack_id: StrictStr = Field(
+        min_length=1,
+        max_length=96,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    handler_ids: tuple[StrictStr, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _handler_ids_are_unique(self) -> Self:
+        if len(self.handler_ids) != len(set(self.handler_ids)):
+            raise ValueError("utility handler_ids must be unique")
+        return self
+
+
 class ModelSOContractBindings(_ClosedBinding):
     """Filesystem contract roots owned by the application overlay.
 
@@ -241,6 +266,10 @@ class ModelSOContractBindings(_ClosedBinding):
     arena_id: StrictStr = Field(pattern=r"^[a-z][a-z0-9_]*$")
     card_catalog: ModelSOCardCatalogBinding | None = None
     balance_rule_pack: ModelSOBalanceRulePackBinding | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    utility_handler_pack: ModelSOUtilityHandlerPackBinding | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )

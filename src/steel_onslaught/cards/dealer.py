@@ -52,35 +52,56 @@ class ModelSODealResult(_ClosedDealerModel):
     )
 
 
+def _empty_deck_state() -> ModelSODeckState:
+    """Return the canonical empty pile used when a seat deals no utility cards."""
+
+    return ModelSODeckState(draw_pile=(), discard_pile=())
+
+
 class ModelSOSplitDeckState(_ClosedDealerModel):
-    """Independent draw/discard state for one seat's two card partitions."""
+    """Independent draw/discard state for one seat's card partitions.
+
+    ``utility`` is the Phase 2 third pile.  It defaults to an empty pile so
+    every pre-Phase-2 construction (``ModelSOSplitDeckState(movement=...,
+    weapon=...)``) stays valid and byte-identical when no utility deck is
+    configured.
+    """
 
     movement: ModelSODeckState
     weapon: ModelSODeckState
+    utility: ModelSODeckState = Field(default_factory=_empty_deck_state)
 
 
 class ModelSOSplitDealResult(_ClosedDealerModel):
-    """One seat's quota-sized movement and weapon deals."""
+    """One seat's quota-sized movement, weapon, and (Phase 2) utility deals."""
 
     movement_hand: tuple[CardId, ...] = Field(...)
     weapon_hand: tuple[CardId, ...] = Field(...)
+    utility_hand: tuple[CardId, ...] = ()
     state: ModelSOSplitDeckState
     movement_reshuffled: StrictBool = Field(...)
     weapon_reshuffled: StrictBool = Field(...)
+    utility_reshuffled: StrictBool = False
     movement_exhausted: StrictBool = Field(...)
     weapon_exhausted: StrictBool = Field(...)
+    utility_exhausted: StrictBool = False
 
     @property
     def hand(self) -> tuple[CardId, ...]:
-        """Return a stable partition order for adapter consumers."""
+        """Return a stable partition order for adapter consumers.
 
-        return self.movement_hand + self.weapon_hand
+        Utility cards are appended after movement/weapon so the over-dealt hand
+        conserves order against the ``movement -> weapon -> utility`` partition
+        metadata carried by ``HAND_DEALT``.
+        """
+
+        return self.movement_hand + self.weapon_hand + self.utility_hand
 
     @property
     def exhausted(self) -> bool:
-        """Whether either explicitly requested partition could not be filled."""
+        """Whether any explicitly requested partition could not be filled."""
 
-        return self.movement_exhausted or self.weapon_exhausted
+        return self.movement_exhausted or self.weapon_exhausted or self.utility_exhausted
 
 
 def _fisher_yates(cards: tuple[CardId, ...], rng: Random) -> tuple[CardId, ...]:
@@ -174,17 +195,24 @@ class DealerCompute:
         weapon_deck: ModelSODeck,
         hand_quota: ModelSODeckHandQuota,
         scope: ModelSODealerScope,
+        utility_deck: ModelSODeck | None = None,
     ) -> ModelSOSplitDealResult:
-        """Deal two independent piles without sharing mutable dealer state.
+        """Deal the independent piles without sharing mutable dealer state.
 
         Each partition is opened and drawn through the existing explicit
         single-deck primitive.  Since every operation derives its own RNG from
         the immutable scope and deck value, red/blue call order cannot alter a
-        seat's deal.
+        seat's deal.  ``utility_deck`` is the Phase 2 third pile; it is only
+        opened when present (a positive ``hand_quota.utility`` requires it, per
+        the split-deck contract).
         """
 
         if movement_deck.id == weapon_deck.id:
             raise ValueError("split-deck deal requires distinct movement and weapon decks")
+        if utility_deck is not None and utility_deck.id in {movement_deck.id, weapon_deck.id}:
+            raise ValueError("split-deck deal requires a distinct utility deck")
+        if hand_quota.utility > 0 and utility_deck is None:
+            raise ValueError("a positive utility quota requires an opened utility deck")
         movement_state = self.open_deck_for_seat(
             deck=movement_deck,
             scope=scope.model_copy(update={"seat": f"{scope.seat}:movement"}),
@@ -193,8 +221,18 @@ class DealerCompute:
             deck=weapon_deck,
             scope=scope.model_copy(update={"seat": f"{scope.seat}:weapon"}),
         )
+        utility_state = (
+            _empty_deck_state()
+            if utility_deck is None
+            else self.open_deck_for_seat(
+                deck=utility_deck,
+                scope=scope.model_copy(update={"seat": f"{scope.seat}:utility"}),
+            )
+        )
         return self.deal_split_hand_for_seat(
-            state=ModelSOSplitDeckState(movement=movement_state, weapon=weapon_state),
+            state=ModelSOSplitDeckState(
+                movement=movement_state, weapon=weapon_state, utility=utility_state
+            ),
             hand_quota=hand_quota,
             scope=scope,
         )
@@ -210,6 +248,7 @@ class DealerCompute:
 
         movement_scope = scope.model_copy(update={"seat": f"{scope.seat}:movement"})
         weapon_scope = scope.model_copy(update={"seat": f"{scope.seat}:weapon"})
+        utility_scope = scope.model_copy(update={"seat": f"{scope.seat}:utility"})
         movement = self.deal_hand_for_seat(
             state=state.movement,
             count=hand_quota.movement,
@@ -220,14 +259,24 @@ class DealerCompute:
             count=hand_quota.weapon,
             scope=weapon_scope,
         )
+        utility = self.deal_hand_for_seat(
+            state=state.utility,
+            count=hand_quota.utility,
+            scope=utility_scope,
+        )
         return ModelSOSplitDealResult(
             movement_hand=movement.hand,
             weapon_hand=weapon.hand,
-            state=ModelSOSplitDeckState(movement=movement.state, weapon=weapon.state),
+            utility_hand=utility.hand,
+            state=ModelSOSplitDeckState(
+                movement=movement.state, weapon=weapon.state, utility=utility.state
+            ),
             movement_reshuffled=movement.reshuffled,
             weapon_reshuffled=weapon.reshuffled,
+            utility_reshuffled=utility.reshuffled,
             movement_exhausted=movement.exhausted,
             weapon_exhausted=weapon.exhausted,
+            utility_exhausted=utility.exhausted,
         )
 
     @staticmethod

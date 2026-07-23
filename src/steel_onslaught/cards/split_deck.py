@@ -62,12 +62,22 @@ class SplitDeckDealerAdapter:
         seat = self.policy.for_side(side)
         movement_deck = self.snapshot.require_deck(seat.movement_deck_id)
         weapon_deck = self.snapshot.require_deck(seat.weapon_deck_id)
+        # Phase 2 third pile: resolve the utility deck only when the seat
+        # declares one.  The split-deck contract guarantees a positive
+        # ``hand_quota.utility`` implies a ``utility_deck_id``, so a None deck
+        # here means a zero utility quota and an empty utility pile.
+        utility_deck = (
+            None
+            if seat.utility_deck_id is None
+            else self.snapshot.require_deck(seat.utility_deck_id)
+        )
         if state is None:
             return self.dealer.spawn_split_deal_for_seat(
                 movement_deck=movement_deck,
                 weapon_deck=weapon_deck,
                 hand_quota=seat.hand_quota,
                 scope=scope,
+                utility_deck=utility_deck,
             )
         return self.dealer.deal_split_hand_for_seat(
             state=state,

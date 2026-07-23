@@ -245,6 +245,7 @@ class MatchRunner:
         card_adapter: CardRunnerAdapter | None = None,
         card_cadence: Literal["atomic", "paced"] = "atomic",
         progress_gate: ProgressGate | None = None,
+        utility_handler_ids: tuple[str, ...] | None = None,
     ) -> None:
         self._identity = identity
         self._match_id = identity.match_id
@@ -267,8 +268,13 @@ class MatchRunner:
         self._arena_size = self._arena.size
         self._obstacles = self._arena.obstacle_cells
         # Allowlisted utility resolution handlers (Phase 2), selected fail-closed
-        # by the typed pack; the default pack carries smoke/chaff/flares.
+        # by the typed overlay (design §6 Handlers row).  ``utility_handler_ids``
+        # None keeps the full default pack (smoke/chaff/flares); a typed overlay
+        # ``utility_handler_pack`` narrows it to the named subset.  ``select``
+        # fails closed on unknown/duplicate/empty ids.
         self._utility_registry: UtilityResolutionRegistry = default_utility_registry()
+        if utility_handler_ids is not None:
+            self._utility_registry = self._utility_registry.select(utility_handler_ids)
         self._sudden_death_start_tick = self._arena.sudden_death_start_tick
         self._sudden_death_damage_base = self._arena.sudden_death_damage_base
         if max_ticks is None and self._sudden_death_start_tick is None:

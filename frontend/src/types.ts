@@ -662,7 +662,7 @@ export type SOPlanSource =
   | "unspecified";
 
 export interface HandPartitionPayload {
-  partition: "movement" | "weapon";
+  partition: "movement" | "weapon" | "utility";
   deck_id: string;
   card_ids: string[];
   requested_count: number;
@@ -681,6 +681,8 @@ export interface HandDealtPayload {
   partitions?: {
     movement: HandPartitionPayload;
     weapon: HandPartitionPayload;
+    // Phase 2 third pile; only present when a utility quota was dealt.
+    utility?: HandPartitionPayload;
   };
   register_count?: number;
 }
@@ -2321,10 +2323,12 @@ const PAYLOAD_PARSERS: PayloadParsers = {
     let partitions: HandDealtPayload["partitions"];
     if (rawPartitions !== undefined) {
       const partitionRecord = asRecord(rawPartitions, `${context}.partitions`);
-      rejectUnknown(partitionRecord, ["movement", "weapon"], `${context}.partitions`);
+      // Phase 2 third pile: "utility" is optional and only present when a
+      // utility quota was dealt, so pre-Phase-2 hands stay two-partition.
+      rejectUnknown(partitionRecord, ["movement", "weapon", "utility"], `${context}.partitions`);
       const parsePartition = (
         value: unknown,
-        partition: "movement" | "weapon",
+        partition: "movement" | "weapon" | "utility",
       ): HandPartitionPayload => {
         const itemContext = `${context}.partitions.${partition}`;
         const item = asRecord(value, itemContext);
@@ -2350,14 +2354,27 @@ const PAYLOAD_PARSERS: PayloadParsers = {
           reshuffled: bool(item, "reshuffled", itemContext),
         };
       };
+      const utilityPartition =
+        partitionRecord["utility"] === undefined
+          ? undefined
+          : parsePartition(partitionRecord["utility"], "utility");
       partitions = {
         movement: parsePartition(partitionRecord["movement"], "movement"),
         weapon: parsePartition(partitionRecord["weapon"], "weapon"),
+        ...(utilityPartition === undefined ? {} : { utility: utilityPartition }),
       };
-      if (partitions.movement.requested_count + partitions.weapon.requested_count !== hand_size) {
+      const utilityCount = utilityPartition?.requested_count ?? 0;
+      if (
+        partitions.movement.requested_count + partitions.weapon.requested_count + utilityCount !==
+        hand_size
+      ) {
         fail(context, "partition counts must equal hand_size");
       }
-      const partitionIds = [...partitions.movement.card_ids, ...partitions.weapon.card_ids];
+      const partitionIds = [
+        ...partitions.movement.card_ids,
+        ...partitions.weapon.card_ids,
+        ...(utilityPartition?.card_ids ?? []),
+      ];
       if (partitionIds.join("\u0000") !== card_ids.join("\u0000")) {
         fail(context, "partitions must preserve card_ids order");
       }

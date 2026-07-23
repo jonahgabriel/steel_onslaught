@@ -97,6 +97,18 @@ contracts:
     kind: card_programming_rules
     pack_id: rules.card_programming_v1
     handler_ids: []
+  # Phase 2 — utility resolution handlers selected by this typed overlay
+  # (design §6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
 llm:
   providers:
     - kind: openai_compatible

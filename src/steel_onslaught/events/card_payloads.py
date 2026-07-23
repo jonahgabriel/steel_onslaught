@@ -44,10 +44,17 @@ class SORegisterFillReason(StrEnum):
 
 
 class SOCardPartition(StrEnum):
-    """The two explicit piles in a split card hand."""
+    """The explicit piles in a split card hand.
+
+    ``UTILITY`` is the Phase 2 third pile (smoke/chaff/flares counterplay); it
+    is only present in a hand when the seat declares a utility deck and a
+    positive utility quota, so pre-Phase-2 split hands stay two-partition and
+    byte-identical.
+    """
 
     MOVEMENT = "movement"
     WEAPON = "weapon"
+    UTILITY = "utility"
 
 
 class SOPlanSource(StrEnum):
@@ -109,10 +116,19 @@ class ModelSOHandPartitionPayload(_ClosedCardPayload):
 
 
 class ModelSOHandPartitionsPayload(_ClosedCardPayload):
-    """Movement/weapon partition metadata carried by ``HAND_DEALT``."""
+    """Movement/weapon (and optional Phase 2 utility) partition metadata.
+
+    ``utility`` defaults to ``None`` and is excluded from serialization when
+    absent, so every pre-Phase-2 split-hand payload stays byte-identical.  It
+    is only populated when the seat is dealt a positive utility quota.
+    """
 
     movement: ModelSOHandPartitionPayload
     weapon: ModelSOHandPartitionPayload
+    utility: ModelSOHandPartitionPayload | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _partitions_are_named_correctly(self) -> Self:
@@ -120,7 +136,12 @@ class ModelSOHandPartitionsPayload(_ClosedCardPayload):
             raise ValueError("movement partition must be named movement")
         if self.weapon.partition is not SOCardPartition.WEAPON:
             raise ValueError("weapon partition must be named weapon")
-        if self.movement.requested_count + self.weapon.requested_count < 1:
+        utility_count = 0
+        if self.utility is not None:
+            if self.utility.partition is not SOCardPartition.UTILITY:
+                raise ValueError("utility partition must be named utility")
+            utility_count = self.utility.requested_count
+        if self.movement.requested_count + self.weapon.requested_count + utility_count < 1:
             raise ValueError("split hand must contain at least one card")
         return self
 
@@ -151,14 +172,20 @@ class ModelSOHandDealtPayload(_ClosedCardPayload):
         if self.partitions is not None:
             if self.deck_id != SPLIT_DECK_MARKER:
                 raise ValueError(f"split hand payloads must use deck marker {SPLIT_DECK_MARKER!r}")
+            utility_partition = self.partitions.utility
+            utility_cards = () if utility_partition is None else utility_partition.card_ids
+            utility_count = 0 if utility_partition is None else utility_partition.requested_count
             partition_cards = (
                 *self.partitions.movement.card_ids,
                 *self.partitions.weapon.card_ids,
+                *utility_cards,
             )
             if tuple(partition_cards) != tuple(self.card_ids):
                 raise ValueError("split hand partitions must preserve card_ids order")
             if self.hand_size != (
-                self.partitions.movement.requested_count + self.partitions.weapon.requested_count
+                self.partitions.movement.requested_count
+                + self.partitions.weapon.requested_count
+                + utility_count
             ):
                 raise ValueError("split hand_size must equal partition quotas")
             if self.register_count is None:

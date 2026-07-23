@@ -23,6 +23,7 @@ from steel_onslaught.cards.registers import RegisterExecutionReducer
 from steel_onslaught.cards.round import CardRoundRuntime
 from steel_onslaught.cards.rules import CardProgrammingRuleRegistry, default_rule_registry
 from steel_onslaught.cards.split_deck import SplitDeckDealerAdapter
+from steel_onslaught.cards.utility_handlers import default_utility_registry
 from steel_onslaught.commands.authority import (
     AuthenticatedSessionCapability,
     ModelSOStartMatchAuthorityContext,
@@ -374,6 +375,11 @@ class RuntimeDependencies:
     # A human prompt edit is a decision input; recording it here is what keeps
     # replay honest about what the mechs were actually told.
     prompt_provenance: ModelSOMatchPromptProvenance | None = None
+    # Phase 2 — utility resolution handlers selected by the typed overlay
+    # (design §6 Handlers row).  ``None`` keeps the full default pack
+    # (smoke/chaff/flares); an overlay ``utility_handler_pack`` narrows it to
+    # the named, fail-closed subset.
+    utility_handler_ids: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.card_cadence not in {"atomic", "paced"}:
@@ -912,7 +918,7 @@ def _validate_split_deck_policy(
 
     decks_by_id = {str(deck.id): deck for deck in decks}
     for seat in policy.seats:
-        for deck_id, categories, label in (
+        partitions = [
             (
                 seat.movement_deck_id,
                 frozenset({SOCardCategory.MOVEMENT, SOCardCategory.ROTATE}),
@@ -923,7 +929,18 @@ def _validate_split_deck_policy(
                 frozenset({SOCardCategory.ATTACK, SOCardCategory.VENT, SOCardCategory.SPECIAL}),
                 "weapon",
             ),
-        ):
+        ]
+        # Phase 2 third pile: validate the utility deck reference + category
+        # partition at load time (fail closed) when the seat declares one.
+        if seat.utility_deck_id is not None:
+            partitions.append(
+                (
+                    seat.utility_deck_id,
+                    frozenset({SOCardCategory.UTILITY}),
+                    "utility",
+                )
+            )
+        for deck_id, categories, label in partitions:
             deck = decks_by_id.get(str(deck_id))
             if deck is None:
                 raise ValueError(
@@ -1683,6 +1700,24 @@ def build_runtime_dependencies(
                     f"available pack is {rule_registry.pack_id!r}"
                 )
             rule_handler_ids = tuple(rule_binding.handler_ids)
+        # Phase 2 — utility resolution handlers selected by the typed overlay
+        # (design §6 Handlers row).  Absent binding => full default pack; a
+        # binding narrows it to a fail-closed named subset validated here so a
+        # mis-authored overlay fails at composition, not mid-match.
+        utility_pack_binding = overlay.contracts.utility_handler_pack
+        utility_handler_ids: tuple[str, ...] | None = None
+        if utility_pack_binding is not None:
+            if card_binding is None or not card_binding.card_mode_enabled:
+                raise ValueError("utility_handler_pack requires an explicitly enabled card catalog")
+            default_utility = default_utility_registry()
+            if utility_pack_binding.pack_id != default_utility.pack_id:
+                raise ValueError(
+                    f"unknown utility handler pack {utility_pack_binding.pack_id!r}; "
+                    f"available pack is {default_utility.pack_id!r}"
+                )
+            # ``select`` fails closed on unknown/duplicate/empty ids.
+            default_utility.select(utility_pack_binding.handler_ids)
+            utility_handler_ids = tuple(utility_pack_binding.handler_ids)
         if card_binding is not None and card_binding.programmers:
             if card_programmers is not None:
                 raise ValueError(
@@ -1743,6 +1778,7 @@ def build_runtime_dependencies(
                 card_adapter.rule_provenance if card_adapter is not None else None
             ),
             prompt_provenance=llm.prompt_provenance,
+            utility_handler_ids=utility_handler_ids,
         )
     except Exception:
         if owns_llm:
@@ -2200,6 +2236,7 @@ def assemble_match_with_dependencies(
         card_adapter=card_adapter,
         card_cadence=dependencies.card_cadence,
         progress_gate=resolved_progress_gate,
+        utility_handler_ids=dependencies.utility_handler_ids,
     )
     scoring = ReducerScoring(
         identity.match_id,
