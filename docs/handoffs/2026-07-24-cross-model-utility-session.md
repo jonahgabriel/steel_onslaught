@@ -99,3 +99,16 @@ State-roots live under each worktree's gitignored `.onex_state/steel_onslaught/`
 - Running: **deepseek-clean rerun** (background workflow, ~10/30, healthy, ~morning ETA).
 - Gated: Gemma→n=30 + more free lineages (OpenRouter daily reset ~18h).
 - Everything else captured, verified, and durable on `main`. Both experimental axes answered.
+
+---
+
+## REFINEMENT (2026-07-24, GLM 4th arm — n=4 models)
+
+The "GENERAL across architectures" headline is REFINED by adding Zhipu/GLM (glm-4.5, lower-power):
+
+- **GENERAL (4/4 lineages):** the AGGRESSIVE/berserker (red) seat programs utility far below chance in every family — qwen35 0.0552, deepseek 0.0735, gemma 0.1776, glm-4.5 0.0942 (all vs 0.50 floor). Aggressive-seat utility suppression is architecture-independent. This is the load-bearing, robust finding.
+- **LINEAGE-SPECIFIC:** whether the DEFENSIVE/sniper (blue) seat ALSO suppresses holds for qwen35/deepseek/gemma (blue 0.17–0.32, sub-chance) but BREAKS on GLM — glm-4.5 blue keeps utility AT chance (0.513). The scope (one seat vs both) is not general.
+- **Capability axis (n=4, directional only):** the lowest-power model (glm-4.5) shows the SHARPEST seat split (5.4×), not uniform suppression — inconsistent with "lower-power deprioritizes more"; consistent with the seat/role prompt dominating, executed more coarsely by the weaker model.
+- **Confound:** GLM red had a 63% abort rate (glm-4.5 emits invalid plans on the berserker seat — model quality, not infra; the retry fix solved only the z.ai timeout stalls, 1/111). Red is a biased survivor sample. The general red-suppression claim survives across clean + confounded arms; the capability reading is directional.
+
+Evidence: docs/evidence/2026-07-24-crossarch-glm-lowpower.md. Wiring: PR #151 (glm-4.5 + thinking:disabled typed field + secret injection), #152 (retry resilience). deepseek-clean rerun still pending (will firm the same-family point).
