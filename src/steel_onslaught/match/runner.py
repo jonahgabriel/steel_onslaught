@@ -1227,6 +1227,8 @@ class MatchRunner:
                 perp_x, perp_y = -axis_y, axis_x
             dx = perp_x * budget
             dy = perp_y * budget
+        elif direction == "covered_advance":
+            dx, dy = self._covered_advance_step(from_pos, enemy.position, budget)
         else:  # toward_cover
             # Obstacles are impassable in the current arena contract.  Move
             # toward the nearest obstacle but stop one legal cell before it;
@@ -1292,6 +1294,56 @@ class MatchRunner:
                 break
             last = ModelSOPosition(x=x, y=y)
         return last
+
+    def _covered_advance_step(
+        self,
+        from_pos: ModelSOPosition,
+        enemy_pos: ModelSOPosition,
+        budget: int,
+    ) -> tuple[int, int]:
+        """Pure dx/dy for ``covered_advance``: close distance via an LOS shadow.
+
+        Enumerates every reachable cell within the Chebyshev ``budget`` disk
+        (reachable = an unobstructed straight king-move path from
+        ``from_pos``, matching how ``_walk_to`` actually resolves movement),
+        keeps only cells that (a) strictly reduce distance to the enemy and
+        (b) the enemy has no line of sight to (terrain obstacles only — smoke
+        is a separate counterplay card and deliberately not folded in here,
+        so this card's value never depends on a second card being played).
+        Among survivors, picks the fixed lexicographic minimum
+        ``(distance_to_enemy, x, y)`` — deterministic, no iteration-order
+        dependence on set/dict ordering. If no cell qualifies, degrades to a
+        plain ``toward_enemy`` advance (identical math to that branch above).
+        """
+        distance_now = chebyshev(from_pos, enemy_pos)
+        best: ModelSOPosition | None = None
+        best_key: tuple[int, int, int] | None = None
+        min_x = max(0, from_pos.x - budget)
+        max_x = min(self._arena_size - 1, from_pos.x + budget)
+        min_y = max(0, from_pos.y - budget)
+        max_y = min(self._arena_size - 1, from_pos.y + budget)
+        for cx in range(min_x, max_x + 1):
+            for cy in range(min_y, max_y + 1):
+                if max(abs(cx - from_pos.x), abs(cy - from_pos.y)) > budget:
+                    continue
+                if (cx, cy) == (enemy_pos.x, enemy_pos.y):
+                    continue  # never resolve a move into the enemy's cell
+                candidate = ModelSOPosition(x=cx, y=cy)
+                candidate_distance = chebyshev(candidate, enemy_pos)
+                if candidate_distance >= distance_now:
+                    continue  # must be a strict advance, not a lateral/backward move
+                if line_of_sight_clear(enemy_pos, candidate, self._obstacles):
+                    continue  # enemy can see this cell -- not covered
+                if self._walk_to(from_pos, candidate) != candidate:
+                    continue  # not reachable: terrain blocks the straight path there
+                key = (candidate_distance, cx, cy)
+                if best_key is None or key < best_key:
+                    best_key, best = key, candidate
+        if best is not None:
+            return best.x - from_pos.x, best.y - from_pos.y
+        # Degrade: no LOS-shadowed cell reduces distance -- plain toward_enemy.
+        step = min(budget, max(0, distance_now - 1))
+        return _clamp(enemy_pos.x - from_pos.x, step), _clamp(enemy_pos.y - from_pos.y, step)
 
     def _resolve_weapon_fire(
         self,

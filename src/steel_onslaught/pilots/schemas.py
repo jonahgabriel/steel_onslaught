@@ -113,6 +113,7 @@ type SOMoveDirection = Literal[
     "flank_left",
     "flank_right",
     "toward_cover",
+    "covered_advance",
     "hold_position",
 ]
 

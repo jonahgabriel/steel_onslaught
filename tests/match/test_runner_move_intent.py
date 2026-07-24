@@ -410,6 +410,101 @@ def test_hold_position_and_empty_cover_are_explicit_no_ops() -> None:
 
 
 # ---------------------------------------------------------------------------
+# covered_advance -- LOS-aware deterministic advance (card.movement.covered_advance)
+# ---------------------------------------------------------------------------
+#
+# All of the following pin ``_prepared_move_runner``'s default rig: mech a at
+# (10, 10), enemy b at (20, 10), budget 4 (base_speed 4, current_mode recon
+# -> +0, pressure_current 30 -- see ``_mech_payload`` below). A plain
+# ``toward_enemy`` advance in this rig resolves to (14, 10): step =
+# min(budget=4, distance-1=9) = 4.
+
+
+@pytest.mark.unit
+def test_covered_advance_prefers_a_los_shadowed_cell_over_the_visible_straight_line() -> None:
+    """A single obstacle just off the straight path shadows a nearby cell.
+
+    The plain ``toward_enemy`` target (14, 10) stays fully visible to the
+    enemy at (20, 10) -- the obstacle at (14, 9) never crosses the y=10
+    line. ``covered_advance`` must reject that visible target and instead
+    resolve to (13, 9): reachable within budget, strictly closer to the
+    enemy than the starting distance, and outside the enemy's line of sight.
+    """
+    runner, mech, collected = _prepared_move_runner(obstacles=(ModelSOPosition(x=14, y=9),))
+    collected.clear()
+
+    runner._resolve_move(_move_intent("covered_advance"), runner.fold.state, mech)
+
+    movement = next(
+        event for event in collected if event.event_type is SOEventType.MOVEMENT_RESOLVED
+    )
+    assert movement.payload["to"] == {"x": 13, "y": 9}
+
+
+@pytest.mark.unit
+def test_covered_advance_degrades_to_plain_toward_enemy_when_no_cover_helps() -> None:
+    """No obstacle shadows any distance-reducing cell -> identical to toward_enemy."""
+    runner, mech, collected = _prepared_move_runner()
+    collected.clear()
+
+    runner._resolve_move(_move_intent("covered_advance"), runner.fold.state, mech)
+    covered = next(
+        event for event in collected if event.event_type is SOEventType.MOVEMENT_RESOLVED
+    )
+
+    runner2, mech2, collected2 = _prepared_move_runner()
+    collected2.clear()
+    runner2._resolve_move(_move_intent("toward_enemy"), runner2.fold.state, mech2)
+    plain = next(event for event in collected2 if event.event_type is SOEventType.MOVEMENT_RESOLVED)
+
+    assert covered.payload["to"] == plain.payload["to"] == {"x": 14, "y": 10}
+
+
+@pytest.mark.unit
+def test_covered_advance_tie_break_is_lexicographic_distance_then_x_then_y() -> None:
+    """Two symmetric shadowed cells at equal distance -- the smaller y wins.
+
+    Obstacles at (14, 9) and (14, 11) shadow (13, 9) and (13, 11)
+    symmetrically (both distance 7 from the enemy, same x). The fixed
+    tie-break ``(distance_to_enemy, x, y)`` must deterministically prefer
+    (13, 9) over (13, 11) -- never depend on obstacle-set iteration order.
+    """
+    runner, mech, collected = _prepared_move_runner(
+        obstacles=(ModelSOPosition(x=14, y=9), ModelSOPosition(x=14, y=11))
+    )
+    collected.clear()
+
+    runner._resolve_move(_move_intent("covered_advance"), runner.fold.state, mech)
+
+    movement = next(
+        event for event in collected if event.event_type is SOEventType.MOVEMENT_RESOLVED
+    )
+    assert movement.payload["to"] == {"x": 13, "y": 9}
+
+
+@pytest.mark.unit
+def test_covered_advance_resolver_is_a_pure_deterministic_function_of_state() -> None:
+    """Same (from, enemy, budget, obstacles) in -> byte-identical dx/dy out.
+
+    ``_covered_advance_step`` takes no bus/RNG/clock and must be a pure
+    function: this is the load-bearing property behind ``all_replay_valid``
+    (the reducer re-folds whatever the resolver emitted live -- correctness
+    depends on the resolver never emitting a different answer for the same
+    inputs, e.g. via unsorted set/dict iteration order).
+    """
+    runner, mech, _collected = _prepared_move_runner(
+        obstacles=(ModelSOPosition(x=14, y=9), ModelSOPosition(x=14, y=11))
+    )
+    enemy_pos = ModelSOPosition(x=20, y=10)
+
+    first = runner._covered_advance_step(mech.position, enemy_pos, 4)
+    second = runner._covered_advance_step(mech.position, enemy_pos, 4)
+    third = runner._covered_advance_step(mech.position, enemy_pos, 4)
+
+    assert first == second == third == (3, -1)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

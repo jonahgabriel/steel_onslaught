@@ -17,6 +17,7 @@ type SOCardDirection = Literal[
     "away_from_enemy",
     "left",
     "right",
+    "covered_advance",
 ]
 type SOCardSpeed = Literal["full"]
 type SOUtilityKind = Literal["smoke", "chaff", "flares"]
