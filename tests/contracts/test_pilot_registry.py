@@ -29,6 +29,7 @@ _PINNED_LOADOUT_PILOT_IDS: dict[str, str] = {
     "llm_qwen35_berserker_v2.yaml": "pilot.llm.qwen35",
     "llm_qwen35_berserker_dmg3.yaml": "pilot.llm.qwen35",
     "llm_qwen35_berserker_dmg55.yaml": "pilot.llm.qwen35",
+    "llm_qwen35_berserker_dmg8.yaml": "pilot.llm.qwen35",
     "proof_blue_aggressive_hunter.yaml": "pilot.template.aggressive",
     "proof_blue_defensive_passive.yaml": "pilot.template.defensive",
     "proof_red_defensive_passive.yaml": "pilot.template.defensive",
