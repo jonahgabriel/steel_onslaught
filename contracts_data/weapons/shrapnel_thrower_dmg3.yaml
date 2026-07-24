@@ -1,0 +1,36 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.weapon
+id: weapon.light.shrapnel_thrower_dmg3
+display_name: "Shrapnel Thrower (Damage x3)"
+# Pair-sweep arm P1 (mortar_r30 x red-dmg-x3, session 2026-07-24): additive
+# weapon variant of contracts_data/weapons/shrapnel_thrower.yaml with
+# EXACTLY ONE field changed -- damage 12 -> 36 (x3). Every other field
+# (range, pressure_cost, heat_generated, cooldown_ticks, accuracy_curve,
+# target_class_effectiveness, damage_type, compatibility) is byte-identical
+# to the baseline shrapnel thrower. shrapnel_thrower.yaml itself stays
+# untouched -- this is a NEW weapon id, bound only via the P1 berserker
+# loadout variant (contracts_data/loadouts/llm_qwen35_berserker_dmg3.yaml).
+weapon_class: light
+range: 8
+damage: 36
+pressure_cost: 6
+heat_generated: 5
+cooldown_ticks: 2
+accuracy_curve:
+  - range: 0
+    hit_probability: 0.90
+  - range: 4
+    hit_probability: 0.80
+  - range: 6
+    hit_probability: 0.65
+  - range: 8
+    hit_probability: 0.45
+target_class_effectiveness:
+  light: 1.4
+  medium: 0.9
+  heavy: 0.6
+damage_type: standard
+compatibility:
+  compatible_chassis_classes:
+    - light
+    - medium
