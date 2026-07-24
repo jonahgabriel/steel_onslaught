@@ -26,7 +26,14 @@ from omnibase_core.models.common.model_envelope import ModelEnvelope
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.contracts.player_selection import ModelSOHumanDecisionSource
-from steel_onslaught.contracts.weapon import UnknownWeaponError
+from steel_onslaught.contracts.weapon import (
+    ModelSOAccuracyPoint,
+    ModelSOTargetClassEffectiveness,
+    ModelSOWeaponCompatibility,
+    ModelSOWeaponSpec,
+    UnknownWeaponError,
+    WeaponDamageType,
+)
 from steel_onslaught.events.envelope import (
     ModelSOEventEnvelope,
     ModelSOEventSubject,
@@ -301,6 +308,8 @@ def _make_reducer(
     state: ModelSOMatchState,
     pilots: dict[str, Any],
     sensor_events: list[ModelSOEventEnvelope] | None = None,
+    weapon_specs: dict[str, ModelSOWeaponSpec] | None = None,
+    obstacles: frozenset[tuple[int, int]] = frozenset(),
 ) -> tuple[ReducerPilotTick, list[ModelSOEventEnvelope]]:
     emitted: list[ModelSOEventEnvelope] = []
     reducer = ReducerPilotTick(
@@ -309,10 +318,10 @@ def _make_reducer(
         pilots=pilots,
         sensor_events=sensor_events or [],
         emit=emitted.append,
-        weapon_specs={},
+        weapon_specs=weapon_specs or {},
         correlation_id=_TEST_CORRELATION_ID,
         event_factory=_EVENT_FACTORY,
-        obstacles=frozenset(),
+        obstacles=obstacles,
         arena_size=40,
     )
     return reducer, emitted
@@ -580,3 +589,91 @@ def test_sensor_events_passed_to_observation() -> None:
     assert stub.last_observation is not None
     assert len(stub.last_observation.enemy_observations) == 1
     assert stub.last_observation.enemy_observations[0].enemy_mech_id == MECH_BLUE
+
+
+# ---------------------------------------------------------------------------
+# Terrain + enemy weapon threat (2026-07-24 prompt-content audit gaps #1-#4, #2)
+# ---------------------------------------------------------------------------
+
+_MORTAR_SPEC = ModelSOWeaponSpec(
+    schema_version="0.1.0",
+    kind="steel_onslaught.weapon",
+    id="weapon.siege.artillery_mortar",
+    display_name="Artillery Mortar",
+    weapon_class="siege",
+    range=50,
+    damage=20,
+    pressure_cost=10,
+    heat_generated=15,
+    cooldown_ticks=3,
+    accuracy_curve=(ModelSOAccuracyPoint(range=0, hit_probability=0.9),),
+    target_class_effectiveness=ModelSOTargetClassEffectiveness(light=1.0, medium=1.0, heavy=1.0),
+    damage_type=WeaponDamageType.STANDARD,
+    compatibility=ModelSOWeaponCompatibility(compatible_chassis_classes=("heavy",)),
+)
+
+
+@pytest.mark.unit
+def test_observation_surfaces_cover_cells_from_arena_obstacles() -> None:
+    """``obstacles`` (already threaded through geometry) also populates ``cover_cells``."""
+    stub = _StubPilot()
+    state = _match_state([_mech()])
+    obstacles = frozenset({(20, 30), (36, 30)})
+    reducer, _ = _make_reducer(state, {MECH_RED: stub}, obstacles=obstacles)
+    reducer.apply(_tick_event())
+
+    assert stub.last_observation is not None
+    assert set((c.x, c.y) for c in stub.last_observation.cover_cells) == obstacles
+
+
+@pytest.mark.unit
+def test_observation_surfaces_enemy_weapon_threat_from_living_enemy() -> None:
+    """Enemy's equipped weapons (not the enemy's position/HP) are declared, not sensed."""
+    stub = _StubPilot()
+    enemy = _mech(
+        mech_id=MECH_BLUE,
+        player_id=PLAYER_BLUE,
+        weapon_cooldowns={"weapon.siege.artillery_mortar": 0},
+    )
+    state = _match_state([_mech(), enemy])
+    reducer, _ = _make_reducer(
+        state,
+        {MECH_RED: stub},
+        weapon_specs={"weapon.siege.artillery_mortar": _MORTAR_SPEC},
+    )
+    reducer.apply(_tick_event())
+
+    assert stub.last_observation is not None
+    threats = stub.last_observation.enemy_weapon_threat
+    assert len(threats) == 1
+    assert threats[0].enemy_mech_id == MECH_BLUE
+    assert threats[0].weapon_id == "weapon.siege.artillery_mortar"
+    assert threats[0].range == 50
+    assert threats[0].damage == 20
+
+
+@pytest.mark.unit
+def test_observation_enemy_weapon_threat_empty_with_no_living_enemy() -> None:
+    stub = _StubPilot()
+    state = _match_state([_mech()])
+    reducer, _ = _make_reducer(state, {MECH_RED: stub})
+    reducer.apply(_tick_event())
+
+    assert stub.last_observation is not None
+    assert stub.last_observation.enemy_weapon_threat == ()
+
+
+@pytest.mark.unit
+def test_observation_enemy_weapon_threat_fails_closed_on_unknown_weapon_spec() -> None:
+    """An enemy weapon_cooldowns id with no matching spec is a provenance violation."""
+    stub = _StubPilot()
+    enemy = _mech(
+        mech_id=MECH_BLUE,
+        player_id=PLAYER_BLUE,
+        weapon_cooldowns={"weapon.unregistered": 0},
+    )
+    state = _match_state([_mech(), enemy])
+    reducer, _ = _make_reducer(state, {MECH_RED: stub}, weapon_specs={})
+
+    with pytest.raises(UnknownWeaponError):
+        reducer.apply(_tick_event())

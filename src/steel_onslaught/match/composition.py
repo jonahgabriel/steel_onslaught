@@ -1268,6 +1268,19 @@ def build_card_programmers(
         else:
             client = llm.client_factory.client_for(provider_id)
         persona = llm.persona_registry.require(parameters.persona)
+        # The live-learning policy-guidance block for this seat, when the
+        # match's admitted policy governs it (L-GATE-2 consumption seam),
+        # takes precedence over a spec-authored static guidance block; the two
+        # are not expected to co-occur in practice (live-learning and a
+        # hand-authored ``programming_guidance`` target different seats/
+        # experiments), but live-learning is the more specific, per-match
+        # signal when both are present. Falls back to the pilot spec's own
+        # ``programming_guidance`` (2026-07-24 prompt-arms ARM G) otherwise.
+        live_learning_guidance = (
+            policy_guidance_by_side.get(binding.side)
+            if policy_guidance_by_side is not None
+            else None
+        )
         programmers[binding.side] = LLMProgrammingPilot(
             client=client,
             persona=persona,
@@ -1277,12 +1290,10 @@ def build_card_programmers(
             correlation_id=correlation_id,
             # Names the failing provider on a bounded-retry semantic terminal.
             provider_id=provider_id,
-            # The live-learning policy-guidance block for this seat, when the
-            # match's admitted policy governs it (L-GATE-2 consumption seam).
             policy_guidance=(
-                policy_guidance_by_side.get(binding.side)
-                if policy_guidance_by_side is not None
-                else None
+                live_learning_guidance
+                if live_learning_guidance is not None
+                else parameters.programming_guidance
             ),
         )
     return MappingProxyType(programmers)

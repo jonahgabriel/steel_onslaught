@@ -147,6 +147,26 @@ class ModelSOSensorReading(BaseModel):
     )
 
 
+class ModelSOEnemyWeaponThreat(BaseModel):
+    """One known enemy-equipped weapon envelope (2026-07-24 prompt-content audit gap #2).
+
+    Both sides in a match field a declared, catalog-listed loadout -- equipped
+    weapon identity is public force composition, not a hidden game secret --
+    unlike enemy position/HP/mode, which stay genuinely fogged and are only
+    ever surfaced through the noisy ``ModelSOSensorReading`` entries above.
+    Before this field, the pilot had zero enemy weapon-range information of
+    any kind, so it could reason about its own weapon envelope but never
+    compare it to what the enemy could reach it with.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    enemy_mech_id: str
+    weapon_id: str
+    range: int = Field(ge=0)
+    damage: int = Field(ge=0)
+
+
 # ---------------------------------------------------------------------------
 # Observation
 # ---------------------------------------------------------------------------
@@ -208,9 +228,18 @@ class ModelSOPilotObservation(BaseModel):
     under_sensor_lock: bool
     has_line_of_sight_to_enemy: bool = False
     blocked_directions: tuple[SOCompassDirection, ...] = ()
+    # Arena obstacle/cover cells (ground-truth terrain, not per-tick sensed;
+    # 2026-07-24 prompt-content audit gap #1/#3/#4). Empty on obstacle-free
+    # arenas, which keeps every pre-existing observation byte-shape-compatible
+    # (still an empty list once serialized, never an absent key -- see the
+    # programming-prompt serializer for the rendered shape).
+    cover_cells: tuple[ModelSOPosition, ...] = ()
 
     # Enemy state as observed (noisy, possibly stale; newest last).
     enemy_observations: list[ModelSOSensorReading]
+    # Known enemy-equipped weapon envelopes (declared loadout, not sensed;
+    # audit gap #2). Empty when there is no living enemy to report on.
+    enemy_weapon_threat: tuple[ModelSOEnemyWeaponThreat, ...] = ()
 
     # Objective-victory view (Phase 4).  Empty/None on objective-free arenas,
     # which keeps every pre-Phase-4 observation (and its serialized prompt)

@@ -92,6 +92,16 @@ class ModelSOLlmPilotParams(BaseModel):
         min_length=1,
         description="Provider id selected by the application overlay",
     )
+    # Optional static, seat-scoped tactical guidance for whole-round card
+    # programming (2026-07-24 prompt-arms ARM G). Declarative-only: this is a
+    # config field authored on the pilot spec, never hardcoded prompt text in
+    # code. It reuses the exact same code-owned composition seam as the
+    # live-learning ``policy_guidance`` block (``programming_system_prompt``
+    # appends it AFTER the wire-contract instructions and the persona
+    # doctrine), so it is stacked on top of, not a replacement for, the
+    # persona's standing doctrine text. ``None`` by default keeps every
+    # existing pilot spec's resolved programmer byte-identical.
+    programming_guidance: str | None = Field(default=None, min_length=1)
 
 
 class ModelSOHumanPilotParams(BaseModel):

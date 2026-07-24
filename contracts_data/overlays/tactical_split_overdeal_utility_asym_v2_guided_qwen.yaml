@@ -1,0 +1,180 @@
+# Brawler prompt-arms ARM G battery overlay (session 2026-07-24, seat-scoped
+# steering on top of ARM S surfacing). NEW, additive overlay — the surfacing
+# (v2) overlay (``tactical_split_overdeal_utility_asym_v2_qwen.yaml``) and the
+# v1 overlay are both untouched.
+#
+# Identical shape to the v2 (surfacing) overlay in every respect EXCEPT the
+# red seat's card-programmer binding: ``pilot_spec_id`` is
+# ``pilot.llm.qwen35_berserker_guided`` (``contracts_data/pilots/
+# fire_dense_qwen/llm_qwen35_berserker_guided.yaml``) instead of
+# ``pilot.llm.qwen35``. That spec is the SAME persona (berserker) and provider
+# (qwen35) plus one additive field, ``programming_guidance`` — a declarative,
+# seat-scoped tactical steering block composed on top of the persona doctrine
+# and the code-owned wire-contract instructions (the same seam the
+# live-learning policy-guidance block already uses). The blue (sniper) seat's
+# binding is unchanged, so guidance is brawler-seat-only, matching ARM G's
+# scope (surfacing already applies to both seats via the shared prompt
+# serializer code path — no config toggle needed for that half).
+#
+#   - arena ``foundry_60_asym_v2`` (unchanged from the v2/surfacing overlay);
+#   - loadout pairing intended for this overlay: red =
+#     ``loadout.llm.qwen35_berserker_v2`` vs blue =
+#     ``loadout.llm.qwen35_sniper_ironclad`` (identical to the v2/surfacing
+#     overlay — loadouts are bound at launch, not referenced in this file).
+#
+# The empirical question this overlay lets the O-GATE battery answer: given
+# ARM S surfacing alone measured no change (see the prompt_surfacing_v2_battery
+# run), does STACKING brawler-seat-only tactical steering on top of that
+# surfacing move the brawler off its 0/30 record — or does the persona
+# doctrine's standing "CLOSE TO POINT-BLANK RANGE IMMEDIATELY... Disdain
+# caution" instruction dominate the added steering the same way L-GATE-2 found
+# seat-scoped steering did not move utility-card usage on this same model?
+#
+# Neither existing overlay, arena, nor loadout contract is modified. Ledger
+# paths are isolated under a NEW state directory so this battery does not
+# collide with the v1, v2/surfacing, utility-only, or asym-only lanes.
+#
+# The ``secret_resolver`` is ``none`` (not ``injected``): the sole provider is the
+# keyless local Qwen endpoint (``secret_ref: null``), so this overlay launches
+# directly from the CLI without a resolver capability:
+#
+#   so run --overlay contracts_data/overlays/tactical_split_overdeal_utility_asym_v2_guided_qwen.yaml \
+#          --loadout-a contracts_data/loadouts/llm_qwen35_berserker_v2.yaml \
+#          --loadout-b contracts_data/loadouts/qwen35/sniper_ironclad.yaml --seed 5001
+#
+# and the O-GATE battery driver selects it via
+# ``scripts/run_ogate_objectives_battery.py --overlay <this file>
+# --expected-arena foundry_60_asym_v2 --red-loadout
+# contracts_data/loadouts/llm_qwen35_berserker_v2.yaml --state-root
+# .onex_state/steel_onslaught/prompt_guidance_v2_battery`` (blue loadout stays
+# the driver default, ``contracts_data/loadouts/qwen35/sniper_ironclad.yaml``).
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_guided_qwen/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_guided_qwen/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_guided_qwen/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_guided_qwen/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_guided_qwen/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_guided_qwen/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v2
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        # ONLY difference from the v2/surfacing overlay: the guided spec adds
+        # a brawler-seat-only ``programming_guidance`` block. Same persona
+        # (berserker) and provider (qwen35) as pilot.llm.qwen35.
+        pilot_spec_id: pilot.llm.qwen35_berserker_guided
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  # Phase 2 — utility resolution handlers selected by this typed overlay
+  # (design §6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # Keyless: the only provider carries ``secret_ref: null``, so no resolver
+    # capability is required.  ``none`` lets ``so run --overlay`` and the O-GATE
+    # battery driver launch this overlay directly (``injected`` would raise
+    # "requires a resolver capability" on the keyless CLI path).
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

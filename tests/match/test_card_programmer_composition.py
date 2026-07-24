@@ -93,7 +93,13 @@ def _llm_dependencies(clients: dict[str, ProtocolLlmClient]) -> LlmDependencies:
     )
 
 
-def _llm_spec(spec_id: str, provider: str, persona: str) -> ModelSOPilotSpec:
+def _llm_spec(
+    spec_id: str,
+    provider: str,
+    persona: str,
+    *,
+    programming_guidance: str | None = None,
+) -> ModelSOPilotSpec:
     return ModelSOPilotSpec(
         schema_version="0.1.0",
         kind="steel_onslaught.pilot",
@@ -101,7 +107,11 @@ def _llm_spec(spec_id: str, provider: str, persona: str) -> ModelSOPilotSpec:
         display_name=spec_id,
         archetype="llm",
         lineage=ModelSOPilotLineage(parent=None),
-        parameters=ModelSOLlmPilotParams(persona=persona, provider=provider),
+        parameters=ModelSOLlmPilotParams(
+            persona=persona,
+            provider=provider,
+            programming_guidance=programming_guidance,
+        ),
     )
 
 
@@ -236,6 +246,72 @@ def test_explicit_bindings_resolve_exact_seat_spec_provider_and_persona() -> Non
     assert adapter.programmers is not None
     assert adapter.programmers["red"] is red_pilot
     assert adapter.programmers["blue"] is blue_pilot
+
+
+def test_spec_authored_programming_guidance_reaches_only_its_seat() -> None:
+    """Prompt-arms ARM G: a spec-level ``programming_guidance`` is declarative,
+    seat-scoped, and additive -- a seat without one is unaffected."""
+
+    red_client = _Client("red-provider")
+    blue_client = _Client("blue-provider")
+    llm = _llm_dependencies({"provider.red": red_client, "provider.blue": blue_client})
+    registry = PilotSpecRegistry(
+        {
+            "pilot.llm.red": _llm_spec(
+                "pilot.llm.red",
+                "provider.red",
+                "sniper",
+                programming_guidance="BRAWLER SEAT TACTICAL GUIDANCE: prefer flanking.",
+            ),
+            "pilot.llm.blue": _llm_spec("pilot.llm.blue", "provider.blue", "opportunist"),
+        }
+    )
+
+    programmers = build_card_programmers(
+        (
+            _binding("red", "pilot.llm.red"),
+            _binding("blue", "pilot.llm.blue"),
+        ),
+        registry=registry,
+        llm=llm,
+    )
+
+    red_pilot = programmers["red"]
+    blue_pilot = programmers["blue"]
+    assert isinstance(red_pilot, LLMProgrammingPilot)
+    assert isinstance(blue_pilot, LLMProgrammingPilot)
+    assert "BRAWLER SEAT TACTICAL GUIDANCE" in red_pilot.system_prompt()
+    assert "BRAWLER SEAT TACTICAL GUIDANCE" not in blue_pilot.system_prompt()
+
+
+def test_live_learning_guidance_takes_precedence_over_spec_guidance() -> None:
+    """When both are present for a side, the per-match live-learning block wins."""
+
+    red_client = _Client("red-provider")
+    llm = _llm_dependencies({"provider.red": red_client})
+    registry = PilotSpecRegistry(
+        {
+            "pilot.llm.red": _llm_spec(
+                "pilot.llm.red",
+                "provider.red",
+                "sniper",
+                programming_guidance="STATIC SPEC GUIDANCE",
+            ),
+        }
+    )
+
+    programmers = build_card_programmers(
+        (_binding("red", "pilot.llm.red"),),
+        registry=registry,
+        llm=llm,
+        policy_guidance_by_side={"red": "LIVE LEARNING GUIDANCE"},
+    )
+
+    red_pilot = programmers["red"]
+    assert isinstance(red_pilot, LLMProgrammingPilot)
+    prompt = red_pilot.system_prompt()
+    assert "LIVE LEARNING GUIDANCE" in prompt
+    assert "STATIC SPEC GUIDANCE" not in prompt
 
 
 def test_card_adapter_without_overlay_bindings_keeps_deterministic_programmer() -> None:

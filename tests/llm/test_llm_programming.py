@@ -36,6 +36,7 @@ from steel_onslaught.llm.schemas import (
 )
 from steel_onslaught.pilots.programming import ModelSOProgrammingObservation, program_for_seat
 from steel_onslaught.pilots.schemas import (
+    ModelSOEnemyWeaponThreat,
     ModelSOObjectiveView,
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
@@ -865,6 +866,76 @@ def test_serialized_programming_prompt_never_leaks_priority() -> None:
 
     serialized = _serialize_programming_observation(_observation())
     assert '"priority"' not in serialized
+
+
+# --- Prompt-arms ARM S: cover map + enemy weapon threat surfacing (2026-07-24) -
+#
+# The 2026-07-24 brawler prompt-content audit found the whole-round prompt
+# carried zero cover/obstacle information (only single-bit LOS/adjacency
+# derivatives) and zero enemy weapon-range information of any kind. These
+# tests prove both neutral facts reach the serialized prompt, and that an
+# obstacle-free / enemy-free observation still renders both keys as an empty
+# list rather than omitting them (a stable, always-present shape for the
+# model and for downstream parsers).
+
+
+def test_serialized_prompt_surfaces_cover_cells() -> None:
+    observation = _observation()
+    pilot = observation.pilot_observation.model_copy(
+        update={
+            "cover_cells": (
+                ModelSOPosition(x=20, y=30),
+                ModelSOPosition(x=36, y=30),
+            )
+        }
+    )
+    observation = observation.model_copy(update={"pilot_observation": pilot})
+
+    serialized = _serialize_programming_observation(observation)
+    payload = json.loads(serialized)
+
+    assert payload["own_observation"]["cover_cells"] == [
+        {"x": 20, "y": 30},
+        {"x": 36, "y": 30},
+    ]
+
+
+def test_serialized_prompt_surfaces_enemy_weapon_threat() -> None:
+    observation = _observation()
+    pilot = observation.pilot_observation.model_copy(
+        update={
+            "enemy_weapon_threat": (
+                ModelSOEnemyWeaponThreat(
+                    enemy_mech_id="mech.blue.01",
+                    weapon_id="weapon.siege.artillery_mortar",
+                    range=50,
+                    damage=20,
+                ),
+            )
+        }
+    )
+    observation = observation.model_copy(update={"pilot_observation": pilot})
+
+    serialized = _serialize_programming_observation(observation)
+    payload = json.loads(serialized)
+
+    assert payload["enemy_weapon_threat"] == [
+        {
+            "enemy_mech_id": "mech.blue.01",
+            "weapon_id": "weapon.siege.artillery_mortar",
+            "range": 50,
+            "damage": 20,
+        }
+    ]
+
+
+def test_serialized_prompt_renders_empty_cover_and_threat_as_empty_lists() -> None:
+    """No cover / no living enemy still renders both keys, as empty lists."""
+    serialized = _serialize_programming_observation(_observation())
+    payload = json.loads(serialized)
+
+    assert payload["own_observation"]["cover_cells"] == []
+    assert payload["enemy_weapon_threat"] == []
 
 
 def test_objective_free_programming_prompt_has_no_objectives_block() -> None:
