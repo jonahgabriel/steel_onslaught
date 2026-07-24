@@ -508,17 +508,35 @@ def main() -> int:
     blue_loadout_path = args.blue_loadout.resolve(strict=True)
 
     rows: list[dict[str, Any]] = []
+    # Seeds whose match died on an unhandled error (provider 429/5xx, transport
+    # drop, etc.).  Before 2026-07-24 a single such error propagated out of the
+    # loop and killed the whole battery process: the V-IMG vision arm lost 29 of
+    # 30 seeds to one 429 on the first call.  A dead seed is now skipped so the
+    # remaining seeds still run — but it is recorded and reported LOUDLY, never
+    # silently dropped, because a shrunken denominator that looks like a
+    # completed battery is worse than a crash.  Skipped seeds are deliberately
+    # NOT written to battery_raw.jsonl: that file is the evidence ledger of
+    # matches that actually ran, and a synthetic row would corrupt it.
+    skipped: list[dict[str, str]] = []
     for index in range(1, args.n + 1):
         seed = args.seed_base + index
-        row = _run_match(
-            overlay,
-            seed=seed,
-            max_ticks=args.max_ticks,
-            expected_arena_hash=expected_arena_hash,
-            expected_arena_id=expected_arena_id,
-            red_loadout_path=red_loadout_path,
-            blue_loadout_path=blue_loadout_path,
-        )
+        try:
+            row = _run_match(
+                overlay,
+                seed=seed,
+                max_ticks=args.max_ticks,
+                expected_arena_hash=expected_arena_hash,
+                expected_arena_id=expected_arena_id,
+                red_loadout_path=red_loadout_path,
+                blue_loadout_path=blue_loadout_path,
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # broad on purpose: one dead seed must not kill the battery
+            detail = " ".join(f"{type(exc).__name__}: {exc}".split())[:240]
+            skipped.append({"seed": str(seed), "error": detail})
+            print(f"[{index}/{args.n}] seed={seed} SKIPPED — {detail}", flush=True)
+            continue
         rows.append(row)
         with raw_path.open("a", encoding="utf-8") as sink:
             sink.write(json.dumps(row, sort_keys=True) + "\n")
@@ -532,6 +550,21 @@ def main() -> int:
         )
 
     summary = _summarize(rows, gate_threshold=args.gate_threshold)
+    # Surface the shortfall in the summary itself so no downstream reader can
+    # mistake a partially-completed battery for a clean n-of-n run.  ``n`` in
+    # the summary counts matches that RAN; ``requested_n`` is what was asked
+    # for.  o_gate_pass is force-failed on any skip: a trust gate computed over
+    # a silently-shrunk denominator is not a trust gate.
+    summary["requested_n"] = args.n
+    summary["skipped_seeds"] = skipped
+    if skipped:
+        summary["o_gate_pass"] = False
+        print(
+            f"\n!! BATTERY INCOMPLETE: {len(skipped)}/{args.n} seeds skipped on error "
+            f"({', '.join(s['seed'] for s in skipped)}). "
+            f"o_gate_pass force-failed; rerun the skipped seeds before citing this battery.",
+            flush=True,
+        )
     summary_path = state_root / "battery_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))

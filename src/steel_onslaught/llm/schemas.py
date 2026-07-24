@@ -304,6 +304,7 @@ class ProtocolLlmAttempt(Protocol):
         reason_code: LlmCompletionFailureReason,
         *,
         semantic_failure_code: LlmSemanticFailureCode | None = None,
+        semantic_failure_detail: str | None = None,
     ) -> None: ...
 
     def __enter__(self) -> Self: ...
@@ -347,6 +348,7 @@ class ProtocolLlmCompletionObserver(Protocol):
         requested: ModelSOEventEnvelope,
         *,
         semantic_failure_code: LlmSemanticFailureCode | None = None,
+        semantic_failure_detail: str | None = None,
     ) -> None: ...
 
 

@@ -152,6 +152,44 @@ def test_card_ids_use_the_canonical_card_id_contract() -> None:
         ModelSOPlanRegister(register_index=0, card_id="not-a-card-id")
 
 
+def test_spatial_read_defaults_to_none_for_non_scaffold_arms() -> None:
+    """An arm that never asks for a spatial read gets an explicit null, not a
+    dropped key -- the payload validates old events (key absent) and new
+    non-scaffold events (key present, null) identically."""
+    payload = ModelSOPlanCommittedPayload(
+        seat="a",
+        registers=tuple(
+            ModelSOPlanRegister(register_index=index, card_id=card_id)
+            for index, card_id in enumerate(_CARDS)
+        ),
+        rationale="Advance then fire.",
+        confidence=0.75,
+    )
+    assert payload.spatial_read is None
+    dumped = payload.model_dump(mode="json")
+    assert dumped["spatial_read"] is None
+    # A legacy event persisted before the field existed carries no key at all.
+    legacy = dict(dumped)
+    del legacy["spatial_read"]
+    assert ModelSOPlanCommittedPayload.model_validate(legacy).spatial_read is None
+
+
+def test_spatial_read_round_trips_for_the_grid_scaffold_arm() -> None:
+    payload = ModelSOPlanCommittedPayload(
+        seat="a",
+        registers=tuple(
+            ModelSOPlanRegister(register_index=index, card_id=card_id)
+            for index, card_id in enumerate(_CARDS)
+        ),
+        rationale="Advance then fire.",
+        confidence=0.75,
+        spatial_read="clear line of sight, no cover nearby",
+    )
+    dumped = payload.model_dump(mode="json")
+    assert dumped["spatial_read"] == "clear line of sight, no cover nearby"
+    assert ModelSOPlanCommittedPayload.model_validate(dumped) == payload
+
+
 def test_plan_register_rejects_nested_unknown_fields() -> None:
     with pytest.raises(ValidationError, match="unknown"):
         ModelSOPlanCommittedPayload.model_validate(

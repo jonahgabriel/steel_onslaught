@@ -202,6 +202,36 @@ describe("types parity against Python-emitted fixtures", () => {
     expect(payload["plan_source"]).toBe("unspecified");
   });
 
+  it("parses a legacy plan_committed that predates spatial_read", () => {
+    // spatial_read is grid_scaffold-only and Python-side defaults to None, so
+    // every plan_committed event persisted before the field existed (and
+    // every non-scaffold arm) carries no key at all -- same legacy shape as
+    // plan_source above.
+    const envelope = corruptPayload("plan_committed", (payload) => {
+      delete payload["spatial_read"];
+    });
+    const parsed = parseEnvelope(envelope);
+    expect(parsed.event_type).toBe("plan_committed");
+    const payload = objectValue(
+      (parsed as unknown as MutableObject)["payload"],
+      "plan_committed.payload",
+    );
+    expect(payload["spatial_read"]).toBeNull();
+  });
+
+  it("round-trips a grid_scaffold plan's spatial_read", () => {
+    const envelope = corruptPayload("plan_committed", (payload) => {
+      payload["spatial_read"] = "clear line of sight, no cover nearby";
+    });
+    const parsed = parseEnvelope(envelope);
+    expect(parsed.event_type).toBe("plan_committed");
+    const payload = objectValue(
+      (parsed as unknown as MutableObject)["payload"],
+      "plan_committed.payload",
+    );
+    expect(payload["spatial_read"]).toBe("clear line of sight, no cover nearby");
+  });
+
   it("accepts every plan_source member the Python enum can emit", () => {
     for (const source of [
       "llm",

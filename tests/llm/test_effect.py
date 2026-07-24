@@ -183,6 +183,52 @@ def test_semantic_rejection_emits_failed_with_usage_without_raw_content() -> Non
 
 
 @pytest.mark.unit
+def test_semantic_rejection_persists_detail_and_response_length_on_the_failed_terminal() -> None:
+    """2026-07-24 R2 abort forensics: the rejection detail that already goes
+    into the repair prompt is ALSO persisted on the ledger's failed terminal,
+    end to end from ``LlmSemanticError.detail`` through ``consume_llm_completion``
+    to ``LedgerLlmCompletionObserver.failed``, so a repeated malformed_json
+    failure is root-causable without re-running the battery."""
+
+    class _SemanticResponseClient:
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            return LlmResponse(
+                text='{"not": "a valid plan"}',
+                usage=LlmUsage(prompt_tokens=7, completion_tokens=3, cost_usd=None),
+                model="served-model",
+                finish_reason="stop",
+            )
+
+    client, events = _observed(_SemanticResponseClient())
+
+    def reject(response: LlmResponse) -> None:
+        raise LlmSemanticError("malformed_json", detail="registers must be non-empty")
+
+    with pytest.raises(LlmSemanticError):
+        consume_llm_completion(client=client, request=_request(), consumer=reject)
+    _assert_chain(events, SOEventType.LLM_COMPLETION_FAILED)
+    payload = events[-1].payload
+    assert payload["semantic_failure_detail"] == "registers must be non-empty"
+    assert payload["response_length"] == len('{"not": "a valid plan"}')
+
+
+@pytest.mark.unit
+def test_semantic_rejection_without_detail_omits_the_detail_field() -> None:
+    """No detail on the raised error -> no key at all on the ledger event
+    (``exclude_if``), never a persisted null -- matches every other optional
+    forensic field on this payload family."""
+    client, events = _observed(_ResponseClient())
+
+    def reject(response: LlmResponse) -> None:
+        raise LlmSemanticError("malformed_json")
+
+    with pytest.raises(LlmSemanticError):
+        consume_llm_completion(client=client, request=_request(), consumer=reject)
+    _assert_chain(events, SOEventType.LLM_COMPLETION_FAILED)
+    assert "semantic_failure_detail" not in events[-1].payload
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "unsafe_finish_reason",
     [

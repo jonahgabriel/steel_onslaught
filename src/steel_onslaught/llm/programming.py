@@ -803,6 +803,12 @@ class LLMProgrammingPilot:
                 rationale=parsed.rationale,
                 confidence=parsed.confidence,
                 plan_source=SOPlanSource.LLM,
+                # Persist the scaffold's spatial read onto the durable plan so
+                # the grid_scaffold arm's actual stated reasoning survives into
+                # the ledger.  ``None`` whenever the arm did not request one
+                # (every non-scaffold representation), which keeps the payload
+                # byte-identical to the pre-field composition for those arms.
+                spatial_read=parsed.spatial_read,
             )
             # Run the candidate through the canonical boundary here so an
             # observed completion is resolved only after hand/register checks.

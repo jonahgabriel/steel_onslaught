@@ -127,6 +127,9 @@ export function makePlan(
     // Matches the pinned plan_committed.json fixture: the demo's card-cadence
     // plans are authored by the pilot LLM.
     plan_source: "llm",
+    // grid_scaffold-only field (R1/R2 spatial arms); this demo helper never
+    // opts a seat into the scaffold representation.
+    spatial_read: null,
   };
   return makeEnvelope("plan_committed", payload, o);
 }

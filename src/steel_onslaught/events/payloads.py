@@ -475,6 +475,40 @@ class ModelSOLlmCompletionFailedPayload(_ClosedPayload):
     prompt_tokens: StrictInt | None = Field(ge=0)
     completion_tokens: StrictInt | None = Field(ge=0)
     cost_usd: StrictFloat | None = Field(ge=0.0, allow_inf_nan=False)
+    # Forensic fields (2026-07-24).  The R2 spatial battery aborted 6/30
+    # matches; three were ``finish_reason=length`` truncations (diagnosable
+    # from the token counts already above) but the other three exhausted the
+    # plan-attempt budget on ``malformed_json`` and were NOT diagnosable at
+    # all from the ledger — the failure event recorded the code but discarded
+    # both the validator's rejection message and any measure of the offending
+    # response.  Without those, "why did the repair prompt fail three times in
+    # a row" is unanswerable after the fact and the arm cannot be root-caused
+    # without re-running it.
+    #
+    # ``semantic_failure_detail`` carries the SAME bounded string already fed
+    # to the repair prompt (``programming._error_detail``): it originates from
+    # our own closed response model or the canonical plan validator, never
+    # from raw provider text, so persisting it introduces no provider-text
+    # leakage that the repair prompt did not already contain.
+    #
+    # Both default to ``None`` so every event persisted before these fields
+    # existed stays valid on replay, and absence is never read as evidence.
+    # ``exclude_if`` matches the established pattern for optional forensic
+    # fields on this same event family (see ``image_sha256``/
+    # ``image_byte_length`` on ``ModelSOLlmCompletionRequestedPayload`` above):
+    # a ``None`` value is omitted from the serialized payload entirely rather
+    # than persisted as an explicit null, so events emitted before these
+    # fields existed round-trip byte-identically.
+    semantic_failure_detail: StrictStr | None = Field(
+        default=None,
+        max_length=512,
+        exclude_if=lambda value: value is None,
+    )
+    response_length: StrictInt | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _semantic_failure_matches_reason(self) -> ModelSOLlmCompletionFailedPayload:
@@ -487,6 +521,8 @@ class ModelSOLlmCompletionFailedPayload(_ClosedPayload):
             raise ValueError(
                 "semantic_failure_code is forbidden unless reason_code is invalid_response"
             )
+        if self.semantic_failure_detail is not None and self.semantic_failure_code is None:
+            raise ValueError("semantic_failure_detail is forbidden without a semantic_failure_code")
         return self
 
 

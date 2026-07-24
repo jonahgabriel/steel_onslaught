@@ -700,6 +700,7 @@ export interface PlanCommittedPayload {
   rationale: string | null;
   confidence: number;
   plan_source: SOPlanSource;
+  spatial_read: string | null;
 }
 
 /** Mirror of ModelSORegisterResolvedPayload. */
@@ -2399,7 +2400,11 @@ const PAYLOAD_PARSERS: PayloadParsers = {
   },
   plan_committed: (value, context) => {
     const record = asRecord(value, context);
-    rejectUnknown(record, ["seat", "registers", "rationale", "confidence", "plan_source"], context);
+    rejectUnknown(
+      record,
+      ["seat", "registers", "rationale", "confidence", "plan_source", "spatial_read"],
+      context,
+    );
     requireFields(record, ["rationale"], context);
     const rawRegisters = record["registers"];
     if (!Array.isArray(rawRegisters)) {
@@ -2424,6 +2429,12 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       rationale: nullableStr(record, "rationale", context),
       confidence: boundedNum(record, "confidence", context, 0, 1),
       plan_source: parsePlanSource(record["plan_source"], `${context}.plan_source`),
+      // Spatial-representation arms R1/R2 (2026-07-24): only the
+      // grid_scaffold arm asks for this field. Absent (every event persisted
+      // before the field existed, and every non-scaffold arm) is treated the
+      // same as an explicit null by `nullableStr` -- both mean "no spatial
+      // read was requested or given", never evidence of model behavior.
+      spatial_read: nullableStr(record, "spatial_read", context),
     };
   },
   register_resolved: (value, context) => {
