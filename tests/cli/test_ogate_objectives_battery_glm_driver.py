@@ -168,9 +168,14 @@ def test_glm_overlay_pins_the_lowpower_glm_model_over_zai() -> None:
     assert provider.secret_ref is not None
     assert str(provider.secret_ref.ref) == _GLM_REF
     assert provider.max_tokens == 4096
-    assert provider.timeout_seconds == 120.0
-    # Flat-rate plan: single fail-loud attempt, no rate-limit backoff.
-    assert provider.retry.max_attempts == 1
+    # Shortened so an intermittent z.ai coding-pool stall fails FAST and is
+    # retried below, instead of blocking the whole match for 120 s then aborting.
+    assert provider.timeout_seconds == 45.0
+    # Flat-rate plan: the bounded retry absorbs intermittent transport STALLS
+    # (not rate limits) so one pool stall no longer aborts the match.
+    assert provider.retry.max_attempts == 4
+    assert provider.retry.initial_backoff_seconds == 1.0
+    assert provider.retry.backoff_multiplier == 2.0
     assert overlay.llm.model_identities[0].model_identity_id == "model_identity.glm"
     assert overlay.llm.model_identities[0].provider_binding_id == "glm"
 
