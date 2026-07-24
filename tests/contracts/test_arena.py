@@ -24,6 +24,8 @@ def test_shipped_arena_catalog_is_typed_and_snapshot_is_canonical() -> None:
         "foundry_60",
         "foundry_60_asym_v1",
         "foundry_60_asym_v2",
+        "foundry_60_asym_v1_corridor_spawn",
+        "foundry_60_asym_v1_leapfrog_cover",
         "open_field",
     }
     foundry = catalog.arenas["foundry"]

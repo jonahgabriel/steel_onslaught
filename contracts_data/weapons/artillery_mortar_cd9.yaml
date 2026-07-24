@@ -1,0 +1,42 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.weapon
+id: weapon.siege.artillery_mortar_cd9
+display_name: "Artillery Mortar (Cooldown 9)"
+# Tournament arm 3 (mortar_cd9, session 2026-07-24): additive weapon variant
+# of contracts_data/weapons/artillery_mortar.yaml with EXACTLY ONE field
+# changed -- cooldown_ticks 5 -> 9. Every other field (range, damage,
+# heat_generated, pressure_cost, accuracy_curve, target_class_effectiveness,
+# damage_type, compatibility) is byte-identical to the baseline mortar.
+# artillery_mortar.yaml itself stays untouched -- this is a NEW weapon id,
+# bound only via the arm's own sniper loadout variant
+# (contracts_data/loadouts/qwen35/sniper_ironclad_mortar_cd9.yaml).
+#
+# CAUSAL HYPOTHESIS: the sniper's mortar fires every 5 ticks at long range
+# with no exposure cost to the sniper. Slowing the cooldown to 9 ticks
+# nearly doubles the interval between aimed shots, widening the brawler's
+# window to close distance between volleys -- without touching range,
+# accuracy, or damage, so any outcome shift is attributable to fire rate
+# alone.
+weapon_class: siege
+range: 50
+damage: 45
+pressure_cost: 20
+heat_generated: 15
+cooldown_ticks: 9
+accuracy_curve:
+  - range: 20
+    hit_probability: 0.80
+  - range: 35
+    hit_probability: 0.70
+  - range: 45
+    hit_probability: 0.55
+  - range: 50
+    hit_probability: 0.40
+target_class_effectiveness:
+  light: 0.9
+  medium: 1.0
+  heavy: 1.3
+damage_type: standard
+compatibility:
+  compatible_chassis_classes:
+    - heavy
