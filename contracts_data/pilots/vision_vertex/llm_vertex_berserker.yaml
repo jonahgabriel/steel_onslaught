@@ -1,0 +1,24 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.vertex_vl_berserker
+display_name: "Gemini 2.5 Flash-Lite Berserker (vision-representation experiment, Vertex AI)"
+# Plain per-tick decide() pilot (archetype llm), NOT card mode -- same design
+# as the gemini_vl / openrouter_vl twins. The image attachment is wired into
+# LLMPilot.decide (pilot.py), which card-mode ProgrammingPilot never calls.
+# The SAME persona/provider parameters here serve both the V-TEXT and V-IMG
+# arm overlays -- the arm distinction lives entirely in the overlay's
+# llm.providers[0].image_attachment binding, never in this file.
+#
+# Third provider route for the identical model (google/gemini-2.5-flash-lite):
+# direct Google Cloud Vertex AI, OpenAI-compatible endpoint, authenticated via
+# an ADC OAuth2 access token (not a static API key -- see the overlay's
+# secret_ref comment). Billed against project omnibase-465418 on-demand
+# (usage.extra_properties.google.traffic_type == "ON_DEMAND"), independent of
+# both the Google AI Studio free tier (blocked, PRs #176/#178/#185) and the
+# OpenRouter paid pass-through (docs/evidence/2026-07-24-vl_openrouter_rerun-battery.md).
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: berserker
+  provider: vertex_vl

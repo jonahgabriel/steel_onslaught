@@ -98,6 +98,17 @@ _SECRET_REF_ENV_NAMES: dict[str, tuple[str, ...]] = {
     # 2026-07-24 vision-representation experiment (V-TEXT/V-IMG arms). Canonical
     # name in ~/.omnibase/.env is GEMINI_API_KEY.
     "secret://llm/gemini": ("GEMINI_API_KEY",),
+    # Google Cloud Vertex AI, OpenAI-compatible endpoint -- the 2026-07-24
+    # vision-representation experiment's OpenRouter/Gemini-direct rerun
+    # (both free-tier-blocked). Unlike the other refs above, this is NOT a
+    # static API key: it is a short-lived (~1hr) OAuth2 access token minted
+    # per invocation via ``gcloud auth application-default print-access-token``
+    # and exported as VERTEX_ACCESS_TOKEN immediately before each battery
+    # process launches. Because this driver runs one process per seed
+    # (per-seed isolated invocation), re-minting before every seed removes
+    # all token-expiry risk across a multi-hour battery -- no caching, no
+    # refresh-mid-process logic needed here.
+    "secret://llm/vertex": ("VERTEX_ACCESS_TOKEN",),
 }
 
 
