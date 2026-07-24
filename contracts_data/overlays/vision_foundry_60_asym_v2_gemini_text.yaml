@@ -1,0 +1,110 @@
+# ARM V-TEXT of the 2026-07-24 vision-representation experiment ("show don't
+# tell"): does giving the pilot an actual IMAGE of the arena change outcomes,
+# holding the model fixed?
+#
+# Within-model design: ONE vision-language model (Gemini 2.5 Flash-Lite,
+# direct Google API -- see docs/research/2026-07-24-vl-endpoint-recon.md)
+# runs two arms on the IDENTICAL v2 config (arena foundry_60_asym_v2 + PR #157
+# loadout v2). This is that model's own text-only baseline: the plain per-tick
+# ``LLMPilot.decide`` prompt path (pilot.py::_serialize_observation), no
+# image_attachment binding on the provider. Its twin,
+# ``vision_foundry_60_asym_v2_gemini_img.yaml``, is byte-identical to this
+# file except for one added ``llm.providers[0].image_attachment`` block --
+# every other surface (arena, loadouts, personas, provider model/timeout/
+# retry, state-root basename minus the arm suffix) is shared so the
+# V-TEXT/V-IMG delta isolates exactly what the image buys.
+#
+# Deliberately NOT card mode: the image attachment is wired into
+# ``LLMPilot.decide`` (src/steel_onslaught/llm/pilot.py), which the card-mode
+# ``ProgrammingPilot`` (llm/programming.py, used by every ``contracts.
+# card_catalog.programmers`` overlay in this repo) never calls. Omitting
+# ``contracts.card_catalog`` entirely (optional per
+# ``ModelSOContractBindings``) routes both seats through the plain
+# ``archetype: llm`` pilot-factory path instead, which does call ``decide``
+# once per tick per seat -- see ``contracts_data/pilots/vision_gemini/``.
+#
+# Provider: direct (non-OpenRouter) Gemini, reusing the existing
+# ``tactical_v1_gemini.yaml`` wiring pattern (endpoint, secret_ref, injected
+# resolver) -- own-billed API key, not the shared OpenRouter ``:free`` pool
+# that truncated the gemma text lane at n=19/30
+# (docs/evidence/2026-07-23-crossarch-b-gemma.md).
+#
+# Battery:
+#   uv run python scripts/run_ogate_objectives_battery.py \
+#       --overlay contracts_data/overlays/vision_foundry_60_asym_v2_gemini_text.yaml \
+#       --red-loadout contracts_data/loadouts/vision_gemini/berserker_scout_v2.yaml \
+#       --blue-loadout contracts_data/loadouts/vision_gemini/sniper_ironclad.yaml \
+#       --expected-arena foundry_60_asym_v2 \
+#       --n 30 --seed-base 5000 \
+#       --state-root .onex_state/steel_onslaught/vl_text_battery
+# with GEMINI_API_KEY available in the environment or ~/.omnibase/.env.
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_gemini_text/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_gemini_text/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_gemini_text/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_gemini_text/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_gemini_text/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_gemini_text/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/vision_gemini
+  arena_id: foundry_60_asym_v2
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: gemini_vl
+      endpoint_url: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+      model: gemini-2.5-flash-lite
+      secret_ref:
+        kind: opaque
+        ref: secret://llm/gemini
+      timeout_seconds: 90.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+      # V-TEXT arm: no image_attachment. This is the ONLY field that differs
+      # from the V-IMG twin overlay's provider binding.
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.gemini_vl_text
+      display_name: Gemini 2.5 Flash-Lite (V-TEXT arm)
+      provider_binding_id: gemini_vl
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

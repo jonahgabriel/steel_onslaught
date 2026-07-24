@@ -241,11 +241,14 @@ class LedgerLlmCompletionObserver:
         self, provider_id: str, request: ModelSOLlmCompletionRequest
     ) -> ModelSOEventEnvelope:
         context = self._context(request)
+        attachment = request.image_attachment
         payload = ModelSOLlmCompletionRequestedPayload(
             provider_id=provider_id,
             persona_id=request.persona,
             system_prompt_length=len(request.system_prompt),
             user_prompt_length=len(request.user_prompt),
+            image_sha256=attachment.sha256_hex if attachment is not None else None,
+            image_byte_length=len(attachment.png_bytes) if attachment is not None else None,
         )
         event = self._events.make(
             match_id=context.match_id,

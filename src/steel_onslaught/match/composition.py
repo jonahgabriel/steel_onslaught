@@ -39,6 +39,7 @@ from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOCardCatalogBinding,
     ModelSOCardProgrammerBinding,
+    ModelSOLlmImageAttachmentBinding,
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOStubLlmProviderBinding,
 )
@@ -274,11 +275,17 @@ class ApplicationPilotFactory:
         personas: PersonaRegistry,
         observer: ProtocolLlmCompletionObserver | None = None,
         failure_policy: LlmPilotFailurePolicy = "fallback",
+        image_attachments: Mapping[str, ModelSOLlmImageAttachmentBinding] | None = None,
     ) -> None:
         self._clients = clients
         self._personas = personas
         self._observer = observer
         self._failure_policy = failure_policy
+        # Provider-id-keyed image-attachment config for the V-IMG arm of the
+        # 2026-07-24 vision-representation experiment. Empty for every overlay
+        # that does not declare ``image_attachment`` on any provider binding,
+        # which keeps every pre-existing pilot's ``decide`` output unchanged.
+        self._image_attachments = dict(image_attachments or {})
 
     def with_observer(self, observer: ProtocolLlmCompletionObserver) -> ProtocolPilotFactory:
         return ApplicationPilotFactory(
@@ -286,6 +293,7 @@ class ApplicationPilotFactory:
             personas=self._personas,
             observer=observer,
             failure_policy=self._failure_policy,
+            image_attachments=self._image_attachments,
         )
 
     def from_spec(self, spec: ModelSOPilotSpec) -> PilotProtocol:
@@ -324,6 +332,7 @@ class ApplicationPilotFactory:
             client=client,
             persona=self._personas.require(selection.persona_id),
             failure_policy=self._failure_policy,
+            image_attachment=self._image_attachments.get(selection.provider_id),
         )
 
 
@@ -604,7 +613,31 @@ def load_application_overlay(path: Path) -> ModelSOApplicationOverlay:
     evaluation_storage = overlay.evaluation_storage.model_copy(
         update={"root": resolved(overlay.evaluation_storage.root)}
     )
-    llm = overlay.llm.model_copy(update={"personas_dir": resolved(overlay.llm.personas_dir)})
+    # Providers themselves carry no other resolvable path today; only the
+    # optional per-provider ``image_attachment.render_output_dir`` (2026-07-24
+    # vision-pilot experiment) needs the same overlay-relative resolution as
+    # every other declared filesystem root above.
+    resolved_providers = tuple(
+        provider.model_copy(
+            update={
+                "image_attachment": provider.image_attachment.model_copy(
+                    update={
+                        "render_output_dir": resolved(provider.image_attachment.render_output_dir)
+                    }
+                )
+            }
+        )
+        if isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
+        and provider.image_attachment is not None
+        else provider
+        for provider in overlay.llm.providers
+    )
+    llm = overlay.llm.model_copy(
+        update={
+            "personas_dir": resolved(overlay.llm.personas_dir),
+            "providers": resolved_providers,
+        }
+    )
     live_learning = overlay.live_learning
     if live_learning is not None and live_learning.base_loadout_path is not None:
         live_learning = live_learning.model_copy(
@@ -1470,10 +1503,17 @@ def build_llm_dependencies(
                     client = BoundedLlmClient(client, max_completions=256)
                 clients[provider.provider_id] = client
         client_factory = StaticLlmClientFactory(clients)
+        image_attachments: dict[str, ModelSOLlmImageAttachmentBinding] = {
+            provider.provider_id: provider.image_attachment
+            for provider in providers
+            if isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
+            and provider.image_attachment is not None
+        }
         pilot_factory = ApplicationPilotFactory(
             clients=client_factory,
             personas=persona_registry,
             failure_policy=resolved_failure_policy,
+            image_attachments=image_attachments,
         )
         return LlmDependencies(
             client_factory=client_factory,

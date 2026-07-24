@@ -19,6 +19,7 @@ from steel_onslaught.llm.schemas import (
     LlmUsage,
     ModelSOLlmCompletionRequest,
     ModelSOLlmEvidenceContext,
+    ModelSOLlmImageAttachment,
 )
 from tests.runtime import runtime_dependencies
 
@@ -90,6 +91,42 @@ def test_strict_acceptance_emits_requested_then_resolved() -> None:
     assert result == "served-model"
     _assert_chain(events, SOEventType.LLM_COMPLETION_RESOLVED)
     assert events[-1].payload["cost_usd"] is None
+
+
+@pytest.mark.unit
+def test_requested_payload_omits_image_fields_for_text_only_arm() -> None:
+    """V-TEXT arm: no image_attachment -> no image_sha256/image_byte_length keys."""
+    client, events = _observed(_ResponseClient())
+    consume_llm_completion(client=client, request=_request(), consumer=lambda r: r.model)
+    requested_payload = events[0].payload
+    assert "image_sha256" not in requested_payload
+    assert "image_byte_length" not in requested_payload
+
+
+@pytest.mark.unit
+def test_requested_payload_carries_image_sha256_and_byte_length_for_image_arm() -> None:
+    """V-IMG arm: the ledger event's sha256 always matches the attached bytes."""
+    client, events = _observed(_ResponseClient())
+    attachment = ModelSOLlmImageAttachment(png_bytes=b"\x89PNGDATAFAKE", sha256_hex="b" * 64)
+    request = ModelSOLlmCompletionRequest(
+        system_prompt="system",
+        user_prompt="user",
+        persona="pilot.persona",
+        temperature=0.2,
+        json_mode=True,
+        evidence_context=ModelSOLlmEvidenceContext(
+            match_id="match.evidence",
+            mech_id="mech.red.01",
+            player_id="player.red",
+            tick=4,
+            correlation_id=_CORRELATION,
+        ),
+        image_attachment=attachment,
+    )
+    consume_llm_completion(client=client, request=request, consumer=lambda r: r.model)
+    requested_payload = events[0].payload
+    assert requested_payload["image_sha256"] == "b" * 64
+    assert requested_payload["image_byte_length"] == len(b"\x89PNGDATAFAKE")
 
 
 @pytest.mark.unit

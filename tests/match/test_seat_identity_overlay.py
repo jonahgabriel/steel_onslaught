@@ -87,7 +87,9 @@ class _PlanTransport:
         timeout_seconds: float,
     ) -> ModelSOOpenAIChatResponse:
         del url, headers, timeout_seconds
-        prompt = json.loads(request.messages[1].content)
+        user_content = request.messages[1].content
+        assert isinstance(user_content, str)  # this arm never attaches an image
+        prompt = json.loads(user_content)
         free_indices = prompt["registers"]["free_indices"]
         # ``hand`` is the dealt multiset in order; ``legal_hand`` is deduped.
         hand = [entry["card_id"] for entry in prompt["hand"]]

@@ -16,11 +16,13 @@ decision was produced.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictStr, ValidationError
 
+from steel_onslaught.contracts.application import ModelSOLlmImageAttachmentBinding
 from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
 from steel_onslaught.events.payloads import (
     ModelSOEmptyPayload,
@@ -30,11 +32,13 @@ from steel_onslaught.events.payloads import (
 from steel_onslaught.immutable import FrozenJSONMapping, thaw_json_mapping
 from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
 from steel_onslaught.llm.personas import Persona
+from steel_onslaught.llm.render import render_observation_png
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
     LlmResponse,
     ModelSOLlmCompletionRequest,
     ModelSOLlmEvidenceContext,
+    ModelSOLlmImageAttachment,
     ProtocolLlmClient,
 )
 from steel_onslaught.pilots.schemas import (
@@ -65,6 +69,17 @@ _TACTICAL_OBJECTIVES: dict[str, str] = {
     "sniper": "hold maximum standoff, preserve heat headroom, and punish overextension",
     "opportunist": "probe from range, wait for heat or confidence mistakes, then counter-punch",
 }
+
+# The ONE sentence that differs between the V-TEXT and V-IMG arms of the
+# 2026-07-24 vision-representation experiment (within-model isolation): a
+# neutral pointer to the attached image, carrying no strategy or additional
+# information beyond what the text prompt already states. Every other
+# character of the user prompt is byte-identical between the two arms.
+_IMAGE_ATTACHMENT_NOTE = (
+    "An image of the current arena state is attached below; it depicts the "
+    "same information described above (your position, cover cells, "
+    "objectives, and the enemy distance ring)."
+)
 
 
 class _ModelSOLlmPilotResponse(BaseModel):
@@ -183,12 +198,18 @@ class LLMPilot:
         client: ProtocolLlmClient,
         persona: Persona,
         failure_policy: LlmPilotFailurePolicy = "fallback",
+        image_attachment: ModelSOLlmImageAttachmentBinding | None = None,
     ) -> None:
         if failure_policy not in ("fallback", "raise"):
             raise ValueError(f"unknown LLM pilot failure policy: {failure_policy!r}")
         self._client = client
         self._persona = persona
         self._failure_policy = failure_policy
+        # Present only for the V-IMG arm's provider binding (2026-07-24
+        # vision-representation experiment). ``None`` for every other pilot,
+        # which keeps ``decide`` producing the exact same request it always
+        # has.
+        self._image_attachment_config = image_attachment
         # Remember only each mech's own observed HP trend.  This is pilot
         # context, not authoritative match state: the observation remains the
         # sole source of truth and the maps are intentionally not serialized
@@ -205,6 +226,9 @@ class LLMPilot:
     def decide(self, observation: ModelSOPilotObservation) -> ModelSOPilotDecision:
         """Consult the LLM and return a validated decision, or REMAIN on failure."""
         user_prompt = self._serialize_observation_with_memory(observation)
+        image_attachment = self._render_image_attachment(observation)
+        if image_attachment is not None:
+            user_prompt = f"{user_prompt}\n\n{_IMAGE_ATTACHMENT_NOTE}"
         try:
             return consume_llm_completion(
                 client=self._client,
@@ -221,6 +245,7 @@ class LLMPilot:
                         tick=observation.tick,
                         correlation_id=None,
                     ),
+                    image_attachment=image_attachment,
                 ),
                 consumer=lambda response: self._parse_response(response, observation),
             )
@@ -233,6 +258,27 @@ class LLMPilot:
             if self._failure_policy == "raise":
                 raise
             return _fallback_decision(type(exc).__name__)
+
+    def _render_image_attachment(
+        self, observation: ModelSOPilotObservation
+    ) -> ModelSOLlmImageAttachment | None:
+        """Render + persist this tick's deterministic PNG, or ``None`` for V-TEXT.
+
+        Persists under ``render_output_dir/<match_id>/tick_<NNNN>_<mech_id>.png``
+        (state-root-relative, tick-keyed, no ULIDs/wall-clock in the path) so
+        the sha256 recorded in the ``LLM_COMPLETION_REQUESTED`` ledger event is
+        joinable to a durable evidence artifact.
+        """
+        config = self._image_attachment_config
+        if config is None:
+            return None
+        png_bytes = render_observation_png(observation, arena_size=config.arena_size)
+        sha256_hex = hashlib.sha256(png_bytes).hexdigest()
+        match_dir = config.render_output_dir / observation.match_id
+        match_dir.mkdir(parents=True, exist_ok=True)
+        output_path = match_dir / f"tick_{observation.tick:04d}_{observation.mech_id}.png"
+        output_path.write_bytes(png_bytes)
+        return ModelSOLlmImageAttachment(png_bytes=png_bytes, sha256_hex=sha256_hex)
 
     def _serialize_observation_with_memory(self, observation: ModelSOPilotObservation) -> str:
         """Serialize the current observation with the pilot's remembered HP trend."""

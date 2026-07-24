@@ -1,0 +1,17 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.gemini_vl_berserker
+display_name: "Gemini 2.5 Flash-Lite Berserker (vision-representation experiment)"
+# Plain per-tick decide() pilot (archetype llm), NOT card mode. This is a
+# deliberate choice for the 2026-07-24 vision-representation experiment: the
+# image attachment is wired into LLMPilot.decide (pilot.py), which card-mode
+# ProgrammingPilot never calls. The SAME persona/provider parameters here
+# serve both the V-TEXT and V-IMG arm overlays -- the arm distinction lives
+# entirely in the overlay's llm.providers[0].image_attachment binding, never
+# in this file.
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: berserker
+  provider: gemini_vl

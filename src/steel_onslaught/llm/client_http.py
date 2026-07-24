@@ -6,6 +6,7 @@ module performs no environment, package-path, registry, or constructor lookup.
 
 from __future__ import annotations
 
+import base64
 import time
 from collections.abc import Mapping, Sequence
 from threading import Lock
@@ -27,7 +28,11 @@ from steel_onslaught.llm.schemas import (
     ModelSOOpenAIChatMessage,
     ModelSOOpenAIChatRequest,
     ModelSOOpenAIChatResponse,
+    ModelSOOpenAIContentPart,
+    ModelSOOpenAIImageUrl,
+    ModelSOOpenAIImageUrlContentPart,
     ModelSOOpenAIResponseFormat,
+    ModelSOOpenAITextContentPart,
     ProtocolHttpTransport,
     ProtocolLlmClient,
     ProtocolSecretResolver,
@@ -183,6 +188,28 @@ class OpenAICompatibleClient:
         headers["Authorization"] = f"Bearer {secret}"
         return headers
 
+    @staticmethod
+    def _user_content(
+        request: ModelSOLlmCompletionRequest,
+    ) -> str | tuple[ModelSOOpenAIContentPart, ...]:
+        """A plain string for text-only arms; multi-part content for V-IMG.
+
+        Byte-identity of the pre-existing text-only wire body is the
+        contract: when ``image_attachment`` is ``None`` (every arm except
+        V-IMG) this returns exactly ``request.user_prompt``, unchanged.
+        """
+        attachment = request.image_attachment
+        if attachment is None:
+            return request.user_prompt
+        data_url = f"data:image/png;base64,{base64.b64encode(attachment.png_bytes).decode('ascii')}"
+        return (
+            ModelSOOpenAITextContentPart(type="text", text=request.user_prompt),
+            ModelSOOpenAIImageUrlContentPart(
+                type="image_url",
+                image_url=ModelSOOpenAIImageUrl(url=data_url),
+            ),
+        )
+
     def complete(
         self,
         request: ModelSOLlmCompletionRequest,
@@ -191,7 +218,7 @@ class OpenAICompatibleClient:
             model=self._config.model,
             messages=(
                 ModelSOOpenAIChatMessage(role="system", content=request.system_prompt),
-                ModelSOOpenAIChatMessage(role="user", content=request.user_prompt),
+                ModelSOOpenAIChatMessage(role="user", content=self._user_content(request)),
             ),
             temperature=request.temperature,
             max_tokens=self._config.max_tokens,

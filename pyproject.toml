@@ -18,6 +18,11 @@ dependencies = [
     # httpx is the LLM client transport (transitive via omnibase-core, but
     # declared explicitly for the LLM pilot/tuner effect node).
     "httpx>=0.27",
+    # Pillow renders the deterministic per-tick arena PNG for the V-IMG
+    # vision-pilot arm (2026-07-24). Pinned range: newer Pillow versions can
+    # change default PNG compression behavior, which would break the
+    # byte-identity determinism guarantee this renderer depends on.
+    "pillow>=10.4,<11",
 ]
 
 [project.optional-dependencies]
