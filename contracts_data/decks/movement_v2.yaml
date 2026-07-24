@@ -1,0 +1,32 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.deck"
+id: "deck.movement.v2"
+display_name: "Movement Deck v2 (covered advance)"
+hand_size: 3
+register_count: 3
+cards:
+  # deck.movement.v1's pool held { advance:8, flank_left:4, flank_right:4,
+  # reposition:4 } = 20 cards.  ``covered_advance`` weakly dominates plain
+  # ``advance`` (identical toward-enemy math when no LOS-shadowed cell
+  # exists; strictly better when one does), so v2 shifts 6 of the 8
+  # ``advance`` copies to ``covered_advance`` and holds pool size at 20 --
+  # every other card count is unchanged from v1.
+  #
+  # Deal-rate math (hypergeometric, draws without replacement from a
+  # reshuffled pile, hand_quota.movement=4 per the split-deck overlay):
+  #   P(covered_advance in hand) = 1 - C(20-6, 4) / C(20, 4)
+  #                              = 1 - C(14, 4) / C(20, 4)
+  #                              = 1 - 1001 / 4845
+  #                              ~= 79.3%
+  # which clears the cited heat-lance-analog deal rate (77.5%); k=5 would
+  # have landed at ~71.8%, short of that bar.
+  - card_id: "card.movement.advance"
+    count: 2
+  - card_id: "card.movement.covered_advance"
+    count: 6
+  - card_id: "card.movement.flank_left"
+    count: 4
+  - card_id: "card.movement.flank_right"
+    count: 4
+  - card_id: "card.movement.reposition"
+    count: 4

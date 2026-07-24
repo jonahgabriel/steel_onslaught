@@ -1,0 +1,14 @@
+schema_version: "0.1.0"
+kind: "steel_onslaught.card"
+id: "card.movement.covered_advance"
+display_name: "Covered Advance"
+category: "movement"
+priority: 410
+heat_cost: 0
+effect:
+  direction: "covered_advance"
+  speed: "full"
+description: >-
+  Advance toward the enemy, automatically routing through positions the
+  enemy cannot hit -- if no closer position breaks the enemy's line of
+  sight, this behaves exactly like a plain advance.

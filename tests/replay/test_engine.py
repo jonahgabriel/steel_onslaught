@@ -16,6 +16,7 @@ from typing import Literal
 from uuid import UUID
 
 import pytest
+import ulid
 from pydantic import ValidationError
 
 from steel_onslaught.bus.in_process import InProcessEventBus
@@ -33,7 +34,11 @@ from steel_onslaught.contracts.player_selection import (
     ModelSOMatchLaunchProvenance,
     ModelSOModelSeatAssignment,
 )
-from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.events.envelope import (
+    ModelSOEventEnvelope,
+    ModelSOEventSubject,
+    SOEventType,
+)
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.immutable import thaw_json_mapping
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
@@ -53,6 +58,7 @@ from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.movement import chebyshev
 from steel_onslaught.replay.engine import ReplayEngine
 from tests.fixtures.event_samples import build_sample_envelopes
+from tests.match.test_runner_move_intent import _MATCH_SUBJECT, _mech_payload, _onex_envelope
 from tests.runtime import match_runner, pilot_from_spec, runtime_dependencies
 from tests.sqlite_ledger import open_sqlite_ledger
 
@@ -674,3 +680,104 @@ def test_step_backward_at_tick_zero_returns_same_state(tmp_path: Path) -> None:
     replay.reconstruct_at_tick(0)  # position at start
     at_start = replay.step_backward()
     assert at_start.tick == 0  # cannot go below 0
+
+
+# ---------------------------------------------------------------------------
+# covered_advance -- the live resolver's LOS-shadow output must replay
+# byte-identically (card.movement.covered_advance, SO-SEEKCOVER).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_replay_reproduces_covered_advance_movement(tmp_path: Path) -> None:
+    """A live ``covered_advance`` move (LOS-shadow selection, not degrade)
+    must fold to the exact same ``ModelSOMatchState`` on replay.
+
+    Reuses the exact obstacle geometry hand-verified in
+    ``tests/match/test_runner_move_intent.py`` (obstacle at (14, 9) shadows
+    (13, 9); the visible plain-advance target (14, 10) is rejected). This
+    proves the reducer replay-folds the resolver's *live* MOVEMENT_RESOLVED
+    event without re-deriving it -- the actual invariant behind
+    ``all_replay_valid`` (see that module's determinism test for the
+    resolver-purity half of this guarantee).
+    """
+    match_id = "match.replay.covered-advance"
+    ledger = open_sqlite_ledger(tmp_path / f"{match_id}.sqlite")
+    bus = InProcessEventBus()
+    events: list[ModelSOEventEnvelope] = []
+    bus.subscribe(ledger.append)
+    bus.subscribe(events.append)
+
+    a_pos = ModelSOPosition(x=10, y=10)
+    b_pos = ModelSOPosition(x=20, y=10)
+    arena = ModelSOArenaSpec(
+        schema_version="0.1.0",
+        kind="steel_onslaught.arena",
+        arena_id="replay_covered_advance",
+        display_name="Replay covered-advance test arena",
+        size=40,
+        spawn_a=a_pos,
+        spawn_b=b_pos,
+        obstacles=(ModelSOPosition(x=14, y=9),),
+        rects=(),
+    )
+    runner, runtime = match_runner(
+        bus=bus,
+        match_id=match_id,
+        seed=1,
+        loadout_a=load_loadout(LOADOUT_A),
+        loadout_b=load_loadout(LOADOUT_B),
+        max_ticks=2,
+        arena_override=arena,
+    )
+    a_payload = _mech_payload("mech.a.01", "player.a")
+    a_payload["position"] = a_pos.model_dump(mode="json")
+    b_payload = _mech_payload("mech.b.01", "player.b")
+    b_payload["position"] = b_pos.model_dump(mode="json")
+    bus.publish(
+        ModelSOEventEnvelope(
+            event_id=ulid.new().str,
+            match_id=match_id,
+            tick=0,
+            sequence_in_tick=0,
+            event_type=SOEventType.MATCH_STARTED,
+            producer_node="node.test",
+            subject=_MATCH_SUBJECT,
+            payload={
+                "seed": 1,
+                "max_ticks": 2,
+                "mechs": [a_payload, b_payload],
+                "arena": arena.to_snapshot().model_dump(mode="json"),
+            },
+            envelope=_onex_envelope(match_id),
+        )
+    )
+    mech = runner.fold.state.mech_states["mech.a.01"]
+    bus.publish(
+        ModelSOEventEnvelope(
+            event_id=ulid.new().str,
+            match_id=match_id,
+            tick=1,
+            sequence_in_tick=0,
+            event_type=SOEventType.MOVE_INTENT,
+            producer_node="node.test",
+            subject=ModelSOEventSubject(mech_id="mech.a.01", player_id="player.a"),
+            payload={"direction": "covered_advance"},
+            envelope=_onex_envelope(match_id),
+        )
+    )
+    runner._resolve_move(events[-1], runner.fold.state, mech)
+
+    movement = next(event for event in events if event.event_type is SOEventType.MOVEMENT_RESOLVED)
+    assert movement.payload["to"] == {"x": 13, "y": 9}  # pins the LOS-shadow branch, not degrade
+
+    live_state = runner.fold.state
+    replay = ReplayEngine(
+        ledger,
+        match_id=match_id,
+        catalog=runtime.catalog,
+        event_factory=runtime.event_factory,
+    )
+    reconstructed = replay.reconstruct_at_tick(live_state.tick)
+    assert reconstructed == live_state
+    assert reconstructed.mech_states["mech.a.01"].position == ModelSOPosition(x=13, y=9)
