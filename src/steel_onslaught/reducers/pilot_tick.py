@@ -55,10 +55,12 @@ from steel_onslaught.match.geometry import blocked_directions, line_of_sight_cle
 from steel_onslaught.match.objectives import classify_control
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState
 from steel_onslaught.pilots.schemas import (
+    ModelSOEnemyWeaponThreat,
     ModelSOObjectiveView,
     ModelSOPilotDecision,
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
+    ModelSOPosition,
     ModelSOSensorReading,
     ModelSOVictoryPointsView,
     PilotProtocol,
@@ -111,6 +113,39 @@ def _objective_views(
         )
         for objective in sorted(objectives, key=lambda item: item.objective_id)
     )
+
+
+def _cover_cells(obstacles: frozenset[tuple[int, int]]) -> tuple[ModelSOPosition, ...]:
+    """Deterministic (sorted) cover/obstacle map view (audit gap #1/#3/#4).
+
+    ``obstacles`` is the same ground-truth cell set ``line_of_sight_clear``/
+    ``blocked_directions`` already consume; this simply exposes it directly
+    instead of only through single-bit LOS/adjacency derivatives.
+    """
+    return tuple(ModelSOPosition(x=x, y=y) for x, y in sorted(obstacles))
+
+
+def _enemy_weapon_threat(
+    enemy: ModelSOMechRuntimeState | None,
+    weapon_specs: Mapping[str, ModelSOWeaponSpec],
+) -> tuple[ModelSOEnemyWeaponThreat, ...]:
+    """Known enemy-equipped weapon envelopes (audit gap #2); empty if no enemy."""
+    if enemy is None:
+        return ()
+    threats: list[ModelSOEnemyWeaponThreat] = []
+    for weapon_id in enemy.weapon_cooldowns:
+        spec = weapon_specs.get(weapon_id)
+        if spec is None:
+            raise UnknownWeaponError(weapon_id, owner_id=enemy.mech_id)
+        threats.append(
+            ModelSOEnemyWeaponThreat(
+                enemy_mech_id=enemy.mech_id,
+                weapon_id=weapon_id,
+                range=spec.range,
+                damage=spec.damage,
+            )
+        )
+    return tuple(sorted(threats, key=lambda threat: threat.weapon_id))
 
 
 def _victory_points_view(
@@ -209,7 +244,9 @@ def _build_observation(
             size=arena_size,
             obstacles=obstacles,
         ),
+        cover_cells=_cover_cells(obstacles),
         enemy_observations=enemy_readings,
+        enemy_weapon_threat=_enemy_weapon_threat(enemy, weapon_specs),
         objectives=(
             _objective_views(mech, state, objectives)
             if objectives and vp_threshold is not None

@@ -1,0 +1,42 @@
+# Brawler prompt-arms ARM G (session 2026-07-24, seat-scoped steering on top
+# of ARM S surfacing). NEW, additive pilot spec -- pilot.llm.qwen35 (used by
+# both the v1 and v2 brawler loadouts) is untouched.
+#
+# Same persona (berserker) and provider (qwen35) as pilot.llm.qwen35; the only
+# difference is ``programming_guidance``, a declarative, seat-scoped tactical
+# steering block rendered on top of the persona doctrine and the code-owned
+# wire-contract instructions (see ``LLMProgrammingPilot``/
+# ``build_card_programmers`` -- the same composition seam the live-learning
+# policy-guidance block already uses). This is the ONLY new content: no code
+# change is needed to steer a seat, only this config field.
+#
+# Precedent this arm is tested against: L-GATE-2 falsified seat-scoped
+# steering for utility-card usage on qwen35 -- this is a different behavior
+# class (movement/weapon routing, not utility keep-rate) and is measured as
+# its own arm, not assumed to work from that precedent.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen35_berserker_guided
+display_name: "Qwen3.6-35B Berserker (Guided, AI PC 5090)"
+archetype: llm
+lineage:
+  parent: pilot.llm.qwen35
+parameters:
+  persona: berserker
+  provider: qwen35
+  programming_guidance: >-
+    BRAWLER SEAT TACTICAL GUIDANCE (a bias on THIS round's card selection from
+    legal_hand; it never overrides the register rules above). You are exposed
+    to enemy fire whenever own_observation.has_line_of_sight_to_enemy is true
+    and you are outside your own weapons' range. Prefer card.movement.flank_left
+    or card.movement.flank_right over card.movement.advance when your
+    own_observation.position is inside or approaching the open y=28-32 lane and
+    own_observation.cover_cells lists cells off the direct line to the enemy --
+    routing toward and behind those cells is how you break the enemy's line of
+    sight, since no movement card places you on an exact coordinate. Do not
+    program a weapon-fire card (card.attack.fire_primary / card.attack.fire_secondary)
+    until your distance to the enemy is inside that weapon's own
+    own_observation.weapons[].range entry; firing outside your own range wastes
+    the register without threatening the enemy. When more than one weapon card is
+    both legal and in range, prefer the one with the longer range entry so you
+    threaten the enemy_weapon_threat entries before they threaten you.

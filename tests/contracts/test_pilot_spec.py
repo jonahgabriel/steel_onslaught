@@ -10,7 +10,11 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
-from steel_onslaught.contracts.pilot import ModelSOPilotSpec, SOWeaponPreference
+from steel_onslaught.contracts.pilot import (
+    ModelSOLlmPilotParams,
+    ModelSOPilotSpec,
+    SOWeaponPreference,
+)
 
 PILOTS_DATA = Path(__file__).parent.parent.parent / "contracts_data" / "pilots"
 DEFENSIVE_GOLDEN = Path(__file__).parent.parent / "pilots" / "golden" / "defensive_golden.json"
@@ -267,6 +271,34 @@ def test_bad_parent_shape_rejected() -> None:
 # ---------------------------------------------------------------------------
 # Null-parent census (addendum §8): templates are the ONLY null-parent specs
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# LLM archetype: ``programming_guidance`` (2026-07-24 prompt-arms ARM G)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_llm_pilot_params_programming_guidance_defaults_to_none() -> None:
+    """Every existing pilot spec (no ``programming_guidance`` authored) is unaffected."""
+    params = ModelSOLlmPilotParams(persona="berserker", provider="qwen35")
+    assert params.programming_guidance is None
+
+
+@pytest.mark.unit
+def test_llm_pilot_params_accepts_authored_programming_guidance() -> None:
+    params = ModelSOLlmPilotParams(
+        persona="berserker",
+        provider="qwen35",
+        programming_guidance="BRAWLER SEAT TACTICAL GUIDANCE: prefer flanking.",
+    )
+    assert params.programming_guidance == "BRAWLER SEAT TACTICAL GUIDANCE: prefer flanking."
+
+
+@pytest.mark.unit
+def test_llm_pilot_params_rejects_blank_programming_guidance() -> None:
+    with pytest.raises(ValidationError):
+        ModelSOLlmPilotParams(persona="berserker", provider="qwen35", programming_guidance="")
 
 
 @pytest.mark.unit

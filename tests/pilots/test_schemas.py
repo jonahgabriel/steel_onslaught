@@ -16,6 +16,7 @@ from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
+    ModelSOEnemyWeaponThreat,
     ModelSOPilotDecision,
     ModelSOPilotObservation,
     ModelSOPilotWeaponView,
@@ -179,6 +180,49 @@ def test_observation_is_frozen() -> None:
     obs = _observation()
     with pytest.raises(ValidationError):
         obs.tick = 6
+
+
+@pytest.mark.unit
+def test_observation_defaults_terrain_and_enemy_weapon_threat_empty() -> None:
+    """Pre-existing observation shape stays valid: both new fields default empty."""
+    obs = _observation()
+    assert obs.cover_cells == ()
+    assert obs.enemy_weapon_threat == ()
+
+
+@pytest.mark.unit
+def test_observation_carries_cover_cells_and_enemy_weapon_threat() -> None:
+    """2026-07-24 prompt-content audit gaps #1-#4 (cover map) and #2 (enemy weapon range)."""
+    obs = _observation()
+    threat = ModelSOEnemyWeaponThreat(
+        enemy_mech_id="mech-blue",
+        weapon_id="weapon.siege.artillery_mortar",
+        range=50,
+        damage=20,
+    )
+    obs = obs.model_copy(
+        update={
+            "cover_cells": (ModelSOPosition(x=20, y=30), ModelSOPosition(x=36, y=30)),
+            "enemy_weapon_threat": (threat,),
+        }
+    )
+    assert obs.cover_cells == (ModelSOPosition(x=20, y=30), ModelSOPosition(x=36, y=30))
+    assert obs.enemy_weapon_threat[0].weapon_id == "weapon.siege.artillery_mortar"
+    assert obs.enemy_weapon_threat[0].range == 50
+
+
+@pytest.mark.unit
+def test_enemy_weapon_threat_rejects_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        ModelSOEnemyWeaponThreat.model_validate(
+            {
+                "enemy_mech_id": "mech-blue",
+                "weapon_id": "weapon.test",
+                "range": 10,
+                "damage": 5,
+                "surprise": True,
+            }
+        )
 
 
 @pytest.mark.unit

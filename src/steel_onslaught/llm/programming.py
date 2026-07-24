@@ -330,9 +330,20 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
             "under_sensor_lock": pilot.under_sensor_lock,
             "has_line_of_sight_to_enemy": pilot.has_line_of_sight_to_enemy,
             "blocked_directions": pilot.blocked_directions,
+            # Arena obstacle/cover cells: neutral terrain fact, not sensed --
+            # ground truth for where cover exists (2026-07-24 prompt-content
+            # audit gap #1/#3/#4). Empty list (never absent) on obstacle-free
+            # arenas, so this key is always present and always the same shape.
+            "cover_cells": [cell.model_dump(mode="json") for cell in pilot.cover_cells],
         },
         "opponent_observations": [
             reading.model_dump(mode="json") for reading in pilot.enemy_observations
+        ],
+        # Known enemy-equipped weapon envelopes: neutral fact, not sensed --
+        # declared force composition (audit gap #2). Empty list (never absent)
+        # when there is no living enemy to report on.
+        "enemy_weapon_threat": [
+            threat.model_dump(mode="json") for threat in pilot.enemy_weapon_threat
         ],
     }
     # Objective-victory legibility (Phase 4).  Added ONLY when the arena
