@@ -1,0 +1,86 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.arena
+display_name: The Foundry (Asymmetric Objectives — Corridor Spawn)
+arena_id: foundry_60_asym_v1_corridor_spawn
+# Tournament arm 11 (corridor_spawn, session 2026-07-24): additive arena
+# variant of contracts_data/arenas/foundry_60_asym_v1.yaml. foundry_60_asym_v1
+# itself stays byte-untouched so historical replays remain valid; this is a
+# NEW versioned arena id, bound only via this arm's own battery overlay
+# (contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_qwen_corridor_spawn.yaml).
+#
+# THE ONLY CHANGE: spawn_a moves from the open mid-lane sightline
+# ((4,30), directly on the sniper's y=28..32 firing lane) into the mouth of
+# the north approach corridor -- so the brawler starts its match already
+# inside the covered corridor band (x=8..34, y=17..25) instead of having to
+# cross open ground to reach it. Every other field (spawn_b, obstacles,
+# rects, objectives, VP schedule, sudden-death timing) is byte-identical to
+# foundry_60_asym_v1.
+#
+# DISPATCH COORDINATE CORRECTION (verified against every rect/objective in
+# this file before landing, per the arm spec's explicit verification
+# requirement): the dispatched spawn_a value {x: 8, y: 20} COLLIDES with the
+# pre-existing obstacle rect {x0: 8, y0: 20, x1: 9, y1: 21} (cell (8,20) is
+# a member of that rect) -- the arena contract's own layout validator
+# rejects any spawn point that occupies an obstacle cell. CORRECTED to
+# {x: 10, y: 22} -- the nearest clear cell inside the same corridor-mouth
+# region (rects x=8..34, y=17..25) that:
+#   - is not a member of any obstacle rect (checked against all 24 rects in
+#     this file, including the 7 north-corridor rects that define the band
+#     itself: {8,20,9,21}, {13,18,14,19}, {18,21,20,21}, {23,17,24,18},
+#     {27,20,28,21}, {32,24,33,24}, {33,18,34,19});
+#   - is not a member of the west home-turf scatter rect {10,25,11,25}
+#     (y=25 vs the chosen y=22 -- no overlap, but checked explicitly since
+#     it is the nearest scatter cover to the corridor mouth); and
+#   - does not coincide with any objective cell (west_yard (18,30),
+#     north_works (30,22), east_gate (42,36)) or with spawn_b (52,30).
+# (10,22) sits two cells south-east of the first corridor cover cluster
+# {8,20,9,21} and four cells west of the second cluster {13,18,14,19} --
+# inside the covered band's footprint without occupying any of its cover
+# cells.
+size: 60
+spawn_a: {x: 10, y: 22}
+spawn_b: {x: 52, y: 30}
+obstacles: []
+rects:
+  # North approach corridor (west -> east cover chain) — unchanged from v1
+  - {x0: 8, y0: 20, x1: 9, y1: 21}
+  - {x0: 13, y0: 18, x1: 14, y1: 19}
+  - {x0: 18, y0: 21, x1: 20, y1: 21}
+  - {x0: 23, y0: 17, x1: 24, y1: 18}
+  - {x0: 27, y0: 20, x1: 28, y1: 21}
+  - {x0: 32, y0: 24, x1: 33, y1: 24}
+  - {x0: 33, y0: 18, x1: 34, y1: 19}
+  # Mid-lane flanking cover around objective.west_yard (18,30): the lane rows
+  # y=28..32 stay clear; cover hugs the lane edges north and south.
+  - {x0: 16, y0: 27, x1: 17, y1: 27}
+  - {x0: 19, y0: 33, x1: 20, y1: 33}
+  # East zone around objective.east_gate (42,36) — blue's defense band
+  - {x0: 39, y0: 33, x1: 40, y1: 34}
+  - {x0: 44, y0: 38, x1: 45, y1: 39}
+  - {x0: 46, y0: 33, x1: 46, y1: 35}
+  # South approach (sparser, wider hops)
+  - {x0: 14, y0: 42, x1: 15, y1: 43}
+  - {x0: 21, y0: 45, x1: 23, y1: 45}
+  - {x0: 28, y0: 42, x1: 29, y1: 43}
+  - {x0: 34, y0: 45, x1: 35, y1: 46}
+  - {x0: 37, y0: 42, x1: 38, y1: 43}
+  # West home-turf scatter (red side)
+  - {x0: 10, y0: 25, x1: 11, y1: 25}
+  - {x0: 9, y0: 35, x1: 10, y1: 36}
+  # Blue-side scatter
+  - {x0: 50, y0: 22, x1: 51, y1: 23}
+  - {x0: 49, y0: 40, x1: 50, y1: 41}
+  - {x0: 55, y0: 35, x1: 55, y1: 36}
+objectives:
+  - objective_id: objective.west_yard
+    cell: {x: 18, y: 30}
+    vp_per_round: 1
+  - objective_id: objective.north_works
+    cell: {x: 30, y: 22}
+    vp_per_round: 1
+  - objective_id: objective.east_gate
+    cell: {x: 42, y: 36}
+    vp_per_round: 1
+vp_threshold: 15
+sudden_death_start_tick: 120
+sudden_death_damage_base: 8

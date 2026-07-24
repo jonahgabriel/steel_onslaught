@@ -1,0 +1,108 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.arena
+display_name: The Foundry (Asymmetric Objectives — Leapfrog Cover)
+arena_id: foundry_60_asym_v1_leapfrog_cover
+# Tournament arm 13 (leapfrog_cover, session 2026-07-24): additive arena
+# variant of contracts_data/arenas/foundry_60_asym_v1.yaml. foundry_60_asym_v1
+# itself stays byte-untouched so historical replays remain valid; this is a
+# NEW versioned arena id, bound only via this arm's own battery overlay
+# (contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_qwen_leapfrog_cover.yaml).
+#
+# THE ONLY CHANGE: 5 new staggered blocking rects added inside the
+# previously fully-open y=28..32 sightline lane (x=8..48), alternating
+# north-side (y=27..29) and south-side (y=31..33) of the lane centerline so
+# the brawler must leapfrog between cover on opposite sides of the lane
+# while closing distance, rather than bounding between two symmetric
+# mid-lane blocks (c.f. the brawler-recut-v2 arena, foundry_60_asym_v2,
+# which added exactly two centered blocks). Every other field (spawns,
+# objectives, VP schedule, sudden-death timing, and every pre-existing rect)
+# is byte-identical to foundry_60_asym_v1.
+#
+# DISPATCH COORDINATES + COLLISION CORRECTION (verified against every
+# existing rect/objective/spawn in this file before landing, per the arm
+# spec's explicit verification requirement):
+#   block 1  {x0:10, y0:27, x1:14, y1:29}  (north side) -- clear, no change.
+#   block 2  {x0:18, y0:31, x1:22, y1:33}  (south side) AS DISPATCHED
+#     COLLIDES with the pre-existing mid-lane flanking-cover rect
+#     {x0:19, y0:33, x1:20, y1:33} (west_yard's south flank, inherited from
+#     v1) -- cells (19,33) and (20,33) are members of both rects. CORRECTED
+#     to {x0:18, y0:31, x1:22, y1:32} -- the y1:33 row is dropped (block 2
+#     becomes 5x2=10 cells instead of the uniform 5x3=15 of the other four
+#     blocks), which removes the only colliding cells while keeping the
+#     same x-window and the same stagger gaps to block 1 and block 3. No
+#     other rect, objective, or spawn cell is affected by this correction.
+#   block 3  {x0:26, y0:27, x1:30, y1:29}  (north side) -- clear, no change.
+#   block 4  {x0:34, y0:31, x1:38, y1:33}  (south side) -- clear, no change.
+#   block 5  {x0:42, y0:27, x1:46, y1:29}  (north side) -- clear, no change.
+# None of the 5 blocks (post-correction) overlaps a spawn cell ((4,30),
+# (52,30)) or an objective cell ((18,30), (30,22), (42,36)); every block
+# keeps its rows strictly inside the lane band y=28..32 sans block 2's
+# 1-row extension to y=33 pre-correction -- post-correction all 5 blocks sit
+# at y in {27,28,29} or {31,32}, i.e. entirely within the y=27..33 halo
+# around the lane, matching the dispatched intent.
+#
+# Everything below (spawns, north/south approach bands, home-turf scatter,
+# objectives, VP schedule, sudden-death timing, every pre-existing rect) is
+# IDENTICAL to foundry_60_asym_v1 -- only the 5 new leapfrog cover blocks are
+# added.
+size: 60
+spawn_a: {x: 4, y: 30}
+spawn_b: {x: 52, y: 30}
+obstacles: []
+rects:
+  # North approach corridor (west -> east cover chain) — unchanged from v1
+  - {x0: 8, y0: 20, x1: 9, y1: 21}
+  - {x0: 13, y0: 18, x1: 14, y1: 19}
+  - {x0: 18, y0: 21, x1: 20, y1: 21}
+  - {x0: 23, y0: 17, x1: 24, y1: 18}
+  - {x0: 27, y0: 20, x1: 28, y1: 21}
+  - {x0: 32, y0: 24, x1: 33, y1: 24}
+  - {x0: 33, y0: 18, x1: 34, y1: 19}
+  # Mid-lane flanking cover around objective.west_yard (18,30) — unchanged
+  # from v1; the lane rows y=28..32 otherwise stay clear except for the 5
+  # new leapfrog cover blocks below.
+  - {x0: 16, y0: 27, x1: 17, y1: 27}
+  - {x0: 19, y0: 33, x1: 20, y1: 33}
+  # NEW arm 13: leapfrog cover block 1 (north side of the lane).
+  - {x0: 10, y0: 27, x1: 14, y1: 29}
+  # NEW arm 13: leapfrog cover block 2 (south side of the lane). Corrected
+  # from the dispatched {18,31,22,33} to {18,31,22,32} -- see the header
+  # comment above for the collision this avoids.
+  - {x0: 18, y0: 31, x1: 22, y1: 32}
+  # NEW arm 13: leapfrog cover block 3 (north side of the lane).
+  - {x0: 26, y0: 27, x1: 30, y1: 29}
+  # NEW arm 13: leapfrog cover block 4 (south side of the lane).
+  - {x0: 34, y0: 31, x1: 38, y1: 33}
+  # NEW arm 13: leapfrog cover block 5 (north side of the lane).
+  - {x0: 42, y0: 27, x1: 46, y1: 29}
+  # East zone around objective.east_gate (42,36) — blue's defense band,
+  # unchanged from v1
+  - {x0: 39, y0: 33, x1: 40, y1: 34}
+  - {x0: 44, y0: 38, x1: 45, y1: 39}
+  - {x0: 46, y0: 33, x1: 46, y1: 35}
+  # South approach (sparser, wider hops) — unchanged from v1
+  - {x0: 14, y0: 42, x1: 15, y1: 43}
+  - {x0: 21, y0: 45, x1: 23, y1: 45}
+  - {x0: 28, y0: 42, x1: 29, y1: 43}
+  - {x0: 34, y0: 45, x1: 35, y1: 46}
+  - {x0: 37, y0: 42, x1: 38, y1: 43}
+  # West home-turf scatter (red side) — unchanged from v1
+  - {x0: 10, y0: 25, x1: 11, y1: 25}
+  - {x0: 9, y0: 35, x1: 10, y1: 36}
+  # Blue-side scatter — unchanged from v1
+  - {x0: 50, y0: 22, x1: 51, y1: 23}
+  - {x0: 49, y0: 40, x1: 50, y1: 41}
+  - {x0: 55, y0: 35, x1: 55, y1: 36}
+objectives:
+  - objective_id: objective.west_yard
+    cell: {x: 18, y: 30}
+    vp_per_round: 1
+  - objective_id: objective.north_works
+    cell: {x: 30, y: 22}
+    vp_per_round: 1
+  - objective_id: objective.east_gate
+    cell: {x: 42, y: 36}
+    vp_per_round: 1
+vp_threshold: 15
+sudden_death_start_tick: 120
+sudden_death_damage_base: 8
