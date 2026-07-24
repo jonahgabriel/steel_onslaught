@@ -277,6 +277,31 @@ def _objective_metrics(
     }
 
 
+def _row_winner_player_id(scored: ModelSOMatchScoredPayload) -> str | None:
+    """The battery row's decisive-winner answer, self-consistent with ``is_draw``.
+
+    ``ModelSOMatchScoredPayload.winner_player_id`` is a required ``str`` field
+    that is NOT usable verbatim as "who won this match": the scoring
+    reducer's documented Task 30 draw convention
+    (``reducers/scoring.py::_score``) stamps the alphabetically-first player
+    into that flattened field even on a draw, because the leaderboard's SQL
+    schema declares the column ``NOT NULL`` for its own bucketing purposes --
+    ``is_draw`` (and the nested ``winner`` block, which the payload's own
+    validator requires to be ``None`` exactly when ``is_draw``) is the
+    required disambiguator. A battery evidence row must never carry both a
+    winner and a draw flag, so this re-derives the field rather than
+    forwarding the reducer's placeholder.
+
+    Root-caused against a real aborted match (seed 5028,
+    match.01KYAT1XPK61H653M0YBKR2B88, pair_p4_dmg8 ledger): the terminal
+    MATCH_ENDED event correctly carried ``winner_id=null``, but the
+    downstream MATCH_SCORED event's flattened ``winner_player_id`` was still
+    ``"player.blue"`` despite ``is_draw=true`` -- exactly the leaderboard
+    convention above, forwarded uncritically into the evidence row.
+    """
+    return None if scored.is_draw else scored.winner_player_id
+
+
 def _run_match(
     overlay: ModelSOApplicationOverlay,
     *,
@@ -339,7 +364,7 @@ def _run_match(
         "end_reason": end_reason,
         "victory_kind": victory_kind,
         "terminal_class": _terminal_class(end_reason, victory_kind),
-        "winner_player_id": scored.winner_player_id,
+        "winner_player_id": _row_winner_player_id(scored),
         "is_draw": scored.is_draw,
         "duration_ticks": scored.duration_ticks,
         "vp_totals": vp_totals,
