@@ -1,0 +1,10 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.glm_sniper
+display_name: "GLM 4.5 Sniper (z.ai coding)"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: sniper
+  provider: glm

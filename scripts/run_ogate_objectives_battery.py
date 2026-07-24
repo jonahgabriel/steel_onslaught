@@ -90,6 +90,10 @@ _SECRET_REF_ENV_NAMES: dict[str, tuple[str, ...]] = {
     # OPEN_ROUTER_API_KEY; OPENROUTER_API_KEY is accepted as the documented
     # ``so play-live`` alias so one exported key serves both paths.
     "secret://llm/openrouter": ("OPEN_ROUTER_API_KEY", "OPENROUTER_API_KEY"),
+    # Zhipu/GLM (z.ai) Bearer key for the cross-architecture arm. Canonical name
+    # in ~/.omnibase/.env is LLM_GLM_API_KEY; resolved at the battery edge exactly
+    # like the OpenRouter key so the real key never touches the overlay or argv.
+    "secret://llm/glm": ("LLM_GLM_API_KEY",),
 }
 
 

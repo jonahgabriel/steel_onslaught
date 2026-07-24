@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
+from steel_onslaught.contracts.application import ModelSOThinkingBinding
+
 if TYPE_CHECKING:
     from steel_onslaught.contracts.application import ModelSOSecretRef
     from steel_onslaught.contracts.pilot import ModelSOPilotSpec
@@ -70,6 +72,10 @@ class ModelSOOpenAIChatRequest(_ClosedStrictModel):
     temperature: StrictFloat = Field(ge=0.0, le=2.0, allow_inf_nan=False)
     max_tokens: StrictInt | None = Field(gt=0, le=32768)
     response_format: ModelSOOpenAIResponseFormat | None
+    # Optional provider ``thinking`` control (e.g. GLM/z.ai) serialized as a
+    # top-level object only when set. ``None`` (every non-GLM arm) is excluded by
+    # ``model_dump(exclude_none=True)``, so the wire body stays byte-identical.
+    thinking: ModelSOThinkingBinding | None = None
 
 
 class _StrictWireResponseModel(BaseModel):

@@ -1,0 +1,21 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.glm_berserker
+chassis_id: chassis.light.scout_mk1
+boiler_id: boiler.compact.v1
+pilot_id: pilot.llm.glm_berserker
+modules:
+  weapons: [weapon.light.machine_gun, weapon.light.shrapnel_thrower]
+  sensors: [sensor.short_range_scanner]
+  cooling: []
+  armor: []
+  gizmos: []
+budgets:
+  points_used: 40
+  points_max: 100
+  mass_used: 30
+  mass_max: 60
+  slots_used: 3
+  slots_max: 4
+  expected_heat_peak: 30
+  expected_signature: 35
