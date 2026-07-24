@@ -24,7 +24,11 @@ or ``draw_max_ticks``) rather than the engine's ``aborted_runaway`` guard.
 
 Every match also verifies the Phase-4 provenance seam inline: MATCH_STARTED
 must carry ``arena_contract_hash`` equal to the recomputed digest of the
-shipped ``foundry_60_asym_v1`` contract.
+shipped ``--expected-arena`` contract (default ``foundry_60_asym_v1``). Pass a
+symmetric, objective-less arena (``--expected-arena foundry_60`` with a utility
+overlay that references it) to run the same battery on a non-asym scenario: the
+objective/VP scorecard then aggregates zero objectives without error, and the
+keep/terminal-class/winner statistics still compute.
 
 Run (defaults: n=30, seeds 5001..5030):
 
@@ -271,6 +275,7 @@ def _run_match(
     seed: int,
     max_ticks: int,
     expected_arena_hash: str,
+    expected_arena_id: str = _ARENA_ID,
     red_loadout_path: Path = _RED_LOADOUT,
     blue_loadout_path: Path = _BLUE_LOADOUT,
 ) -> dict[str, Any]:
@@ -304,7 +309,7 @@ def _run_match(
     for event in events:
         if event.event_type is SOEventType.MATCH_STARTED:
             started = ModelSOMatchStartedPayload.model_validate(event.payload)
-            assert started.arena.arena_id == _ARENA_ID, started.arena.arena_id
+            assert started.arena.arena_id == expected_arena_id, started.arena.arena_id
             assert started.arena_contract_hash == expected_arena_hash, (
                 "arena_contract_hash provenance seam broken"
             )
@@ -414,8 +419,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "application overlay for the battery (default: the asym objective "
             "overlay). Pass the combined asym+utility overlay "
             "(tactical_split_overdeal_utility_asym_v1_qwen.yaml) to measure "
-            "whether utility counterplay lets the brawler contest VP. Must still "
-            "resolve arena foundry_60_asym_v1."
+            "whether utility counterplay lets the brawler contest VP. The "
+            "overlay's arena must match --expected-arena (default "
+            "foundry_60_asym_v1); pass a symmetric utility overlay together with "
+            "--expected-arena foundry_60 to run the utility battery on the "
+            "objective-less arena."
         ),
     )
     parser.add_argument(
@@ -438,6 +446,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "registry); default preserves the qwen35 sniper byte-for-byte. "
             "Pass the qwen27 loadout (contracts_data/loadouts/qwen27/"
             "sniper_ironclad.yaml) alongside the qwen27 overlay for cross-model B."
+        ),
+    )
+    parser.add_argument(
+        "--expected-arena",
+        default=_ARENA_ID,
+        help=(
+            "arena_id the selected overlay must resolve to; asserted on every "
+            "MATCH_STARTED and used to compute the expected arena_contract_hash "
+            "provenance seam (default: the asym objective arena). Pass "
+            "'foundry_60' to run the symmetric, objective-less arena — the "
+            "objective/VP scorecard then aggregates zero objectives without "
+            "error while keep/terminal/winner stats still compute."
         ),
     )
     parser.add_argument("--n", type=int, default=30, help="battery size")
@@ -469,8 +489,11 @@ def main() -> int:
     state_root.mkdir(parents=True, exist_ok=True)
     raw_path = state_root / "battery_raw.jsonl"
 
+    expected_arena_id = args.expected_arena
     expected_arena_hash = arena_contract_hash(
-        load_match_contract_catalog(_REPO_ROOT / "contracts_data").arenas[_ARENA_ID].to_snapshot()
+        load_match_contract_catalog(_REPO_ROOT / "contracts_data")
+        .arenas[expected_arena_id]
+        .to_snapshot()
     )
     overlay = _lane_overlay(state_root, args.overlay.resolve(strict=True))
     red_loadout_path = args.red_loadout.resolve(strict=True)
@@ -484,6 +507,7 @@ def main() -> int:
             seed=seed,
             max_ticks=args.max_ticks,
             expected_arena_hash=expected_arena_hash,
+            expected_arena_id=expected_arena_id,
             red_loadout_path=red_loadout_path,
             blue_loadout_path=blue_loadout_path,
         )
