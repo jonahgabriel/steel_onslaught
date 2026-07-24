@@ -6,6 +6,7 @@ from dataclasses import replace
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from steel_onslaught.cards.actions import compile_card_action
 from steel_onslaught.cards.dealer import DealerCompute, ModelSODealerScope, ModelSODeckState
@@ -38,6 +39,7 @@ from steel_onslaught.match.card_adapter import (
     ModelSOCardSeatRequest,
 )
 from steel_onslaught.match.card_event_specs import build_card_round_event_specs
+from steel_onslaught.match.spatial_preview import DEFAULT_GRID_RADIUS
 from steel_onslaught.pilots.programming import ModelSOProgrammingObservation, ProgrammingPilotError
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotObservation,
@@ -180,6 +182,10 @@ def _request(
     lock_depth: int = 0,
     previous_plan: ModelSOPlanCommittedPayload | None = None,
     weapon_ids: tuple[str, ...] = ("weapon.test.primary",),
+    spatial_representation: str = "none",
+    enemy_position: ModelSOPosition | None = None,
+    arena_size: int | None = None,
+    move_budget: int | None = None,
 ) -> ModelSOCardSeatRequest:
     return ModelSOCardSeatRequest(
         seat=seat,
@@ -194,6 +200,10 @@ def _request(
         lock_depth=lock_depth,
         previous_plan=previous_plan,
         weapon_ids=weapon_ids,
+        spatial_representation=spatial_representation,  # type: ignore[arg-type]
+        enemy_position=enemy_position,
+        arena_size=arena_size,
+        move_budget=move_budget,
     )
 
 
@@ -228,6 +238,27 @@ class _Program:
                 for index, card_id in enumerate(self.card_ids)
             ),
             rationale="explicit test program",
+            confidence=1.0,
+        )
+
+
+class _CapturingProgram:
+    """Like ``_Program`` but records every observation it was called with."""
+
+    def __init__(self, card_ids: tuple[str, str]) -> None:
+        self.card_ids = card_ids
+        self.observations: list[ModelSOProgrammingObservation] = []
+
+    def program(self, observation: ModelSOProgrammingObservation) -> ModelSOPlanCommittedPayload:
+        self.observations.append(observation)
+        assert all(card_id in observation.hand for card_id in self.card_ids)
+        return ModelSOPlanCommittedPayload(
+            seat=observation.seat,
+            registers=tuple(
+                ModelSOPlanRegister(register_index=index, card_id=card_id)
+                for index, card_id in enumerate(self.card_ids)
+            ),
+            rationale="capturing test program",
             confidence=1.0,
         )
 
@@ -523,3 +554,149 @@ def test_dependency_identity_mismatch_fails_closed() -> None:
             dealer=DealerCompute(),
             reducer=base.reducer,
         )
+
+
+# --- Show-dont-tell spatial representation arms R1/R2 (2026-07-24) ---------
+
+
+def test_spatial_representation_requires_arena_size_and_move_budget() -> None:
+    # pydantic wraps the model_validator's CardRunnerAdapterError (a ValueError
+    # subclass) into its own ValidationError; the original message survives.
+    with pytest.raises(ValidationError, match="arena_size and move_budget"):
+        _request("a", spatial_representation="grid")
+
+
+def test_spatial_representation_none_needs_no_extra_fields() -> None:
+    request = _request("a")
+    assert request.spatial_representation == "none"
+    assert request.enemy_position is None
+    assert request.arena_size is None
+    assert request.move_budget is None
+
+
+def test_spatial_representation_for_resolves_seat_then_side_then_none() -> None:
+    class _StubProgrammer:
+        def __init__(self, representation: str) -> None:
+            self.spatial_representation = representation
+
+    base = _runtime()
+    runtime = base.card_round_runtime
+    assert runtime is not None
+    adapter = CardRunnerAdapter(
+        registers_enabled=True,
+        card_round_runtime=runtime,
+        dealer=base.dealer,
+        reducer=base.reducer,
+        programmers={"red": _StubProgrammer("grid")},  # type: ignore[dict-item]
+    )
+    assert adapter.spatial_representation_for("red", "blue") == "grid"
+    assert adapter.spatial_representation_for("unknown-seat", "red") == "grid"
+    assert adapter.spatial_representation_for("unknown-seat", "unknown-side") == "none"
+
+    disabled_adapter = _runtime(registers_enabled=False)
+    assert disabled_adapter.spatial_representation_for("red", "blue") == "none"
+
+
+def test_produce_computes_spatial_fields_only_for_the_opted_in_seat() -> None:
+    """A `grid_scaffold` seat gets the rendered map + previews + range flags
+    (and ``spatial_read_required``); an unopted seat in the SAME round gets
+    an observation byte-identical to the pre-arm shape."""
+    base = _runtime()
+    runtime = base.card_round_runtime
+    assert runtime is not None
+    programmer_a = _CapturingProgram(("card.test.advance", "card.test.attack"))
+    programmer_b = _CapturingProgram(("card.test.advance", "card.test.vent"))
+    adapter = CardRunnerAdapter(
+        registers_enabled=True,
+        card_round_runtime=runtime,
+        dealer=base.dealer,
+        reducer=base.reducer,
+        programmers={"a": programmer_a, "b": programmer_b},
+    )
+    request_a = _request(
+        "a",
+        spatial_representation="grid_scaffold",
+        enemy_position=ModelSOPosition(x=6, y=1),
+        arena_size=20,
+        move_budget=4,
+    )
+    request_b = _request("b")  # unopted default: "none"
+
+    adapter.produce(
+        seats=(request_a, request_b),
+        round_index=0,
+        tick=3,
+        causation_id="round.test.spatial",
+        starting_deck_state=_known_starting_state(),
+    )
+
+    assert len(programmer_a.observations) == 1
+    observation_a = programmer_a.observations[0]
+    assert observation_a.spatial_grid is not None
+    assert observation_a.spatial_grid.radius == DEFAULT_GRID_RADIUS
+    movement_card_ids = {preview.card_id for preview in observation_a.movement_previews}
+    assert "card.test.advance" in movement_card_ids
+    weapon_card_ids = {flag.card_id for flag in observation_a.weapon_range_flags}
+    assert "card.test.attack" in weapon_card_ids
+    assert observation_a.spatial_read_required is True
+
+    assert len(programmer_b.observations) == 1
+    observation_b = programmer_b.observations[0]
+    assert observation_b.spatial_grid is None
+    assert observation_b.movement_previews == ()
+    assert observation_b.weapon_range_flags == ()
+    assert observation_b.spatial_read_required is False
+
+
+def test_produce_movement_preview_matches_pure_resolver_for_same_inputs() -> None:
+    """The preview attached to the observation must equal calling the pure
+    resolver directly with the SAME from_pos/direction/budget/enemy/obstacles
+    -- the property this whole feature exists to guarantee."""
+    from steel_onslaught.match.move_resolution import resolve_move_destination
+
+    base = _runtime()
+    runtime = base.card_round_runtime
+    assert runtime is not None
+    programmer = _CapturingProgram(("card.test.advance", "card.test.attack"))
+    adapter = CardRunnerAdapter(
+        registers_enabled=True,
+        card_round_runtime=runtime,
+        dealer=base.dealer,
+        reducer=base.reducer,
+        programmers={"a": programmer},
+    )
+    self_pos = ModelSOPosition(x=1, y=1)
+    enemy_pos = ModelSOPosition(x=9, y=1)
+    request = _request(
+        "a",
+        spatial_representation="grid",
+        enemy_position=enemy_pos,
+        arena_size=20,
+        move_budget=4,
+    )
+    adapter.produce(
+        seats=(request,),
+        round_index=0,
+        tick=3,
+        causation_id="round.test.preview-drift",
+        starting_deck_state=_known_starting_state(),
+    )
+
+    observation = programmer.observations[0]
+    preview = next(
+        preview
+        for preview in observation.movement_previews
+        if preview.card_id == "card.test.advance"
+    )
+    # request._observation("a") pins position to (1,1); the pressure_current
+    # on that fixture boiler (40) exceeds move_budget=4, so the preview budget
+    # is the full move_budget.
+    expected = resolve_move_destination(
+        from_pos=self_pos,
+        direction="toward_enemy",
+        budget=4,
+        enemy_pos=enemy_pos,
+        obstacles=frozenset(),
+        arena_size=20,
+    )
+    assert preview.resulting_cell == expected

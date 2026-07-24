@@ -102,6 +102,16 @@ class ModelSOLlmPilotParams(BaseModel):
     # persona's standing doctrine text. ``None`` by default keeps every
     # existing pilot spec's resolved programmer byte-identical.
     programming_guidance: str | None = Field(default=None, min_length=1)
+    # Show-dont-tell spatial representation arms R1/R2 (2026-07-24 prompt-
+    # content audit follow-up). "none" (default) keeps every existing pilot
+    # spec's resolved observation/prompt byte-identical -- zero behavior
+    # change unless a spec explicitly opts in. "grid" (ARM R1) adds a
+    # rendered viewport map, per-dealt-movement-card consequence previews,
+    # and per-dealt-weapon-card in-range flags -- representation only, no
+    # strategy advice. "grid_scaffold" (ARM R2) is R1 plus a required
+    # one-line spatial-read field in the response format before register
+    # selection (schema-tolerant: an omitted field is logged, never aborted).
+    spatial_representation: Literal["none", "grid", "grid_scaffold"] = "none"
 
 
 class ModelSOHumanPilotParams(BaseModel):

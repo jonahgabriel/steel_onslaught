@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, Self, cast
+from typing import Literal, NamedTuple, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 
@@ -73,6 +73,11 @@ from steel_onslaught.events.payloads import (
     ModelSOUtilityDeployIntentPayload,
     ModelSOWeaponFireIntentPayload,
 )
+from steel_onslaught.match.spatial_preview import (
+    compute_movement_previews,
+    compute_weapon_range_flags,
+    render_ascii_grid,
+)
 from steel_onslaught.pilots.programming import (
     ModelSOCardRulePackProvenance,
     ModelSOProgrammingObservation,
@@ -81,13 +86,33 @@ from steel_onslaught.pilots.programming import (
 )
 from steel_onslaught.pilots.schemas import (
     ModelSOPilotObservation,
+    ModelSOPosition,
     SOMoveDirection,
     SOPilotAction,
+)
+from steel_onslaught.pilots.spatial_view import (
+    ModelSOMovementPreview,
+    ModelSOSpatialGridView,
+    ModelSOWeaponRangeFlag,
 )
 
 
 class CardRunnerAdapterError(ValueError):
     """An explicitly enabled card adapter cannot produce a safe round."""
+
+
+class _SpatialFields(NamedTuple):
+    """The four show-dont-tell spatial fields, explicitly-typed for mypy strict.
+
+    Field defaults are IDENTICAL to ``ModelSOProgrammingObservation``'s own
+    field defaults, so ``_SpatialFields()`` (the "none" case) constructs an
+    observation byte-identical to the pre-arm shape.
+    """
+
+    spatial_grid: ModelSOSpatialGridView | None = None
+    movement_previews: tuple[ModelSOMovementPreview, ...] = ()
+    weapon_range_flags: tuple[ModelSOWeaponRangeFlag, ...] = ()
+    spatial_read_required: bool = False
 
 
 class _ClosedCardAdapterModel(BaseModel):
@@ -105,6 +130,17 @@ class ModelSOCardSeatRequest(_ClosedCardAdapterModel):
     lock_depth: StrictInt = Field(default=0, ge=0)
     previous_plan: ModelSOPlanCommittedPayload | None = None
     weapon_ids: tuple[StrictStr, ...] = ()
+    # Show-dont-tell spatial representation arms R1/R2 (2026-07-24).  "none"
+    # (default) makes every field below irrelevant and the produced
+    # observation byte-identical to the pre-arm shape.  ``enemy_position`` may
+    # legitimately be ``None`` even when representation is enabled (no living
+    # enemy this round); ``arena_size``/``move_budget`` are required whenever
+    # representation is enabled, since the grid render and consequence preview
+    # cannot be computed without them.
+    spatial_representation: Literal["none", "grid", "grid_scaffold"] = "none"
+    enemy_position: ModelSOPosition | None = None
+    arena_size: StrictInt | None = Field(default=None, ge=1)
+    move_budget: StrictInt | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _scope_belongs_to_seat(self) -> Self:
@@ -120,6 +156,12 @@ class ModelSOCardSeatRequest(_ClosedCardAdapterModel):
             )
         if len(set(self.weapon_ids)) != len(self.weapon_ids):
             raise CardRunnerAdapterError("weapon_ids must not contain duplicates")
+        if self.spatial_representation != "none" and (
+            self.arena_size is None or self.move_budget is None
+        ):
+            raise CardRunnerAdapterError(
+                "spatial_representation requires explicit arena_size and move_budget"
+            )
         return self
 
 
@@ -332,6 +374,26 @@ class CardRunnerAdapter:
             return None
         return self.rule_registry.provenance(self.rule_handler_ids)
 
+    def spatial_representation_for(self, seat: str, side: str | None) -> str:
+        """Return the bound programmer's spatial-representation setting.
+
+        ``"none"`` for a seat with no bound LLM programmer (deterministic
+        priority planner) or whose programmer never opted in -- the runner
+        calls this before it has dealt a hand, so it cannot itself inspect the
+        observation; it can only ask which representation this seat's
+        programmer was constructed with.  Mirrors the exact seat-then-side
+        resolution ``produce`` already uses when picking a programmer.
+        """
+
+        if self.programmers is None:
+            return "none"
+        programmer = self.programmers.get(seat)
+        if programmer is None and side is not None:
+            programmer = self.programmers.get(side)
+        if programmer is None:
+            return "none"
+        return str(getattr(programmer, "spatial_representation", "none"))
+
     def produce(
         self,
         *,
@@ -513,6 +575,7 @@ class CardRunnerAdapter:
                 hand_deck_ids = ()
             locked = heat_locked_indices(request.lock_depth, register_count)
             free_indices = tuple(index for index in range(register_count) if index not in locked)
+            spatial = self._spatial_fields(request, deal.hand)
             observation = ModelSOProgrammingObservation(
                 pilot_observation=request.pilot_observation,
                 card_runtime_snapshot=self.card_round_runtime.snapshot,
@@ -521,6 +584,10 @@ class CardRunnerAdapter:
                 free_indices=free_indices,
                 register_count=register_count,
                 hand_deck_ids=hand_deck_ids,
+                spatial_grid=spatial.spatial_grid,
+                movement_previews=spatial.movement_previews,
+                weapon_range_flags=spatial.weapon_range_flags,
+                spatial_read_required=spatial.spatial_read_required,
             )
             programmer = None
             if self.programmers is not None:
@@ -576,6 +643,65 @@ class CardRunnerAdapter:
             split_policy=(
                 self.split_deck_adapter.policy if self.split_deck_adapter is not None else None
             ),
+        )
+
+    def _spatial_fields(
+        self,
+        request: ModelSOCardSeatRequest,
+        hand: tuple[CardId, ...],
+    ) -> _SpatialFields:
+        """Return the spatial-representation fields for one seat's observation.
+
+        The all-``None``/``()``/``False`` default when the seat did not opt in
+        (``spatial_representation == "none"``) is IDENTICAL to
+        ``ModelSOProgrammingObservation``'s own field defaults, so an unopted
+        seat's construction is byte-identical to the pre-arm call. Every value
+        here is computed by the pure ``match.spatial_preview`` functions,
+        which call the SAME resolver/LOS primitives the live match resolves
+        MOVE_INTENT/WEAPON_FIRE_INTENT through -- see that module's docstring.
+        """
+
+        if request.spatial_representation == "none":
+            return _SpatialFields()
+        assert self.card_round_runtime is not None
+        assert request.arena_size is not None
+        assert request.move_budget is not None
+        obstacles = frozenset((cell.x, cell.y) for cell in request.pilot_observation.cover_cells)
+        self_pos = request.pilot_observation.position
+        catalog = self.card_round_runtime.snapshot.card_catalog
+        hand_cards = tuple(catalog.require(card_id) for card_id in dict.fromkeys(hand))
+        budget = min(request.move_budget, request.pilot_observation.boiler.pressure_current)
+        distance_current = (
+            None
+            if request.enemy_position is None
+            else max(
+                abs(request.enemy_position.x - self_pos.x),
+                abs(request.enemy_position.y - self_pos.y),
+            )
+        )
+        return _SpatialFields(
+            spatial_grid=render_ascii_grid(
+                self_pos=self_pos,
+                enemy_pos=request.enemy_position,
+                obstacles=obstacles,
+                objectives=request.pilot_observation.objectives,
+                arena_size=request.arena_size,
+            ),
+            movement_previews=compute_movement_previews(
+                hand_cards=hand_cards,
+                from_pos=self_pos,
+                budget=budget,
+                enemy_pos=request.enemy_position,
+                obstacles=obstacles,
+                arena_size=request.arena_size,
+            ),
+            weapon_range_flags=compute_weapon_range_flags(
+                hand_cards=hand_cards,
+                weapon_ids=request.weapon_ids,
+                weapon_views=request.pilot_observation.weapons,
+                distance_current=distance_current,
+            ),
+            spatial_read_required=request.spatial_representation == "grid_scaffold",
         )
 
     @staticmethod

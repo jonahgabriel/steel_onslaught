@@ -938,6 +938,176 @@ def test_serialized_prompt_renders_empty_cover_and_threat_as_empty_lists() -> No
     assert payload["enemy_weapon_threat"] == []
 
 
+# --- Show-dont-tell spatial representation arms R1/R2 (2026-07-24) ---------
+#
+# ARM R1/R2 add a rendered viewport map, resolver-backed per-dealt-movement-
+# card consequence previews, and in-range weapon-card flags. Every field is
+# populated ONLY when the observation carries them (an unopted seat's
+# ``ModelSOProgrammingObservation.spatial_grid`` stays ``None``), so an
+# unopted seat's serialized prompt must be BYTE-IDENTICAL to the pre-arm
+# shape -- these tests pin both the opted-in and the opted-out cases.
+
+
+def test_serialized_prompt_omits_spatial_keys_when_not_opted_in() -> None:
+    """The default (unopted) observation carries no spatial_grid: the
+    serialized prompt must not gain any new keys at all."""
+    baseline = _serialize_programming_observation(_observation())
+    payload = json.loads(baseline)
+
+    assert "spatial_grid" not in payload["own_observation"]
+    assert "movement_previews" not in payload
+    assert "weapon_range_flags" not in payload
+    assert "legend" not in payload
+
+
+def test_serialized_prompt_surfaces_spatial_grid_and_previews_when_opted_in() -> None:
+    from steel_onslaught.match.spatial_preview import (
+        compute_movement_previews,
+        compute_weapon_range_flags,
+        render_ascii_grid,
+    )
+
+    observation = _observation()
+    self_pos = observation.pilot_observation.position
+    enemy_pos = ModelSOPosition(x=self_pos.x + 6, y=self_pos.y)
+    grid = render_ascii_grid(
+        self_pos=self_pos,
+        enemy_pos=enemy_pos,
+        obstacles=frozenset(),
+        objectives=(),
+        arena_size=40,
+    )
+    previews = compute_movement_previews(
+        hand_cards=observation.hand_cards,
+        from_pos=self_pos,
+        budget=4,
+        enemy_pos=enemy_pos,
+        obstacles=frozenset(),
+        arena_size=40,
+    )
+    flags = compute_weapon_range_flags(
+        hand_cards=observation.hand_cards,
+        weapon_ids=(),
+        weapon_views=observation.pilot_observation.weapons,
+        distance_current=6,
+    )
+    observation = observation.model_copy(
+        update={
+            "spatial_grid": grid,
+            "movement_previews": previews,
+            "weapon_range_flags": flags,
+        }
+    )
+
+    serialized = _serialize_programming_observation(observation)
+    payload = json.loads(serialized)
+
+    assert payload["own_observation"]["spatial_grid"]["radius"] == grid.radius
+    assert len(payload["own_observation"]["spatial_grid"]["rows"]) == len(grid.rows)
+    assert payload["movement_previews"]
+    assert payload["movement_previews"][0]["card_id"] in {
+        str(card_id) for card_id in observation.hand
+    }
+    assert "legend" in payload
+    assert payload["legend"]["S"]
+
+
+def test_programming_system_prompt_stays_byte_identical_for_none_representation() -> None:
+    """``spatial_representation="none"`` (the default) is a no-op on the prompt."""
+    with_default = programming_system_prompt(_persona())
+    with_explicit_none = programming_system_prompt(_persona(), spatial_representation="none")
+    assert with_default == with_explicit_none
+
+
+def test_programming_system_prompt_adds_grid_addendum_only_for_grid() -> None:
+    base = programming_system_prompt(_persona())
+    grid = programming_system_prompt(_persona(), spatial_representation="grid")
+    assert grid != base
+    assert grid.startswith(base)
+    assert "spatial_grid" in grid
+    assert "spatial_read" not in grid  # R2-only field, not mentioned by R1
+
+
+def test_programming_system_prompt_adds_scaffold_addendum_only_for_grid_scaffold() -> None:
+    grid = programming_system_prompt(_persona(), spatial_representation="grid")
+    scaffold = programming_system_prompt(_persona(), spatial_representation="grid_scaffold")
+    assert scaffold != grid
+    assert scaffold.startswith(grid)
+    assert "spatial_read" in scaffold
+
+
+def test_llm_programming_pilot_exposes_spatial_representation_property() -> None:
+    pilot_default = LLMProgrammingPilot(client=_ResponseClient("{}"), persona=_persona())
+    assert pilot_default.spatial_representation == "none"
+
+    pilot_r2 = LLMProgrammingPilot(
+        client=_ResponseClient("{}"),
+        persona=_persona(),
+        spatial_representation="grid_scaffold",
+    )
+    assert pilot_r2.spatial_representation == "grid_scaffold"
+    assert "spatial_read" in pilot_r2.system_prompt()
+
+
+def test_llm_programming_pilot_rejects_unknown_spatial_representation() -> None:
+    with pytest.raises(ValueError, match="spatial_representation"):
+        LLMProgrammingPilot(
+            client=_ResponseClient("{}"),
+            persona=_persona(),
+            spatial_representation="bogus",  # type: ignore[arg-type]
+        )
+
+
+def test_grid_scaffold_seat_accepts_plan_missing_spatial_read_and_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A scaffold field must never become a new abort source (schema-tolerant)."""
+    observation = _observation().model_copy(update={"spatial_read_required": True})
+    plan_json = json.dumps(
+        {
+            "registers": [
+                {"register_index": 0, "card_id": "card.test.vent"},
+                {"register_index": 2, "card_id": "card.test.advance"},
+            ],
+            "confidence": 0.9,
+            "rationale": "no spatial_read field here",
+        }
+    )
+    client = _ResponseClient(plan_json)
+    pilot = LLMProgrammingPilot(
+        client=client, persona=_persona(), spatial_representation="grid_scaffold"
+    )
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="steel_onslaught.llm.programming"):
+        plan = pilot.program(observation)
+
+    assert plan.plan_source is SOPlanSource.LLM
+    assert any("spatial_read" in record.message for record in caplog.records)
+
+
+def test_grid_scaffold_seat_accepts_plan_with_spatial_read() -> None:
+    observation = _observation().model_copy(update={"spatial_read_required": True})
+    plan_json = json.dumps(
+        {
+            "registers": [
+                {"register_index": 0, "card_id": "card.test.vent"},
+                {"register_index": 2, "card_id": "card.test.advance"},
+            ],
+            "confidence": 0.9,
+            "rationale": "vent then advance",
+            "spatial_read": "clear line of sight, no cover nearby",
+        }
+    )
+    client = _ResponseClient(plan_json)
+    pilot = LLMProgrammingPilot(
+        client=client, persona=_persona(), spatial_representation="grid_scaffold"
+    )
+    plan = pilot.program(observation)
+    assert plan.plan_source is SOPlanSource.LLM
+
+
 def test_objective_free_programming_prompt_has_no_objectives_block() -> None:
     """Pre-Phase-4 prompt shape is preserved byte-for-byte off objective arenas."""
 

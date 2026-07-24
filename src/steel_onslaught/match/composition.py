@@ -1295,6 +1295,10 @@ def build_card_programmers(
                 if live_learning_guidance is not None
                 else parameters.programming_guidance
             ),
+            # Show-dont-tell spatial representation arms R1/R2 (2026-07-24) --
+            # "none" by default, so every existing pilot spec's resolved
+            # programmer stays byte-identical unless a spec opts in.
+            spatial_representation=parameters.spatial_representation,
         )
     return MappingProxyType(programmers)
 

@@ -29,6 +29,11 @@ from steel_onslaught.events.card_payloads import (
     SOPlanSource,
 )
 from steel_onslaught.pilots.schemas import ModelSOPilotObservation
+from steel_onslaught.pilots.spatial_view import (
+    ModelSOMovementPreview,
+    ModelSOSpatialGridView,
+    ModelSOWeaponRangeFlag,
+)
 
 _RegisterIndex = Annotated[StrictInt, Field(ge=0)]
 
@@ -153,6 +158,22 @@ class ModelSOProgrammingObservation(_ClosedProgrammingModel):
     free_indices: tuple[_RegisterIndex, ...] = Field(default=())
     register_count: StrictInt | None = Field(default=None, ge=1)
     hand_deck_ids: tuple[StrictStr, ...] = ()
+    # Show-dont-tell spatial representation arms R1/R2 (2026-07-24).  Populated
+    # ONLY when the seat's ``ModelSOLlmPilotParams.spatial_representation``
+    # opts in ("grid"/"grid_scaffold"); every other seat's observation stays
+    # byte-identical (``None``/``()``/``False``) to the pre-arm shape.  Values
+    # are computed by ``match.spatial_preview`` from the SAME resolver/LOS
+    # functions the live match uses -- never a strategy hint, only rendered
+    # ground-truth facts a pilot with eyes would already have.
+    spatial_grid: ModelSOSpatialGridView | None = Field(default=None)
+    movement_previews: tuple[ModelSOMovementPreview, ...] = Field(default=())
+    weapon_range_flags: tuple[ModelSOWeaponRangeFlag, ...] = Field(default=())
+    # R2 only: the wire contract requires one spatial-read sentence before
+    # register selection.  Deliberately NOT enforced by a pydantic validator
+    # anywhere in this module -- a scaffold field must never become an abort
+    # source (see ``llm.programming._parse_response``, which logs and
+    # continues when a provider omits it rather than raising).
+    spatial_read_required: bool = Field(default=False)
 
     @model_validator(mode="after")
     def _validate_hand_and_registers(self) -> ModelSOProgrammingObservation:

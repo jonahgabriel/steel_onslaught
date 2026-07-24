@@ -1,0 +1,31 @@
+# Show-dont-tell spatial representation ARM R1 (session 2026-07-24).
+#
+# Hypothesis under test: the pilot CAN reason spatially but has never been
+# SHOWN the space in a usable form -- the surfacing lane (PR #160/ARM S)
+# closed the raw-data gaps (cover_cells list, enemy_weapon_threat list) but
+# left the pilot to do all the spatial math itself from own_observation's raw
+# coordinates. qwen35 produced 0/209 plan rationales mentioning terrain in
+# that battery, and 85/107 red fire attempts were out of range.
+#
+# ARM R1 = the v2 config (arena foundry_60_asym_v2 + loadout v2) PLUS the
+# rendered spatial representation: a per-round ASCII viewport map (obstacles,
+# both mechs, objectives, enemy-LOS shadow cells), per-dealt-movement-card
+# consequence previews (resulting cell / enemy-LOS-after / distance-after,
+# computed by the SAME resolver the game uses), and in-range-now flags on
+# dealt weapon cards. Representation only -- zero strategy advice, unlike ARM
+# G's ``programming_guidance`` block, which this spec does NOT carry.
+#
+# Same persona (berserker) and provider (qwen35) as pilot.llm.qwen35; the only
+# difference is ``spatial_representation: grid``. NEW, additive pilot spec --
+# pilot.llm.qwen35 (used by the v1/v2/surfacing lanes) is untouched.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen35_berserker_spatial_r1
+display_name: "Qwen3.6-35B Berserker (Spatial R1, AI PC 5090)"
+archetype: llm
+lineage:
+  parent: pilot.llm.qwen35
+parameters:
+  persona: berserker
+  provider: qwen35
+  spatial_representation: grid
