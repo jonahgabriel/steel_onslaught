@@ -189,6 +189,36 @@ def test_compute_movement_previews_resulting_cell_matches_direction() -> None:
     assert preview.distance_to_enemy_after == 7
 
 
+def test_compute_movement_previews_covers_covered_advance_card() -> None:
+    """Regression: PR #165 added ``card.movement.covered_advance``
+    (``effect.direction == "covered_advance"``) after this module's direction
+    map was written; a preview for this card must resolve through the SAME
+    LOS-shadow resolver the live match uses, never raise "unmapped card
+    movement direction"."""
+    hand = (
+        _card(
+            "card.test.covered_advance",
+            SOCardCategory.MOVEMENT,
+            ModelSOCardEffect(direction="covered_advance", speed="full"),
+        ),
+    )
+    previews = compute_movement_previews(
+        hand_cards=hand,
+        from_pos=ModelSOPosition(x=10, y=10),
+        budget=4,
+        enemy_pos=ModelSOPosition(x=20, y=10),
+        obstacles=frozenset({(14, 9)}),
+        arena_size=40,
+    )
+    assert len(previews) == 1
+    preview = previews[0]
+    assert preview.direction == "covered_advance"
+    # Same LOS-shadow math as MatchRunner._resolve_move's covered_advance
+    # branch (test_covered_advance_prefers_a_los_shadowed_cell_over_the_
+    # visible_straight_line in tests/match/test_runner_move_intent.py).
+    assert preview.resulting_cell == ModelSOPosition(x=13, y=9)
+
+
 def test_compute_movement_previews_no_living_enemy() -> None:
     hand = (
         _card(

@@ -486,20 +486,31 @@ def test_covered_advance_tie_break_is_lexicographic_distance_then_x_then_y() -> 
 def test_covered_advance_resolver_is_a_pure_deterministic_function_of_state() -> None:
     """Same (from, enemy, budget, obstacles) in -> byte-identical dx/dy out.
 
-    ``_covered_advance_step`` takes no bus/RNG/clock and must be a pure
-    function: this is the load-bearing property behind ``all_replay_valid``
-    (the reducer re-folds whatever the resolver emitted live -- correctness
-    depends on the resolver never emitting a different answer for the same
-    inputs, e.g. via unsorted set/dict iteration order).
+    ``_covered_advance_step`` (2026-07-24 show-dont-tell spatial
+    representation arms: extracted from ``MatchRunner`` into the free-
+    standing ``match.move_resolution`` module so a prompt-facing preview
+    could call the SAME movement math) takes no bus/RNG/clock and must be a
+    pure function: this is the load-bearing property behind
+    ``all_replay_valid`` (the reducer re-folds whatever the resolver emitted
+    live -- correctness depends on the resolver never emitting a different
+    answer for the same inputs, e.g. via unsorted set/dict iteration order).
     """
+    from steel_onslaught.match.move_resolution import _covered_advance_step
+
     runner, mech, _collected = _prepared_move_runner(
         obstacles=(ModelSOPosition(x=14, y=9), ModelSOPosition(x=14, y=11))
     )
     enemy_pos = ModelSOPosition(x=20, y=10)
 
-    first = runner._covered_advance_step(mech.position, enemy_pos, 4)
-    second = runner._covered_advance_step(mech.position, enemy_pos, 4)
-    third = runner._covered_advance_step(mech.position, enemy_pos, 4)
+    first = _covered_advance_step(
+        mech.position, enemy_pos, 4, obstacles=runner._obstacles, arena_size=runner._arena_size
+    )
+    second = _covered_advance_step(
+        mech.position, enemy_pos, 4, obstacles=runner._obstacles, arena_size=runner._arena_size
+    )
+    third = _covered_advance_step(
+        mech.position, enemy_pos, 4, obstacles=runner._obstacles, arena_size=runner._arena_size
+    )
 
     assert first == second == third == (3, -1)
 

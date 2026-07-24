@@ -61,6 +61,7 @@ def _move_direction(card_direction: str) -> SOMoveDirection:
         "flank_left",
         "flank_right",
         "toward_cover",
+        "covered_advance",
         "hold_position",
     ):
         raise ValueError(f"unmapped card movement direction: {card_direction!r}")
