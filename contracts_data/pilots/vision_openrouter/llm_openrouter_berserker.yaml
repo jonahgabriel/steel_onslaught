@@ -1,0 +1,26 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.openrouter_vl_berserker
+display_name: "Gemini 2.5 Flash-Lite Berserker (vision-representation experiment, OpenRouter)"
+# Plain per-tick decide() pilot (archetype llm), NOT card mode -- same design
+# as the blocked gemini_vl twins (contracts_data/pilots/vision_gemini/). The
+# image attachment is wired into LLMPilot.decide (pilot.py), which card-mode
+# ProgrammingPilot never calls. The SAME persona/provider parameters here
+# serve both the V-TEXT and V-IMG arm overlays -- the arm distinction lives
+# entirely in the overlay's llm.providers[0].image_attachment binding, never
+# in this file.
+#
+# The only difference from pilot.llm.gemini_vl_berserker is the provider
+# binding: ``provider: openrouter_vl`` resolves against an overlay's
+# llm.providers[0].provider_id == "openrouter_vl" (endpoint
+# https://openrouter.ai/api/v1/chat/completions, model
+# google/gemini-2.5-flash-lite, secret_ref secret://llm/openrouter) instead
+# of the direct (free-tier-blocked) Google API endpoint. Same underlying
+# model (gemini-2.5-flash-lite), different provider route -- billed through
+# OpenRouter, not Google AI Studio's 20-requests/day free tier.
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: berserker
+  provider: openrouter_vl

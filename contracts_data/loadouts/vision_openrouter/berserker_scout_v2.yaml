@@ -1,0 +1,27 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.openrouter_vl_berserker_v2
+# Byte-for-byte module/budget mirror of ``loadout.llm.gemini_vl_berserker_v2``
+# (contracts_data/loadouts/vision_gemini/berserker_scout_v2.yaml), itself a
+# mirror of ``loadout.llm.qwen35_berserker_v2`` (PR #157) -- same heat_lance
+# armor-piercing swap against the v2 arena's sniper-favoring terrain, same
+# budget arithmetic. Only ``id``/``pilot_id`` differ, pointing at the
+# OpenRouter vision-experiment pilot registry instead of gemini_vl's.
+chassis_id: chassis.light.scout_mk1
+boiler_id: boiler.compact.v1
+pilot_id: pilot.llm.openrouter_vl_berserker
+modules:
+  weapons: [weapon.light.machine_gun, weapon.medium.heat_lance]
+  sensors: [sensor.short_range_scanner]
+  cooling: []
+  armor: []
+  gizmos: [gizmo.efficiency.efficient_regulator]
+budgets:
+  points_used: 55
+  points_max: 100
+  mass_used: 4
+  mass_max: 60
+  slots_used: 4
+  slots_max: 4
+  expected_heat_peak: 22
+  expected_signature: 34

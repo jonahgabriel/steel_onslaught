@@ -1,0 +1,12 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.openrouter_vl_sniper
+display_name: "Gemini 2.5 Flash-Lite Sniper (vision-representation experiment, OpenRouter)"
+# See llm_openrouter_berserker.yaml for the full design note. Same provider
+# binding (openrouter_vl), sniper persona.
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: sniper
+  provider: openrouter_vl
