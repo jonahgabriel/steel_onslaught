@@ -383,6 +383,19 @@ class ModelSOStubLlmProviderBinding(_ClosedBinding):
     model: StrictStr = Field(min_length=1)
 
 
+class ModelSOThinkingBinding(_ClosedBinding):
+    """Optional provider ``thinking`` control forwarded verbatim into the chat body.
+
+    Some OpenAI-compatible providers (e.g. Zhipu/GLM over z.ai) narrate their
+    chain-of-thought into ``content`` unless the request explicitly disables the
+    thinking span. This closed binding is serialized as a top-level
+    ``thinking`` object on the request body only when declared; keyless and
+    OpenRouter overlays that omit it produce a byte-identical request.
+    """
+
+    type: Literal["enabled", "disabled"]
+
+
 class ModelSOOpenAICompatibleProviderBinding(_ClosedBinding):
     kind: Literal["openai_compatible"]
     provider_id: StrictStr = Field(min_length=1)
@@ -392,6 +405,13 @@ class ModelSOOpenAICompatibleProviderBinding(_ClosedBinding):
     timeout_seconds: StrictFloat = Field(gt=0.0, le=300.0, allow_inf_nan=False)
     max_tokens: StrictInt | None = Field(gt=0, le=32768)
     retry: ModelSOLlmRetryBinding
+    # Optional provider-specific request extension. Present only for providers
+    # that require ``thinking`` control; ``None`` (the default for every existing
+    # overlay) forwards nothing, so the wire body stays byte-identical.
+    thinking: ModelSOThinkingBinding | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("endpoint_url")
     @classmethod
@@ -569,4 +589,5 @@ __all__ = [
     "ModelSOStubLlmProviderBinding",
     "ModelSOSystemClockBinding",
     "ModelSOSystemIdentityBinding",
+    "ModelSOThinkingBinding",
 ]

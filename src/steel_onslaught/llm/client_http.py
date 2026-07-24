@@ -198,6 +198,10 @@ class OpenAICompatibleClient:
             response_format=(
                 ModelSOOpenAIResponseFormat(type="json_object") if request.json_mode else None
             ),
+            # Provider-specific ``thinking`` control (e.g. GLM/z.ai). ``None`` for
+            # every other arm, so ``model_dump(exclude_none=True)`` keeps the wire
+            # body byte-identical.
+            thinking=self._config.thinking,
         )
 
         headers = self._headers()
