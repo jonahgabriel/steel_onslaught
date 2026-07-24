@@ -1,0 +1,141 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.qwen35_berserker_v2
+# Brawler-recut v2 (session 2026-07-24, combined declarative re-cut). NEW,
+# additive loadout file — loadout.llm.qwen35_berserker (v1) is untouched and
+# stays the byte-identical baseline other lanes/replays depend on.
+#
+# WHY: on foundry_60_asym_v1, the stock berserker loses to the sniper because
+# of a two-stage failure — (1) the sniper holds an unbroken sightline for the
+# whole approach (addressed by the paired arena foundry_60_asym_v2, not this
+# file), and (2) even mechs that survive to close range lose the post-arrival
+# damage math: both stock weapons are short-range/standard-damage
+# (machine_gun range=12 dmg=8, shrapnel_thrower range=8 dmg=12) against a
+# heavy chassis with base_armor=16 and only 0.75-cap standard-damage
+# mitigation (i.e. armor eats up to 75% of every standard hit). This file
+# fixes stage (2) only.
+#
+# ==========================================================================
+# SWAP DECISION (preflight-grounded, both branches checked before choosing):
+# ==========================================================================
+#   Candidate A: weapon.medium.steam_cannon
+#     -- REJECTED. compatible_chassis_classes: [medium, heavy] does NOT
+#        include "light" (contracts_data/weapons/steam_cannon.yaml). Even
+#        though chassis.light.scout_mk1.compatibility.weapon_classes allows
+#        the "medium" weapon *class*, steam_cannon's own weapon-level
+#        compatible_chassis_classes gate still fails for a light chassis.
+#        Chassis-class-allows-medium is necessary but not sufficient.
+#   Candidate B: weapon.medium.heat_lance -- ACCEPTED.
+#     -- compatible_chassis_classes: [light, medium, heavy] -- passes.
+#     -- weapon_class: medium, in chassis.light.scout_mk1's allowed
+#        weapon_classes [light, medium] -- passes.
+#     -- damage_type: heat. Two independent mechanical reasons this beats a
+#        standard-damage weapon against the sniper's heavy chassis:
+#          1. compute_armor_reduction mitigation_cap[HEAT] = 0.50 vs
+#             STANDARD = 0.75 -- heat is 25pp less mitigable by armor,
+#             i.e. more armor-piercing by design.
+#          2. compute_effective_damage_after_vulnerability multiplies
+#             post-armor heat damage by the TARGET chassis's
+#             heat_weapon_vulnerability -- chassis.heavy.ironclad_mk1 (the
+#             sniper) carries 1.3 vs chassis.light.scout_mk1 (the brawler
+#             itself) at 1.1, so a heat weapon fired AT the sniper deals 30%
+#             bonus post-armor damage, strictly favoring red attacking blue.
+#     -- range: 20 (vs shrapnel_thrower's 8) closes most of the gap to
+#        steam_cannon's range=25 and to the sniper's own weapons
+#        (harpoon best <=10, mortar effective to 35) without the
+#        chassis-compatibility failure above.
+#
+#   REPLACED MODULE: weapon.light.shrapnel_thrower (range=8, the lowest-range
+#   weapon in the stock loadout -- machine_gun's range=12 is longer -- and
+#   damage_type=standard, the weaker-vs-heavy-armor type per the mitigation
+#   math above). weapon.light.machine_gun is KEPT unchanged (close-range
+#   finisher / anti-light utility retained).
+#
+# ==========================================================================
+# FULL BUDGET ARITHMETIC (mechanically-enforced axes only -- see
+# src/steel_onslaught/contracts/budget.py and match/runner.py::_module_budgets
+# for the ground truth this comment is derived from):
+# ==========================================================================
+#   MASS axis (chassis.light.scout_mk1.constraints.max_mass = 60):
+#     _module_budgets hardcodes mass=0 for every weapon AND every sensor
+#     ("Weapon contracts carry no mass field ... mass axis covers gizmos
+#     only at MVP"). Only gizmos consume mass.
+#       weapon.light.machine_gun ............ mass 0 (hardcoded)
+#       weapon.medium.heat_lance ............. mass 0 (hardcoded)
+#       sensor.short_range_scanner ........... mass 0 (hardcoded)
+#       gizmo.efficiency.efficient_regulator . mass 4 (contract: constraints.mass)
+#     mass_used = 0 + 0 + 0 + 4 = 4  <=  mass_max 60          PASS (56 free)
+#
+#   SLOTS axis (chassis.light.scout_mk1.constraints.max_module_slots = 4):
+#     weapons: 1 slot each (2 weapons) .......... 2
+#     sensors: 1 slot each (1 sensor) ............ 1
+#     gizmos: contract slots (regulator = 1) ..... 1
+#     slots_used = 2 + 1 + 1 = 4  <=  slots_max 4              PASS (0 free,
+#     the swap + defensive-adjacent gizmo exactly fills the chassis)
+#
+#   PRESSURE axis (boiler.compact.v1.pressure_capacity = 50; cap = 50*0.7=35,
+#   PRESSURE_HEADROOM_FRACTION):
+#     weapons: pressure_draw=0.0 steady-state (firing costs are event-based,
+#       hardcoded in _module_budgets) ............ 0.0 (both weapons)
+#     sensor.short_range_scanner.pressure_draw_per_tick ....... 2.0
+#     gizmo.efficiency.efficient_regulator.pressure_draw ....... 0.0
+#     pressure_steady_state = 2.0  <=  cap 35.0                PASS (33 free)
+#     (event-based firing cost of heat_lance itself is pressure_cost=8 per
+#     shot, not a steady-state draw -- confirmed not double-counted anywhere
+#     else in the reducers; only the per-tick sensor draw is steady-state.)
+#
+#   HEAT (computed, informational -- not a hard-reject axis, but the reason
+#   the third module slot went to the regulator rather than
+#   gizmo.control.targeting_assist):
+#     heat_lance.heat_generated = 18 vs shrapnel_thrower's 5 -- a +13/shot
+#     increase in the ASSAULT-mode heat contribution. The only two
+#     light-chassis-compatible gizmos in the catalog are
+#     gizmo.control.targeting_assist (mass 3, +0.15 accuracy on lock, no
+#     heat/defense effect, +5 signature) and
+#     gizmo.efficiency.efficient_regulator (mass 4, +1 heat_dissipation_bonus
+#     per tick, +2 pressure_regen, -3 max_pressure tradeoff). NO armor or
+#     cooling module contracts exist anywhere in contracts_data/ (runner.py
+#     hard-raises if loadout.modules.armor or .cooling is non-empty) --
+#     armor/cooling stay [] here as everywhere else in this repo. Of the two
+#     available gizmos, efficient_regulator is the closer analogue to a
+#     defensive/heat-offset pick given the heat_lance's higher heat load, so
+#     it is the one filling the last free slot instead of targeting_assist.
+#
+#   POINTS axis: points_used/points_max are typed fields
+#     (contracts/loadout.py ModelSOLoadoutBudgets) with NO cross-check
+#     against module costs anywhere in the codebase (confirmed:
+#     validate_loadout_budgets enforces exactly MASS/SLOTS/PRESSURE, no
+#     points axis). The declared numbers below are informational only, kept
+#     proportionate to the v1 declared numbers (points_used raised from 40
+#     to 55 to reflect the medium-weapon upgrade; this has zero effect on
+#     match legality).
+#
+#   expected_heat_peak / expected_signature (declared, computed the same way
+#   compute_loadout_budget_usage would -- both informational, not enforced):
+#     expected_heat_peak: ASSAULT-mode sum of heat_output = machine_gun(3) +
+#       heat_lance(18) + sensor(0.5) + gizmo(0, hardcoded) = 21.5 -> 22
+#       (other modes: sensor+gizmo only = 0.5; ASSAULT is the peak mode).
+#     expected_signature: base_signature(30, chassis.light.scout_mk1) +
+#       sensor.signature_impact(4) + weapons(0, hardcoded) +
+#       gizmo(0, hardcoded -- the gizmo's own "+5 signature" is a narrative
+#       tradeoffs.signature_increase field, not consumed by
+#       compute_loadout_budget_usage, which only reads ModelSOModuleBudget) =
+#       34, same in every mode.
+chassis_id: chassis.light.scout_mk1
+boiler_id: boiler.compact.v1
+pilot_id: pilot.llm.qwen35
+modules:
+  weapons: [weapon.light.machine_gun, weapon.medium.heat_lance]
+  sensors: [sensor.short_range_scanner]
+  cooling: []
+  armor: []
+  gizmos: [gizmo.efficiency.efficient_regulator]
+budgets:
+  points_used: 55
+  points_max: 100
+  mass_used: 4
+  mass_max: 60
+  slots_used: 4
+  slots_max: 4
+  expected_heat_peak: 22
+  expected_signature: 34
