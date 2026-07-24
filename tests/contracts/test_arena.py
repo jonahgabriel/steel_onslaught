@@ -19,7 +19,13 @@ from steel_onslaught.match.geometry import line_of_sight_clear
 def test_shipped_arena_catalog_is_typed_and_snapshot_is_canonical() -> None:
     catalog = load_match_contract_catalog(Path("contracts_data"))
 
-    assert set(catalog.arenas) == {"foundry", "foundry_60", "foundry_60_asym_v1", "open_field"}
+    assert set(catalog.arenas) == {
+        "foundry",
+        "foundry_60",
+        "foundry_60_asym_v1",
+        "foundry_60_asym_v2",
+        "open_field",
+    }
     foundry = catalog.arenas["foundry"]
     snapshot = foundry.to_snapshot()
     assert snapshot.arena_id == "foundry"

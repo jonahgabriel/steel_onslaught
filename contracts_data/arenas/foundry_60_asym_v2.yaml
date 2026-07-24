@@ -1,0 +1,117 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.arena
+display_name: The Foundry (Asymmetric Objectives v2 — Broken Sightline)
+arena_id: foundry_60_asym_v2
+# Brawler-recut v2 (session 2026-07-24, combined declarative re-cut).  This is
+# a NEW versioned arena contract, additive alongside foundry_60_asym_v1 —
+# v1 stays byte-untouched (its own header already promises this for
+# foundry_60; v2 extends the same discipline) so historical replays on either
+# id remain valid.
+#
+# WHY v2 EXISTS (causal story, not aesthetic): battery evidence on v1 showed
+# the sniper (blue) beating the brawler (red) on foundry_60_asym_v1 ~all
+# games (30/30 vs blue in the ugate_surfacing_fix_battery anchor run,
+# 2026-07-23).  Four prior single-lever rounds (loadout-only tweaks) were each
+# falsified in isolation — the failure is TWO-STAGE: (1) v1's fully open
+# y=28..32 lane, x=8..48, gives the sniper an unbroken 40-cell sightline from
+# spawn to spawn, so the brawler is under aimed fire for the ENTIRE approach,
+# not just near the objectives; and (2) even mechs that survive the approach
+# and arrive at range lose the post-arrival damage math — the brawler's stock
+# loadout (two light, short-range, standard-damage weapons) has no answer to
+# the sniper's armor (base_armor 16) at the range band where contact happens.
+# Neither lever alone fixes a two-stage loss; this file addresses stage (1)
+# and the paired loadout v2 (loadout.llm.qwen35_berserker_v2) addresses
+# stage (2) — see that file's own budget-arithmetic comment block.
+#
+# LAYOUT CHANGE FROM v1 (the only change — everything else below is inherited
+# verbatim): the open sightline lane (y=28..32, x=8..48) that v1 deliberately
+# kept clear end-to-end now carries TWO short cover blocks that break the
+# sniper's single unbroken firing line into three shorter segments the
+# brawler can bound between:
+#   - west segment  x=8..19  (12 cells, open) — contains objective.west_yard
+#     (18,30), unchanged; red's initial dash still starts in the open, as
+#     designed, but the exposure window past x=19 is now capped.
+#   - COVER BLOCK 1  x=20..24, y=29..31 (5x3, 15 cells) — first sightline
+#     break, roughly a third of the way down the lane from red's spawn.
+#   - mid segment   x=25..35  (11 cells, open) — still spans
+#     objective.north_works' longitude (x=30) without touching its cell
+#     (30,22), which sits 7 rows north of the lane band and is untouched.
+#   - COVER BLOCK 2  x=36..40, y=29..31 (5x3, 15 cells) — second sightline
+#     break, positioned so blue can no longer hold a single firing solution
+#     from spawn (52,30) across the whole lane; blue must reposition between
+#     blocks to keep the brawler under fire.
+#   - east segment  x=41..48  (8 cells, open) — approach into
+#     objective.east_gate (42,36) and blue's harpoon defense band, unchanged
+#     from v1.
+# Both blocks are inset from the lane's y-edges (y=29..31 sits strictly
+# inside the y=28..32 band) so the band's own edge-cover rects (mid-lane
+# flanking cover at y=27/y=33, east zone at y=33..34) are untouched and do
+# not merge with the new blocks. Neither block overlaps a spawn cell
+# ((4,30), (52,30)) or an objective cell ((18,30), (30,22), (42,36)); gaps of
+# >=1 cell separate every new rect from every existing rect and from both
+# objective cells adjacent to the lane (west_yard sits 2 cells west of block
+# 1's edge at x=20; east_gate's approach starts 1 cell east of block 2's
+# edge at x=40, at x=41).
+#
+# Everything below (spawns, north/south approach bands, home-turf scatter,
+# objectives, VP schedule, sudden-death timing) is IDENTICAL to
+# foundry_60_asym_v1 — only the two new mid-lane cover rects are added.
+size: 60
+spawn_a: {x: 4, y: 30}
+spawn_b: {x: 52, y: 30}
+obstacles: []
+rects:
+  # North approach corridor (west -> east cover chain) — unchanged from v1
+  - {x0: 8, y0: 20, x1: 9, y1: 21}
+  - {x0: 13, y0: 18, x1: 14, y1: 19}
+  - {x0: 18, y0: 21, x1: 20, y1: 21}
+  - {x0: 23, y0: 17, x1: 24, y1: 18}
+  - {x0: 27, y0: 20, x1: 28, y1: 21}
+  - {x0: 32, y0: 24, x1: 33, y1: 24}
+  - {x0: 33, y0: 18, x1: 34, y1: 19}
+  # Mid-lane flanking cover around objective.west_yard (18,30) — unchanged
+  # from v1; the lane rows y=28..32 otherwise stay clear except for the two
+  # new sightline-breaking blocks below.
+  - {x0: 16, y0: 27, x1: 17, y1: 27}
+  - {x0: 19, y0: 33, x1: 20, y1: 33}
+  # NEW v2: sightline-breaking cover block 1 — splits the west segment
+  # (objective.west_yard side) from the mid segment. Inset inside the lane
+  # band (y=29..31 within y=28..32); >=1-cell gap from west_yard (18,30) and
+  # from every existing rect.
+  - {x0: 20, y0: 29, x1: 24, y1: 31}
+  # NEW v2: sightline-breaking cover block 2 — splits the mid segment from
+  # the east segment (objective.east_gate approach side). Inset inside the
+  # lane band; >=1-cell gap from every existing rect and from east_gate's
+  # approach.
+  - {x0: 36, y0: 29, x1: 40, y1: 31}
+  # East zone around objective.east_gate (42,36) — blue's defense band,
+  # unchanged from v1
+  - {x0: 39, y0: 33, x1: 40, y1: 34}
+  - {x0: 44, y0: 38, x1: 45, y1: 39}
+  - {x0: 46, y0: 33, x1: 46, y1: 35}
+  # South approach (sparser, wider hops) — unchanged from v1
+  - {x0: 14, y0: 42, x1: 15, y1: 43}
+  - {x0: 21, y0: 45, x1: 23, y1: 45}
+  - {x0: 28, y0: 42, x1: 29, y1: 43}
+  - {x0: 34, y0: 45, x1: 35, y1: 46}
+  - {x0: 37, y0: 42, x1: 38, y1: 43}
+  # West home-turf scatter (red side) — unchanged from v1
+  - {x0: 10, y0: 25, x1: 11, y1: 25}
+  - {x0: 9, y0: 35, x1: 10, y1: 36}
+  # Blue-side scatter — unchanged from v1
+  - {x0: 50, y0: 22, x1: 51, y1: 23}
+  - {x0: 49, y0: 40, x1: 50, y1: 41}
+  - {x0: 55, y0: 35, x1: 55, y1: 36}
+objectives:
+  - objective_id: objective.west_yard
+    cell: {x: 18, y: 30}
+    vp_per_round: 1
+  - objective_id: objective.north_works
+    cell: {x: 30, y: 22}
+    vp_per_round: 1
+  - objective_id: objective.east_gate
+    cell: {x: 42, y: 36}
+    vp_per_round: 1
+vp_threshold: 15
+sudden_death_start_tick: 120
+sudden_death_damage_base: 8
