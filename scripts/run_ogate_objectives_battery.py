@@ -94,6 +94,10 @@ _SECRET_REF_ENV_NAMES: dict[str, tuple[str, ...]] = {
     # in ~/.omnibase/.env is LLM_GLM_API_KEY; resolved at the battery edge exactly
     # like the OpenRouter key so the real key never touches the overlay or argv.
     "secret://llm/glm": ("LLM_GLM_API_KEY",),
+    # Direct (non-OpenRouter) Google Gemini API key, own-billed -- used by the
+    # 2026-07-24 vision-representation experiment (V-TEXT/V-IMG arms). Canonical
+    # name in ~/.omnibase/.env is GEMINI_API_KEY.
+    "secret://llm/gemini": ("GEMINI_API_KEY",),
 }
 
 

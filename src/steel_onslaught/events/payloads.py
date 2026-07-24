@@ -428,6 +428,21 @@ class ModelSOLlmCompletionRequestedPayload(_ClosedPayload):
     persona_id: str
     system_prompt_length: StrictInt = Field(ge=0)
     user_prompt_length: StrictInt = Field(ge=0)
+    # Present only on the V-IMG arm of the vision-representation experiment
+    # (2026-07-24). ``None`` for every text-only completion, so pre-existing
+    # ledger evidence stays additive/backward-compatible. The sha256 is the
+    # durable, joinable evidence trail: event -> sha256 -> PNG persisted
+    # under the state root (see ``LLMPilot.decide``).
+    image_sha256: StrictStr | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+    image_byte_length: StrictInt | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class ModelSOLlmCompletionResolvedPayload(_ClosedPayload):

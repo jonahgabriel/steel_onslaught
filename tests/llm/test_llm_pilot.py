@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from steel_onslaught.contracts.application import ModelSOLlmImageAttachmentBinding
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
 from steel_onslaught.llm.effect import LlmSemanticError
 from steel_onslaught.llm.personas import Persona
-from steel_onslaught.llm.pilot import LLMPilot
+from steel_onslaught.llm.pilot import _IMAGE_ATTACHMENT_NOTE, LLMPilot
 from steel_onslaught.llm.schemas import LlmResponse, LlmUsage, ModelSOLlmCompletionRequest
 from steel_onslaught.llm.stub import StubLlmClient
 from steel_onslaught.pilots.schemas import (
@@ -893,3 +896,72 @@ def test_objective_free_per_tick_prompt_is_unchanged() -> None:
     assert client.request is not None
     assert "OBJECTIVES" not in client.request.user_prompt
     assert "victory_points" not in client.request.user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Vision-representation experiment (2026-07-24): V-TEXT/V-IMG arm toggle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_no_image_attachment_config_leaves_request_unattached() -> None:
+    """V-TEXT arm: default construction never attaches an image."""
+    client = _RecordingClient()
+    pilot = LLMPilot(client=client, persona=_persona("berserker"))
+    pilot.decide(_observation())
+
+    assert client.request is not None
+    assert client.request.image_attachment is None
+    assert _IMAGE_ATTACHMENT_NOTE not in client.request.user_prompt
+
+
+@pytest.mark.unit
+def test_image_attachment_config_attaches_rendered_png_and_persists_it(tmp_path: Path) -> None:
+    """V-IMG arm: renders + persists the PNG and attaches sha256-matched bytes."""
+    client = _RecordingClient()
+    output_dir = tmp_path / "renders"
+    pilot = LLMPilot(
+        client=client,
+        persona=_persona("berserker"),
+        image_attachment=ModelSOLlmImageAttachmentBinding(
+            enabled=True,
+            arena_size=20,
+            render_output_dir=output_dir,
+        ),
+    )
+    pilot.decide(_observation())
+
+    assert client.request is not None
+    attachment = client.request.image_attachment
+    assert attachment is not None
+    assert attachment.sha256_hex == hashlib.sha256(attachment.png_bytes).hexdigest()
+    assert _IMAGE_ATTACHMENT_NOTE in client.request.user_prompt
+
+    persisted_path = output_dir / "m" / "tick_0001_mech.a.png"
+    assert persisted_path.is_file()
+    assert persisted_path.read_bytes() == attachment.png_bytes
+
+
+@pytest.mark.unit
+def test_image_attachment_prompt_delta_is_exactly_the_neutral_note(tmp_path: Path) -> None:
+    """The ONLY user-prompt delta between V-TEXT and V-IMG is the neutral note."""
+    text_client = _RecordingClient()
+    image_client = _RecordingClient()
+    text_pilot = LLMPilot(client=text_client, persona=_persona("berserker"))
+    image_pilot = LLMPilot(
+        client=image_client,
+        persona=_persona("berserker"),
+        image_attachment=ModelSOLlmImageAttachmentBinding(
+            enabled=True,
+            arena_size=20,
+            render_output_dir=tmp_path / "renders",
+        ),
+    )
+    observation = _observation()
+    text_pilot.decide(observation)
+    image_pilot.decide(observation)
+    assert text_client.request is not None
+    assert image_client.request is not None
+    text_prompt = text_client.request.user_prompt
+    image_prompt = image_client.request.user_prompt
+    assert image_prompt == f"{text_prompt}\n\n{_IMAGE_ATTACHMENT_NOTE}"

@@ -30,9 +30,12 @@ from steel_onslaught.llm.schemas import (
     LlmTransportError,
     LlmUsage,
     ModelSOLlmCompletionRequest,
+    ModelSOLlmImageAttachment,
     ModelSOOpenAIChatMessage,
     ModelSOOpenAIChatRequest,
     ModelSOOpenAIChatResponse,
+    ModelSOOpenAIImageUrlContentPart,
+    ModelSOOpenAITextContentPart,
     SecretResolutionError,
 )
 from steel_onslaught.llm.stub import StubLlmClient
@@ -184,6 +187,45 @@ def test_posts_complete_url_and_explicit_request_fields_verbatim() -> None:
             "finish_reason": "stop",
         }
     )
+
+
+@pytest.mark.unit
+def test_text_only_request_content_is_byte_identical_plain_string() -> None:
+    """V-TEXT arm regression: no ``image_attachment`` -> plain string content."""
+    client, transport, _, _ = _client()
+    client.complete(_request())
+    request = transport.calls[0][2]
+    assert [message.content for message in request.messages] == ["system", "user"]
+
+
+@pytest.mark.unit
+def test_image_attachment_becomes_text_and_image_url_content_parts() -> None:
+    """V-IMG arm: user content becomes [text, image_url] with a base64 data URI."""
+    client, transport, _, _ = _client()
+    attachment = ModelSOLlmImageAttachment(png_bytes=b"\x89PNGDATA", sha256_hex="a" * 64)
+    request = ModelSOLlmCompletionRequest(
+        system_prompt="system",
+        user_prompt="user",
+        persona="persona",
+        temperature=0.4,
+        json_mode=True,
+        evidence_context=None,
+        image_attachment=attachment,
+    )
+    client.complete(request)
+    sent = transport.calls[0][2]
+    system_message, user_message = sent.messages
+    assert system_message.content == "system"
+    assert isinstance(user_message.content, tuple)
+    text_part, image_part = user_message.content
+    assert isinstance(text_part, ModelSOOpenAITextContentPart)
+    assert text_part.text == "user"
+    assert isinstance(image_part, ModelSOOpenAIImageUrlContentPart)
+    assert image_part.image_url.url.startswith("data:image/png;base64,")
+    import base64 as _base64
+
+    encoded = image_part.image_url.url.removeprefix("data:image/png;base64,")
+    assert _base64.b64decode(encoded) == b"\x89PNGDATA"
 
 
 @pytest.mark.unit

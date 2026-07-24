@@ -396,6 +396,25 @@ class ModelSOThinkingBinding(_ClosedBinding):
     type: Literal["enabled", "disabled"]
 
 
+class ModelSOLlmImageAttachmentBinding(_ClosedBinding):
+    """Declares a config-time, deterministic per-tick arena render for this seat.
+
+    ``arena_size`` is a static, config-declared value -- the overlay is
+    authored for one specific arena, so the render call needs no dynamic
+    threading of the live ``ModelSOArenaSpec`` through the pilot-factory
+    graph. ``render_output_dir`` is the state-root-relative directory PNGs
+    are persisted under, keyed by match id and tick, so the render evidence
+    is durable and auditable alongside the sha256 recorded in the event
+    ledger. Present only on the V-IMG arm's provider binding; the V-TEXT arm
+    omits it entirely (``None``), which is what keeps V-TEXT byte-identical
+    to the pre-existing text-only wire body.
+    """
+
+    enabled: Literal[True]
+    arena_size: StrictInt = Field(gt=0, le=200)
+    render_output_dir: Path
+
+
 class ModelSOOpenAICompatibleProviderBinding(_ClosedBinding):
     kind: Literal["openai_compatible"]
     provider_id: StrictStr = Field(min_length=1)
@@ -409,6 +428,18 @@ class ModelSOOpenAICompatibleProviderBinding(_ClosedBinding):
     # that require ``thinking`` control; ``None`` (the default for every existing
     # overlay) forwards nothing, so the wire body stays byte-identical.
     thinking: ModelSOThinkingBinding | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    # Optional per-seat image-representation arm (2026-07-24 vision pilot
+    # experiment). ``None`` on every existing overlay and on the V-TEXT arm of
+    # the vision experiment itself; only the V-IMG arm's provider binding sets
+    # this. This binding never reaches the wire request directly -- it only
+    # configures the pilot-factory render call -- so it carries no
+    # ``exclude_if`` significance for ``ModelSOOpenAIChatRequest`` byte
+    # identity (that identity is guarded by ``ModelSOLlmCompletionRequest
+    # .image_attachment`` staying ``None`` on every non-V-IMG request).
+    image_attachment: ModelSOLlmImageAttachmentBinding | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
@@ -575,6 +606,7 @@ __all__ = [
     "ModelSOInjectedSecretResolverBinding",
     "ModelSOLiveLearningBinding",
     "ModelSOLlmBindings",
+    "ModelSOLlmImageAttachmentBinding",
     "ModelSOLlmRetryBinding",
     "ModelSOModelCatalogProjection",
     "ModelSOModelIdentityBinding",

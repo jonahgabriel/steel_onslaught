@@ -991,6 +991,51 @@ def test_http_provider_accepts_explicit_nullable_max_tokens(tmp_path: Path) -> N
 
 
 @pytest.mark.unit
+def test_http_provider_omits_image_attachment_by_default(tmp_path: Path) -> None:
+    """Text-only arms (every pre-existing overlay) never declare image_attachment."""
+    overlay = ModelSOApplicationOverlay.model_validate(_with_http_provider(tmp_path))
+    provider = overlay.llm.providers[0]
+    assert provider.image_attachment is None  # type: ignore[union-attr]
+    dumped = provider.model_dump(mode="json", exclude_none=True)
+    assert "image_attachment" not in dumped
+
+
+@pytest.mark.unit
+def test_http_provider_accepts_declared_image_attachment(tmp_path: Path) -> None:
+    """V-IMG arm: image_attachment round-trips with the config-declared arena_size."""
+    raw = _with_http_provider(tmp_path)
+    llm = dict(_require_object_dict(raw["llm"]))
+    provider = dict(_http_provider())
+    provider["image_attachment"] = {
+        "enabled": True,
+        "arena_size": 60,
+        "render_output_dir": str(tmp_path / "renders"),
+    }
+    llm["providers"] = [provider]
+    raw["llm"] = llm
+    overlay = ModelSOApplicationOverlay.model_validate(raw)
+    binding = overlay.llm.providers[0].image_attachment  # type: ignore[union-attr]
+    assert binding is not None
+    assert binding.arena_size == 60
+
+
+@pytest.mark.unit
+def test_http_provider_rejects_out_of_bounds_image_attachment_arena_size(tmp_path: Path) -> None:
+    raw = _with_http_provider(tmp_path)
+    llm = dict(_require_object_dict(raw["llm"]))
+    provider = dict(_http_provider())
+    provider["image_attachment"] = {
+        "enabled": True,
+        "arena_size": 0,
+        "render_output_dir": str(tmp_path / "renders"),
+    }
+    llm["providers"] = [provider]
+    raw["llm"] = llm
+    with pytest.raises(ValueError):
+        ModelSOApplicationOverlay.model_validate(raw)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("path", "value"),
     [

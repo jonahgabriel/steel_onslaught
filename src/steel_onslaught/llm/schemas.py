@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING, Literal, Protocol, Self, runtime_checkable
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol, Self, runtime_checkable
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictBytes,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+)
 
 from steel_onslaught.contracts.application import ModelSOThinkingBinding
 
@@ -42,6 +51,18 @@ class ModelSOLlmEvidenceContext(_ClosedStrictModel):
     correlation_id: UUID | None
 
 
+class ModelSOLlmImageAttachment(_ClosedStrictModel):
+    """One deterministic per-tick render, attached alongside the text prompt.
+
+    ``sha256_hex`` is computed by the caller (the renderer's only consumer)
+    over the exact ``png_bytes`` carried here, so the ledger evidence and the
+    wire payload can never diverge -- both are derived from this one value.
+    """
+
+    png_bytes: StrictBytes
+    sha256_hex: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ModelSOLlmCompletionRequest(_ClosedStrictModel):
     system_prompt: StrictStr = Field(min_length=1)
     user_prompt: StrictStr = Field(min_length=1)
@@ -49,6 +70,11 @@ class ModelSOLlmCompletionRequest(_ClosedStrictModel):
     temperature: StrictFloat = Field(ge=0.0, le=2.0, allow_inf_nan=False)
     json_mode: StrictBool
     evidence_context: ModelSOLlmEvidenceContext | None
+    # Present only on the V-IMG arm of the vision-representation experiment
+    # (2026-07-24). ``None`` for every other call site, which is what keeps
+    # ``OpenAICompatibleClient.complete`` emitting a byte-identical string
+    # ``content`` field for every pre-existing (text-only) arm.
+    image_attachment: ModelSOLlmImageAttachment | None = None
 
 
 class ModelSOLlmPilotSelection(_ClosedStrictModel):
@@ -57,9 +83,34 @@ class ModelSOLlmPilotSelection(_ClosedStrictModel):
     opponent_trace: StrictStr | None
 
 
+class ModelSOOpenAITextContentPart(_ClosedStrictModel):
+    type: Literal["text"]
+    text: StrictStr
+
+
+class ModelSOOpenAIImageUrl(_ClosedStrictModel):
+    url: StrictStr = Field(min_length=1)
+
+
+class ModelSOOpenAIImageUrlContentPart(_ClosedStrictModel):
+    type: Literal["image_url"]
+    image_url: ModelSOOpenAIImageUrl
+
+
+ModelSOOpenAIContentPart = Annotated[
+    ModelSOOpenAITextContentPart | ModelSOOpenAIImageUrlContentPart,
+    Field(discriminator="type"),
+]
+
+
 class ModelSOOpenAIChatMessage(_ClosedStrictModel):
     role: Literal["system", "user"]
-    content: StrictStr
+    # A plain string for every text-only arm (byte-identical to the
+    # pre-existing wire body); a multi-part content-part tuple only for the
+    # V-IMG arm's user message, which carries the text part plus one
+    # ``image_url`` part holding the deterministic per-tick render as a
+    # base64 data URI.
+    content: StrictStr | tuple[ModelSOOpenAIContentPart, ...]
 
 
 class ModelSOOpenAIResponseFormat(_ClosedStrictModel):
@@ -318,14 +369,19 @@ __all__ = [
     "LlmUsage",
     "ModelSOLlmCompletionRequest",
     "ModelSOLlmEvidenceContext",
+    "ModelSOLlmImageAttachment",
     "ModelSOLlmPilotSelection",
     "ModelSOOpenAIChatMessage",
     "ModelSOOpenAIChatRequest",
     "ModelSOOpenAIChatResponse",
+    "ModelSOOpenAIContentPart",
+    "ModelSOOpenAIImageUrl",
+    "ModelSOOpenAIImageUrlContentPart",
     "ModelSOOpenAIResponseChoice",
     "ModelSOOpenAIResponseFormat",
     "ModelSOOpenAIResponseMessage",
     "ModelSOOpenAIResponseUsage",
+    "ModelSOOpenAITextContentPart",
     "ProtocolHttpTransport",
     "ProtocolLlmAttempt",
     "ProtocolLlmAttemptClient",
