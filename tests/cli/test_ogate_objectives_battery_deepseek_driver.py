@@ -129,8 +129,8 @@ def test_deepseek_overlay_binds_the_keyless_deepseek_provider_with_declared_delt
     assert provider.secret_ref is None
     # Winning probe config: max_tokens must clear the ~1680-token reasoning span,
     # timeout must clear the ~131s worst-case completion at ~18.5 tok/s.
-    assert provider.max_tokens == 4096
-    assert provider.timeout_seconds == 240.0
+    assert provider.max_tokens == 16384
+    assert provider.timeout_seconds == 600.0
     assert provider.retry.max_attempts == 1
     assert overlay.llm.model_identities[0].model_identity_id == "model_identity.deepseek"
     assert overlay.llm.model_identities[0].provider_binding_id == "deepseek"

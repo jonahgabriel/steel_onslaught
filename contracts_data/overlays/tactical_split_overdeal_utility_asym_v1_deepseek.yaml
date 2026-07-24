@@ -167,8 +167,8 @@ llm:
       endpoint_url: http://stickybeatz-studio.tail75df5e.ts.net:8101/v1/chat/completions
       model: deepseek-v4-flash
       secret_ref: null
-      timeout_seconds: 240.0
-      max_tokens: 4096
+      timeout_seconds: 600.0
+      max_tokens: 16384
       retry:
         max_attempts: 1
         initial_backoff_seconds: 0.0
