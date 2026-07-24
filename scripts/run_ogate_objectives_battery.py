@@ -277,6 +277,31 @@ def _objective_metrics(
     }
 
 
+def _row_winner_player_id(scored: ModelSOMatchScoredPayload) -> str | None:
+    """The battery row's decisive-winner answer, self-consistent with ``is_draw``.
+
+    ``ModelSOMatchScoredPayload.winner_player_id`` is a required ``str`` field
+    that is NOT usable verbatim as "who won this match": the scoring
+    reducer's documented Task 30 draw convention
+    (``reducers/scoring.py::_score``) stamps the alphabetically-first player
+    into that flattened field even on a draw, because the leaderboard's SQL
+    schema declares the column ``NOT NULL`` for its own bucketing purposes --
+    ``is_draw`` (and the nested ``winner`` block, which the payload's own
+    validator requires to be ``None`` exactly when ``is_draw``) is the
+    required disambiguator. A battery evidence row must never carry both a
+    winner and a draw flag, so this re-derives the field rather than
+    forwarding the reducer's placeholder.
+
+    Root-caused against a real aborted match (seed 5028,
+    match.01KYAT1XPK61H653M0YBKR2B88, pair_p4_dmg8 ledger): the terminal
+    MATCH_ENDED event correctly carried ``winner_id=null``, but the
+    downstream MATCH_SCORED event's flattened ``winner_player_id`` was still
+    ``"player.blue"`` despite ``is_draw=true`` -- exactly the leaderboard
+    convention above, forwarded uncritically into the evidence row.
+    """
+    return None if scored.is_draw else scored.winner_player_id
+
+
 def _run_match(
     overlay: ModelSOApplicationOverlay,
     *,
@@ -339,7 +364,7 @@ def _run_match(
         "end_reason": end_reason,
         "victory_kind": victory_kind,
         "terminal_class": _terminal_class(end_reason, victory_kind),
-        "winner_player_id": scored.winner_player_id,
+        "winner_player_id": _row_winner_player_id(scored),
         "is_draw": scored.is_draw,
         "duration_ticks": scored.duration_ticks,
         "vp_totals": vp_totals,
@@ -508,17 +533,35 @@ def main() -> int:
     blue_loadout_path = args.blue_loadout.resolve(strict=True)
 
     rows: list[dict[str, Any]] = []
+    # Seeds whose match died on an unhandled error (provider 429/5xx, transport
+    # drop, etc.).  Before 2026-07-24 a single such error propagated out of the
+    # loop and killed the whole battery process: the V-IMG vision arm lost 29 of
+    # 30 seeds to one 429 on the first call.  A dead seed is now skipped so the
+    # remaining seeds still run — but it is recorded and reported LOUDLY, never
+    # silently dropped, because a shrunken denominator that looks like a
+    # completed battery is worse than a crash.  Skipped seeds are deliberately
+    # NOT written to battery_raw.jsonl: that file is the evidence ledger of
+    # matches that actually ran, and a synthetic row would corrupt it.
+    skipped: list[dict[str, str]] = []
     for index in range(1, args.n + 1):
         seed = args.seed_base + index
-        row = _run_match(
-            overlay,
-            seed=seed,
-            max_ticks=args.max_ticks,
-            expected_arena_hash=expected_arena_hash,
-            expected_arena_id=expected_arena_id,
-            red_loadout_path=red_loadout_path,
-            blue_loadout_path=blue_loadout_path,
-        )
+        try:
+            row = _run_match(
+                overlay,
+                seed=seed,
+                max_ticks=args.max_ticks,
+                expected_arena_hash=expected_arena_hash,
+                expected_arena_id=expected_arena_id,
+                red_loadout_path=red_loadout_path,
+                blue_loadout_path=blue_loadout_path,
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # broad on purpose: one dead seed must not kill the battery
+            detail = " ".join(f"{type(exc).__name__}: {exc}".split())[:240]
+            skipped.append({"seed": str(seed), "error": detail})
+            print(f"[{index}/{args.n}] seed={seed} SKIPPED — {detail}", flush=True)
+            continue
         rows.append(row)
         with raw_path.open("a", encoding="utf-8") as sink:
             sink.write(json.dumps(row, sort_keys=True) + "\n")
@@ -532,6 +575,21 @@ def main() -> int:
         )
 
     summary = _summarize(rows, gate_threshold=args.gate_threshold)
+    # Surface the shortfall in the summary itself so no downstream reader can
+    # mistake a partially-completed battery for a clean n-of-n run.  ``n`` in
+    # the summary counts matches that RAN; ``requested_n`` is what was asked
+    # for.  o_gate_pass is force-failed on any skip: a trust gate computed over
+    # a silently-shrunk denominator is not a trust gate.
+    summary["requested_n"] = args.n
+    summary["skipped_seeds"] = skipped
+    if skipped:
+        summary["o_gate_pass"] = False
+        print(
+            f"\n!! BATTERY INCOMPLETE: {len(skipped)}/{args.n} seeds skipped on error "
+            f"({', '.join(s['seed'] for s in skipped)}). "
+            f"o_gate_pass force-failed; rerun the skipped seeds before citing this battery.",
+            flush=True,
+        )
     summary_path = state_root / "battery_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))

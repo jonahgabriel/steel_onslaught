@@ -86,6 +86,10 @@ def test_malformed_observed_tuner_response_is_sanitized_consumer_failure() -> No
         "prompt_tokens": 17,
         "completion_tokens": 5,
         "cost_usd": 0.025,
+        # response_length is populated whenever a response exists, even for a
+        # non-semantic consumer_error; semantic_failure_detail stays absent
+        # (exclude_if) because this failure never carries one.
+        "response_length": len(_RAW_OUTPUT),
     }
 
     serialized_evidence = "\n".join(event.model_dump_json() for event in emitted)

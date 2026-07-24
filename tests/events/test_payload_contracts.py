@@ -640,6 +640,59 @@ def test_llm_failed_finish_reason_rejects_unsafe_or_too_long_value(
 
 
 @pytest.mark.unit
+def test_llm_failed_persists_semantic_failure_detail_and_response_length() -> None:
+    """2026-07-24 R2 abort forensics: the rejection detail and response length
+    are persisted alongside the code so a repeated malformed_json/
+    invalid_action_parameters failure is root-causable from the ledger alone."""
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["semantic_failure_detail"] = "1 validation error for _ModelSOLlmProgrammingResponse"
+    raw["response_length"] = 61
+
+    validated = cast(
+        ModelSOLlmCompletionFailedPayload, _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+    )
+
+    assert validated.semantic_failure_detail == (
+        "1 validation error for _ModelSOLlmProgrammingResponse"
+    )
+    assert validated.response_length == 61
+
+
+@pytest.mark.unit
+def test_llm_failed_forensic_fields_default_to_none_and_are_omitted_from_json() -> None:
+    """Absence is never evidence: an event persisted before these fields
+    existed (no keys at all) must still validate, and a freshly-validated
+    payload with no detail must not grow the two keys back in (exclude_if)."""
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    assert "semantic_failure_detail" not in raw
+    assert "response_length" not in raw
+
+    validated = cast(
+        ModelSOLlmCompletionFailedPayload, _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+    )
+
+    assert validated.semantic_failure_detail is None
+    assert validated.response_length is None
+    dumped = validated.model_dump(mode="json")
+    assert "semantic_failure_detail" not in dumped
+    assert "response_length" not in dumped
+
+
+@pytest.mark.unit
+def test_llm_failed_rejects_semantic_failure_detail_without_a_code() -> None:
+    sample = build_sample_envelopes()[SOEventType.LLM_COMPLETION_FAILED]
+    raw = sample.model_dump(mode="json")["payload"]
+    raw["reason_code"] = "provider_error"
+    raw["semantic_failure_code"] = None
+    raw["semantic_failure_detail"] = "leaked detail with no code"
+
+    with pytest.raises(ValidationError, match="forbidden without a semantic_failure_code"):
+        _validate(SOEventType.LLM_COMPLETION_FAILED, raw)
+
+
+@pytest.mark.unit
 def test_payload_consumers_do_not_read_unvalidated_payload_dicts() -> None:
     root = Path(__file__).resolve().parents[2] / "src" / "steel_onslaught"
     files = [

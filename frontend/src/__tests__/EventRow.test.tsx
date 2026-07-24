@@ -121,6 +121,7 @@ describe("EventRow — card-cadence plans (the demo's only reasoning carrier)", 
       rationale: null,
       confidence: 0.5,
       plan_source: "llm",
+      spatial_read: null,
     });
     row(env);
     const registers = screen.getByTestId("plan-registers");

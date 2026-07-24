@@ -54,8 +54,11 @@ class LlmSemanticError(ValueError):
 
     ``detail`` optionally carries the sanitized underlying validation message
     (never provider text) so a bounded same-model reprompt can tell the model
-    exactly which constraint it violated.  The classified ``code`` remains the
-    only value written to the ledger's ``semantic_failure_code`` field.
+    exactly which constraint it violated.  The classified ``code`` is written
+    to the ledger's ``semantic_failure_code`` field; as of 2026-07-24,
+    ``detail`` is ALSO persisted verbatim to ``semantic_failure_detail`` (still
+    never raw provider text) so a repeated semantic failure is root-causable
+    from the ledger alone.
     """
 
     def __init__(self, code: str, *, detail: str | None = None) -> None:
@@ -129,6 +132,7 @@ class _ObservedLlmAttempt:
         reason_code: LlmCompletionFailureReason,
         *,
         semantic_failure_code: LlmSemanticFailureCode | None = None,
+        semantic_failure_detail: str | None = None,
     ) -> None:
         requested = self._require_pending()
         self._terminal = True
@@ -139,6 +143,7 @@ class _ObservedLlmAttempt:
             self._response,
             requested,
             semantic_failure_code=semantic_failure_code,
+            semantic_failure_detail=semantic_failure_detail,
         )
 
     def _require_pending(self) -> ModelSOEventEnvelope:
@@ -207,7 +212,15 @@ def consume_llm_completion[T](
         try:
             result = consumer(attempt.response)
         except LlmSemanticError as exc:
-            attempt.fail("invalid_response", semantic_failure_code=exc.code)
+            attempt.fail(
+                "invalid_response",
+                semantic_failure_code=exc.code,
+                # Persist the rejection message alongside the code so a
+                # repeated malformed_json/invalid_action_parameters failure is
+                # root-causable from the ledger alone, without re-running the
+                # battery (2026-07-24 R2 abort forensics).
+                semantic_failure_detail=exc.detail,
+            )
             raise
         except Exception:
             attempt.fail("consumer_error")
@@ -308,17 +321,20 @@ class LedgerLlmCompletionObserver:
         requested: ModelSOEventEnvelope,
         *,
         semantic_failure_code: LlmSemanticFailureCode | None = None,
+        semantic_failure_detail: str | None = None,
     ) -> None:
         context = self._context(request)
         payload = ModelSOLlmCompletionFailedPayload(
             provider_id=provider_id,
             reason_code=reason_code,
             semantic_failure_code=semantic_failure_code,
+            semantic_failure_detail=semantic_failure_detail,
             model=response.model if response is not None else None,
             finish_reason=_safe_finish_reason(response),
             prompt_tokens=response.usage.prompt_tokens if response is not None else None,
             completion_tokens=(response.usage.completion_tokens if response is not None else None),
             cost_usd=response.usage.cost_usd if response is not None else None,
+            response_length=len(response.text) if response is not None else None,
         )
         self._emit(
             self._events.caused_by(

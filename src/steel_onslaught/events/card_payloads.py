@@ -214,6 +214,21 @@ class ModelSOPlanCommittedPayload(_ClosedCardPayload):
     # not ``deterministic_fallback``; defaulting to the substitution member
     # would retroactively relabel historical evidence.
     plan_source: SOPlanSource = SOPlanSource.UNSPECIFIED
+    # Spatial-representation arms R1/R2 (2026-07-24): under the
+    # ``grid_scaffold`` representation the model is asked for one extra field,
+    # ``spatial_read`` — a one-line statement of what it reads off the ASCII
+    # grid before selecting registers.  The field was parsed off the response
+    # from the start but never persisted here, so the R2 battery's 264
+    # ``plan_committed`` payloads all carry zero spatial-read content and the
+    # scaffold's actual effect on stated reasoning is unrecoverable from the
+    # ledger.  Persisting it closes that forensic gap.
+    #
+    # Fail-safe default, same rationale as ``plan_source`` above: an omitted
+    # field (every plan_committed event persisted before this field existed,
+    # and every non-scaffold arm, which never requests it) is ``None`` — a
+    # plan that was never asked for a spatial read, not one that refused to
+    # give one.  Absence here is never evidence of model behavior.
+    spatial_read: StrictStr | None = None
 
     @model_validator(mode="after")
     def _register_indexes_are_unique(self) -> Self:
