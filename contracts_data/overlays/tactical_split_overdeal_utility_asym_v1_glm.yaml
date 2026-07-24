@@ -50,13 +50,20 @@
 #   so 4096 is ample headroom for a five-register whole-round program under
 #   ``response_format: {"type":"json_object"}`` (always sent by the SO
 #   programming path via ``json_mode=True``).
-# * ``timeout_seconds: 120``: a sequential completion over the z.ai coding pool
-#   lands well within this bound; 120 s leaves wide margin for a slow upstream
-#   hop.
-# * ``retry: {max_attempts: 1}``: the z.ai CODING subscription is a flat-rate
-#   plan (no per-token cost), so there is no rate-limit backoff to absorb here;
-#   a single attempt keeps the battery fail-loud on any transport error, exactly
-#   like the keyless local arms.
+# * ``timeout_seconds: 45``: a sequential completion over the z.ai coding pool
+#   normally lands in ~4 s. The pool intermittently STALLS a request, and a long
+#   120 s ceiling meant one stall blocked the whole match for two minutes before
+#   aborting. 45 s makes a stall fail FAST so the retry below can absorb it while
+#   still leaving generous margin for a genuinely slow upstream hop.
+# * ``retry: {max_attempts: 4, initial_backoff_seconds: 1.0,
+#   backoff_multiplier: 2.0}``: the z.ai CODING subscription is a flat-rate plan
+#   (no per-token cost), so the retry is here to absorb intermittent transport
+#   STALLS, not rate limits. A single attempt turned one pool stall into a whole-
+#   match abort (reproduced 2/2 smoke runs). Four attempts with a 1 s → 2 s → 4 s
+#   bounded backoff retry RETRYABLE transport failures (timeout / transient
+#   request error) — a real HTTP error or a truncated/semantic failure is still
+#   surfaced. Keyless local arms keep ``max_attempts: 1`` and stay byte-identical
+#   single-shot; only this GLM arm opts into mid-match resilience.
 #
 # NOTE on reasoning_effort: the SO LLM client wire contract
 # (``ModelSOOpenAIChatRequest``) has NO ``reasoning_effort`` field, so it cannot
@@ -182,7 +189,7 @@ llm:
       secret_ref:
         kind: opaque
         ref: secret://llm/glm
-      timeout_seconds: 120.0
+      timeout_seconds: 45.0
       max_tokens: 4096
       # GLM narrates chain-of-thought into content unless the thinking span is
       # explicitly disabled; forwarded verbatim as a top-level ``thinking``
@@ -191,11 +198,18 @@ llm:
       thinking:
         type: disabled
       retry:
-        # Flat-rate z.ai CODING plan: no rate-limit backoff to absorb, so a
-        # single fail-loud attempt matches the keyless local arms.
-        max_attempts: 1
-        initial_backoff_seconds: 0.0
-        backoff_multiplier: 1.0
+        # The z.ai CODING pool occasionally stalls a normally ~4 s request past
+        # the transport timeout. A single fail-loud attempt turned one such stall
+        # into a whole-match abort (reproduced 2/2 smoke runs). With the shorter
+        # 45 s timeout above, a stall now fails FAST and this bounded backoff
+        # retries the RETRYABLE transport failure (timeout / transient request
+        # error) instead of aborting. Schedule: 4 attempts, sleeping 1 s → 2 s →
+        # 4 s between them (total backoff 7 s, well under the 300 s contract
+        # bound). Keyless local arms stay pinned at max_attempts=1 and remain
+        # byte-identical single-shot.
+        max_attempts: 4
+        initial_backoff_seconds: 1.0
+        backoff_multiplier: 2.0
   model_identities:
     - schema_version: "1"
       kind: steel_onslaught.model_identity

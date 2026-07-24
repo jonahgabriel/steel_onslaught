@@ -374,35 +374,94 @@ def test_http_timeout_is_sanitized_and_retryable() -> None:
 
 
 @pytest.mark.unit
-def test_selected_only_builder_ignores_unselected_provider_and_requires_one_attempt() -> None:
+def test_selected_only_builder_ignores_unselected_provider_and_accepts_any_attempt_count() -> None:
     from steel_onslaught.llm.client_http import SelectedOnlyLlmClientBuilder
 
-    selected = _config(max_attempts=1).model_copy(
+    single_shot = _config(max_attempts=1).model_copy(
         update={
-            "provider_id": "selected",
-            "endpoint_url": "https://selected.test/chat",
+            "provider_id": "single_shot",
+            "endpoint_url": "https://single.test/chat",
         }
     )
-    unselected = _config(max_attempts=3).model_copy(
+    resilient = _config(max_attempts=4).model_copy(
         update={
-            "provider_id": "unselected",
-            "endpoint_url": "https://unselected.test/chat",
+            "provider_id": "resilient",
+            "endpoint_url": "https://resilient.test/chat",
         }
     )
     builder = SelectedOnlyLlmClientBuilder()
 
-    selected_binding = builder.select(
-        providers=(unselected, selected),
-        selected_provider_id="selected",
+    single_binding = builder.select(
+        providers=(resilient, single_shot),
+        selected_provider_id="single_shot",
     )
-    assert selected_binding is selected
-    assert selected_binding.endpoint_url == "https://selected.test/chat"
+    assert single_binding is single_shot
+    assert single_binding.retry.max_attempts == 1
 
-    with pytest.raises(ValueError, match="max_attempts=1"):
-        builder.select(
-            providers=(unselected, selected),
-            selected_provider_id="unselected",
-        )
+    # A selected provider that opts into bounded retry (max_attempts>1) is now
+    # admitted: the retry is what makes an arm behind an intermittently stalling
+    # endpoint resilient instead of aborting on the first transport stall. The
+    # attempt count stays contract-bounded by ModelSOLlmRetryBinding.
+    resilient_binding = builder.select(
+        providers=(resilient, single_shot),
+        selected_provider_id="resilient",
+    )
+    assert resilient_binding is resilient
+    assert resilient_binding.retry.max_attempts == 4
+
+
+@pytest.mark.unit
+def test_selected_only_builder_rejects_non_openai_compatible_and_ambiguous_ids() -> None:
+    from steel_onslaught.llm.client_http import SelectedOnlyLlmClientBuilder
+
+    binding = _config(max_attempts=1).model_copy(update={"provider_id": "present"})
+    builder = SelectedOnlyLlmClientBuilder()
+    with pytest.raises(ProviderRegistryError, match="resolve exactly once"):
+        builder.select(providers=(binding,), selected_provider_id="absent")
+
+
+@pytest.mark.unit
+def test_selected_live_timeout_is_retried_under_bounded_attempts() -> None:
+    # The transport surfaces an httpx timeout as a RETRYABLE
+    # LlmCompletionBoundaryError; under max_attempts>1 the client's bounded
+    # backoff loop retries it (fixing the GLM whole-match abort on one z.ai
+    # pool stall) rather than propagating the first stall.
+    from steel_onslaught.llm.schemas import LlmCompletionBoundaryError
+
+    transport = _Transport(
+        [
+            LlmCompletionBoundaryError("timeout", retryable=True),
+            LlmCompletionBoundaryError("timeout", retryable=True),
+            _response(),
+        ]
+    )
+    sleeper = _Sleeper()
+    client, _, _, _ = _client(config=_config(max_attempts=4), transport=transport, sleeper=sleeper)
+    assert client.complete(_request()).text == "ok"
+    assert len(transport.calls) == 3
+    assert sleeper.calls == [0.25, 0.5]
+
+
+@pytest.mark.unit
+def test_selected_live_timeout_is_single_shot_when_max_attempts_is_one() -> None:
+    # max_attempts=1 arms (qwen/deepseek/gemma at their current settings) keep
+    # byte-identical single-shot behavior: the same timeout is NOT retried and
+    # propagates on the first (only) attempt without sleeping.
+    from steel_onslaught.llm.schemas import LlmCompletionBoundaryError
+
+    transport = _Transport(
+        [
+            LlmCompletionBoundaryError("timeout", retryable=True),
+            _response(),
+        ]
+    )
+    sleeper = _Sleeper()
+    client, _, _, _ = _client(config=_config(max_attempts=1), transport=transport, sleeper=sleeper)
+    with pytest.raises(LlmCompletionBoundaryError) as raised:
+        client.complete(_request())
+    assert raised.value.reason_code == "timeout"
+    assert len(transport.calls) == 1
+    assert sleeper.calls == []
 
 
 @pytest.mark.unit

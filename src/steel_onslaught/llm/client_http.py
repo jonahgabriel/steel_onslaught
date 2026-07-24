@@ -248,7 +248,19 @@ class SelectedOnlyLlmClientBuilder:
         providers: Sequence[ModelSOStubLlmProviderBinding | ModelSOOpenAICompatibleProviderBinding],
         selected_provider_id: str,
     ) -> ModelSOOpenAICompatibleProviderBinding:
-        """Return the exact one-attempt HTTP binding without constructing effects."""
+        """Return the exact selected HTTP binding without constructing effects.
+
+        The binding's own ``retry`` policy decides attempt count. A provider
+        pinned to ``max_attempts=1`` stays single-shot (the retry loop makes one
+        attempt and re-raises), so historically single-shot arms are byte-
+        identical. A provider that opts into ``max_attempts>1`` — e.g. an arm
+        behind an endpoint with intermittent transport stalls — reuses the
+        client's existing bounded-backoff retry of RETRYABLE transport failures
+        (timeouts / transient request errors) instead of aborting the match on
+        the first stall. The attempt count and backoff schedule are already
+        contract-bounded by ``ModelSOLlmRetryBinding`` (max_attempts 1..5, total
+        backoff ≤ 300s), so no additional ceiling is enforced here.
+        """
 
         selected = tuple(
             provider for provider in providers if provider.provider_id == selected_provider_id
@@ -258,8 +270,6 @@ class SelectedOnlyLlmClientBuilder:
         provider = selected[0]
         if not isinstance(provider, ModelSOOpenAICompatibleProviderBinding):
             raise ValueError("selected live provider must be openai_compatible")
-        if provider.retry.max_attempts != 1:
-            raise ValueError("selected live provider requires max_attempts=1")
         return provider
 
     def select_many(
