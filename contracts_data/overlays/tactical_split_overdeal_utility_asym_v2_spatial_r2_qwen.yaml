@@ -1,0 +1,153 @@
+# Show-dont-tell spatial representation ARM R2 battery overlay (session
+# 2026-07-24). NEW, additive overlay -- the surfacing overlay
+# (``tactical_split_overdeal_utility_asym_v2_qwen.yaml``, ARM S/baseline for
+# this arm) is byte-untouched.
+#
+# Same shape as the v2/surfacing overlay in every dimension EXCEPT the two
+# card-programmer bindings: BOTH seats point at the new ``*_spatial_r2``
+# pilot specs (fairness -- symmetric information, not a one-sided advantage),
+# which add ``spatial_representation: grid_scaffold`` -- ARM R1's rendered
+# map + resolver-backed consequence previews + in-range flags, PLUS the
+# required one-line spatial-read scaffold field before register selection --
+# on top of the exact same persona/provider as their v2/surfacing
+# counterparts. No arena, loadout, deck policy, or utility pack changes --
+# this overlay isolates ONLY the prompt-representation variable.
+#
+#   so run --overlay contracts_data/overlays/tactical_split_overdeal_utility_asym_v2_spatial_r2_qwen.yaml \
+#          --loadout-a contracts_data/loadouts/llm_qwen35_berserker_v2.yaml \
+#          --loadout-b contracts_data/loadouts/qwen35/sniper_ironclad.yaml --seed 5001
+#
+# Battery driver:
+#   python scripts/run_ogate_objectives_battery.py \
+#          --overlay contracts_data/overlays/tactical_split_overdeal_utility_asym_v2_spatial_r2_qwen.yaml \
+#          --expected-arena foundry_60_asym_v2 \
+#          --red-loadout contracts_data/loadouts/llm_qwen35_berserker_v2.yaml \
+#          --state-root .onex_state/steel_onslaught/spatial_r2_battery \
+#          --seed-base 5000 --n 30
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_spatial_r2_qwen/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_spatial_r2_qwen/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_spatial_r2_qwen/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_spatial_r2_qwen/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_spatial_r2_qwen/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v2_spatial_r2_qwen/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v2
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 -- utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 -- utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35_berserker_spatial_r2
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper_spatial_r2
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  # Phase 2 -- utility resolution handlers selected by this typed overlay
+  # (design SS6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # Keyless: the only provider carries ``secret_ref: null``, so no resolver
+    # capability is required.  ``none`` lets ``so run --overlay`` and the O-GATE
+    # battery driver launch this overlay directly (``injected`` would raise
+    # "requires a resolver capability" on the keyless CLI path).
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

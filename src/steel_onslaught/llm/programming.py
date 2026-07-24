@@ -71,10 +71,14 @@ from steel_onslaught.pilots.programming import (
     ProgrammingPilotError,
     program_for_seat,
 )
+from steel_onslaught.pilots.spatial_view import SPATIAL_GRID_LEGEND
 
 _LOG = logging.getLogger(__name__)
 
 type LlmProgrammingFailurePolicy = Literal["raise", "fallback"]
+# Show-dont-tell spatial representation arms R1/R2 (2026-07-24). Mirrors
+# ``ModelSOLlmPilotParams.spatial_representation`` exactly.
+type LlmSpatialRepresentation = Literal["none", "grid", "grid_scaffold"]
 
 
 class _ClosedProgrammingResponse(BaseModel):
@@ -92,6 +96,12 @@ class _ModelSOLlmProgrammingResponse(_ClosedProgrammingResponse):
     registers: tuple[_ModelSOLlmProgrammingRegister, ...]
     confidence: StrictFloat = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     rationale: StrictStr = Field(min_length=1)
+    # ARM R2 scaffold (2026-07-24 show-dont-tell): one required-by-prompt-text
+    # sentence of spatial analysis before register selection. Optional at the
+    # SCHEMA level on purpose -- a scaffold field must never become a new
+    # abort source. ``_parse_response`` logs (never raises) when a
+    # grid_scaffold seat's completion omits it.
+    spatial_read: StrictStr | None = Field(default=None, min_length=1)
 
 
 class _ValueProgrammer:
@@ -141,8 +151,65 @@ PROGRAMMING_INSTRUCTIONS_SHA256 = hashlib.sha256(
     _PROGRAMMING_INSTRUCTIONS.encode("utf-8")
 ).hexdigest()
 
+# ARM R1 (show-dont-tell spatial representation, 2026-07-24 prompt-content
+# audit follow-up): explains the new ``own_observation.spatial_grid`` /
+# ``movement_previews`` / ``weapon_range_flags`` fields. Representation only —
+# it never tells the model which register to pick, only how to read fields
+# that are otherwise self-describing JSON. Appended AFTER the base wire
+# contract, and only when a seat's ``spatial_representation`` is not "none",
+# so a non-arm seat's system prompt stays byte-identical.
+_SPATIAL_GRID_INSTRUCTIONS = """
+SPATIAL REPRESENTATION (this round only, in addition to the fields above).
+``own_observation.spatial_grid`` is a fixed-radius ASCII map centered on your
+own mech: ``origin`` is the absolute arena coordinate of the top-left
+character of ``rows[0]``; each string in ``rows`` is one map row, top to
+bottom; each character in a row is one cell, left to right. Legend: S = your
+mech, E = enemy mech, # = obstacle/cover (impassable terrain), O = an
+objective cell, x = an open cell where the enemy's line of sight is currently
+BLOCKED (you would be safe from enemy fire there), . = an open cell the enemy
+can currently see, ~ = outside the arena. ``movement_previews`` lists, for
+EVERY movement/rotate card in your legal_hand, the exact resulting cell,
+whether the enemy would have line of sight to you there
+(enemy_los_after: blocked/clear/no_living_enemy), and your distance to the
+enemy after the move (distance_to_enemy_after) — these are computed by the
+same engine that resolves your move this round, not an estimate.
+``weapon_range_flags`` lists, for EVERY attack card in your legal_hand,
+whether the enemy is in that weapon's range right now (in_range) and the
+exact current distance and weapon range. Use these fields to read the board;
+they never choose your registers for you.
+""".strip()
 
-def programming_system_prompt(persona: Persona, *, policy_guidance: str | None = None) -> str:
+SPATIAL_GRID_INSTRUCTIONS_SHA256 = hashlib.sha256(
+    _SPATIAL_GRID_INSTRUCTIONS.encode("utf-8")
+).hexdigest()
+
+# ARM R2: R1 plus a required scaffolded spatial-read sentence in the response,
+# BEFORE register selection. The response shape gains exactly one optional
+# field (``spatial_read``) — the sole named exception to the base
+# instructions' "do not add fields" rule.
+_SPATIAL_SCAFFOLD_INSTRUCTIONS = """
+SPATIAL READ (required, one exception to "do not add fields" above). Before
+choosing your registers, think through what spatial_grid/movement_previews/
+weapon_range_flags show about your position, cover, and range this round,
+then add exactly one extra field to your JSON response: "spatial_read", one
+short factual sentence stating that read (never a tactical recommendation,
+never chain-of-thought). Response shape becomes:
+{"registers":[{"register_index":0,"card_id":"card.example.id"}],
+"confidence":0.0,"rationale":"one short sentence",
+"spatial_read":"one short sentence"}
+""".strip()
+
+SPATIAL_SCAFFOLD_INSTRUCTIONS_SHA256 = hashlib.sha256(
+    _SPATIAL_SCAFFOLD_INSTRUCTIONS.encode("utf-8")
+).hexdigest()
+
+
+def programming_system_prompt(
+    persona: Persona,
+    *,
+    policy_guidance: str | None = None,
+    spatial_representation: LlmSpatialRepresentation = "none",
+) -> str:
     """Return the exact system prompt one whole-round programmer will send.
 
     ``policy_guidance`` is the optional, code-rendered live-learning policy
@@ -150,9 +217,19 @@ def programming_system_prompt(persona: Persona, *, policy_guidance: str | None =
     the code-owned instruction block so the wire contract stays first-class,
     and its absence leaves the prompt byte-identical to the policy-free
     composition — a match without a live-learning policy is unchanged.
+
+    ``spatial_representation`` (show-dont-tell arms R1/R2, 2026-07-24) appends
+    the code-owned spatial-representation addendum(s) BEFORE
+    ``policy_guidance`` — representation is wire contract, guidance is
+    steering. ``"none"`` (default) leaves the prompt byte-identical to the
+    pre-arm composition.
     """
 
     base = f"{persona.system_prompt}\n\n{_PROGRAMMING_INSTRUCTIONS}"
+    if spatial_representation != "none":
+        base = f"{base}\n\n{_SPATIAL_GRID_INSTRUCTIONS}"
+        if spatial_representation == "grid_scaffold":
+            base = f"{base}\n\n{_SPATIAL_SCAFFOLD_INSTRUCTIONS}"
     if policy_guidance is None:
         return base
     if not policy_guidance.strip():
@@ -335,6 +412,11 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
             # audit gap #1/#3/#4). Empty list (never absent) on obstacle-free
             # arenas, so this key is always present and always the same shape.
             "cover_cells": [cell.model_dump(mode="json") for cell in pilot.cover_cells],
+            **(
+                {}
+                if observation.spatial_grid is None
+                else {"spatial_grid": observation.spatial_grid.model_dump(mode="json")}
+            ),
         },
         "opponent_observations": [
             reading.model_dump(mode="json") for reading in pilot.enemy_observations
@@ -346,6 +428,17 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
             threat.model_dump(mode="json") for threat in pilot.enemy_weapon_threat
         ],
     }
+    # Show-dont-tell spatial representation arms R1/R2 (2026-07-24). Present
+    # ONLY when the seat opted in; an unopted seat's serialized prompt is
+    # byte-identical to the pre-arm shape (these keys are simply absent).
+    if observation.spatial_grid is not None:
+        prompt_value["movement_previews"] = [
+            preview.model_dump(mode="json") for preview in observation.movement_previews
+        ]
+        prompt_value["weapon_range_flags"] = [
+            flag.model_dump(mode="json") for flag in observation.weapon_range_flags
+        ]
+        prompt_value["legend"] = dict(SPATIAL_GRID_LEGEND)
     # Objective-victory legibility (Phase 4).  Added ONLY when the arena
     # declares objectives, so objective-free prompts stay byte-identical.
     # Without this block the pilots literally cannot play toward VP: the
@@ -428,6 +521,7 @@ class LLMProgrammingPilot:
         provider_id: str | None = None,
         semantic_retry_limit: int = _DEFAULT_SEMANTIC_RETRY_LIMIT,
         policy_guidance: str | None = None,
+        spatial_representation: LlmSpatialRepresentation = "none",
     ) -> None:
         if failure_policy not in ("raise", "fallback"):
             raise ValueError(f"unknown LLM programming failure policy: {failure_policy!r}")
@@ -435,6 +529,8 @@ class LLMProgrammingPilot:
             raise ValueError("semantic_retry_limit must not be negative")
         if policy_guidance is not None and not policy_guidance.strip():
             raise ValueError("policy_guidance must be omitted (None) rather than blank")
+        if spatial_representation not in ("none", "grid", "grid_scaffold"):
+            raise ValueError(f"unknown spatial_representation: {spatial_representation!r}")
         self._client = client
         self._persona = persona
         self._failure_policy = failure_policy
@@ -442,12 +538,29 @@ class LLMProgrammingPilot:
         self._provider_id = provider_id
         self._semantic_retry_limit = semantic_retry_limit
         self._policy_guidance = policy_guidance
+        self._spatial_representation = spatial_representation
+
+    @property
+    def spatial_representation(self) -> LlmSpatialRepresentation:
+        """The show-dont-tell spatial representation this programmer was built with.
+
+        Read by ``MatchRunner`` (via ``CardRunnerAdapter.
+        spatial_representation_for``) BEFORE the round's hand is dealt, so the
+        runner knows whether to compute/attach ground-truth spatial fields
+        onto this seat's ``ModelSOCardSeatRequest`` at all.
+        """
+
+        return self._spatial_representation
 
     def system_prompt(self) -> str:
         """The exact system prompt this programmer sends (persona + wire
-        contract + optional policy-guidance block)."""
+        contract + optional spatial-representation + policy-guidance block)."""
 
-        return programming_system_prompt(self._persona, policy_guidance=self._policy_guidance)
+        return programming_system_prompt(
+            self._persona,
+            policy_guidance=self._policy_guidance,
+            spatial_representation=self._spatial_representation,
+        )
 
     def program(self, observation: ModelSOProgrammingObservation) -> ModelSOPlanCommittedPayload:
         """Request, parse, and strictly validate one complete register plan."""
@@ -666,6 +779,16 @@ class LLMProgrammingPilot:
                 parsed = _ModelSOLlmProgrammingResponse.model_validate_json(text[start : end + 1])
         except (ValidationError, ValueError, TypeError) as exc:
             raise LlmSemanticError("malformed_json", detail=_error_detail(exc)) from None
+
+        if observation.spatial_read_required and parsed.spatial_read is None:
+            # A scaffold field must never become a new abort source (R2 is
+            # schema-tolerant by design): log and continue with the plan the
+            # model actually returned rather than raising a semantic error.
+            _LOG.warning(
+                "grid_scaffold seat %s completion omitted spatial_read (persona=%s)",
+                observation.seat,
+                self._persona.persona_id,
+            )
 
         try:
             plan = ModelSOPlanCommittedPayload(

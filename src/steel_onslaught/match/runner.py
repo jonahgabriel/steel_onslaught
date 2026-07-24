@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -82,8 +82,9 @@ from steel_onslaught.match.card_event_specs import (
     build_card_round_event_specs,
 )
 from steel_onslaught.match.fold import MatchContractCatalog, MatchStateFold
-from steel_onslaught.match.geometry import chebyshev_line, greedy_sidestep, line_of_sight_clear
+from steel_onslaught.match.geometry import line_of_sight_clear
 from steel_onslaught.match.initiative import initiative_score, order_by_initiative
+from steel_onslaught.match.move_resolution import resolve_move_destination
 from steel_onslaught.match.rng import MatchRng
 from steel_onslaught.match.runtime import (
     OpenProgressGate,
@@ -185,12 +186,19 @@ _INTENT_EVENT_TYPES = [
 ]
 
 
-def _clamp(value: int, magnitude: int) -> int:
-    return max(-magnitude, min(magnitude, value))
+class _SpatialSeatKwargs(NamedTuple):
+    """Show-dont-tell spatial arm kwargs for one seat's card request.
 
+    Field defaults are IDENTICAL to ``ModelSOCardSeatRequest``'s own field
+    defaults, so ``_SpatialSeatKwargs()`` (the "none" case, every seat with no
+    bound spatial-representation programmer) constructs a request byte-
+    identical to the pre-arm shape.
+    """
 
-def _sign(value: int) -> int:
-    return (value > 0) - (value < 0)
+    spatial_representation: Literal["none", "grid", "grid_scaffold"] = "none"
+    enemy_position: ModelSOPosition | None = None
+    arena_size: int | None = None
+    move_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -646,6 +654,35 @@ class MatchRunner:
             )
         )
 
+    def _spatial_seat_kwargs(self, seat: str, mech: ModelSOMechRuntimeState) -> _SpatialSeatKwargs:
+        """Build the show-dont-tell spatial kwargs for one seat's card request.
+
+        ``_SpatialSeatKwargs()`` (all defaults) for every seat by default --
+        an unbound programmer, or one whose spec never opted in, produces a
+        ``ModelSOCardSeatRequest`` with no spatial fields set and therefore a
+        byte-identical observation.  The runner is the only place with full
+        match state (obstacles, arena size, true enemy position, effective
+        speed) needed to resolve those fields BEFORE the round's hand is dealt
+        (``CardRunnerAdapter.produce`` needs them already populated once
+        dealing happens, to compute the per-dealt-card preview).
+        """
+
+        adapter = self._card_adapter
+        representation = (
+            "none" if adapter is None else adapter.spatial_representation_for(seat, mech.side)
+        )
+        if representation not in ("none", "grid", "grid_scaffold"):
+            raise ValueError(f"unknown spatial_representation: {representation!r}")
+        if representation == "none":
+            return _SpatialSeatKwargs()
+        enemy = self._living_opponent(self.fold.state, mech)
+        return _SpatialSeatKwargs(
+            spatial_representation=cast(Literal["grid", "grid_scaffold"], representation),
+            enemy_position=enemy.position if enemy is not None else None,
+            arena_size=self._arena_size,
+            move_budget=effective_speed(mech),
+        )
+
     def _run_card_round(self, tick: int, tick_event: ModelSOEventEnvelope) -> None:
         """Publish one explicit card round and resolve its typed intents.
 
@@ -680,6 +717,7 @@ class MatchRunner:
                 objectives=self._arena.objectives,
                 vp_threshold=self._arena.vp_threshold,
             )
+            spatial = self._spatial_seat_kwargs(seat, mech)
             seats.append(
                 ModelSOCardSeatRequest(
                     seat=seat,
@@ -695,6 +733,10 @@ class MatchRunner:
                     lock_depth=lock_depth,
                     previous_plan=previous,
                     weapon_ids=tuple(mech.weapon_cooldowns),
+                    spatial_representation=spatial.spatial_representation,
+                    enemy_position=spatial.enemy_position,
+                    arena_size=spatial.arena_size,
+                    move_budget=spatial.move_budget,
                 )
             )
             subject_by_seat[seat] = ModelSOEventSubject(
@@ -788,6 +830,7 @@ class MatchRunner:
                     objectives=self._arena.objectives,
                     vp_threshold=self._arena.vp_threshold,
                 )
+                spatial = self._spatial_seat_kwargs(seat, mech)
                 seats.append(
                     ModelSOCardSeatRequest(
                         seat=seat,
@@ -803,6 +846,10 @@ class MatchRunner:
                         lock_depth=lock_depth,
                         previous_plan=previous,
                         weapon_ids=tuple(mech.weapon_cooldowns),
+                        spatial_representation=spatial.spatial_representation,
+                        enemy_position=spatial.enemy_position,
+                        arena_size=spatial.arena_size,
+                        move_budget=spatial.move_budget,
                     )
                 )
                 subject_by_seat[seat] = ModelSOEventSubject(
@@ -1206,65 +1253,21 @@ class MatchRunner:
             return
 
         from_pos = mech.position
-        if direction == "toward_enemy":
-            distance = chebyshev(from_pos, enemy.position)
-            step = min(budget, max(0, distance - 1))  # never enter the enemy's cell
-            dx = _clamp(enemy.position.x - from_pos.x, step)
-            dy = _clamp(enemy.position.y - from_pos.y, step)
-        elif direction == "defensive":  # open distance from the enemy
-            step = budget
-            dx = _clamp(from_pos.x - enemy.position.x, step)
-            dy = _clamp(from_pos.y - enemy.position.y, step)
-        elif direction in ("flank_left", "flank_right"):
-            # Rotate the sign-clamped mech→enemy axis by 90 degrees.  This is
-            # structurally perpendicular, so a flank cannot collapse into the
-            # old toward/away beeline even when the model asks for one.
-            axis_x = _sign(enemy.position.x - from_pos.x)
-            axis_y = _sign(enemy.position.y - from_pos.y)
-            if direction == "flank_left":
-                perp_x, perp_y = axis_y, -axis_x
-            else:
-                perp_x, perp_y = -axis_y, axis_x
-            dx = perp_x * budget
-            dy = perp_y * budget
-        elif direction == "covered_advance":
-            dx, dy = self._covered_advance_step(from_pos, enemy.position, budget)
-        else:  # toward_cover
-            # Obstacles are impassable in the current arena contract.  Move
-            # toward the nearest obstacle but stop one legal cell before it;
-            # an empty arena or already-adjacent cover is a deterministic no-op.
-            cover_targets = sorted(
-                self._obstacles,
-                key=lambda cell: (
-                    max(abs(cell[0] - from_pos.x), abs(cell[1] - from_pos.y)),
-                    cell[0],
-                    cell[1],
-                ),
-            )
-            if not cover_targets:
-                return
-            cover = ModelSOPosition(x=cover_targets[0][0], y=cover_targets[0][1])
-            distance = chebyshev(from_pos, cover)
-            step = min(budget, max(0, distance - 1))
-            dx = _clamp(cover.x - from_pos.x, step)
-            dy = _clamp(cover.y - from_pos.y, step)
-
-        intended = ModelSOPosition(
-            x=min(max(from_pos.x + dx, 0), self._arena_size - 1),
-            y=min(max(from_pos.y + dy, 0), self._arena_size - 1),
+        # Delegate to the pure resolver (2026-07-24 show-dont-tell spatial
+        # representation arms): this is the SAME function the prompt-facing
+        # consequence preview calls (``match.spatial_preview``), and it also
+        # owns the ``covered_advance`` LOS-shadow math (PR #165), so a
+        # preview shown to a pilot can never compute a different destination
+        # than the live match resolves for ANY movement direction.
+        to_pos = resolve_move_destination(
+            from_pos=from_pos,
+            direction=direction,
+            budget=budget,
+            enemy_pos=enemy.position,
+            obstacles=self._obstacles,
+            arena_size=self._arena_size,
         )
-        to_pos = self._walk_to(from_pos, intended)
         moved = chebyshev(from_pos, to_pos)
-        if moved == 0 and self._obstacles:
-            to_pos = greedy_sidestep(
-                from_pos,
-                enemy.position,
-                obstacles=self._obstacles,
-                size=self._arena_size,
-                toward=direction == "toward_enemy",
-                forbidden=frozenset({(enemy.position.x, enemy.position.y)}),
-            )
-            moved = chebyshev(from_pos, to_pos)
         if moved == 0:
             return  # pinned against the arena edge, terrain, or already adjacent
 
@@ -1282,68 +1285,6 @@ class MatchRunner:
                 caused_by_intent=intent,
             )
         )
-
-    def _walk_to(
-        self,
-        from_pos: ModelSOPosition,
-        intended: ModelSOPosition,
-    ) -> ModelSOPosition:
-        last = from_pos
-        for x, y in chebyshev_line(from_pos, intended):
-            if (x, y) in self._obstacles:
-                break
-            last = ModelSOPosition(x=x, y=y)
-        return last
-
-    def _covered_advance_step(
-        self,
-        from_pos: ModelSOPosition,
-        enemy_pos: ModelSOPosition,
-        budget: int,
-    ) -> tuple[int, int]:
-        """Pure dx/dy for ``covered_advance``: close distance via an LOS shadow.
-
-        Enumerates every reachable cell within the Chebyshev ``budget`` disk
-        (reachable = an unobstructed straight king-move path from
-        ``from_pos``, matching how ``_walk_to`` actually resolves movement),
-        keeps only cells that (a) strictly reduce distance to the enemy and
-        (b) the enemy has no line of sight to (terrain obstacles only — smoke
-        is a separate counterplay card and deliberately not folded in here,
-        so this card's value never depends on a second card being played).
-        Among survivors, picks the fixed lexicographic minimum
-        ``(distance_to_enemy, x, y)`` — deterministic, no iteration-order
-        dependence on set/dict ordering. If no cell qualifies, degrades to a
-        plain ``toward_enemy`` advance (identical math to that branch above).
-        """
-        distance_now = chebyshev(from_pos, enemy_pos)
-        best: ModelSOPosition | None = None
-        best_key: tuple[int, int, int] | None = None
-        min_x = max(0, from_pos.x - budget)
-        max_x = min(self._arena_size - 1, from_pos.x + budget)
-        min_y = max(0, from_pos.y - budget)
-        max_y = min(self._arena_size - 1, from_pos.y + budget)
-        for cx in range(min_x, max_x + 1):
-            for cy in range(min_y, max_y + 1):
-                if max(abs(cx - from_pos.x), abs(cy - from_pos.y)) > budget:
-                    continue
-                if (cx, cy) == (enemy_pos.x, enemy_pos.y):
-                    continue  # never resolve a move into the enemy's cell
-                candidate = ModelSOPosition(x=cx, y=cy)
-                candidate_distance = chebyshev(candidate, enemy_pos)
-                if candidate_distance >= distance_now:
-                    continue  # must be a strict advance, not a lateral/backward move
-                if line_of_sight_clear(enemy_pos, candidate, self._obstacles):
-                    continue  # enemy can see this cell -- not covered
-                if self._walk_to(from_pos, candidate) != candidate:
-                    continue  # not reachable: terrain blocks the straight path there
-                key = (candidate_distance, cx, cy)
-                if best_key is None or key < best_key:
-                    best_key, best = key, candidate
-        if best is not None:
-            return best.x - from_pos.x, best.y - from_pos.y
-        # Degrade: no LOS-shadowed cell reduces distance -- plain toward_enemy.
-        step = min(budget, max(0, distance_now - 1))
-        return _clamp(enemy_pos.x - from_pos.x, step), _clamp(enemy_pos.y - from_pos.y, step)
 
     def _resolve_weapon_fire(
         self,

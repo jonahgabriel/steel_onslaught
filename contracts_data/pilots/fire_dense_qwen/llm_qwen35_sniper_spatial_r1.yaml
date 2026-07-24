@@ -1,0 +1,17 @@
+# Show-dont-tell spatial representation ARM R1 (session 2026-07-24) -- blue
+# seat. Fairness: the representation is symmetric information, so the sniper
+# seat gets the exact same rendered map/preview/range-flag fields as the
+# brawler seat this arm targets, not a one-sided advantage. Same persona
+# (sniper) and provider (qwen35) as pilot.llm.qwen35_sniper; the only
+# difference is ``spatial_representation: grid``.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen35_sniper_spatial_r1
+display_name: "Qwen3.6-35B Sniper (Spatial R1, AI PC 5090)"
+archetype: llm
+lineage:
+  parent: pilot.llm.qwen35_sniper
+parameters:
+  persona: sniper
+  provider: qwen35
+  spatial_representation: grid

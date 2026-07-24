@@ -1,0 +1,24 @@
+# Show-dont-tell spatial representation ARM R2 (session 2026-07-24).
+#
+# ARM R2 = ARM R1 (rendered map + resolver-backed consequence previews +
+# in-range flags) PLUS a required one-line scaffolded spatial read in the
+# response format, BEFORE register selection -- still zero strategy advice,
+# just forcing the model to state what it sees before it decides. Schema-
+# tolerant: an omitted ``spatial_read`` is logged, never treated as a
+# semantic failure (see ``llm.programming.LLMProgrammingPilot._parse_response``).
+#
+# Same persona (berserker) and provider (qwen35) as pilot.llm.qwen35; the only
+# difference is ``spatial_representation: grid_scaffold``. NEW, additive pilot
+# spec -- pilot.llm.qwen35 and pilot.llm.qwen35_berserker_spatial_r1 are both
+# untouched.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen35_berserker_spatial_r2
+display_name: "Qwen3.6-35B Berserker (Spatial R2, AI PC 5090)"
+archetype: llm
+lineage:
+  parent: pilot.llm.qwen35_berserker_spatial_r1
+parameters:
+  persona: berserker
+  provider: qwen35
+  spatial_representation: grid_scaffold

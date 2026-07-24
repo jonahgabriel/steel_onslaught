@@ -1,0 +1,16 @@
+# Show-dont-tell spatial representation ARM R2 (session 2026-07-24) -- blue
+# seat. Fairness: symmetric with the red (berserker) R2 spec -- same rendered
+# map/preview/range-flag fields plus the required spatial-read scaffold field.
+# Same persona (sniper) and provider (qwen35) as pilot.llm.qwen35_sniper; the
+# only difference is ``spatial_representation: grid_scaffold``.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen35_sniper_spatial_r2
+display_name: "Qwen3.6-35B Sniper (Spatial R2, AI PC 5090)"
+archetype: llm
+lineage:
+  parent: pilot.llm.qwen35_sniper_spatial_r1
+parameters:
+  persona: sniper
+  provider: qwen35
+  spatial_representation: grid_scaffold

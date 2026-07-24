@@ -8,6 +8,7 @@ from steel_onslaught.bus.in_process import InProcessEventBus
 from steel_onslaught.contracts.arena import ModelSOArenaSpec
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.match.composition import load_loadout
+from steel_onslaught.match.move_resolution import walk_to
 from steel_onslaught.pilots.schemas import (
     ModelSOConsideredAction,
     ModelSOPilotDecision,
@@ -81,10 +82,17 @@ def test_injected_arena_snapshot_blocks_weapon_line_of_sight() -> None:
 
 @pytest.mark.unit
 def test_runner_walk_stops_before_injected_obstacle() -> None:
+    # The obstacle-aware walk used to be a MatchRunner-private method; it was
+    # extracted to ``match.move_resolution.walk_to`` (2026-07-24 show-dont-tell
+    # spatial representation arms) so a prompt-facing consequence preview can
+    # call the SAME function the live resolver uses. This proof now drives
+    # that pure function directly with the arena's own obstacle set, rather
+    # than reaching into runner-private state; ``match_runner`` is still built
+    # here to prove the injected arena composes end to end.
     bus = InProcessEventBus()
     arena = _wall_arena()
     loadout = load_loadout(_LOADOUT)
-    runner, _runtime = match_runner(
+    _runner, _runtime = match_runner(
         bus=bus,
         match_id="match.test.terrain-movement",
         seed=7,
@@ -94,9 +102,10 @@ def test_runner_walk_stops_before_injected_obstacle() -> None:
         arena_override=arena,
     )
 
-    reached = runner._walk_to(
+    reached = walk_to(
         ModelSOPosition(x=1, y=5),
         ModelSOPosition(x=10, y=5),
+        obstacles=arena.obstacle_cells,
     )
 
     assert reached == ModelSOPosition(x=4, y=5)
