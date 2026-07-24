@@ -421,7 +421,7 @@ class ModelSOOpenAICompatibleProviderBinding(_ClosedBinding):
     endpoint_url: StrictStr = Field(min_length=1)
     model: StrictStr = Field(min_length=1)
     secret_ref: ModelSOSecretRef | None
-    timeout_seconds: StrictFloat = Field(gt=0.0, le=300.0, allow_inf_nan=False)
+    timeout_seconds: StrictFloat = Field(gt=0.0, le=600.0, allow_inf_nan=False)
     max_tokens: StrictInt | None = Field(gt=0, le=32768)
     retry: ModelSOLlmRetryBinding
     # Optional provider-specific request extension. Present only for providers
