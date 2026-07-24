@@ -1,0 +1,39 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.qwen35_berserker_dmg8
+# Pair-sweep arm P4 (mortar_r30 x red-dmg-x8, session 2026-07-24):
+# additive loadout variant of llm_qwen35_berserker.yaml with EXACTLY ONE
+# module swap per weapon slot -- weapon.light.machine_gun ->
+# weapon.light.machine_gun_dmg8 and weapon.light.shrapnel_thrower ->
+# weapon.light.shrapnel_thrower_dmg8 (damage x8 on both -- the next dose
+# above the confirmed 0% (x1) -> 3.4% (x3) -> 17.2% (x5.5) monotonic,
+# accelerating curve, with the mortar_r30 approach fix held constant exactly
+# as in P1/P2 -- every other weapon field identical, see those files). Every
+# other module and field (chassis, boiler, pilot, sensors, cooling, armor,
+# gizmos, budgets) is byte-identical to the baseline berserker loadout.
+# llm_qwen35_berserker.yaml itself stays untouched.
+#
+# Budget note: weapon module contracts carry no mass field --
+# match/runner.py::_module_budgets hardcodes mass=0 for every weapon, and
+# damage does not feed the MASS/SLOTS/PRESSURE budget axes at all -- so
+# swapping to the damage-x8 variants changes zero budget arithmetic.
+# Declared budgets below are therefore identical to the baseline berserker
+# loadout (and to the P1/P2 variants).
+chassis_id: chassis.light.scout_mk1
+boiler_id: boiler.compact.v1
+pilot_id: pilot.llm.qwen35
+modules:
+  weapons: [weapon.light.machine_gun_dmg8, weapon.light.shrapnel_thrower_dmg8]
+  sensors: [sensor.short_range_scanner]
+  cooling: []
+  armor: []
+  gizmos: []
+budgets:
+  points_used: 40
+  points_max: 100
+  mass_used: 30
+  mass_max: 60
+  slots_used: 3
+  slots_max: 4
+  expected_heat_peak: 30
+  expected_signature: 35
