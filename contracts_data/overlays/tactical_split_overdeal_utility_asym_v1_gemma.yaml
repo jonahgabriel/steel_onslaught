@@ -1,0 +1,216 @@
+# U-GATE + O-GATE combined battery overlay bound to Google Gemma over OpenRouter
+# (cross-ARCHITECTURE B — a lineage-independent model family from Qwen/DeepSeek).
+#
+# This is the Gemma twin of ``tactical_split_overdeal_utility_asym_v1_deepseek.yaml``:
+# a mechanical merge of that overlay's utility-surfacing arena/split-decks/rule-
+# pack/cadence with Gemma-over-OpenRouter provider deltas.  It is the intersection
+# of:
+#   - the ASYM objective arena ``foundry_60_asym_v1`` (asymmetric cover corridors
+#     + 3 objective cells + vp_threshold 15), so a match can end on VP as well as
+#     elimination; AND
+#   - the THIRD split-deck pile (each seat dealt an extra ``utility`` quota of
+#     smoke/chaff/flares counterplay cards + the ``utility_handler_pack``);
+#   - bound to Google Gemma (``google/gemma-4-26b-a4b-it:free``) served through
+#     the OpenRouter free tier over an authenticated OpenAI-compatible endpoint.
+#
+# The empirical question it lets the O-GATE battery answer for the CROSS-
+# ARCHITECTURE arm (a model family with an independent lineage from both the Qwen
+# and the DeepSeek arms): with utility counterplay in hand, does the red brawler
+# survive the sniper's sightline lane long enough to contest VP on
+# ``foundry_60_asym_v1`` when the pilot is Gemma rather than a Qwen or DeepSeek
+# model?  Over-deal stays the mechanism: the deal grows to 10 (4 movement +
+# 4 weapon + 2 utility) while the program stays 5, so utility competes for the
+# SAME 5 registers as movement and attack.  No balance knob is touched (U-GATE
+# requirement): the utility effect is expressed only through LOS/lock/targeting
+# consults in the fold, never a damage/evasion/range number.
+#
+# Gemma-over-OpenRouter provider deltas (vs the keyless local twins) — the cross-
+# architecture B arm "differing ONLY in provider binding plus declared
+# max_tokens/timeout/retry deltas":
+# * provider binding: the AUTHENTICATED OpenAI-compatible OpenRouter endpoint at
+#   ``https://openrouter.ai/api/v1/chat/completions``, model pinned EXACTLY to
+#   ``google/gemma-4-26b-a4b-it:free`` (the explicit ``:free`` slug, never the
+#   ``openrouter/free`` auto-router) so attribution is exact and cost is $0.
+#   Both seats (gemma_berserker red / gemma_sniper blue), pilot registry
+#   ``../pilots/fire_dense_gemma``.
+# * ``secret_ref: secret://llm/openrouter`` with ``secret_resolver.kind:
+#   injected``: unlike the keyless local arms, OpenRouter requires a Bearer key.
+#   The opaque ``secret://`` reference is the ONLY credential material in this
+#   file — the real key is NEVER written here.  It is resolved at the CLI/battery
+#   edge from ``OPEN_ROUTER_API_KEY`` (env or ~/.omnibase/.env) and reaches only
+#   the Authorization header at request time.
+# * ``max_tokens: 2048``: Gemma is an instruct/non-reasoning model, so it emits
+#   the register JSON directly with no chain-of-thought span to clear.  2048 is
+#   ample headroom for a five-register whole-round program under
+#   ``response_format: {"type":"json_object"}`` (always sent by the SO
+#   programming path via ``json_mode=True``).
+# * ``timeout_seconds: 120``: a sequential completion over the public OpenRouter
+#   pool lands in ~10s; 120 s leaves wide margin for a slow upstream hop.
+# * ``retry: {max_attempts: 4, initial_backoff_seconds: 2.0, backoff_multiplier:
+#   2.0}``: the OpenRouter free pool intermittently returns HTTP 429 (upstream
+#   rate limit / pool saturation).  The SO OpenAI-compatible client already maps
+#   429 to a RETRYABLE transport error (``client_http.py`` HttpxJsonTransport)
+#   and retries retryable errors with bounded exponential backoff up to
+#   ``retry.max_attempts`` (``OpenAICompatibleClient.complete``).  The battery /
+#   ``assemble_match_live`` path builds providers UNSELECTED, so it honors this
+#   ``max_attempts`` (the selected/browser ``SelectedOnlyLlmClientBuilder`` path
+#   forces ``max_attempts == 1`` and is NOT the launch path for this free-tier
+#   arm).  4 attempts with backoff 2s -> 4s -> 8s absorbs the intermittent 429s;
+#   at ~10s/completion the sequential battery stays under the 20 RPM free ceiling
+#   so no explicit throttle is needed.
+#
+# NOTE on reasoning_effort: the SO LLM client wire contract
+# (``ModelSOOpenAIChatRequest``) has NO ``reasoning_effort`` field, so it cannot
+# be carried in this overlay — which is the safe default for an instruct model.
+#
+# Every utility/arena surface (arena, decks, over-deal hand quotas, register
+# count, cadence, rule pack, utility pile + handler pack, personas) is
+# byte-identical to the deepseek/qwen27 combined overlays so within-model
+# contrasts stay comparable ACROSS models.  Neither existing overlay nor either
+# arena contract is modified — ``foundry_60`` and ``foundry_60_asym_v1`` stay
+# byte-frozen so historical replays remain valid.  Ledger paths are isolated
+# under a NEW state directory so this combined gemma battery does not collide
+# with any other lane.
+#
+# The ``secret_resolver`` is ``injected`` (not ``none``): the sole provider
+# carries a real ``secret_ref``, so composition requires a resolver capability.
+# The O-GATE battery driver selects it and supplies an env-backed resolver:
+#
+#   scripts/run_ogate_objectives_battery.py \
+#       --overlay contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_gemma.yaml \
+#       --red-loadout contracts_data/loadouts/gemma/berserker_scout.yaml \
+#       --blue-loadout contracts_data/loadouts/gemma/sniper_ironclad.yaml
+#
+# with OPEN_ROUTER_API_KEY available in the environment or ~/.omnibase/.env.
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_gemma/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_gemma/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_gemma/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_gemma/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_gemma/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_gemma/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_gemma
+  arena_id: foundry_60_asym_v1
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.gemma_berserker
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.gemma_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  # Phase 2 — utility resolution handlers selected by this typed overlay
+  # (design §6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: gemma
+      endpoint_url: https://openrouter.ai/api/v1/chat/completions
+      model: google/gemma-4-26b-a4b-it:free
+      secret_ref:
+        kind: opaque
+        ref: secret://llm/openrouter
+      timeout_seconds: 120.0
+      max_tokens: 2048
+      retry:
+        # Bounded exponential-backoff 429-retry for the intermittent OpenRouter
+        # free-pool rate limits: attempts at 0s, 2s, 6s, 14s cumulative
+        # (sleeps 2s -> 4s -> 8s).  Honored on the UNSELECTED battery path.
+        max_attempts: 4
+        initial_backoff_seconds: 2.0
+        backoff_multiplier: 2.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.gemma
+      display_name: Google Gemma 4 26B (OpenRouter free)
+      provider_binding_id: gemma
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # Injected: the sole provider carries ``secret_ref: secret://llm/openrouter``,
+    # so composition requires a resolver capability.  The battery driver supplies
+    # an env-backed resolver that reads OPEN_ROUTER_API_KEY at the edge; the key
+    # never appears in this file, argv, or any log.
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

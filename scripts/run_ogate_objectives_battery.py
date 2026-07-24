@@ -35,14 +35,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import statistics
 import sys
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
-from steel_onslaught.contracts.application import ModelSOApplicationOverlay
+from steel_onslaught.contracts.application import (
+    ModelSOApplicationOverlay,
+    ModelSOOpenAICompatibleProviderBinding,
+    ModelSOSecretRef,
+)
 from steel_onslaught.contracts.arena import arena_contract_hash
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.payloads import (
@@ -52,6 +59,7 @@ from steel_onslaught.events.payloads import (
     ModelSOVictoryDeclaredPayload,
 )
 from steel_onslaught.llm.client_http import NoSecretResolver
+from steel_onslaught.llm.schemas import ProtocolSecretResolver, SecretResolutionError
 from steel_onslaught.match.composition import (
     assemble_match_live,
     load_application_overlay,
@@ -68,6 +76,124 @@ _RED = "player.red"  # brawler (berserker) — the reported observable's seat
 _BLUE = "player.blue"  # sniper
 
 _ELIMINATION_REASONS = frozenset({"last_mech_standing", "pilot_killed", "draw_mutual_destruction"})
+
+# Opaque overlay secret refs -> the env var names that carry their value. The
+# battery driver only ever resolves keys for cross-provider ARMS whose overlay
+# declares a secret-bearing provider (the OpenRouter free arm). No key is
+# inferred from provider or model naming; the mapping is explicit and narrow.
+_SECRET_REF_ENV_NAMES: dict[str, tuple[str, ...]] = {
+    # OpenRouter Bearer key. Canonical name in ~/.omnibase/.env is
+    # OPEN_ROUTER_API_KEY; OPENROUTER_API_KEY is accepted as the documented
+    # ``so play-live`` alias so one exported key serves both paths.
+    "secret://llm/openrouter": ("OPEN_ROUTER_API_KEY", "OPENROUTER_API_KEY"),
+}
+
+
+def _load_omnibase_dotenv() -> dict[str, str]:
+    """Parse ``~/.omnibase/.env`` into a name->value map (portable, no deps).
+
+    Read-only and best-effort: a missing file yields an empty map. Values are
+    never logged; only names are ever surfaced in error text.
+    """
+
+    path = Path.home() / ".omnibase" / ".env"
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _first_env_value(names: Sequence[str], dotenv: Mapping[str, str]) -> str | None:
+    """First non-empty value for ``names`` from the process env, then the dotenv."""
+
+    for name in names:
+        value = os.environ.get(name) or dotenv.get(name)
+        if value:
+            return value
+    return None
+
+
+class _EnvBackedSecretResolver:
+    """Resolve overlay ``secret://`` refs from the environment / ~/.omnibase/.env.
+
+    Composition never reads the environment; this tiny edge adapter is the only
+    place the real key is loaded, and it is handed only to the OpenAI-compatible
+    client's Authorization header at request time. The key is never written to a
+    file, printed, or placed on argv. Selected per-reference so an overlay with
+    no secret-bearing provider never triggers a key lookup.
+    """
+
+    def __init__(self, secrets: Mapping[str, str]) -> None:
+        self._secrets = MappingProxyType(dict(secrets))
+
+    @classmethod
+    def for_references(cls, references: Sequence[str]) -> _EnvBackedSecretResolver:
+        """Build a resolver that has already loaded every required secret ref.
+
+        Fails closed (``SecretResolutionError``) if a ref has no known env
+        mapping or the mapped env var is absent/empty, so a missing key is a
+        loud edge failure, never a silently unauthenticated request.
+        """
+
+        dotenv = _load_omnibase_dotenv()
+        resolved: dict[str, str] = {}
+        for reference in references:
+            env_names = _SECRET_REF_ENV_NAMES.get(reference)
+            if env_names is None:
+                raise SecretResolutionError(f"no env mapping for secret ref {reference!r}")
+            value = _first_env_value(env_names, dotenv)
+            if not value:
+                raise SecretResolutionError(
+                    f"secret ref {reference!r} requires one of {env_names} in the "
+                    "environment or ~/.omnibase/.env"
+                )
+            resolved[reference] = value
+        return cls(resolved)
+
+    def resolve(self, reference: ModelSOSecretRef) -> str:
+        try:
+            return self._secrets[str(reference.ref)]
+        except KeyError:
+            raise SecretResolutionError(f"unmapped secret ref {reference.ref!r}") from None
+
+
+def _select_secret_resolver(
+    overlay: ModelSOApplicationOverlay,
+) -> ProtocolSecretResolver | None:
+    """Pick the resolver capability the overlay's declared binding requires.
+
+    - ``none``  -> ``None``: composition rejects an injected resolver and builds
+      its own fail-closed ``NoSecretResolver`` (keyless local arms, e.g. deepseek).
+    - ``injected`` with no secret-bearing provider -> ``NoSecretResolver``: the
+      keyless-but-injected local arms (e.g. qwen, ``secret_ref: null``) whose
+      resolver is never consulted. Byte-identical to the prior behavior.
+    - ``injected`` with a secret-bearing provider -> an env-backed resolver that
+      loads the real key at the edge (the OpenRouter free arm). This is the only
+      path that touches OPEN_ROUTER_API_KEY.
+    """
+
+    if overlay.llm.secret_resolver.kind == "none":
+        return None
+    secret_bearing = tuple(
+        provider
+        for provider in overlay.llm.providers
+        if isinstance(provider, ModelSOOpenAICompatibleProviderBinding)
+        and provider.secret_ref is not None
+    )
+    if not secret_bearing:
+        return NoSecretResolver()
+    references = tuple(
+        str(provider.secret_ref.ref)
+        for provider in secret_bearing
+        if provider.secret_ref is not None
+    )
+    return _EnvBackedSecretResolver.for_references(references)
 
 
 def _lane_overlay(state_root: Path, overlay_path: Path = _OVERLAY) -> ModelSOApplicationOverlay:
@@ -148,12 +274,13 @@ def _run_match(
     red_loadout_path: Path = _RED_LOADOUT,
     blue_loadout_path: Path = _BLUE_LOADOUT,
 ) -> dict[str, Any]:
-    # Keyless composition owns the transport regardless.  A ``none`` overlay
-    # (the combined asym+utility overlay) rejects an injected resolver and lets
-    # composition build its own ``NoSecretResolver``; an ``injected`` overlay
-    # (the asym-only default) requires one to be supplied.  Selecting by the
-    # declared binding kind keeps both overlays launchable from one driver.
-    secret_resolver = None if overlay.llm.secret_resolver.kind == "none" else NoSecretResolver()
+    # A ``none`` overlay rejects an injected resolver and lets composition build
+    # its own ``NoSecretResolver``; a keyless ``injected`` overlay wants a
+    # never-consulted ``NoSecretResolver``; a secret-bearing ``injected`` overlay
+    # (the OpenRouter free arm) wants a real env-backed resolver. Selecting by
+    # the declared binding + provider secret_ref keeps every arm launchable from
+    # one driver without leaking a key into argv or logs.
+    secret_resolver = _select_secret_resolver(overlay)
     stack = assemble_match_live(
         overlay=overlay,
         red_loadout_path=red_loadout_path,
