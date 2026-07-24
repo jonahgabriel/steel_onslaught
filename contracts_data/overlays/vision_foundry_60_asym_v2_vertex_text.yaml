@@ -1,0 +1,137 @@
+# ARM V-TEXT of the 2026-07-24 vision-representation experiment, THIRD
+# provider rerun -- Google Cloud Vertex AI, direct. Same model
+# (google/gemini-2.5-flash-lite) as every prior arm of this experiment
+# (Gemini-direct via Google AI Studio, blocked on a 20-req/day free tier --
+# PRs #176/#178/#185; OpenRouter paid pass-through, unblocked and reported in
+# docs/evidence/2026-07-24-vl_openrouter_rerun-battery.md). This arm swaps
+# the provider route again: Vertex AI's OpenAI-compatible endpoint,
+# authenticated via a Google Cloud ADC OAuth2 access token rather than a
+# static API key or an OpenRouter Bearer key. Preferred over OpenRouter for
+# this rerun because it is the most direct, most canonical route to the
+# SAME model the experiment was originally designed around -- no
+# third-party pass-through billing layer between this codebase and Google.
+#
+# Within-model design (unchanged): ONE vision-language model runs two arms
+# on the IDENTICAL v2 config (arena foundry_60_asym_v2 + PR #157 loadout
+# v2). This is that model's own text-only baseline: the plain per-tick
+# ``LLMPilot.decide`` prompt path (pilot.py::_serialize_observation), no
+# image_attachment binding on the provider. Its twin,
+# ``vision_foundry_60_asym_v2_vertex_img.yaml``, is byte-identical to this
+# file except for one added ``llm.providers[0].image_attachment`` block.
+#
+# Deliberately NOT card mode -- see the openrouter_text overlay's header
+# comment for the full rationale. Pilot registry:
+# contracts_data/pilots/vision_vertex/.
+#
+# Provider deltas vs the OpenRouter pair:
+# * provider binding: Vertex AI's OpenAI-compatible chat-completions
+#   endpoint, project ``omnibase-465418``, region ``us-central1``:
+#   ``https://us-central1-aiplatform.googleapis.com/v1beta1/projects/omnibase-465418/locations/us-central1/endpoints/openapi/chat/completions``.
+#   ``model: google/gemini-2.5-flash-lite`` -- the ``google/`` prefix is
+#   REQUIRED by this endpoint (confirmed via a live 200 probe this session;
+#   omitting it is untested and not assumed to work).
+# * ``secret_ref: secret://llm/vertex``: NOT a static API key. Resolved at
+#   the battery-driver edge from ``VERTEX_ACCESS_TOKEN``, which the battery
+#   driver's caller must export fresh (via
+#   ``gcloud auth application-default print-access-token``) immediately
+#   before each per-seed process launch -- the token is short-lived
+#   (~1hr) and this codebase's per-seed isolated invocation pattern already
+#   launches one process per seed, so re-minting per seed removes all
+#   expiry risk with no in-process refresh logic needed. The real token
+#   value never appears in this file, argv, or any log.
+# * Billing verified live this session (not assumed): a real probe call to
+#   this exact endpoint/model returned
+#   ``usage.extra_properties.google.traffic_type: "ON_DEMAND"`` -- billed
+#   against project ``omnibase-465418``, independent of both the Google AI
+#   Studio free tier and OpenRouter's pass-through billing.
+# * ``max_tokens: 3072``, ``timeout_seconds: 120``, and the bounded 429
+#   retry (``max_attempts: 4``, ``initial_backoff_seconds: 2.0``,
+#   ``backoff_multiplier: 2.0``) are carried over unchanged from the
+#   OpenRouter pair -- zero CoT-budget truncation (finish_reason=length)
+#   was observed anywhere in that prior run (5,571 resolved completions),
+#   so no adjustment is made here.
+#
+# Battery (per-seed isolated invocation, matched seeds against the V-IMG
+# twin and against the OpenRouter pair's seeds 5001-5030 for a three-way
+# comparison):
+#   VERTEX_ACCESS_TOKEN="$(gcloud auth application-default print-access-token)" \
+#   uv run python scripts/run_ogate_objectives_battery.py \
+#       --overlay contracts_data/overlays/vision_foundry_60_asym_v2_vertex_text.yaml \
+#       --red-loadout contracts_data/loadouts/vision_vertex/berserker_scout_v2.yaml \
+#       --blue-loadout contracts_data/loadouts/vision_vertex/sniper_ironclad.yaml \
+#       --expected-arena foundry_60_asym_v2 \
+#       --n 1 --seed-base <seed-1> \
+#       --state-root .onex_state/steel_onslaught/vl_vertex_text_battery
+# with gcloud on PATH (this machine: ~/Downloads/google-cloud-sdk/bin, NOT
+# the default PATH -- a fragile environment dependency flagged for whoever
+# reruns this) and valid ADC credentials.
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_vertex_text/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_vertex_text/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_vertex_text/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_vertex_text/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_vertex_text/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_vertex_text/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/vision_vertex
+  arena_id: foundry_60_asym_v2
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: vertex_vl
+      endpoint_url: https://us-central1-aiplatform.googleapis.com/v1beta1/projects/omnibase-465418/locations/us-central1/endpoints/openapi/chat/completions
+      model: google/gemini-2.5-flash-lite
+      secret_ref:
+        kind: opaque
+        ref: secret://llm/vertex
+      timeout_seconds: 120.0
+      max_tokens: 3072
+      retry:
+        max_attempts: 4
+        initial_backoff_seconds: 2.0
+        backoff_multiplier: 2.0
+      # V-TEXT arm: no image_attachment. This is the ONLY field that differs
+      # from the V-IMG twin overlay's provider binding.
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.vertex_vl_text
+      display_name: Gemini 2.5 Flash-Lite (V-TEXT arm, Vertex AI)
+      provider_binding_id: vertex_vl
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500
