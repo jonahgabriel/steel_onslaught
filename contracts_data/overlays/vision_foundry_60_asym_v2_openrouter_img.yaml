@@ -1,0 +1,117 @@
+# ARM V-IMG of the 2026-07-24 vision-representation experiment RERUN over
+# OpenRouter. Byte-identical to
+# ``vision_foundry_60_asym_v2_openrouter_text.yaml`` (same model, same
+# arena/loadouts/personas, same provider timeout/retry/max_tokens) except
+# for the ONE added block below: ``llm.providers[0].image_attachment``. That
+# binding makes ``LLMPilot.decide`` (pilot.py) render + attach a deterministic
+# per-tick PNG (``render_observation_png``, llm/render.py) alongside the SAME
+# text prompt V-TEXT sends, plus one neutral sentence noting the image is
+# attached (no strategy). Both seats render symmetrically -- neither side
+# gets an information advantage the other lacks.
+#
+# See the V-TEXT twin overlay's header comment for the full OpenRouter-
+# unblock rationale (why this is a rerun of PR #171's blocked gemini_text/
+# gemini_img pair, not a new experiment) and the live evidence backing the
+# provider/model/billing choice (paid, non-``:free`` ``google/gemini-2.5-
+# flash-lite`` slug; account credit confirmed; image content-part accepted
+# and billed in a live smoke-test call this session).
+#
+# Platform non-negotiables this binding relies on (unchanged from the
+# original gemini_img design):
+#   - the render is a PURE deterministic function of match state (same state
+#     -> byte-identical PNG; tests/llm/test_render_determinism.py);
+#   - the sha256 is recorded in the ``LLM_COMPLETION_REQUESTED`` ledger event
+#     (events/payloads.py::ModelSOLlmCompletionRequestedPayload.image_sha256);
+#   - the PNG itself is persisted under ``render_output_dir`` below, keyed by
+#     match_id/tick, so the ledger's sha256 is joinable to a durable artifact;
+#   - replay validity is unaffected -- LLM completion telemetry (image or
+#     text) was never part of the canonical fold
+#     (src/steel_onslaught/replay/engine.py's own module docstring).
+#
+# Battery (per-seed isolated invocation, matched seeds against the V-TEXT
+# twin for a paired within-model comparison):
+#   uv run python scripts/run_ogate_objectives_battery.py \
+#       --overlay contracts_data/overlays/vision_foundry_60_asym_v2_openrouter_img.yaml \
+#       --red-loadout contracts_data/loadouts/vision_openrouter/berserker_scout_v2.yaml \
+#       --blue-loadout contracts_data/loadouts/vision_openrouter/sniper_ironclad.yaml \
+#       --expected-arena foundry_60_asym_v2 \
+#       --n 1 --seed-base <seed-1> \
+#       --state-root .onex_state/steel_onslaught/vl_or_img_battery
+# with OPEN_ROUTER_API_KEY available in the environment or ~/.omnibase/.env.
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_img/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_img/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_img/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_img/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_img/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_img/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/vision_openrouter
+  arena_id: foundry_60_asym_v2
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: openrouter_vl
+      endpoint_url: https://openrouter.ai/api/v1/chat/completions
+      model: google/gemini-2.5-flash-lite
+      secret_ref:
+        kind: opaque
+        ref: secret://llm/openrouter
+      timeout_seconds: 120.0
+      max_tokens: 3072
+      retry:
+        max_attempts: 4
+        initial_backoff_seconds: 2.0
+        backoff_multiplier: 2.0
+      # V-IMG arm: the ONLY field that differs from the V-TEXT twin overlay.
+      # arena_size is config-declared to match foundry_60_asym_v2's own
+      # ``size: 60`` (contracts_data/arenas/foundry_60_asym_v2.yaml) -- static
+      # per this overlay, never resolved dynamically from the live arena spec
+      # (see ModelSOLlmImageAttachmentBinding's docstring).
+      image_attachment:
+        enabled: true
+        arena_size: 60
+        render_output_dir: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_img/renders
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.openrouter_vl_img
+      display_name: Gemini 2.5 Flash-Lite (V-IMG arm, OpenRouter)
+      provider_binding_id: openrouter_vl
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500
