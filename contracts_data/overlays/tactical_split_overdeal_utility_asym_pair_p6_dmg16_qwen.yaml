@@ -13,11 +13,14 @@
 #     does not touch the arena).
 #   - blue loadout: ``loadout.llm.qwen35_sniper_ironclad_mortar_r30``
 #     (``contracts_data/loadouts/qwen35/sniper_ironclad_mortar_r30.yaml``) --
-#     the shared approach-fix lever, HELD CONSTANT across P1/P2/P3/P4/P5/P6:
+#     the shared mortar-range lever, HELD CONSTANT across P1/P2/P3/P4/P5/P6:
 #     swaps ONLY ``weapon.siege.artillery_mortar`` ->
 #     ``weapon.siege.artillery_mortar_r30`` (range 50 -> 30, every other
 #     weapon field identical). Bound via ``--blue-loadout`` at launch, not
 #     referenced inside this overlay file.
+#     CORRECTION (OMN-15119): this is a partial approach fix only --
+#     ``harpoon_gun`` stays at range 30, uncapped, through P1-P7. Blue's
+#     engagement envelope was never closed by this lever alone.
 #   - red loadout: ``loadout.llm.qwen35_berserker_dmg16``
 #     (``contracts_data/loadouts/llm_qwen35_berserker_dmg16.yaml``) -- the
 #     lethality-dose lever: swaps both of the berserker's weapons for

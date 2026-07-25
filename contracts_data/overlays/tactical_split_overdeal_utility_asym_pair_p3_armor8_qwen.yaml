@@ -12,11 +12,14 @@
 #     does not touch the arena).
 #   - blue loadout: ``loadout.llm.qwen35_sniper_ironclad_mortar_r30_armor8``
 #     (``contracts_data/loadouts/qwen35/sniper_ironclad_mortar_r30_armor8.yaml``)
-#     -- BOTH levers live on the blue seat here: the shared approach-fix
+#     -- BOTH levers live on the blue seat here: the shared mortar-range
 #     lever (``weapon.siege.artillery_mortar`` -> ``...mortar_r30``, range
 #     50 -> 30) PLUS the lethality-dose lever (chassis
 #     ``chassis.heavy.ironclad_mk1`` -> ``...ironclad_mk1_armor8``,
 #     base_armor 16 -> 8), every other loadout/chassis field identical.
+#     CORRECTION (OMN-15119): the mortar-range half of this pair is a
+#     partial approach fix only -- ``harpoon_gun`` stays at range 30,
+#     uncapped, through P1-P7. Blue's engagement envelope was never closed.
 #     Bound via ``--blue-loadout`` at launch, not referenced inside this
 #     overlay file.
 #   - red loadout: ``loadout.llm.qwen35_berserker``
