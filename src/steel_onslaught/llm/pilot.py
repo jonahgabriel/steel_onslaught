@@ -32,7 +32,7 @@ from steel_onslaught.events.payloads import (
 from steel_onslaught.immutable import FrozenJSONMapping, thaw_json_mapping
 from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
 from steel_onslaught.llm.personas import Persona
-from steel_onslaught.llm.render import render_observation_png
+from steel_onslaught.llm.render import render_blank_png, render_observation_png
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
     LlmResponse,
@@ -268,11 +268,19 @@ class LLMPilot:
         (state-root-relative, tick-keyed, no ULIDs/wall-clock in the path) so
         the sha256 recorded in the ``LLM_COMPLETION_REQUESTED`` ledger event is
         joinable to a durable evidence artifact.
+
+        ``config.render_mode`` selects the renderer (2026-07-24 blank-image
+        control arm): ``"arena_render"`` (default, every pre-existing overlay)
+        keeps the original observation-dependent render; ``"blank"`` renders
+        a content-free, same-dimensions control image instead.
         """
         config = self._image_attachment_config
         if config is None:
             return None
-        png_bytes = render_observation_png(observation, arena_size=config.arena_size)
+        if config.render_mode == "blank":
+            png_bytes = render_blank_png(arena_size=config.arena_size)
+        else:
+            png_bytes = render_observation_png(observation, arena_size=config.arena_size)
         sha256_hex = hashlib.sha256(png_bytes).hexdigest()
         match_dir = config.render_output_dir / observation.match_id
         match_dir.mkdir(parents=True, exist_ok=True)

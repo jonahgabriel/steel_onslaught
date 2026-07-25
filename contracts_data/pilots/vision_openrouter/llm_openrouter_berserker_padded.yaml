@@ -1,0 +1,17 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.openrouter_vl_berserker_padded
+display_name: "Gemini 2.5 Flash-Lite Berserker (text-padding control arm, OpenRouter)"
+# 2026-07-24 blank-image/text-padding control-arm follow-up to PR #187
+# (docs/evidence/2026-07-24-vl_openrouter_rerun-battery.md). Same provider
+# binding (openrouter_vl) as the V-TEXT/V-IMG pilots -- only the persona
+# differs: `berserker_padded` (contracts_data/pilots/personas/) is the
+# `berserker` doctrine verbatim plus a deterministic, clearly-marked filler
+# block appended, calibrated to match V-IMG's mean prompt_tokens overhead
+# WITHOUT attaching an image. Never card mode, same as its siblings.
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: berserker_padded
+  provider: openrouter_vl

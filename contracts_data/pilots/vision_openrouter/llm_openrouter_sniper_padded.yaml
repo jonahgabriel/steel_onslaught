@@ -1,0 +1,13 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.openrouter_vl_sniper_padded
+display_name: "Gemini 2.5 Flash-Lite Sniper (text-padding control arm, OpenRouter)"
+# See llm_openrouter_berserker_padded.yaml for the full design note. Same
+# provider binding (openrouter_vl), sniper_padded persona (sniper doctrine +
+# the SAME deterministic filler block, matching lengths symmetrically).
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: sniper_padded
+  provider: openrouter_vl
