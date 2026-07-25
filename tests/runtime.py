@@ -99,6 +99,7 @@ def match_runner(
     arena_override: ModelSOArenaSpec | None = None,
     pilots_override: Mapping[str, PilotProtocol] | None = None,
     card_runtime_snapshot: ModelSOCardRuntimeSnapshot | None = None,
+    defense_handler_ids: tuple[str, ...] | None = None,
 ) -> tuple[MatchRunner, TestRuntime]:
     runtime = runtime_dependencies()
     if arena_override is not None and (spawn_a is not None or spawn_b is not None):
@@ -156,6 +157,7 @@ def match_runner(
         side_a=side_a,
         side_b=side_b,
         card_runtime_snapshot=card_runtime_snapshot,
+        defense_handler_ids=defense_handler_ids,
     )
     return runner, runtime
 

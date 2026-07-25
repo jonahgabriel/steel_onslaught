@@ -252,6 +252,33 @@ class ModelSOUtilityHandlerPackBinding(_ClosedBinding):
         return self
 
 
+class ModelSODefenseHandlerPackBinding(_ClosedBinding):
+    """Explicit allowlisted defense-resolution handler pack selection.
+
+    Mirrors ``ModelSOUtilityHandlerPackBinding`` but for the always-on
+    damage-mitigation seam (armor today; a future shield/ablative-plating
+    handler would add its id alongside ``defense.armor.v1``).
+    ``handler_ids`` selects a fail-closed subset of the canonical pack; an
+    empty tuple is rejected so an overlay that opts in must name at least one
+    handler. Overlays that omit this binding keep the default pack
+    (``defense.armor.v1`` — byte-identical to the pre-seam hardcoded call).
+    """
+
+    kind: Literal["defense_resolution_handlers"]
+    pack_id: StrictStr = Field(
+        min_length=1,
+        max_length=96,
+        pattern=r"^[a-z][a-z0-9_.-]*$",
+    )
+    handler_ids: tuple[StrictStr, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _handler_ids_are_unique(self) -> Self:
+        if len(self.handler_ids) != len(set(self.handler_ids)):
+            raise ValueError("defense handler_ids must be unique")
+        return self
+
+
 class ModelSOContractBindings(_ClosedBinding):
     """Filesystem contract roots owned by the application overlay.
 
@@ -270,6 +297,10 @@ class ModelSOContractBindings(_ClosedBinding):
         exclude_if=lambda value: value is None,
     )
     utility_handler_pack: ModelSOUtilityHandlerPackBinding | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    defense_handler_pack: ModelSODefenseHandlerPackBinding | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )

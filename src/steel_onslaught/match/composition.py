@@ -180,6 +180,7 @@ from steel_onslaught.projections.leaderboard.handler import (
     ModelSOSQLiteLeaderboardConfig,
 )
 from steel_onslaught.projections.leaderboard.protocol import LeaderboardRepository
+from steel_onslaught.reducers.defense_handlers import default_defense_registry
 from steel_onslaught.reducers.scoring import ReducerScoring, verify_replay_validity
 
 
@@ -389,6 +390,13 @@ class RuntimeDependencies:
     # (smoke/chaff/flares); an overlay ``utility_handler_pack`` narrows it to
     # the named, fail-closed subset.
     utility_handler_ids: tuple[str, ...] | None = None
+    # Defense-resolution (armor) handlers selected by the typed overlay.
+    # Unlike ``utility_handler_ids``/``card_rule_pack_provenance``, this seam
+    # is never card-mode-gated and never off: damage resolution runs in every
+    # match.  ``None`` keeps the default pack (``defense.armor.v1`` — the
+    # pre-seam hardcoded behavior); an overlay ``defense_handler_pack``
+    # narrows it to a named, fail-closed subset.
+    defense_handler_ids: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.card_cadence not in {"atomic", "paced"}:
@@ -1773,6 +1781,25 @@ def build_runtime_dependencies(
             # ``select`` fails closed on unknown/duplicate/empty ids.
             default_utility.select(utility_pack_binding.handler_ids)
             utility_handler_ids = tuple(utility_pack_binding.handler_ids)
+        # Defense-resolution (armor) handlers selected by the typed overlay.
+        # Unlike the utility/rule packs above, this is NOT gated on card mode:
+        # weapon-fire damage resolution runs in every match regardless of
+        # whether card mode is enabled. Absent binding => default pack
+        # (``defense.armor.v1``, byte-identical to the pre-seam hardcoded
+        # call); a binding narrows it to a fail-closed named subset validated
+        # here so a mis-authored overlay fails at composition, not mid-match.
+        defense_pack_binding = overlay.contracts.defense_handler_pack
+        defense_handler_ids: tuple[str, ...] | None = None
+        if defense_pack_binding is not None:
+            default_defense = default_defense_registry()
+            if defense_pack_binding.pack_id != default_defense.pack_id:
+                raise ValueError(
+                    f"unknown defense handler pack {defense_pack_binding.pack_id!r}; "
+                    f"available pack is {default_defense.pack_id!r}"
+                )
+            # ``select`` fails closed on unknown/duplicate/empty ids.
+            default_defense.select(defense_pack_binding.handler_ids)
+            defense_handler_ids = tuple(defense_pack_binding.handler_ids)
         if card_binding is not None and card_binding.programmers:
             if card_programmers is not None:
                 raise ValueError(
@@ -1834,6 +1861,7 @@ def build_runtime_dependencies(
             ),
             prompt_provenance=llm.prompt_provenance,
             utility_handler_ids=utility_handler_ids,
+            defense_handler_ids=defense_handler_ids,
         )
     except Exception:
         if owns_llm:
@@ -2292,6 +2320,7 @@ def assemble_match_with_dependencies(
         card_cadence=dependencies.card_cadence,
         progress_gate=resolved_progress_gate,
         utility_handler_ids=dependencies.utility_handler_ids,
+        defense_handler_ids=dependencies.defense_handler_ids,
     )
     scoring = ReducerScoring(
         identity.match_id,

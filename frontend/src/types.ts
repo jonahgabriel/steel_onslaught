@@ -271,6 +271,23 @@ export interface SOCardRulePackProvenance {
   content_sha256: string;
 }
 
+/** Content-addressed identity of one selected defense-resolution handler
+ * (defense seam refactor) — mirrors ModelSODefenseHandlerDescriptor. */
+export interface SODefenseHandlerDescriptor {
+  handler_id: string;
+  version: string;
+  description: string;
+}
+
+/** Which defense-resolution (armor) handler pack a match flew with. Unlike
+ * card_rule_pack_provenance, this is always present: damage resolution runs
+ * in every match, so a new match's MATCH_STARTED always carries this field. */
+export interface SODefenseHandlerPackProvenance {
+  pack_id: string;
+  handlers: SODefenseHandlerDescriptor[];
+  content_sha256: string;
+}
+
 export interface SOEffectivePromptProvenance {
   schema_version: "0.1.0";
   kind: "steel_onslaught.effective_prompt";
@@ -340,6 +357,9 @@ export interface MatchStartedPayload {
   card_rule_pack_provenance?: SOCardRulePackProvenance;
   prompt_provenance?: SOMatchPromptProvenance;
   policy_provenance?: SOSeatPolicyProvenance[];
+  /** Always present on new matches (defense resolution is never off); absent
+   * only on ledgers recorded before this seam existed. */
+  defense_handler_pack_provenance?: SODefenseHandlerPackProvenance;
 }
 
 export type SORuntimeStatus = "ready" | "running" | "paused" | "ended" | "failed";
@@ -1501,6 +1521,50 @@ function parseCardRulePackProvenance(value: unknown, context: string): SOCardRul
   };
 }
 
+function parseDefenseHandlerPackProvenance(
+  value: unknown,
+  context: string,
+): SODefenseHandlerPackProvenance {
+  const record = asRecord(value, context);
+  rejectUnknown(record, ["pack_id", "handlers", "content_sha256"], context);
+  const handlers = record["handlers"];
+  if (!Array.isArray(handlers)) {
+    fail(context, 'field "handlers" must be an array');
+  }
+  return {
+    pack_id: patternString(
+      record["pack_id"],
+      /^[a-z][a-z0-9_.-]*$/,
+      "a defense handler pack id",
+      `${context}.pack_id`,
+    ),
+    handlers: handlers.map((handler, index) => {
+      const handlerRecord = asRecord(handler, `${context}.handlers[${index}]`);
+      rejectUnknown(
+        handlerRecord,
+        ["handler_id", "version", "description"],
+        `${context}.handlers[${index}]`,
+      );
+      return {
+        handler_id: patternString(
+          handlerRecord["handler_id"],
+          /^[a-z][a-z0-9_.-]*$/,
+          "a defense handler id",
+          `${context}.handlers[${index}].handler_id`,
+        ),
+        version: str(handlerRecord, "version", `${context}.handlers[${index}]`),
+        description: str(handlerRecord, "description", `${context}.handlers[${index}]`),
+      };
+    }),
+    content_sha256: patternString(
+      record["content_sha256"],
+      /^[0-9a-f]{64}$/,
+      "a lowercase SHA-256 digest",
+      `${context}.content_sha256`,
+    ),
+  };
+}
+
 function parsePromptProvenance(value: unknown, context: string): SOMatchPromptProvenance {
   const record = asRecord(value, context);
   rejectUnknown(
@@ -2058,6 +2122,7 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         "card_rule_pack_provenance",
         "prompt_provenance",
         "policy_provenance",
+        "defense_handler_pack_provenance",
       ],
       context,
     );
@@ -2131,6 +2196,13 @@ const PAYLOAD_PARSERS: PayloadParsers = {
       "prompt_provenance" in record
         ? parsePromptProvenance(record["prompt_provenance"], `${context}.prompt_provenance`)
         : undefined;
+    const defenseHandlerPackProvenance =
+      "defense_handler_pack_provenance" in record
+        ? parseDefenseHandlerPackProvenance(
+            record["defense_handler_pack_provenance"],
+            `${context}.defense_handler_pack_provenance`,
+          )
+        : undefined;
     let policyProvenance: SOSeatPolicyProvenance[] | undefined;
     if ("policy_provenance" in record) {
       const rawPolicy = record["policy_provenance"];
@@ -2160,6 +2232,9 @@ const PAYLOAD_PARSERS: PayloadParsers = {
         : { card_rule_pack_provenance: cardRulePackProvenance }),
       ...(promptProvenance === undefined ? {} : { prompt_provenance: promptProvenance }),
       ...(policyProvenance === undefined ? {} : { policy_provenance: policyProvenance }),
+      ...(defenseHandlerPackProvenance === undefined
+        ? {}
+        : { defense_handler_pack_provenance: defenseHandlerPackProvenance }),
     };
   },
   runtime_status_changed: (value, context) => {
