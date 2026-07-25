@@ -11,6 +11,7 @@ authority: this module has zero side effects and zero I/O.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 
 from steel_onslaught.contracts.card import ModelSOCard, SOCardCategory
@@ -235,10 +236,53 @@ def compute_weapon_range_flags(
     return tuple(sorted(flags, key=lambda flag: flag.card_id))
 
 
+def compute_spatial_read_receipt(
+    *,
+    grid: ModelSOSpatialGridView,
+    movement_previews: Sequence[ModelSOMovementPreview],
+    weapon_range_flags: Sequence[ModelSOWeaponRangeFlag],
+) -> str:
+    """Deterministic runtime receipt that spatial data was actually rendered.
+
+    ARM R1 (``spatial_representation == "grid"``) never asks the model to
+    state anything -- there is no scaffold field in its prompt (see
+    ``llm.programming._SPATIAL_GRID_INSTRUCTIONS`` vs
+    ``_SPATIAL_SCAFFOLD_INSTRUCTIONS``), so an R1 plan has no LLM text to
+    persist the way R2's ``spatial_read`` self-report does. Without this
+    function an R1-bearing match's ``plan_committed`` events carry zero
+    trace of the lever: the only proof the representation was applied is the
+    overlay's ``pilot_spec_id``, a *configuration* fact, not a *runtime* one
+    (SO-COMP-INT, docs/evidence/2026-07-25-composition-interaction-analysis.md
+    §7). This computes a factual one-line summary purely from the SAME real
+    per-round data the R1 prompt rendered -- cell-marker counts off
+    ``grid.rows`` and pass/fail counts off the resolver-computed preview/flag
+    lists -- so the string necessarily varies round to round with what was
+    actually shown and can never degrade into a constant marker.
+
+    Never a strategy hint: this only counts symbols/booleans already present
+    in the rendered prompt, the same way the R2 scaffold only asks the model
+    to restate what it was shown.
+    """
+
+    cell_counts: Counter[str] = Counter()
+    for row in grid.rows:
+        cell_counts.update(row)
+    clear_after = sum(1 for preview in movement_previews if preview.enemy_los_after == "clear")
+    in_range = sum(1 for flag in weapon_range_flags if flag.in_range)
+    return (
+        f"grid radius={grid.radius} rows={len(grid.rows)}: "
+        f"{cell_counts.get('.', 0)} open, {cell_counts.get('x', 0)} los-blocked, "
+        f"{cell_counts.get('#', 0)} obstacle, {cell_counts.get('O', 0)} objective cells; "
+        f"{len(movement_previews)} movement previews ({clear_after} clear-los-after); "
+        f"{in_range}/{len(weapon_range_flags)} weapons in range"
+    )
+
+
 __all__ = [
     "DEFAULT_GRID_RADIUS",
     "SPATIAL_GRID_LEGEND",
     "compute_movement_previews",
+    "compute_spatial_read_receipt",
     "compute_weapon_range_flags",
     "render_ascii_grid",
 ]

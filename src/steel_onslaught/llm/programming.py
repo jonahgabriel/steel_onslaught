@@ -68,6 +68,7 @@ from steel_onslaught.llm.schemas import (
     ModelSOLlmEvidenceContext,
     ProtocolLlmClient,
 )
+from steel_onslaught.match.spatial_preview import compute_spatial_read_receipt
 from steel_onslaught.pilots.programming import (
     ModelSOProgrammingObservation,
     ProgrammingPilotError,
@@ -272,6 +273,31 @@ def _error_detail(exc: BaseException, *, limit: int = 240) -> str:
     if len(detail) > limit:
         detail = detail[: limit - 1] + "…"
     return detail
+
+
+def _computed_spatial_read_receipt(observation: ModelSOProgrammingObservation) -> str | None:
+    """Runtime receipt for the R1 (``spatial_representation="grid"``) lever.
+
+    R1 never asks the model for a ``spatial_read`` sentence (only the
+    ``grid_scaffold`` addendum does), so there is no LLM text to persist for
+    it.  Without a receipt, an R1-bearing ``plan_committed`` event carries no
+    marker at all that the representation was applied -- attribution rests
+    solely on the overlay's ``pilot_spec_id``, a configuration fact rather
+    than a runtime one (SO-COMP-INT, PR #208). This derives a deterministic,
+    content-correct summary from the exact real per-round
+    ``spatial_grid``/``movement_previews``/``weapon_range_flags`` data the
+    prompt itself rendered -- never a constant, never a strategy hint.
+    Returns ``None`` when no spatial data was rendered this round
+    (``spatial_representation == "none"``).
+    """
+
+    if observation.spatial_grid is None:
+        return None
+    return compute_spatial_read_receipt(
+        grid=observation.spatial_grid,
+        movement_previews=observation.movement_previews,
+        weapon_range_flags=observation.weapon_range_flags,
+    )
 
 
 def _card_definition(card: object) -> dict[str, object]:
@@ -857,12 +883,27 @@ class LLMProgrammingPilot:
                 rationale=parsed.rationale,
                 confidence=parsed.confidence,
                 plan_source=SOPlanSource.LLM,
-                # Persist the scaffold's spatial read onto the durable plan so
-                # the grid_scaffold arm's actual stated reasoning survives into
-                # the ledger.  ``None`` whenever the arm did not request one
-                # (every non-scaffold representation), which keeps the payload
-                # byte-identical to the pre-field composition for those arms.
-                spatial_read=parsed.spatial_read,
+                # Persist a truthful spatial_read receipt so BOTH show-dont-
+                # tell arms leave a runtime marker in the ledger, never just
+                # config (SO-SPATIAL-RECEIPT, SO-COMP-INT PR #208 finding:
+                # spatial_read was null in every plan of every arm, including
+                # the R1-only arm, so R1 attribution rested solely on the
+                # overlay's pilot_spec_id). R2 (``spatial_read_required``)
+                # keeps the model's own self-report verbatim -- that text,
+                # and whether the model omitted it, IS the R2 telemetry this
+                # field was built to capture, so it is never overridden here.
+                # R1 (``spatial_grid`` populated, no scaffold ask) has no
+                # model text to persist -- the prompt never asks for one --
+                # so the receipt is computed from the exact real per-round
+                # grid/preview/flag data already rendered into the prompt.
+                # ``None`` only when neither is true (representation
+                # "none"), which keeps the payload byte-identical to the
+                # pre-field composition for those arms.
+                spatial_read=(
+                    parsed.spatial_read
+                    if observation.spatial_read_required
+                    else _computed_spatial_read_receipt(observation)
+                ),
             )
             # Run the candidate through the canonical boundary here so an
             # observed completion is resolved only after hand/register checks.

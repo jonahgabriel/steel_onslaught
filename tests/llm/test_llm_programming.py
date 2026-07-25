@@ -1108,6 +1108,163 @@ def test_grid_scaffold_seat_accepts_plan_with_spatial_read() -> None:
     assert plan.plan_source is SOPlanSource.LLM
 
 
+def _observation_with_spatial_grid(*, spatial_read_required: bool) -> ModelSOProgrammingObservation:
+    """Build an observation carrying real R1/R2 spatial fields (grid, movement
+    previews, weapon range flags), mirroring exactly what
+    ``CardRunnerAdapter._spatial_fields`` attaches for an opted-in seat."""
+    from steel_onslaught.match.spatial_preview import (
+        compute_movement_previews,
+        compute_weapon_range_flags,
+        render_ascii_grid,
+    )
+
+    observation = _observation()
+    self_pos = observation.pilot_observation.position
+    enemy_pos = ModelSOPosition(x=self_pos.x + 6, y=self_pos.y)
+    grid = render_ascii_grid(
+        self_pos=self_pos,
+        enemy_pos=enemy_pos,
+        obstacles=frozenset(),
+        objectives=(),
+        arena_size=40,
+    )
+    previews = compute_movement_previews(
+        hand_cards=observation.hand_cards,
+        from_pos=self_pos,
+        budget=4,
+        enemy_pos=enemy_pos,
+        obstacles=frozenset(),
+        arena_size=40,
+    )
+    flags = compute_weapon_range_flags(
+        hand_cards=observation.hand_cards,
+        weapon_ids=(),
+        weapon_views=observation.pilot_observation.weapons,
+        distance_current=6,
+    )
+    return observation.model_copy(
+        update={
+            "spatial_grid": grid,
+            "movement_previews": previews,
+            "weapon_range_flags": flags,
+            "spatial_read_required": spatial_read_required,
+        }
+    )
+
+
+def test_grid_only_seat_plan_committed_carries_a_truthful_spatial_read_receipt() -> None:
+    """ARM R1 (``spatial_representation="grid"``, no scaffold) never asks the
+    model for a ``spatial_read`` sentence -- the prompt addendum for R1 has no
+    such field (``test_programming_system_prompt_adds_grid_addendum_only_for_grid``
+    above). Per the SO-COMP-INT interaction analysis (PR #208,
+    docs/evidence/2026-07-25-composition-interaction-analysis.md §7),
+    ``plan_committed.spatial_read`` was null in 0/302, 0/500, 0/358, 0/590
+    plans across ALL four factorial arms -- including the R1-only arm whose
+    entire lever is spatial representation. That leaves R1 attribution
+    resting solely on the overlay's ``pilot_spec_id`` (a configuration fact),
+    unlike ``covered_advance``, which has real runtime uptake evidence. A
+    real R1 completion (no ``spatial_read`` field at all, matching the R1
+    wire contract exactly) must still produce a non-null, content-correct
+    receipt on the committed plan -- computed from the real per-round
+    observation data, never a constant.
+    """
+    observation = _observation_with_spatial_grid(spatial_read_required=False)
+    # The exact wire shape a real R1 completion sends: no spatial_read key at
+    # all, since the R1 prompt never asks for one.
+    client = _ResponseClient(_response())
+    pilot = LLMProgrammingPilot(client=client, persona=_persona(), spatial_representation="grid")
+
+    plan = pilot.program(observation)
+
+    assert plan.spatial_read is not None
+    assert observation.spatial_grid is not None
+    assert f"radius={observation.spatial_grid.radius}" in plan.spatial_read
+    assert str(len(observation.movement_previews)) in plan.spatial_read
+
+
+def test_grid_only_seat_spatial_read_receipt_reflects_the_real_data_not_a_constant() -> None:
+    """The R1 receipt must vary with the actual rendered data -- two rounds
+    with different enemy distance (hence different LOS/range facts) must not
+    collapse to the same marker string."""
+    from steel_onslaught.match.spatial_preview import (
+        compute_movement_previews,
+        compute_weapon_range_flags,
+        render_ascii_grid,
+    )
+
+    base = _observation()
+    self_pos = base.pilot_observation.position
+
+    def _plan_for(enemy_offset: int) -> ModelSOPlanCommittedPayload:
+        enemy_pos = ModelSOPosition(x=self_pos.x + enemy_offset, y=self_pos.y)
+        grid = render_ascii_grid(
+            self_pos=self_pos,
+            enemy_pos=enemy_pos,
+            obstacles=frozenset(),
+            objectives=(),
+            arena_size=40,
+        )
+        previews = compute_movement_previews(
+            hand_cards=base.hand_cards,
+            from_pos=self_pos,
+            budget=4,
+            enemy_pos=enemy_pos,
+            obstacles=frozenset(),
+            arena_size=40,
+        )
+        flags = compute_weapon_range_flags(
+            hand_cards=base.hand_cards,
+            weapon_ids=(),
+            weapon_views=base.pilot_observation.weapons,
+            distance_current=enemy_offset,
+        )
+        observation = base.model_copy(
+            update={
+                "spatial_grid": grid,
+                "movement_previews": previews,
+                "weapon_range_flags": flags,
+                "spatial_read_required": False,
+            }
+        )
+        pilot = LLMProgrammingPilot(
+            client=_ResponseClient(_response()), persona=_persona(), spatial_representation="grid"
+        )
+        return pilot.program(observation)
+
+    near_plan = _plan_for(2)
+    far_plan = _plan_for(30)
+    assert near_plan.spatial_read is not None
+    assert far_plan.spatial_read is not None
+    assert near_plan.spatial_read != far_plan.spatial_read
+
+
+def test_grid_scaffold_seat_keeps_llm_self_report_unchanged_when_present() -> None:
+    """R2 is unaffected by the R1 receipt fix: when the model DOES supply a
+    ``spatial_read`` sentence under ``grid_scaffold``, that model text is
+    still what lands on the committed plan (the R1 code-computed receipt
+    path must never override a real R2 self-report)."""
+    observation = _observation_with_spatial_grid(spatial_read_required=True)
+    plan_json = json.dumps(
+        {
+            "registers": [
+                {"register_index": 0, "card_id": "card.test.advance"},
+                {"register_index": 2, "card_id": "card.test.vent"},
+            ],
+            "confidence": 0.8,
+            "rationale": "advance, then vent if heat rises",
+            "spatial_read": "clear line of sight, no cover nearby",
+        }
+    )
+    client = _ResponseClient(plan_json)
+    pilot = LLMProgrammingPilot(
+        client=client, persona=_persona(), spatial_representation="grid_scaffold"
+    )
+
+    plan = pilot.program(observation)
+
+    assert plan.spatial_read == "clear line of sight, no cover nearby"
+
+
 def test_objective_free_programming_prompt_has_no_objectives_block() -> None:
     """Pre-Phase-4 prompt shape is preserved byte-for-byte off objective arenas."""
 
