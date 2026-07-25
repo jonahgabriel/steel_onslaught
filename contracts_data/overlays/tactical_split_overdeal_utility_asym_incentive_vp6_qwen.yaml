@@ -1,0 +1,430 @@
+# SO-UTIL-VP6 arm overlay — rung 3 of the utility-bounty DOSE-RESPONSE ladder.
+#
+# PRE-REGISTERED. This commit adds the pre-registration below and is the LAST
+# commit before the first ``match_started`` event is emitted against this
+# overlay. n = 30, seeds 5001-5030.
+#
+# WHAT IS DIFFERENT FROM THE ANCHOR RUNG. This overlay is the SO-UTIL-REWARD
+# (vp2) arm overlay (``tactical_split_overdeal_utility_asym_incentive_vp2_qwen.yaml``)
+# with EXACTLY ONE experimental change — ``vp_per_deploy`` 2 -> 6 — plus an
+# isolated ledger state root. No arena, loadout, deck, weapon, persona, prompt,
+# handler, provider binding, or retry policy is touched. Mechanically: the body
+# of this file below ``schema_version`` differs from the vp2 overlay's body in
+# exactly eight lines — six state-root paths, the ``vp_per_deploy`` value, and
+# the one inline comment LINE that restates that value in prose. Against the vp4
+# rung (``..._vp4_qwen.yaml``) the same eight-line relationship holds.
+#
+# WHY THIS ARM EXISTS — IT IS THE DISCRIMINATING MEASUREMENT. Rung 1
+# (SO-UTIL-REWARD, #205) established that a structural in-register price moves
+# utility drafting at all: 115/684 = 0.168129, 1.52x its single-lever
+# comparator (z = 3.129, p = 0.0018), the first lever in this program's history
+# to do so. Rung 2 (SO-UTIL-VP4, #206) established that the response KEEPS
+# moving — 138/652 = 0.211656, 1.26x rung 1 (z = 2.030, p = 0.042) — but scored
+# H_SATURATE against its own bar of 0.2242, short by 0.012544. Crucially, rung
+# 2's miss was 0.20x its own CI width and **the bar fell INSIDE its 95% Wilson
+# interval [0.1820, 0.2447]**. Rung 2 therefore could NOT separate "linear" from
+# "sub-linear" at n = 30, and said so in its own verdict. Two points plus a
+# threshold do not identify a curve. This rung is the third point. It is the
+# measurement that makes the shape identifiable.
+#
+# THE BAR WAS FIXED BY FORMULA BEFORE RUNG 2 RAN — READ THIS BEFORE READING THE
+# CRITERION. The ladder's scoring rule (bar = A + steps * W, anchored on the
+# published vp2 figures) was committed in the RUNG 2 pre-registration, which
+# was authored and pushed before rung 2's first ``match_started``. This rung
+# applies that pre-committed formula; it does not choose a new one after seeing
+# rung 2's result. That distinction is the whole reason the formula was written
+# as a formula. It has one consequence that must be stated plainly and in
+# advance, because it changes what "H_DOSE" means at this rung:
+#   * The criterion is CUMULATIVE from vp2, not incremental. bar = A + 2W asks
+#     the vp2 -> vp6 span to deliver 2.000 W in total.
+#   * Rung 2 delivered 0.777 W of that span. So clearing the cumulative bar at
+#     this rung requires the vp4 -> vp6 step alone to deliver 1.223 W — MORE
+#     than the vp0 -> vp2 step (1.029 W) and considerably more than the
+#     vp2 -> vp4 step (0.777 W). In plain terms, the pre-committed criterion
+#     now requires the response to ACCELERATE.
+#   * On the realised trajectory it will very likely not. Extending the
+#     vp2 -> vp4 increment (+0.043527) unchanged predicts 0.255183 at vp6,
+#     which is BELOW the 0.2802 bar. H_SATURATE is the prior-favoured outcome
+#     and this pre-registration says so before the run rather than after it.
+# The bar is NOT moved to compensate. Moving it after two rungs have reported
+# would destroy the only property that makes a ladder worth running. What this
+# pre-registration does instead is add an UNSCORED incremental reading (below)
+# so that "the criterion was missed" and "the response stopped" stay visibly
+# separate claims — the same separation confound (5) enforced at rung 2.
+#
+# WHY 6, AND WHY THE LADDER IS 2/4/6 AND NOT 2/4/8. ``vp_threshold: 15``
+# partitions ``vp_per_deploy`` into structural tiers by deploys-to-threshold:
+# vp 4 -> 4 deploys; vp 5-7 -> 3; vp 8-14 -> 2; vp >= 15 -> 1 (degenerate — one
+# deploy wins the match outright). The geometric ladder 2/4/8 was the first
+# choice and was REJECTED on evidence, not taste. Method: replay a completed
+# ledger, re-cut each match at the tick a seat would first cross 15 VP under
+# the new rate, and recount the paired-round denominator. Recomputed live from
+# ``.onex_state/steel_onslaught/util_incentive_vp2/events.sqlite3`` (102
+# ``utility_deployed`` + 5 ``objective_scored`` events across 30 matches), NOT
+# copied from any document:
+#
+#   rate  deploys-to-15  deploy uplift  vp_threshold terminals  pooled N  Wilson width
+#   vp4        4          1.00 (as-is)          8/30              616       0.0589 (1.05x W)
+#   vp4        4          1.33 (at bar)        12/30              532       0.0639 (1.14x W)
+#   vp6        3          1.00                 12/30              532       0.0639 (1.14x W)
+#   vp6        3          1.67 (at bar)        20/30              384       0.0754 (1.35x W)
+#   vp8        2          1.00                 20/30              384       0.0754 (1.35x W)
+#   vp8        2          2.00 (at bar)        28/30              196       0.1103 (1.97x W)
+#
+# At vp8 the arm eats itself: 28 of 30 matches terminate on the bounty before
+# the drafting behaviour has been observed for long, the pooled denominator
+# collapses to 196, and the rung's own CI is twice as wide as the measurement
+# it is meant to extend. vp4 and vp6 both keep precision within 1.4x of the vp2
+# arm's own. The ladder is therefore 2/4/6, and this rung is 6.
+#
+# RE-PROJECTED FROM THE RUNG-2 LEDGER, WHICH IS THE BETTER BASE AND IS WORSE
+# NEWS. The table above replays vp2 because that is the ladder's published
+# anchor and the table is quoted unchanged from the rung-2 pre-registration for
+# continuity. But rung 2 has since run, and its ledger is one rung closer to
+# this one. Replaying ``util_incentive_vp4/events.sqlite3`` under THIS rung's
+# truncation (cut at each seat's 3rd deploy) gives a materially tighter,
+# materially worse-conditioned projection, disclosed here rather than buried:
+#
+#   base ledger  uplift  vp_threshold terminals  pooled N  Wilson width
+#   vp4 ledger   1.00           19/30              508      0.0722 (1.29x W)
+#   vp4 ledger   1.30           23/30              384      0.0828 (1.48x W)
+#
+# So the honest expectation for this rung is 19-23 of 30 matches ending on the
+# bounty and N ~= 384-508, versus the 12/30 and N = 532 the vp2 replay
+# predicted. Realised Wilson width is expected around 1.3-1.5x W — wider than
+# rung 2's realised 1.12x W, and wider than the 1.14-1.35x W the vp2 replay
+# projected. The disclosure obligation is to publish realised N and CI width
+# beside the bar, NOT to move the bar: the bar is a fixed RATE, so a smaller N
+# can never shift it, only widen this rung's own interval around it. Note N in
+# the 384-508 range falls BELOW 620 — the smallest pooled utility-dealt count
+# in any prior clean n=30 arm — which rung 2 flagged as a disclosure trigger
+# and then retired by realising 652. It is very unlikely to be retired here.
+#
+# CONFIGURATION UNDER TEST (inherited unchanged from #205/#206, restated so no
+# reader has to infer it):
+#   * Red DOSE: UNSCALED BASELINE. ``loadout.llm.qwen35_berserker`` ->
+#     ``weapon.light.machine_gun`` (damage 8, range 12) and
+#     ``weapon.light.shrapnel_thrower`` (damage 12, range 8). No P1-P7
+#     dose-ladder variant (``_dmg3``/``_dmg8``/``_dmg11``/``_dmg16``/``_dmg24``/
+#     ``_dmg55``/``_armor8``) is referenced anywhere in this arm.
+#   * Blue RANGE: UNCUT BASELINE. ``loadout.llm.qwen35_sniper_ironclad`` ->
+#     ``weapon.siege.artillery_mortar`` (range 50, damage 45) and
+#     ``weapon.heavy.harpoon_gun`` (range 30, damage 28). No ``_r30``/``_r15``
+#     SO-RANGECAP / SO-STANDOFF variant is referenced.
+#   * Arena ``foundry_60_asym_v1``, ``vp_threshold: 15``; over-deal 10
+#     (4 movement + 4 weapon + 2 utility), program 5; utility handler pack
+#     ``utility.resolution.v1`` complete. Both seats live Qwen3.6-35B-A3B.
+#   Holding dose and range at baseline is what keeps this arm EXACTLY ONE lever
+#   from the rung it is scored against.
+#
+# HYPOTHESES:
+#   H_DOSE — the response to price is (at least) linear across the full
+#     vp2 -> vp6 span. The cumulative lift from the vp2 rung reaches at least
+#     2.000 W, measured on the CI-width scale defined below.
+#   H_SATURATE — the response to price is SUB-LINEAR across that span. The lift
+#     is real and continues, but flattens with dose: the model re-prices as the
+#     price rises without ever paying full attention to it. A fully real,
+#     publishable, first-class negative result per house rule, and — for the
+#     reasons stated above — the prior-favoured outcome at this rung.
+#
+# ANCHOR AND SCALE — both read off the PUBLISHED SO-UTIL-REWARD evidence
+# document (``docs/evidence/2026-07-25-util_incentive_vp2-battery.md``), so a
+# reader can check every number in the criterion below BEFORE this battery
+# runs, and both IDENTICAL to the values the rung-2 pre-registration used:
+#   A = vp2 pooled utility keep-rate     = 115 / 684 = 0.168129
+#   W = vp2 pooled 95% Wilson CI width   = 0.1980 - 0.1420 = 0.0560
+#
+# FORMAL CRITERION — the ONLY criterion this arm is scored against.
+#   Quantity: POOLED (red + blue) utility keep-rate, n = 30, seeds 5001-5030,
+#   computed by the U-GATE paired ``hand_dealt``/``plan_committed`` method: for
+#   each seat, pair every ``hand_dealt`` with the ``plan_committed`` that
+#   follows it for the same (match_id, seat) in ledger order; keep-rate =
+#   (utility cards in ``plan_committed.registers[].card_id``) / (utility cards
+#   in ``hand_dealt.card_ids``); unpaired hands excluded from BOTH numerator
+#   and denominator.
+#   ARITHMETIC (independently verified before this commit):
+#     steps above the vp2 rung = (6 - 2) / 2 = 2
+#     bar = A + 2 * W
+#         = 0.168129 + 0.112000
+#         = 0.280129
+#         -> rounded UP to 4 dp = 0.2802
+#   Rounding UP is conservative: it makes H_DOSE harder to support, never
+#   easier — the same convention rungs 1 and 2 used. The bar is stable under
+#   the choice of rounding: carrying A and W at full precision
+#   (0.16812865 + 0.11203811 = 0.28016676) rounds up to the same 0.2802.
+#   DECISION: pooled utility keep-rate >= 0.2802 supports H_DOSE.
+#             pooled utility keep-rate <  0.2802 supports H_SATURATE.
+#
+# STANDING REFERENCE, NOT THE BAR. The 0.5331 chance bar from the
+# SO-UTIL-REWARD pre-registration is REPORTED for this rung (distance to it,
+# one-proportion z against the 0.50 floor) but is NOT what this arm is scored
+# against. This rung's bar sits 0.2529 below it by construction. Under the
+# vp0 -> vp2 linear model chance is not reached until vp ~= 14.7 — and under
+# the realised vp2 -> vp4 slope, not until vp ~= 17 — at which price a single
+# resolved deploy wins the match outright and the arena is degenerate. No rung
+# on this ladder can test the chance bar, and none claims to. Saying so here,
+# before the run, is what stops the chance bar from being quietly reintroduced
+# afterwards as a second criterion.
+#
+# LADDER-LEVEL READING — PRE-DECLARED, REPORTED, NEVER SCORED. The ladder has
+# NO criterion of its own; each rung is scored only against its own bar. With
+# vp0 = 0.110497, vp2 = 0.168129, vp4 = 0.211656 published and vp6 measured
+# here, this arm's evidence document will report the 4-point dose-response
+# curve, an unweighted linear trend across the four doses, and which of three
+# shapes the data are consistent with:
+#   (a) continued linear response — the rungs meet their bars;
+#   (b) saturation below chance — the rungs fall short while remaining above
+#       the preceding rung;
+#   (c) no further response — this rung is indistinguishable from vp4.
+# Any of the three is a publishable answer, and "n = 30 cannot distinguish
+# them" remains an acceptable one. None of these readings is scored.
+#
+# UNSCORED INCREMENTAL READING — PRE-DECLARED HERE precisely because the scored
+# criterion is cumulative and therefore now demands acceleration. Reported
+# alongside the criterion, never in place of it: the realised vp4 -> vp6
+# increment, expressed in W and compared against the vp0 -> vp2 (1.029 W) and
+# vp2 -> vp4 (0.777 W) increments, plus the unscored two-proportion tests of
+# this rung against vp4 (138/652) and against vp2 (115/684). This is the
+# reading that separates "the cumulative criterion was missed" from "the
+# response stopped" — two different claims that the criterion alone cannot
+# tell apart.
+#
+# CONFOUNDS — pre-declared, all five, before the run.
+#   (1) THE BOUNTY COUNTS TOWARD ``vp_threshold``, AND THIS IS THE RUNG WHERE
+#       IT BITES HARDEST. At ``vp_per_deploy: 6`` against ``vp_threshold: 15``,
+#       deploys-to-threshold = ceil(15/6) = 3 (2 deploys = 12 VP < 15;
+#       3 = 18 >= 15) — dropping to 2 deploys in a match where the seat also
+#       holds >= 3 objective VP. That shortcut is rarer-but-real (objective
+#       awards: 5 across 30 matches at vp2, 8 at vp4) and MUST BE DISCLOSED PER
+#       MATCH that takes it; at rung 2, zero matches took the equivalent path
+#       and the document said so explicitly. Projections: replaying the vp2
+#       ledger under this truncation gives 12/30 = 40% ``vp_threshold``
+#       terminals at N = 532 (78% of 684), or 20/30 and N = 384 (56%) at the
+#       bar-implied deploy rate; replaying the closer vp4 ledger gives 19/30 at
+#       N = 508 and 23/30 at N = 384. Projected Wilson width 0.0639-0.0828 =
+#       1.14-1.48x W. The bar is a FIXED RATE, so a smaller N cannot move it —
+#       it can only widen this rung's own CI, which is the exact mechanism that
+#       put rung 2's bar inside its interval. Realised N and realised CI width
+#       will be published beside the bar.
+#   (2) TRUNCATION SHORTENS EXPOSURE, NOT THE RATE — TO BE VERIFIED HERE, NOT
+#       ASSUMED FROM THE PRIOR RUNGS. Keep-rate is per-dealt-card, so a
+#       truncated match drops late rounds from numerator and denominator
+#       together. The check held at both prior rungs: at vp2, rounds 1-3 =
+#       60/332 = 0.180723 vs rounds 4+ = 55/352 = 0.156250 (z = 0.855,
+#       p ~ 0.39); at vp4, 75/356 = 0.210674 vs 63/296 = 0.212838 (z = -0.067,
+#       p = 0.946). But it is NOT guaranteed to survive at 3x the vp2 price: a
+#       seat two deploys from the line has an endgame incentive that does not
+#       exist at vp2, and rung 2's own limitations section stated that its
+#       verification "does not automatically extend to rung 3, where
+#       deploys-to-threshold falls to 3 and truncation bites harder; it must be
+#       re-run there." It is re-run here. An honest warning sign is already
+#       visible: replaying the vp4 ledger under this rung's truncation moves
+#       the pooled rate by +0.010785 (0.222441 vs the realised 0.211656),
+#       whereas the same replay of the vp2 ledger moves it by only +0.002924
+#       (0.171053 vs 0.168129). That is a projection artefact, NOT a prediction
+#       of this rung's rate, and it is disclosed because it is the direction
+#       that would flatter this arm.
+#       PRE-DECLARED TRUNCATION-IMMUNE SECONDARY, identical in form to rung 2:
+#       round-capped keep-rate over rounds 1-2 only (vp2 reference 40/232 =
+#       0.172414; vp4 reference 54/240 = 0.225000), a per-round-index keep-rate
+#       table, and disclosure of any seat-match failing to reach round 2 (zero
+#       at both prior rungs). REPORTED, NEVER SCORED. If the round-capped and
+#       pooled readings disagree in DIRECTION at this rung, the POOLED reading
+#       still scores the criterion and the disagreement is reported as a
+#       first-class limitation.
+#   (3) THE BLUE STANDOFF CONFIGURATION IS UNCHANGED (the P1-P7 harpoon framing
+#       error, OMN-15119 class). Blue keeps ``weapon.siege.artillery_mortar``
+#       (range 50) and ``weapon.heavy.harpoon_gun`` (range 30) against red's
+#       range-12 machine gun and range-8 shrapnel thrower. Blue therefore holds
+#       an uncontested standoff envelope; red went 0/30 at vp2 and 2/30 at vp4,
+#       both of those wins bought with deploys rather than won in a firefight.
+#       Holding this configuration is precisely what keeps the arm one lever
+#       from its anchor; every win-rate and terminal figure reads against it.
+#   (4) WIN RATE IS NOT A BALANCE RESULT. Bounty VP was 97.6% of all VP at vp2
+#       and 98.3% at vp4; this rung raises the per-deploy price 3x over the
+#       anchor, so that share can only rise again. At vp6 the win condition is
+#       effectively "three utility deploys". VP composition will be reported
+#       explicitly, and this arm's win rate must never be cited as balance.
+#   (5) H_SATURATE DOES NOT MEAN "NO EFFECT". A cumulative increment smaller
+#       than 2 W scores H_SATURATE even if this rung sets a new program maximum
+#       and beats vp4 significantly. The unscored two-proportion tests against
+#       vp4 (138/652) and vp2 (115/684), and the unscored incremental reading
+#       above, are reported alongside the criterion so that a real-but-
+#       sub-cumulative move is visible as exactly that.
+#
+# SECONDARY OBSERVABLES — PRE-DECLARED HERE, REPORTED, NEVER SCORED. Declaring
+# them in advance is what stops a large-but-sub-bar move from being written up
+# post hoc as a rescue: per-seat utility keep-rate; the round-capped rounds-1-2
+# keep-rate and per-round-index table from confound (2); all-card keep-rate as
+# the mechanical control; red (brawler) win rate and terminal-class mix
+# INCLUDING the ``vp_threshold`` terminal count and the per-match objective-VP
+# disclosure from confound (1); match length; ``utility_deployed`` counts by
+# kind and by seat; programmed-to-resolved conversion; VP composition (bounty
+# vs objective); completion health; the 4-point ladder curve and linear trend;
+# and the unscored two-proportion tests against vp4, vp2, the single-lever
+# comparator, and the 0.50 floor.
+#
+# "n=30 CANNOT DISTINGUISH THEM" IS AN ACCEPTABLE ANSWER. This arm does not
+# pre-favour either hypothesis in its analysis — the statement above that
+# H_SATURATE is prior-favoured is a disclosure of what the pre-committed
+# cumulative formula now demands, not a licence to read the result loosely —
+# and no re-run to chase a different number is permitted: the battery reports
+# the 30 seeds it ran.
+#
+# DISCARD RULE (inherited verbatim in substance from rungs 1 and 2, committed
+# here BEFORE the run; the criterion above is UNCHANGED by it). The single
+# shared vLLM endpoint is not exclusive to this lane and the overlay's provider
+# binding carries ``retry.max_attempts: 1`` — byte-identical to the vp2 and vp4
+# rungs and deliberately NOT modified, since changing it would break the
+# one-lever property this rung's keep-rate comparison rests on. A concurrent
+# battery on the same endpoint, or an isolated provider blip, therefore kills
+# whole seeds outright (``LlmTransportError``/``provider_error``) rather than
+# producing an in-match abort.
+#   A run is DISCARDED if and only if it fails to complete all 30 seeds — i.e.
+#   the driver reports ANY entry in ``skipped_seeds`` (equivalently, exits
+#   non-zero: ``scripts/run_ogate_objectives_battery.py`` returns 1 on any
+#   skipped seed as of #204). That condition is mechanically checkable from
+#   ``battery_summary.json`` and ``$?`` alone, is entirely independent of the
+#   primary outcome, and is evaluated BEFORE any keep-rate is computed. No
+#   other discard reason is permitted. Every discarded run is retained on disk
+#   under a ``_DISCARDED_<reason>`` lane name with its full run log, and is
+#   disclosed by seed list in the arm's evidence document. The FIRST run that
+#   completes 30/30 is the scored run; it is not re-run.
+# ==============================================================================
+#
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/util_incentive_vp6/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/util_incentive_vp6/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/util_incentive_vp6/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/util_incentive_vp6/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/util_incentive_vp6/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/util_incentive_vp6/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v1
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  # Phase 2 — utility resolution handlers selected by this typed overlay
+  # (design §6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+  # THE ONLY EXPERIMENTAL DELTA IN THIS FILE (SO-UTIL-MECH).  Each resolved
+  # UTILITY_DEPLOYED credits the deploying player 6 victory points, folded
+  # into the same ``vp_totals`` objective control scores into and settled
+  # against the same ``vp_threshold: 15``.  Absent this block the whole
+  # mechanism is off and every byte downstream -- prompt, MATCH_STARTED
+  # payload, VP derivation -- is identical to the baseline overlay.
+  utility_incentive:
+    kind: utility_deploy_vp_bounty
+    vp_per_deploy: 6
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # Keyless: the only provider carries ``secret_ref: null``, so no resolver
+    # capability is required.  ``none`` lets ``so run --overlay`` and the O-GATE
+    # battery driver launch this overlay directly (``injected`` would raise
+    # "requires a resolver capability" on the keyless CLI path).
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500
