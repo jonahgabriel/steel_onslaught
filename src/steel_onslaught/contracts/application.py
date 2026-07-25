@@ -408,11 +408,20 @@ class ModelSOLlmImageAttachmentBinding(_ClosedBinding):
     ledger. Present only on the V-IMG arm's provider binding; the V-TEXT arm
     omits it entirely (``None``), which is what keeps V-TEXT byte-identical
     to the pre-existing text-only wire body.
+
+    ``render_mode`` (2026-07-24 blank-image control arm): ``"arena_render"``
+    (the default, byte-identical to the original V-IMG behavior) renders the
+    real deterministic per-tick arena state via ``render_observation_png``.
+    ``"blank"`` instead renders a content-free, same-dimensions control image
+    via ``render_blank_png`` -- same pixel size and PNG encoding, zero
+    observation-dependent content. Every pre-existing overlay omits this
+    field and gets ``"arena_render"``, so no existing wire body changes.
     """
 
     enabled: Literal[True]
     arena_size: StrictInt = Field(gt=0, le=200)
     render_output_dir: Path
+    render_mode: Literal["arena_render", "blank"] = "arena_render"
 
 
 class ModelSOOpenAICompatibleProviderBinding(_ClosedBinding):

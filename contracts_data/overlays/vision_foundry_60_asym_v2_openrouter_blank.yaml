@@ -1,0 +1,119 @@
+# ARM V-IMG-BLANK of the 2026-07-24 vision-representation control-arm
+# follow-up: a content-free image of MATCHED pixel dimensions to the V-IMG
+# arm's real arena render, attached in the exact same way.
+#
+# This experiment follows up PR #187
+# (docs/evidence/2026-07-24-vl_openrouter_rerun-battery.md), which found
+# V-IMG's red win rate collapses from 46.67% (V-TEXT) to 0.00% but could not
+# distinguish two competing explanations (its own §6):
+#   (A) image-content-specific degradation -- the visual channel actively
+#       misleads spatial reasoning; or
+#   (B) prompt-length/attention dilution -- the image roughly doubles prompt
+#       tokens (1033 -> 2353, §3), and ANY equivalent-cost payload would
+#       produce the same degradation, regardless of content.
+#
+# This arm isolates content from length/presence: byte-identical to
+# ``vision_foundry_60_asym_v2_openrouter_img.yaml`` (same model, arena,
+# loadouts, personas, provider timeout/retry/max_tokens, same
+# ``arena_size: 60``) except for ONE added field on the image_attachment
+# binding: ``render_mode: blank``. That routes ``LLMPilot._render_image_attachment``
+# (src/steel_onslaught/llm/pilot.py) to ``render_blank_png`` (new,
+# src/steel_onslaught/llm/render.py) instead of ``render_observation_png`` --
+# a flat mid-grey PNG of the identical ``arena_size * 12px`` canvas, same PNG
+# encoding parameters, zero observation-dependent content (no grid, no
+# cells, no shapes). If the model tokenizes images by resolution (as vision
+# APIs typically do), this arm's prompt_tokens should closely match V-IMG's;
+# empirically verified per-arm in the evidence doc, not assumed.
+#
+# Reuses the SAME pilot registry and loadouts as the V-TEXT/V-IMG pair
+# (contracts_data/pilots/vision_openrouter/,
+# contracts_data/loadouts/vision_openrouter/) -- no new personas or pilots
+# are needed for this arm, since the only thing that changes is which bytes
+# get rendered into the existing image_attachment slot. No existing file is
+# modified; ``render_mode`` defaults to ``"arena_render"`` everywhere else.
+#
+# Battery (per-seed isolated invocation, matched seeds against BOTH the
+# V-TEXT and V-IMG twins for a paired within-model comparison):
+#   uv run python scripts/run_ogate_objectives_battery.py \
+#       --overlay contracts_data/overlays/vision_foundry_60_asym_v2_openrouter_blank.yaml \
+#       --red-loadout contracts_data/loadouts/vision_openrouter/berserker_scout_v2.yaml \
+#       --blue-loadout contracts_data/loadouts/vision_openrouter/sniper_ironclad.yaml \
+#       --expected-arena foundry_60_asym_v2 \
+#       --n 1 --seed-base <seed-1> \
+#       --state-root .onex_state/steel_onslaught/vl_or_blank_battery
+# with OPEN_ROUTER_API_KEY available in the environment or ~/.omnibase/.env.
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_blank/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_blank/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_blank/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_blank/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_blank/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_blank/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/vision_openrouter
+  arena_id: foundry_60_asym_v2
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: openrouter_vl
+      endpoint_url: https://openrouter.ai/api/v1/chat/completions
+      model: google/gemini-2.5-flash-lite
+      secret_ref:
+        kind: opaque
+        ref: secret://llm/openrouter
+      timeout_seconds: 120.0
+      max_tokens: 3072
+      retry:
+        max_attempts: 4
+        initial_backoff_seconds: 2.0
+        backoff_multiplier: 2.0
+      # V-IMG-BLANK arm: same arena_size/render_output_dir shape as the V-IMG
+      # twin, plus the ONE field that differs from it -- render_mode: blank.
+      image_attachment:
+        enabled: true
+        arena_size: 60
+        render_output_dir: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_blank/renders
+        render_mode: blank
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.openrouter_vl_blank
+      display_name: Gemini 2.5 Flash-Lite (V-IMG-BLANK control arm, OpenRouter)
+      provider_binding_id: openrouter_vl
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

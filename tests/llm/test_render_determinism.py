@@ -17,7 +17,7 @@ from PIL import Image
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
-from steel_onslaught.llm.render import render_observation_png
+from steel_onslaught.llm.render import render_blank_png, render_observation_png
 from steel_onslaught.pilots.schemas import (
     ModelSOObjectiveView,
     ModelSOPilotObservation,
@@ -213,3 +213,60 @@ def test_non_positive_arena_size_raises() -> None:
     obs = _observation()
     with pytest.raises(ValueError, match="arena_size must be positive"):
         render_observation_png(obs, arena_size=0)
+
+
+# ---------------------------------------------------------------------------
+# Blank-image control arm (2026-07-24) -- render_blank_png
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_blank_png_is_deterministic_across_repeated_calls() -> None:
+    first = render_blank_png(arena_size=20)
+    second = render_blank_png(arena_size=20)
+    assert first == second
+    assert hashlib.sha256(first).hexdigest() == hashlib.sha256(second).hexdigest()
+
+
+@pytest.mark.unit
+def test_blank_png_dimensions_match_arena_render() -> None:
+    """Same canvas formula as render_observation_png -- pixel dims must match exactly."""
+    obs = _observation()
+    real_png = render_observation_png(obs, arena_size=15)
+    blank_png = render_blank_png(arena_size=15)
+    real_image = Image.open(io.BytesIO(real_png))
+    blank_image = Image.open(io.BytesIO(blank_png))
+    assert blank_image.size == real_image.size == (15 * _CELL_PX, 15 * _CELL_PX)
+
+
+@pytest.mark.unit
+def test_blank_png_is_a_single_flat_color() -> None:
+    blank_png = render_blank_png(arena_size=10)
+    image = Image.open(io.BytesIO(blank_png)).convert("RGB")
+    colors = image.getcolors(maxcolors=10)
+    assert colors is not None
+    assert len(colors) == 1
+
+
+@pytest.mark.unit
+def test_blank_png_differs_from_any_arena_render() -> None:
+    obs = _observation(cover_cells=(ModelSOPosition(x=2, y=2),))
+    real_png = render_observation_png(obs, arena_size=20)
+    blank_png = render_blank_png(arena_size=20)
+    assert real_png != blank_png
+
+
+@pytest.mark.unit
+def test_blank_png_carries_no_timestamp_or_text_metadata_chunks() -> None:
+    blank_png = render_blank_png(arena_size=20)
+    chunk_types = _chunk_types(blank_png)
+    assert "tIME" not in chunk_types
+    assert "tEXt" not in chunk_types
+    assert "zTXt" not in chunk_types
+    assert "iTXt" not in chunk_types
+
+
+@pytest.mark.unit
+def test_blank_png_non_positive_arena_size_raises() -> None:
+    with pytest.raises(ValueError, match="arena_size must be positive"):
+        render_blank_png(arena_size=0)

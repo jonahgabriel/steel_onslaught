@@ -965,3 +965,62 @@ def test_image_attachment_prompt_delta_is_exactly_the_neutral_note(tmp_path: Pat
     text_prompt = text_client.request.user_prompt
     image_prompt = image_client.request.user_prompt
     assert image_prompt == f"{text_prompt}\n\n{_IMAGE_ATTACHMENT_NOTE}"
+
+
+# ---------------------------------------------------------------------------
+# Blank-image control arm (2026-07-24): render_mode="blank" toggle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_render_mode_defaults_to_arena_render_for_existing_configs(tmp_path: Path) -> None:
+    """Every pre-existing V-IMG config omits render_mode and must behave unchanged."""
+    binding = ModelSOLlmImageAttachmentBinding(
+        enabled=True,
+        arena_size=20,
+        render_output_dir=tmp_path / "renders",
+    )
+    assert binding.render_mode == "arena_render"
+
+
+@pytest.mark.unit
+def test_blank_render_mode_attaches_content_free_image_of_matched_dimensions(
+    tmp_path: Path,
+) -> None:
+    """render_mode='blank': attaches a same-size render distinct from the arena render."""
+    real_client = _RecordingClient()
+    blank_client = _RecordingClient()
+    real_pilot = LLMPilot(
+        client=real_client,
+        persona=_persona("berserker"),
+        image_attachment=ModelSOLlmImageAttachmentBinding(
+            enabled=True,
+            arena_size=20,
+            render_output_dir=tmp_path / "renders_real",
+        ),
+    )
+    blank_pilot = LLMPilot(
+        client=blank_client,
+        persona=_persona("berserker"),
+        image_attachment=ModelSOLlmImageAttachmentBinding(
+            enabled=True,
+            arena_size=20,
+            render_output_dir=tmp_path / "renders_blank",
+            render_mode="blank",
+        ),
+    )
+    observation = _observation()
+    real_pilot.decide(observation)
+    blank_pilot.decide(observation)
+
+    assert real_client.request is not None
+    assert blank_client.request is not None
+    real_attachment = real_client.request.image_attachment
+    blank_attachment = blank_client.request.image_attachment
+    assert real_attachment is not None
+    assert blank_attachment is not None
+    assert blank_attachment.png_bytes != real_attachment.png_bytes
+    assert blank_attachment.sha256_hex == hashlib.sha256(blank_attachment.png_bytes).hexdigest()
+    # Same neutral note, same user-prompt delta as the real-render V-IMG arm --
+    # only the attached bytes differ.
+    assert _IMAGE_ATTACHMENT_NOTE in blank_client.request.user_prompt

@@ -1,0 +1,118 @@
+# ARM V-TEXT-PADDED of the 2026-07-24 vision-representation control-arm
+# follow-up to PR #187
+# (docs/evidence/2026-07-24-vl_openrouter_rerun-battery.md).
+#
+# PR #187 found V-IMG's red win rate collapses from 46.67% (V-TEXT) to
+# 0.00%, but left two competing explanations undistinguished (its own §6):
+#   (A) image-content-specific degradation, or
+#   (B) prompt-length/attention dilution -- V-IMG's mean prompt_tokens more
+#       than doubles V-TEXT's (1033 -> 2353), and a longer/denser prompt
+#       could degrade a "lite" model's attention to precise numeric fields
+#       independent of what the image depicts.
+#
+# This arm isolates LENGTH from image PRESENCE/CONTENT entirely: it is
+# ``vision_foundry_60_asym_v2_openrouter_text.yaml`` (V-TEXT) with NO image
+# attached at all -- same model/arena/loadout shapes/provider
+# timeout/retry/max_tokens -- except the pilots route through the
+# ``*_padded`` personas (contracts_data/pilots/personas/berserker_padded.yaml,
+# sniper_padded.yaml), which are each base persona's doctrine verbatim plus
+# one deterministic, clearly-marked, semantically inert filler block
+# (6,708 characters) appended at the end. That filler was calibrated live
+# against this exact model (see the evidence doc's token-matching section)
+# to add ~1,317-1,322 provider-measured `prompt_tokens` per call -- matching
+# V-IMG's overhead of ~1,320 tokens (2352.7 - 1031.3) without any visual
+# content at all. If red's win rate collapses under THIS arm too despite
+# zero image content, that supports hypothesis (B) -- length/attention
+# dilution, not vision. If it stays near V-TEXT's 46.67% baseline, that
+# rules out (B) and supports (A) -- the original collapse was driven by
+# what the image depicts, not merely its token cost.
+#
+# Reuses the SAME loadouts directory and pilot registry as its V-TEXT/V-IMG
+# siblings (contracts_data/loadouts/vision_openrouter/,
+# contracts_data/pilots/vision_openrouter/) -- only two NEW pilot files
+# (llm_openrouter_{berserker,sniper}_padded.yaml) and two NEW loadout files
+# (berserker_scout_v2_padded.yaml, sniper_ironclad_padded.yaml) were added,
+# referencing the new personas. No existing file is modified.
+#
+# Battery (per-seed isolated invocation, matched seeds against ALL of
+# V-TEXT, V-IMG, and V-IMG-BLANK for a fully paired within-model
+# comparison):
+#   uv run python scripts/run_ogate_objectives_battery.py \
+#       --overlay contracts_data/overlays/vision_foundry_60_asym_v2_openrouter_padded.yaml \
+#       --red-loadout contracts_data/loadouts/vision_openrouter/berserker_scout_v2_padded.yaml \
+#       --blue-loadout contracts_data/loadouts/vision_openrouter/sniper_ironclad_padded.yaml \
+#       --expected-arena foundry_60_asym_v2 \
+#       --n 1 --seed-base <seed-1> \
+#       --state-root .onex_state/steel_onslaught/vl_or_padded_battery
+# with OPEN_ROUTER_API_KEY available in the environment or ~/.omnibase/.env.
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_padded/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_padded/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_padded/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_padded/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_padded/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_padded/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/vision_openrouter
+  arena_id: foundry_60_asym_v2
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: openrouter_vl
+      endpoint_url: https://openrouter.ai/api/v1/chat/completions
+      model: google/gemini-2.5-flash-lite
+      secret_ref:
+        kind: opaque
+        ref: secret://llm/openrouter
+      timeout_seconds: 120.0
+      max_tokens: 3072
+      retry:
+        max_attempts: 4
+        initial_backoff_seconds: 2.0
+        backoff_multiplier: 2.0
+      # V-TEXT-PADDED arm: no image_attachment. The prompt-length match comes
+      # entirely from the *_padded personas selected by this overlay's pilot
+      # registry (parameters.persona: berserker_padded / sniper_padded).
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.openrouter_vl_padded
+      display_name: Gemini 2.5 Flash-Lite (V-TEXT-PADDED control arm, OpenRouter)
+      provider_binding_id: openrouter_vl
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

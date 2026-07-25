@@ -57,6 +57,33 @@ _COMPASS_OFFSET: dict[SOCompassDirection, tuple[int, int]] = {
 }
 
 
+_BLANK_FILL = (128, 128, 128)
+
+
+def render_blank_png(*, arena_size: int) -> bytes:
+    """Render a deterministic, content-free control image (2026-07-24 blank-image arm).
+
+    Same canvas formula (``arena_size * _CELL_PX`` square) and identical PNG
+    encoding parameters (``optimize=True, compress_level=6``) as
+    ``render_observation_png``, so pixel dimensions match exactly -- but zero
+    observation-dependent content: one flat mid-grey fill, no grid, no cells,
+    no shapes, no enemy ring. This isolates the "an image content-part is
+    present" variable from "the image depicts task-relevant information,"
+    the two competing explanations left undistinguished by the V-TEXT/V-IMG
+    OpenRouter rerun (docs/evidence/2026-07-24-vl_openrouter_rerun-battery.md
+    §6): if red's win rate recovers under this arm despite an attached image
+    of matched pixel dimensions, the original collapse was driven by image
+    *content*, not merely image *presence*/token cost.
+    """
+    if arena_size <= 0:
+        raise ValueError("arena_size must be positive")
+    dim = arena_size * _CELL_PX
+    image = Image.new("RGB", (dim, dim), color=_BLANK_FILL)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True, compress_level=6)
+    return buffer.getvalue()
+
+
 def render_observation_png(observation: ModelSOPilotObservation, *, arena_size: int) -> bytes:
     """Render one deterministic PNG for the given observation.
 
@@ -148,4 +175,4 @@ def _fill_cell(
         draw.rectangle([x0, y0, x1, y1], fill=color)
 
 
-__all__ = ["render_observation_png"]
+__all__ = ["render_blank_png", "render_observation_png"]
