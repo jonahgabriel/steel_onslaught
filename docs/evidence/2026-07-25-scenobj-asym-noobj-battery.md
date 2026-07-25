@@ -24,7 +24,7 @@ All figures below are independently recomputed from `events.sqlite3` and `batter
 
 ## 0. Pre-declared hypothesis and criterion (quoted verbatim from the overlay header, committed before any battery ran)
 
-From `contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_noobj_qwen.yaml`, commit `3b0ac4a3263b688f3d077a605ddc59053c7706ae`:
+From `contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_noobj_qwen.yaml`, commit `d5cecd9302abe23f4ac5c49bd01cb71787384bcc` (author date `2026-07-25T16:59:10Z`; see §0b on why the committer date is later):
 
 > FIXED REFERENCE CONSTANTS. Independently recomputed from the two merged n=30
 > baselines (both seeds 5001-5030) at pre-registration time, from their raw
@@ -64,7 +64,22 @@ From `contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_noobj_qwen
 > QUALITATIVELY as a sign reversal. A negative or >1 fraction is NOT folded into
 > the 0-1 scale.
 
-**Pre-registration timeline held.** Commit `3b0ac4a` at `2026-07-25T16:59:10Z`; the earliest `match_started` in *any* run of this arm — including the two discarded runs — is `2026-07-25T17:00:01Z` (r1). The scored run's first event is `2026-07-25T17:39:16Z`. The criterion, the fixed constants, and the contamination gate were all fixed before a single match was played.
+**Pre-registration timeline held.** Pre-registration authored `2026-07-25T16:59:10Z`; the earliest `match_started` in *any* run of this arm — including the two discarded runs — is `2026-07-25T17:00:01Z` (r1). The scored run's first event is `2026-07-25T17:39:16Z`. The criterion, the fixed constants, and the contamination gate were all fixed before a single match was played.
+
+### 0b. The pre-registration commit was rebased — read the AUTHOR date, not the committer date
+
+Flagged because the naive reading of this branch's git metadata makes the pre-registration look retroactive, which would invalidate the whole arm.
+
+The pre-registration was originally committed as `3b0ac4a3263b688f3d077a605ddc59053c7706ae` with **author date == committer date == `2026-07-25T16:59:10Z`**, 51 seconds before the first `match_started`. After the battery completed, the branch was rebased onto `origin/main` to pick up concurrently-landing sibling steel lanes. Rebase preserves the author date but **rewrites both the SHA and the committer date**, so the commit now on the branch is `d5cecd9302abe23f4ac5c49bd01cb71787384bcc` with:
+
+| Field | Value | Relation to first `match_started` (17:00:01Z) |
+|---|---|---|
+| author date | `2026-07-25T16:59:10Z` | **before** — this is the true pre-registration time |
+| committer date | `2026-07-25T17:56:17Z` | **after** — an artifact of the rebase, not of authoring |
+
+**The author date is the load-bearing timestamp.** The committer date on `d5cecd9` carries no information about when the criterion was fixed; it records when the rebase replayed the commit.
+
+Honest limit on this proof: the original object `3b0ac4a` (whose committer date independently corroborates the author date) exists only in this worktree's local object store and reflog — it is not pushed and a reviewer cannot fetch it from the remote. What *is* independently verifiable from pushed artifacts is (a) the preserved author date on `d5cecd9`, and (b) the ledger event timestamps, which no part of the authoring flow can backdate. A future arm should avoid this ambiguity by rebasing **before** launching the battery, not after.
 
 ### 0a. Where the pre-registration proved inadequate (stated against myself)
 
@@ -360,6 +375,6 @@ Code cited:
 
 Pending correction (flagged, not applied): `docs/steel_onslaught/LEARNINGS.md`, "Utility deprioritization is SCENARIO-ROBUST" — see §8.
 
-Pre-registration commit: `3b0ac4a3263b688f3d077a605ddc59053c7706ae` at `2026-07-25T16:59:10Z`, preceding the earliest `match_started` of any run of this arm (`2026-07-25T17:00:01Z`).
+Pre-registration commit: `d5cecd9302abe23f4ac5c49bd01cb71787384bcc`, **author date** `2026-07-25T16:59:10Z`, preceding the earliest `match_started` of any run of this arm (`2026-07-25T17:00:01Z`). Its committer date is later purely because the branch was rebased after the battery — see §0b, which also records the pre-rebase SHA `3b0ac4a` and the limits of that corroboration.
 
 No secrets, keys, or absolute paths included.
