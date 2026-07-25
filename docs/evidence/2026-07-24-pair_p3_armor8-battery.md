@@ -148,6 +148,12 @@ Both seats show low utility pickup, consistent with the program's recurring find
 
 ---
 
+## Limitations
+
+- **Uncontrolled range-30 standoff (`harpoon_gun`).** This arm's blue loadout closes only one of blue's two long-range weapons: `artillery_mortar` was cut to range 30 (the approach-fix lever named above), but `harpoon_gun` stayed at range 30, uncapped, through this arm and every other arm in the P1–P7 sweep. Blue therefore retained an ~18–22 cell standoff advantage against red's longest weapon (`machine_gun`, range 12) that this arm's design did not control for and this document did not previously disclose. Found post hoc during the SO-RANGECAP design pass (PR #197); does not change any figure reported above. See OMN-15119.
+
+---
+
 ## Citations (all relative paths)
 
 - Recomputed metrics: `.onex_state/steel_onslaught/pair_p3_armor8/events.sqlite3` (`match_started`, `match_ended`, `hit_resolved`, `armor_absorbed`, `damage_applied`, `mech_destroyed`, `hand_dealt`, `plan_committed`, `llm_completion_requested`/`resolved`/`failed` event types) and `battery_raw.jsonl` (30 rows, seeds 5001–5030), cross-checked against `battery_summary.json` (noting the on-disk summary's `--n` window reflects only the part-2 23-seed resume, per §0 — all figures in this document are recomputed from the full 30-row raw file, not from that summary).

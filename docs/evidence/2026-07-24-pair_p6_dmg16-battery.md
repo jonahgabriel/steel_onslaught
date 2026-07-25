@@ -183,6 +183,12 @@ Six points now show a marginal-rate series of 1.72 → 5.52 → 4.14 → 5.25 �
 
 ---
 
+## Limitations
+
+- **Uncontrolled range-30 standoff (`harpoon_gun`), now identified.** §Verdict above flags "blue's range advantage" as a plausible residual capping factor without naming it precisely. It is now named: `artillery_mortar` was cut to range 30 (the approach-fix lever), but `harpoon_gun` stayed at range 30, uncapped, through this arm and every other arm in the P1–P7 sweep. Blue therefore retained an ~18–22 cell standoff advantage against red's longest weapon (`machine_gun`, range 12) that this arm's design did not control for. Found post hoc during the SO-RANGECAP design pass (PR #197); does not change any figure reported above. See OMN-15119.
+
+---
+
 ## Citations (all relative paths)
 
 - Recomputed metrics: `.onex_state/steel_onslaught/pair_p6_dmg16/events.sqlite3` (`match_started`, `match_ended`, `hit_resolved`, `armor_absorbed`, `weapon_fired`, `mech_destroyed`, `hand_dealt`, `plan_committed`, `llm_completion_requested`/`resolved`/`failed` event types) and `battery_raw.jsonl` (30 rows, seeds 5001–5030).
