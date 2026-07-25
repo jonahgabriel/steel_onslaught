@@ -185,6 +185,14 @@ This is a coherent, well-reasoned decision to remain — the model's *judgment* 
 
 ---
 
+## 6a. A third rival explanation is independently closed: provider-path artifact
+
+While this document's two arms were running, a second, independent effort (`docs/evidence/2026-07-24-vl_vertex_rerun-battery.md`, PR #190, merged) reran V-TEXT/V-IMG on the same model over Google Cloud Vertex AI's direct first-party endpoint — a completely different auth mechanism (ADC OAuth2 vs. OpenRouter's Bearer key), billing path, and transport failure profile than the OpenRouter route this document's arms and PR #187 both use. Independently verified from that document (figures reproduced, not copied): V-TEXT 16/30 = 0.5333 red win rate, V-IMG 0/30 = 0.0000, all 16 V-TEXT wins flipping to blue under V-IMG, zero flipping the other way — the same clean pattern PR #187 found on OpenRouter (14/14), and a larger effect. Mean `prompt_tokens` on Vertex (1033.8 V-TEXT, 2355.9 V-IMG) match OpenRouter's (1033.0, 2352.7) to within 0.14%, ruling out the possibility that OpenRouter is silently re-encoding or downscaling the image before it reaches the model.
+
+This closes a third rival explanation this document does not otherwise address: that the collapse is an OpenRouter-routing artifact rather than a property of the model itself. It is not — the identical collapse reproduces through Google's own direct endpoint. Combined with this document's own two arms, the space of "the V-IMG collapse is actually about X, not vision" explanations that remain open has narrowed to exactly the multi-part-message-channel hypothesis stated in §7: not the provider, not the image's content, and not raw token count.
+
+---
+
 ## 7. Verdict — hypothesis (A) vs (B) vs the data
 
 **Hypothesis (A), image-content-specific degradation, is refuted.** V-IMG-BLANK carries zero task-relevant visual information — a single flat color, nothing the model could read a position, distance, or shape from — and its per-seed outcomes are **identical** to V-IMG's (0 flips across 30 matched seeds, sign-test p=1.0), with the same targeting-precision degradation pattern reproduced quantitatively (§6). Whatever is happening, it does not require the image to depict anything.
@@ -210,3 +218,4 @@ This is a coherent, well-reasoned decision to remain — the model's *judgment* 
 - Render/ledger-linkage spot check: `.onex_state/steel_onslaught/vision_foundry_60_asym_v2_openrouter_blank/renders/match.01KYB5YZM7ZEWA6F1PWFD73DDB/tick_0003_mech.red.01.png`, sha256 `5b54b7297fce4aefb1150b9e765c8b578f83a6394d90bc8723530d70e592ef84`, matching the ledger's `image_sha256` for the same match/tick/seat exactly.
 - Sanitization: `python3 scripts/check_sanitization.py --all` — clean, no secrets/absolute paths.
 - Prior document: `docs/evidence/2026-07-24-vl_openrouter_rerun-battery.md` (PR #187) — this document does not supersede it; it resolves the hypothesis (A)/(B) question that document's §6 left open.
+- Independent third-provider replication (§6a): `docs/evidence/2026-07-24-vl_vertex_rerun-battery.md` (PR #190, merged) — rules out an OpenRouter-routing artifact as a rival explanation.
