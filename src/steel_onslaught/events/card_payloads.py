@@ -214,20 +214,29 @@ class ModelSOPlanCommittedPayload(_ClosedCardPayload):
     # not ``deterministic_fallback``; defaulting to the substitution member
     # would retroactively relabel historical evidence.
     plan_source: SOPlanSource = SOPlanSource.UNSPECIFIED
-    # Spatial-representation arms R1/R2 (2026-07-24): under the
-    # ``grid_scaffold`` representation the model is asked for one extra field,
-    # ``spatial_read`` — a one-line statement of what it reads off the ASCII
-    # grid before selecting registers.  The field was parsed off the response
-    # from the start but never persisted here, so the R2 battery's 264
-    # ``plan_committed`` payloads all carry zero spatial-read content and the
-    # scaffold's actual effect on stated reasoning is unrecoverable from the
-    # ledger.  Persisting it closes that forensic gap.
+    # Spatial-representation arms R1/R2 (2026-07-24): a one-line runtime
+    # receipt that spatial data was rendered and read for this plan. Two
+    # distinct sources feed this ONE field, by representation:
+    #   * ``grid_scaffold`` (R2): the model is asked for one extra field,
+    #     ``spatial_read`` -- its own stated one-line read of the ASCII grid
+    #     before selecting registers. ``None`` if the model omitted it (a
+    #     genuine compliance signal -- never backfilled).
+    #   * ``grid`` (R1, no scaffold): the model is NEVER asked for one, so
+    #     ``llm.programming`` computes a deterministic summary from the same
+    #     real per-round grid/movement-preview/weapon-range-flag data the
+    #     prompt rendered (``match.spatial_preview.compute_spatial_read_receipt``).
+    #     This closes the SO-COMP-INT/SO-SPATIAL-RECEIPT gap (PR #208):
+    #     before this, EVERY R1 arm's ``plan_committed`` payloads carried
+    #     null ``spatial_read`` (0/302, 0/500, 0/358, 0/590 across all four
+    #     factorial arms), so R1 attribution rested solely on the overlay's
+    #     ``pilot_spec_id`` -- a configuration fact, never a runtime one.
     #
-    # Fail-safe default, same rationale as ``plan_source`` above: an omitted
-    # field (every plan_committed event persisted before this field existed,
-    # and every non-scaffold arm, which never requests it) is ``None`` — a
-    # plan that was never asked for a spatial read, not one that refused to
-    # give one.  Absence here is never evidence of model behavior.
+    # Fail-safe default, same rationale as ``plan_source`` above: ``None``
+    # only when no spatial representation was active at all
+    # (``spatial_representation == "none"``, or every plan_committed event
+    # persisted before this field existed). Absence here is never evidence
+    # of model behavior for R2's model-supplied case, and is never reachable
+    # at all for an opted-in R1 seat.
     spatial_read: StrictStr | None = None
 
     @model_validator(mode="after")

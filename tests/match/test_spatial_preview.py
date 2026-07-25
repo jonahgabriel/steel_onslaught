@@ -7,6 +7,7 @@ import pytest
 from steel_onslaught.contracts.card import ModelSOCard, ModelSOCardEffect, SOCardCategory
 from steel_onslaught.match.spatial_preview import (
     compute_movement_previews,
+    compute_spatial_read_receipt,
     compute_weapon_range_flags,
     render_ascii_grid,
 )
@@ -345,3 +346,111 @@ def test_compute_weapon_range_flags_no_living_enemy_never_in_range() -> None:
     assert len(flags) == 1
     assert flags[0].in_range is False
     assert flags[0].distance_current is None
+
+
+# ---------------------------------------------------------------------------
+# compute_spatial_read_receipt (ARM R1 runtime receipt, SO-SPATIAL-RECEIPT)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_spatial_read_receipt_reflects_real_cell_counts() -> None:
+    grid = render_ascii_grid(
+        self_pos=ModelSOPosition(x=10, y=10),
+        enemy_pos=ModelSOPosition(x=12, y=10),
+        obstacles=frozenset({(11, 12)}),
+        objectives=(),
+        arena_size=30,
+        radius=3,
+    )
+    receipt = compute_spatial_read_receipt(
+        grid=grid,
+        movement_previews=(),
+        weapon_range_flags=(),
+    )
+    assert isinstance(receipt, str)
+    assert receipt.strip()
+    assert "radius=3" in receipt
+    assert "1 obstacle" in receipt
+    assert "0 movement previews" in receipt
+    assert "0/0 weapons in range" in receipt
+
+
+def test_compute_spatial_read_receipt_counts_previews_and_range_flags() -> None:
+    grid = render_ascii_grid(
+        self_pos=ModelSOPosition(x=0, y=0),
+        enemy_pos=None,
+        obstacles=frozenset(),
+        objectives=(),
+        arena_size=10,
+        radius=2,
+    )
+    hand = (
+        _card(
+            "card.test.advance",
+            SOCardCategory.MOVEMENT,
+            ModelSOCardEffect(direction="toward_enemy", speed="full"),
+        ),
+    )
+    previews = compute_movement_previews(
+        hand_cards=hand,
+        from_pos=ModelSOPosition(x=0, y=0),
+        budget=4,
+        enemy_pos=ModelSOPosition(x=3, y=0),
+        obstacles=frozenset(),
+        arena_size=10,
+    )
+    attack_hand = (
+        _card("card.test.attack", SOCardCategory.ATTACK, ModelSOCardEffect(weapon_slot=0)),
+    )
+    flags = compute_weapon_range_flags(
+        hand_cards=attack_hand,
+        weapon_ids=("weapon.near",),
+        weapon_views=[
+            ModelSOPilotWeaponView(
+                weapon_id="weapon.near",
+                damage=10,
+                range=20,
+                pressure_cost=1,
+                heat_generated=1,
+                cooldown_remaining_ticks=0,
+            )
+        ],
+        distance_current=5,
+    )
+    receipt = compute_spatial_read_receipt(
+        grid=grid, movement_previews=previews, weapon_range_flags=flags
+    )
+    assert "1 movement previews" in receipt
+    assert "1/1 weapons in range" in receipt
+
+
+def test_compute_spatial_read_receipt_is_deterministic_and_varies_with_input() -> None:
+    """Never a constant: two different grids must produce different text, and
+    the same grid must always produce the same text."""
+    grid_a = render_ascii_grid(
+        self_pos=ModelSOPosition(x=5, y=5),
+        enemy_pos=ModelSOPosition(x=8, y=5),
+        obstacles=frozenset(),
+        objectives=(),
+        arena_size=20,
+        radius=4,
+    )
+    grid_b = render_ascii_grid(
+        self_pos=ModelSOPosition(x=5, y=5),
+        enemy_pos=ModelSOPosition(x=8, y=5),
+        obstacles=frozenset({(6, 5)}),
+        objectives=(),
+        arena_size=20,
+        radius=4,
+    )
+    receipt_a1 = compute_spatial_read_receipt(
+        grid=grid_a, movement_previews=(), weapon_range_flags=()
+    )
+    receipt_a2 = compute_spatial_read_receipt(
+        grid=grid_a, movement_previews=(), weapon_range_flags=()
+    )
+    receipt_b = compute_spatial_read_receipt(
+        grid=grid_b, movement_previews=(), weapon_range_flags=()
+    )
+    assert receipt_a1 == receipt_a2
+    assert receipt_a1 != receipt_b
