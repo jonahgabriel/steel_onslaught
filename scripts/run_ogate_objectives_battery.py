@@ -605,6 +605,23 @@ def main() -> int:
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     print(f"raw: {raw_path}\nsummary: {summary_path}")
+    if skipped:
+        # 2026-07-25 (SO-COMP-CA / SO-COMP-R1): a caller that retries on exit
+        # code alone must be able to see a skipped seed. Before this, `main`
+        # unconditionally returned 0 even when seeds landed no row -- the
+        # summary force-failed `o_gate_pass`, but nothing on `$?` reflected
+        # the shortfall, so an exit-code-keyed retry loop silently accepted a
+        # shrunken battery (the SO-COMP-CA discarded run: 4 of 30 rows lost
+        # with zero error signal). This does not change the exit code or any
+        # stdout for a battery with no skips.
+        skipped_seed_list = ", ".join(s["seed"] for s in skipped)
+        print(
+            f"BATTERY FAILED: {len(skipped)} seed(s) skipped, no row written "
+            f"(seeds: {skipped_seed_list})",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     return 0
 
 
