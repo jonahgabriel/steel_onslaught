@@ -59,6 +59,7 @@ from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.commands import ModelSOStartMatchCommand
 from steel_onslaught.contracts.deck import ModelSODeck
 from steel_onslaught.contracts.gizmo import ModelSOGizmoSpec
+from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.contracts.lineage import ModelSOLineageRecord, spec_hash
 from steel_onslaught.contracts.live_learning import (
     ModelSOLiveLearningPolicy,
@@ -397,6 +398,12 @@ class RuntimeDependencies:
     # pre-seam hardcoded behavior); an overlay ``defense_handler_pack``
     # narrows it to a named, fail-closed subset.
     defense_handler_ids: tuple[str, ...] | None = None
+    # Structural in-register utility incentive (SO-UTIL-MECH) selected by the
+    # typed overlay.  ``None`` => OFF and every downstream surface is
+    # byte-identical to the pre-incentive tree.  Validated at overlay
+    # resolution (card mode enabled + arena declares objectives/vp_threshold)
+    # so a mis-authored overlay fails at composition, not mid-match.
+    utility_incentive: ModelSOUtilityIncentive | None = None
 
     def __post_init__(self) -> None:
         if self.card_cadence not in {"atomic", "paced"}:
@@ -1022,6 +1029,7 @@ def build_card_runner_adapter(
     rule_registry: CardProgrammingRuleRegistry | None = None,
     rule_handler_ids: tuple[str, ...] = (),
     split_policy: ModelSOCardDeckPolicy | None = None,
+    utility_incentive: ModelSOUtilityIncentive | None = None,
 ) -> CardRunnerAdapter:
     """Compose the explicit card runtime graph for an enabled overlay.
 
@@ -1060,6 +1068,7 @@ def build_card_runner_adapter(
         programmers=programmers,
         rule_registry=rule_registry,
         rule_handler_ids=rule_handler_ids,
+        utility_incentive=utility_incentive,
     )
 
 
@@ -1800,6 +1809,34 @@ def build_runtime_dependencies(
             # ``select`` fails closed on unknown/duplicate/empty ids.
             default_defense.select(defense_pack_binding.handler_ids)
             defense_handler_ids = tuple(defense_pack_binding.handler_ids)
+        # Structural in-register utility incentive (SO-UTIL-MECH) selected by
+        # the typed overlay.  Two fail-closed preconditions, both checked here
+        # so a mis-authored overlay dies at composition instead of running a
+        # whole battery whose incentive silently paid nobody:
+        #   (1) card mode must be enabled -- utility cards only exist on the
+        #       split deck's third pile, so an incentive without card mode has
+        #       no event that could ever trigger it;
+        #   (2) the arena must declare objectives AND a vp_threshold -- the
+        #       bounty pays into vp_totals, which only settles a match on such
+        #       an arena.  (The MATCH_STARTED payload validator re-asserts (2)
+        #       on the live AND replay paths; this is the earlier, friendlier
+        #       failure.)
+        utility_incentive = overlay.contracts.utility_incentive
+        if utility_incentive is not None:
+            if card_binding is None or not card_binding.card_mode_enabled:
+                raise ValueError("utility_incentive requires an explicitly enabled card catalog")
+            incentive_arena = catalog.arenas.get(overlay.contracts.arena_id)
+            if incentive_arena is None:
+                raise ValueError(
+                    f"unknown arena_id {overlay.contracts.arena_id!r} in application overlay"
+                )
+            if not incentive_arena.objectives or incentive_arena.vp_threshold is None:
+                raise ValueError(
+                    "utility_incentive requires an arena declaring objectives and "
+                    f"vp_threshold; arena {incentive_arena.arena_id!r} declares "
+                    f"{len(incentive_arena.objectives)} objective(s) and "
+                    f"vp_threshold={incentive_arena.vp_threshold!r}"
+                )
         if card_binding is not None and card_binding.programmers:
             if card_programmers is not None:
                 raise ValueError(
@@ -1827,6 +1864,7 @@ def build_runtime_dependencies(
                 rule_registry=rule_registry,
                 rule_handler_ids=rule_handler_ids,
                 split_policy=card_binding.deck_policy,
+                utility_incentive=utility_incentive,
             )
         else:
             card_adapter = None
@@ -1862,6 +1900,7 @@ def build_runtime_dependencies(
             prompt_provenance=llm.prompt_provenance,
             utility_handler_ids=utility_handler_ids,
             defense_handler_ids=defense_handler_ids,
+            utility_incentive=utility_incentive,
         )
     except Exception:
         if owns_llm:
@@ -2321,6 +2360,7 @@ def assemble_match_with_dependencies(
         progress_gate=resolved_progress_gate,
         utility_handler_ids=dependencies.utility_handler_ids,
         defense_handler_ids=dependencies.defense_handler_ids,
+        utility_incentive=dependencies.utility_incentive,
     )
     scoring = ReducerScoring(
         identity.match_id,

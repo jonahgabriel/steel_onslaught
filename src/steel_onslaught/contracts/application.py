@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from steel_onslaught.contracts.deck import DeckId
+from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.contracts.model_catalog import ModelSOModelCatalogProjection
 from steel_onslaught.contracts.pilot import PilotId
 from steel_onslaught.contracts.player_selection import (
@@ -301,6 +302,18 @@ class ModelSOContractBindings(_ClosedBinding):
         exclude_if=lambda value: value is None,
     )
     defense_handler_pack: ModelSODefenseHandlerPackBinding | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    # Structural in-register utility incentive (SO-UTIL-MECH).  Absent =>
+    # OFF, and every downstream surface (prompt bytes, MATCH_STARTED payload,
+    # VP derivation) is byte-identical to the pre-incentive tree.  Present =>
+    # the named bounty is stamped into MATCH_STARTED and paid by the fold on
+    # every resolved utility deploy.  Validated against card mode and the
+    # arena's objective/VP contract at composition time, so a mis-authored
+    # overlay fails at startup rather than paying into a VP total no arena
+    # can ever settle.
+    utility_incentive: ModelSOUtilityIncentive | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )

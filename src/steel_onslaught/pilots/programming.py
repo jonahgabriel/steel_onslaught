@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_v
 from steel_onslaught.contracts.card import CardId, ModelSOCard
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.deck import ModelSODeck
+from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.events.card_payloads import (
     ModelSOPlanCommittedPayload,
     ModelSOPlanRegister,
@@ -174,6 +175,15 @@ class ModelSOProgrammingObservation(_ClosedProgrammingModel):
     # source (see ``llm.programming._parse_response``, which logs and
     # continues when a provider omits it rather than raising).
     spatial_read_required: bool = Field(default=False)
+    # Structural in-register utility incentive (SO-UTIL-MECH).  Present ONLY
+    # when the match's overlay bound one; ``None`` (the default) leaves the
+    # serialized programming prompt byte-identical to the pre-incentive shape
+    # -- the incentive keys are simply absent.  This is a GAME-STATE value,
+    # not guidance: ``llm.programming`` renders it as numeric card/state
+    # fields and adds no instruction text anywhere, which is precisely the
+    # contrast this experiment draws against the L-GATE-2 prompt-steering
+    # null.
+    utility_incentive: ModelSOUtilityIncentive | None = Field(default=None)
 
     @model_validator(mode="after")
     def _validate_hand_and_registers(self) -> ModelSOProgrammingObservation:

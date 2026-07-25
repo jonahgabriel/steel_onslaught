@@ -1,0 +1,180 @@
+# SO-UTIL-MECH arm overlay — the structural in-register utility incentive.
+#
+# NOT YET LAUNCHED, and NOT YET PRE-REGISTERED. This file ships with the
+# MECHANISM PR so the config path is exercised end to end; the battery is a
+# separate lane. Per house rule the pre-registration — the hypothesis pair and
+# the ONE formal criterion with its arithmetic shown inline — must be written
+# into this header and COMMITTED before the first ``match_started`` event is
+# emitted against it. Do not run a battery on this overlay until that commit
+# exists.
+#
+# WHAT IS DIFFERENT FROM THE BASELINE. This overlay is the U-GATE + O-GATE
+# combined shape (``tactical_split_overdeal_utility_asym_v1_qwen.yaml``:
+# ``foundry_60_asym_v1``, over-deal 10 / program 5, the third utility pile,
+# the full utility handler pack) with EXACTLY ONE addition — the
+# ``utility_incentive`` binding below — plus isolated ledger paths. No arena,
+# loadout, deck, persona, prompt, or handler is touched.
+#
+# WHY THIS ARM EXISTS. Utility deprioritization is the program's most
+# replicated negative result: the aggressive seat programs utility far below
+# the 0.50 chance floor in all four tested lineages (qwen35, deepseek, gemma,
+# glm), it survived the surfacing fix (#139), it survived the arena swap
+# (#147/#148), and L-GATE-2 established that prompt-level steering does not
+# move this model's drafting. Every lever tried so far has been prompt- or
+# balance-shaped. This one is neither: the reward is a victory-point bounty
+# the ENGINE pays on each resolved utility deploy, surfaced to the pilot as a
+# number on the card row (``legal_hand[].deploy_vp_bounty``) and a top-level
+# ``incentives`` block — no instruction sentence anywhere. The question the
+# battery can then answer is whether the drafting bias is a preference the
+# model will trade against a stated in-game price, or a prior it holds
+# regardless of price.
+#
+# READ BEFORE CHOOSING vp_per_deploy. The bounty counts toward this arena's
+# ``vp_threshold`` (15). At ``vp_per_deploy: 2`` a seat that programs utility
+# in every register of every round could reach the line on bounties alone, so
+# the rate is a live confound on WIN RATE and must not be read as a balance
+# result. The primary outcome measure for this arm is the utility KEEP-RATE
+# against the 0.50 floor — the same measure every prior arm in this family
+# reported. State the rate's interaction with the win condition explicitly in
+# the arm's limitations section.
+#
+# The blue standoff configuration this family inherits (the P1-P7 harpoon
+# framing error, OMN-15119) applies here unchanged and must be stated in the
+# arm's limitations.
+#
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/util_incentive_vp2/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/util_incentive_vp2/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/util_incentive_vp2/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/util_incentive_vp2/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/util_incentive_vp2/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/util_incentive_vp2/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v1
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  # Phase 2 — utility resolution handlers selected by this typed overlay
+  # (design §6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+  # THE ONLY EXPERIMENTAL DELTA IN THIS FILE (SO-UTIL-MECH).  Each resolved
+  # UTILITY_DEPLOYED credits the deploying player 2 victory points, folded
+  # into the same ``vp_totals`` objective control scores into and settled
+  # against the same ``vp_threshold: 15``.  Absent this block the whole
+  # mechanism is off and every byte downstream -- prompt, MATCH_STARTED
+  # payload, VP derivation -- is identical to the baseline overlay.
+  utility_incentive:
+    kind: utility_deploy_vp_bounty
+    vp_per_deploy: 2
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # Keyless: the only provider carries ``secret_ref: null``, so no resolver
+    # capability is required.  ``none`` lets ``so run --overlay`` and the O-GATE
+    # battery driver launch this overlay directly (``injected`` would raise
+    # "requires a resolver capability" on the keyless CLI path).
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

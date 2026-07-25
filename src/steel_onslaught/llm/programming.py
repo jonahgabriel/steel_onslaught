@@ -51,6 +51,8 @@ from pydantic import (
     ValidationError,
 )
 
+from steel_onslaught.contracts.card import SOCardCategory
+from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.events.card_payloads import (
     ModelSOPlanCommittedPayload,
     ModelSOPlanRegister,
@@ -308,6 +310,21 @@ def _card_definition(card: object) -> dict[str, object]:
     return definition
 
 
+def _deploy_vp_bounty(definition: dict[str, object], incentive: ModelSOUtilityIncentive) -> int:
+    """Return the per-deploy VP bounty this card pays under ``incentive``.
+
+    Zero for every non-utility category, ON PURPOSE.  The field is emitted on
+    EVERY card row rather than only on the rows that pay, so the value reads
+    as a comparable card statistic (like ``heat_cost``) instead of as a
+    category tag that happens to appear on one pile.  A pilot weighing an
+    attack card at 0 against a utility card at N is reading game state, which
+    is the whole point of the arm.
+    """
+
+    category = definition.get("category")
+    return incentive.vp_per_deploy if category == SOCardCategory.UTILITY.value else 0
+
+
 def _serialize_programming_observation(observation: ModelSOProgrammingObservation) -> str:
     """Build a compact, deterministic prompt from one typed observation."""
 
@@ -344,16 +361,35 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
     hand_card_ids = tuple(str(card_id) for card_id in observation.hand)
     hand_counts = Counter(hand_card_ids)
     pilot = observation.pilot_observation
-    legal_hand = [
-        {
+    incentive = observation.utility_incentive
+    legal_hand: list[dict[str, object]] = []
+    for card_id in dict.fromkeys(hand_card_ids):
+        definition = _card_definition(
+            observation.card_runtime_snapshot.card_catalog.require(card_id)
+        )
+        entry: dict[str, object] = {
             "card_id": card_id,
             "available_copies": hand_counts[card_id],
-            "definition": _card_definition(
-                observation.card_runtime_snapshot.card_catalog.require(card_id)
-            ),
+            "definition": definition,
         }
-        for card_id in dict.fromkeys(hand_card_ids)
-    ]
+        # Structural in-register utility incentive (SO-UTIL-MECH). The bounty
+        # sits on the card row itself, beside ``available_copies`` -- the same
+        # place the pilot already reads a card's economics -- and is ABSENT
+        # (not zero, not null) when no incentive is bound, so an
+        # incentive-free prompt stays byte-identical.
+        if incentive is not None:
+            entry["deploy_vp_bounty"] = _deploy_vp_bounty(definition, incentive)
+        legal_hand.append(entry)
+    hand_rows: list[dict[str, object]] = []
+    for card in observation.hand_cards:
+        card_definition = _card_definition(card)
+        hand_row: dict[str, object] = {
+            "card_id": card.id,
+            "definition": card_definition,
+        }
+        if incentive is not None:
+            hand_row["deploy_vp_bounty"] = _deploy_vp_bounty(card_definition, incentive)
+        hand_rows.append(hand_row)
     prompt_value = {
         "protocol": "steel_onslaught.whole_round_programming.v1",
         "match": {
@@ -386,13 +422,7 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
         # multiset boundary used by the parser.
         "deck": deck_prompt,
         "legal_hand": legal_hand,
-        "hand": [
-            {
-                "card_id": card.id,
-                "definition": _card_definition(card),
-            }
-            for card in observation.hand_cards
-        ],
+        "hand": hand_rows,
         # This is the already-authorized pilot view: own state plus noisy,
         # possibly stale opponent sensor readings. No fold or hidden state is
         # added by this serializer. Keep the two views named explicitly so a
@@ -475,6 +505,30 @@ def _serialize_programming_observation(observation: ModelSOProgrammingObservatio
             "enemy_vp": pilot.victory_points.enemy_vp,
             "cells": [objective.model_dump(mode="json") for objective in pilot.objectives],
         }
+    # Structural in-register utility incentive (SO-UTIL-MECH).  Added ONLY
+    # when the match's overlay bound one, so an incentive-free prompt is
+    # byte-identical to the pre-incentive shape.
+    #
+    # Deliberately CONTRASTS with the ``objectives`` block above: that block
+    # carries a ``rule`` sentence, and the O-GATE battery measured what an
+    # imperative-in-data costs (11/413 completions answered the imperative
+    # instead of the wire contract).  This block carries NO prose at all --
+    # only the rate and the standing VP totals it pays into.  That is the
+    # experimental point, not a stylistic one: L-GATE-2 already established
+    # that telling this model what to value does not move its drafting, so
+    # the arm tests a reward the model reads as state rather than as
+    # instruction.  The per-card half of the same signal is
+    # ``legal_hand[].deploy_vp_bounty``; this block is what ties that number
+    # to the win condition the model is already reading.
+    if observation.utility_incentive is not None:
+        incentive_block: dict[str, object] = {
+            "utility_deploy_vp_bounty": observation.utility_incentive.vp_per_deploy,
+        }
+        if pilot.victory_points is not None:
+            incentive_block["own_vp"] = pilot.victory_points.own_vp
+            incentive_block["enemy_vp"] = pilot.victory_points.enemy_vp
+            incentive_block["vp_threshold"] = pilot.victory_points.vp_threshold
+        prompt_value["incentives"] = incentive_block
     return json.dumps(prompt_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 

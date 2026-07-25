@@ -52,6 +52,7 @@ from steel_onslaught.cards.rules import CardProgrammingRuleRegistry
 from steel_onslaught.cards.split_deck import SplitDeckDealerAdapter
 from steel_onslaught.contracts.card import CardId
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
+from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
 from steel_onslaught.contracts.player_selection import Side
 from steel_onslaught.contracts.split_deck import ModelSOCardDeckPolicy
@@ -318,6 +319,14 @@ class CardRunnerAdapter:
     programmers: Mapping[str, ProgrammingPilot] | None = None
     rule_registry: CardProgrammingRuleRegistry | None = None
     rule_handler_ids: tuple[str, ...] = ()
+    # Structural in-register utility incentive (SO-UTIL-MECH).  Threaded onto
+    # every programming observation this adapter builds so the pilot reads the
+    # bounty as game state.  ``None`` (the default) is OFF and leaves the
+    # produced observation -- and therefore the serialized prompt --
+    # byte-identical to the pre-incentive shape.  The adapter only RENDERS the
+    # rate; the payout is folded from MATCH_STARTED in ``MatchStateFold``, so
+    # a mismatch cannot make a replay pay differently than the live match.
+    utility_incentive: ModelSOUtilityIncentive | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.registers_enabled, bool):
@@ -588,6 +597,7 @@ class CardRunnerAdapter:
                 movement_previews=spatial.movement_previews,
                 weapon_range_flags=spatial.weapon_range_flags,
                 spatial_read_required=spatial.spatial_read_required,
+                utility_incentive=self.utility_incentive,
             )
             programmer = None
             if self.programmers is not None:
