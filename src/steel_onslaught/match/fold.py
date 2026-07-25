@@ -589,6 +589,21 @@ class MatchStateFold:
         arena = self._arena
         if arena is None or not arena.objectives or arena.vp_threshold is None:
             return
+        if arena.objective_scoring == "decoy":
+            # SO-OBJ-DECOY: the objectives are declared and SHOWN to the pilot
+            # (the observation/prompt path is untouched), but they never pay.
+            # No VP accrues, no OBJECTIVE_SCORED is emitted, and no VP victory
+            # can be declared -- so ``vp_totals`` stays at the zeroes
+            # ``_on_match_started`` seeded and the pilot's scoreboard reads
+            # 0-0 for the whole match.  Read from the RECORDED snapshot, so a
+            # replay suppresses exactly what the live match suppressed.
+            #
+            # Returning before the bounty settlement below is safe rather than
+            # silently lossy: a ``utility_incentive`` on a decoy arena is
+            # rejected at composition AND at the MATCH_STARTED payload
+            # boundary, so ``_utility_bounty_unsettled`` can never be True
+            # here.
+            return
         composite = self.state
         if len(composite.surviving_player_ids()) < 2:
             return
