@@ -32,7 +32,15 @@
 # contracts_data/pilots/vision_openrouter/) -- only two NEW pilot files
 # (llm_openrouter_{berserker,sniper}_padded.yaml) and two NEW loadout files
 # (berserker_scout_v2_padded.yaml, sniper_ironclad_padded.yaml) were added,
-# referencing the new personas. No existing file is modified.
+# referencing the new personas. The new personas live in a DEDICATED
+# registry, ../pilots/personas_vision_padded/, NOT the shared
+# ../pilots/personas/ every other vision_openrouter overlay uses --
+# contracts_data/pilots/personas/ is a governed "shipped" roster
+# (tests/llm/test_personas_registry.py asserts an exact persona-id set and
+# requires every entry to declare an identity anchor + dealt-hand-discipline
+# test coverage), and these two experiment-scoped personas are neither new
+# shipped archetypes nor exercised by card-mode programming. No existing
+# file is modified.
 #
 # Battery (per-seed isolated invocation, matched seeds against ALL of
 # V-TEXT, V-IMG, and V-IMG-BLANK for a fully paired within-model
@@ -103,7 +111,9 @@ llm:
       model_identity_id: model_identity.openrouter_vl_padded
       display_name: Gemini 2.5 Flash-Lite (V-TEXT-PADDED control arm, OpenRouter)
       provider_binding_id: openrouter_vl
-  personas_dir: ../pilots/personas
+  # Dedicated registry (NOT the shared ../pilots/personas/ every other
+  # vision_openrouter overlay uses) -- see the header comment above.
+  personas_dir: ../pilots/personas_vision_padded
   secret_resolver:
     kind: injected
 clock:

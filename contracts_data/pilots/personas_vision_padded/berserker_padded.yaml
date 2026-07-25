@@ -15,9 +15,14 @@
 # provider-measured `prompt_tokens` -- empirically verified per-arm in that
 # document, not assumed. Referenced by
 # contracts_data/pilots/vision_openrouter/llm_openrouter_berserker_padded.yaml
-# via the SAME shared personas_dir every other vision_openrouter overlay
-# uses (contracts_data/pilots/personas/), so no overlay/registry changes are
-# needed beyond adding this file.
+# via `vision_foundry_60_asym_v2_openrouter_padded.yaml`'s own
+# `llm.personas_dir: ../pilots/personas_vision_padded` -- a DEDICATED
+# directory, deliberately NOT `contracts_data/pilots/personas/` (the shipped
+# roster `tests/llm/test_personas_registry.py` asserts an exact persona-id
+# set for and requires every entry to declare an identity anchor + dealt-
+# hand-discipline test coverage). This experiment-scoped persona is neither
+# a new shipped archetype nor exercised by card-mode programming, so it
+# lives in its own small registry instead of extending the governed one.
 persona_id: berserker_padded
 display_name: Berserker (text-padding control arm)
 temperature: 0.7
