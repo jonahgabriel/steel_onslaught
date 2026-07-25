@@ -1,0 +1,227 @@
+# SO-SCEN-OBJ control arm: objectives toggled OFF, ASYM geometry held fixed.
+#
+# This overlay is byte-identical to
+# contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_qwen.yaml
+# except for (a) contracts.arena_id, which points at the objectives-stripped
+# geometry copy foundry_60_asym_v1_noobj, and (b) the .onex_state path stems,
+# which are renamed for hygiene only (the battery driver's _lane_overlay()
+# rewrites every durable path from --state-root at runtime, so those strings are
+# cosmetic, not functional).  Loadouts, dose, deck policy, over-deal quotas,
+# utility_handler_pack, provider, retry and timeout are all unchanged and
+# unmodified.
+#
+# ----------------------------------------------------------------------------
+# PRE-REGISTERED HYPOTHESIS AND DECISION CRITERION
+# Committed BEFORE the first match_started event of this arm's battery.
+# ----------------------------------------------------------------------------
+#
+# QUESTION.  The shipped scenario contrast varies two axes at once: ASYM_OBJ
+# (foundry_60_asym_v1, asymmetric corridors + 3 objectives + vp_threshold 15,
+# sudden_death_start_tick 120) vs SYM_NOOBJ (foundry_60, symmetric 336-cell
+# scatter, no objectives, sudden_death_start_tick 100).  Utility keep-rate is
+# lower in SYM_NOOBJ for both seats, but geometry and objectives moved together,
+# so neither axis can be credited.  This arm measures the third corner of the
+# 2x2 - ASYM geometry, objectives OFF - which decomposes the drift exactly.
+#
+# FIXED REFERENCE CONSTANTS.  Independently recomputed from the two merged n=30
+# baselines (both seeds 5001-5030) at pre-registration time, from their raw
+# events.sqlite3 ledgers, using the established method (dealt = utility-partition
+# card count summed over each seat's hand_dealt events; programmed =
+# plan_committed register slots whose card_id matches card.utility.*):
+#
+#   ASYM_OBJ   (ledger ugate_surfacing_fix_battery):
+#       red  = 20/362 = 0.055249      blue = 60/362 = 0.165746
+#   SYM_NOOBJ  (ledger ugate_qwen35_symmetric_battery):
+#       red  = 23/722 = 0.031856      blue = 89/722 = 0.123269
+#
+#   d_total_red  = 0.055249 - 0.031856 = 0.023393   (42.34% of ASYM_OBJ_red)
+#   d_total_blue = 0.165746 - 0.123269 = 0.042477   (25.63% of ASYM_OBJ_blue)
+#   d_total_red + d_total_blue = 0.065870
+#
+# MEASURED QUANTITIES.  From this arm's own n=30 ledger, same method:
+#   ASYM_NOOBJ_red  = programmed_red  / dealt_red
+#   ASYM_NOOBJ_blue = programmed_blue / dealt_blue
+#
+# DECOMPOSITION, per seat:
+#   d_obj_seat  = ASYM_OBJ_seat   - ASYM_NOOBJ_seat   (objectives effect, geometry fixed)
+#   d_geom_seat = ASYM_NOOBJ_seat - SYM_NOOBJ_seat    (geometry effect, no-objectives fixed)
+# Identity (true by algebra for ANY measured value; verified as a
+# computation-correctness check, not as evidence):
+#   d_obj_red  + d_geom_red  == d_total_red  == 0.023393
+#   d_obj_blue + d_geom_blue == d_total_blue == 0.042477
+#
+# PRIMARY STATISTIC:
+#   f_obj_pooled = (d_obj_red + d_obj_blue) / 0.065870
+# Also reported separately, because the seats may attribute differently and that
+# split is itself a finding rather than noise to average away:
+#   f_obj_red  = d_obj_red  / 0.023393
+#   f_obj_blue = d_obj_blue / 0.042477
+#
+# DECISION (disjunctive, exactly one criterion, no illustrative bands):
+#   f_obj_pooled >= 0.65          => OBJECTIVES-ATTRIBUTABLE
+#                                    (objectives toggle alone explains >=65% of
+#                                    the total drift; geometry <=35%)
+#   f_obj_pooled <= 0.35          => GEOMETRY-ATTRIBUTABLE
+#                                    (objectives toggle explains <=35%;
+#                                    geometry >=65%)
+#   0.35 < f_obj_pooled < 0.65    => BOTH-CONTRIBUTE; report both components and
+#                                    do NOT force a single-cause verdict.
+#
+# SIGN-REVERSAL ESCAPE.  If d_obj_red or d_obj_blue carries the opposite sign
+# from its own d_total (i.e. ASYM_NOOBJ_seat > ASYM_OBJ_seat - removing
+# objectives INCREASED that seat's keep-rate), that seat is reported
+# QUALITATIVELY as a sign reversal.  A negative or >1 fraction is NOT folded into
+# the 0-1 scale.
+#
+# CONTAMINATION GATE.  The ledger must show EXACTLY 30 match_started rows, 30
+# distinct match_ids, and seeds 5001-5030 each exactly once.  Anything else means
+# the arm is contaminated and must be re-run in a fresh --state-root before any
+# scoring.
+#
+# STATISTICAL HONESTY.  Adjacent-arm two-proportion z-tests at n=30 rarely reach
+# significance in this program; a non-significant comparison here is the expected
+# shape and must not be over-read in either direction.
+#
+# UNCONTROLLED STANDOFF (OMN-15119 disclosure class).  Blue's stock loadout
+# qwen35/sniper_ironclad.yaml carries weapon.siege.artillery_mortar (range 50)
+# and weapon.heavy.harpoon_gun (range 30); red's llm_qwen35_berserker.yaml
+# carries weapon.light.machine_gun (range 12) and weapon.light.shrapnel_thrower
+# (range 8).  Blue therefore holds an uncontrolled ~18-38 cell range advantage.
+# This arm inherits that asymmetry UNCHANGED and deliberately - both baselines it
+# bridges (ASYM_OBJ, SYM_NOOBJ) carry the identical loadout pairing, so the
+# standoff is constant across all three corners and cannot generate the drift
+# being decomposed. It is disclosed here so no reader assumes it was controlled.
+#
+# Launch:
+#   uv run python scripts/run_ogate_objectives_battery.py \
+#     --overlay contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_noobj_qwen.yaml \
+#     --expected-arena foundry_60_asym_v1_noobj \
+#     --state-root .onex_state/steel_onslaught/ugate_scenobj_asym_noobj_battery \
+#     --n 30 --seed-base 5000 --fresh
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_noobj_qwen/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_noobj_qwen/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_noobj_qwen/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_noobj_qwen/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_noobj_qwen/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_noobj_qwen/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v1_noobj
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  # Phase 2 — utility resolution handlers selected by this typed overlay
+  # (design §6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # Keyless: the only provider carries ``secret_ref: null``, so no resolver
+    # capability is required.  ``none`` lets ``so run --overlay`` and the O-GATE
+    # battery driver launch this overlay directly (``injected`` would raise
+    # "requires a resolver capability" on the keyless CLI path).
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

@@ -1,0 +1,91 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.arena
+display_name: The Foundry (Asymmetric, No Objectives - SCEN-OBJ control)
+arena_id: foundry_60_asym_v1_noobj
+# SCEN-OBJ control arena: the objectives-toggle counterpart of
+# contracts_data/arenas/foundry_60_asym_v1.yaml.
+#
+# WHAT THIS FILE IS: an exact geometry copy of foundry_60_asym_v1.yaml with the
+# `objectives:` list (3 cells) and `vp_threshold: 15` REMOVED, and nothing else
+# changed.  size, spawn_a, spawn_b, obstacles, every rect, sudden_death_start_tick
+# and sudden_death_damage_base are copied byte-for-byte from that file and MUST
+# stay that way - tests/contracts/test_scenobj_noobj_overlay.py asserts the
+# field-by-field equality, so an edit here that touches geometry fails CI.
+#
+# WHY IT EXISTS: the shipped scenario contrast (foundry_60_asym_v1 WITH objectives
+# vs foundry_60 objective-less) varies BOTH terrain/spawns/sudden-death timing AND
+# objectives at once, so the ~25-42% keep-rate magnitude drift between those two
+# batteries cannot be attributed to either axis (see
+# docs/evidence/2026-07-23-scenario-variation-qwen35-symmetric.md, "Verdict and
+# caveats", which names "a clean single-axis test (same geometry, toggle
+# objectives only)" as the required follow-up).  This arena is that toggle: it
+# holds the ASYM geometry fixed and removes objectives only, completing the third
+# corner of the 2x2 so the drift decomposes into an objectives component and a
+# geometry component.
+#
+# SUBTRACTIVE BY DESIGN: removing objectives from the asym map introduces zero new
+# design decisions - both removed keys default to ()/None, which is exactly the
+# objective-less shape foundry_60 already has.  The additive direction (placing
+# objective cells onto foundry_60's symmetric scatter) was rejected: cell
+# placement there is an undesigned free choice with no precedent, i.e. a new
+# design decision smuggled into a control.
+#
+# CONSEQUENCE FOR TERMINALS: with no objectives there is no VP victory path, so
+# matches on this arena end by elimination, sudden death, or the tick cap - the
+# same terminal set foundry_60 batteries produce.  The layout rationale below is
+# inherited verbatim from foundry_60_asym_v1 and still describes the terrain that
+# is present here; its objective-ladder and vp_threshold paragraphs describe the
+# cells this contract deliberately omits and are retained only so the geometry
+# rationale reads against the same reference text.
+#
+# Layout rationale, inherited verbatim from foundry_60_asym_v1.yaml (cover and
+# objectives were co-designed there; only the terrain half applies here):
+#   - Spawns face off on the horizontal mid-line: red brawler west (4,30),
+#     blue sniper east (52,30), 48 Chebyshev apart.
+#   - THE MID-LANE IS THE SIGHTLINE AXIS: row y=28..32 is kept obstacle-free
+#     between x=8..48, so the sniper's mortar (0.80 acc <=20, 0.70 @35) and
+#     harpoon (best <=10) genuinely defend at range along the east-west lane.
+#   - THE NORTH BAND IS THE APPROACH AXIS: a broken chain of 2-4 cell cover
+#     clusters (x=8..34, y=17..25) gives the brawler a covered west-to-east
+#     corridor with short exposed hops.
+#   - The south band is a second, thinner approach with wider gaps - faster
+#     but riskier.
+#   - The cover clusters that were placed to flank the three objective cells
+#     (west_yard 18,30; north_works 30,22; east_gate 42,36) are STILL HERE,
+#     unmoved: the terrain is the control, only the scoring cells are gone.
+size: 60
+spawn_a: {x: 4, y: 30}
+spawn_b: {x: 52, y: 30}
+obstacles: []
+rects:
+  # North approach corridor (west -> east cover chain)
+  - {x0: 8, y0: 20, x1: 9, y1: 21}
+  - {x0: 13, y0: 18, x1: 14, y1: 19}
+  - {x0: 18, y0: 21, x1: 20, y1: 21}
+  - {x0: 23, y0: 17, x1: 24, y1: 18}
+  - {x0: 27, y0: 20, x1: 28, y1: 21}
+  - {x0: 32, y0: 24, x1: 33, y1: 24}
+  - {x0: 33, y0: 18, x1: 34, y1: 19}
+  # Mid-lane flanking cover around objective.west_yard (18,30): the lane rows
+  # y=28..32 stay clear; cover hugs the lane edges north and south.
+  - {x0: 16, y0: 27, x1: 17, y1: 27}
+  - {x0: 19, y0: 33, x1: 20, y1: 33}
+  # East zone around objective.east_gate (42,36) — blue's defense band
+  - {x0: 39, y0: 33, x1: 40, y1: 34}
+  - {x0: 44, y0: 38, x1: 45, y1: 39}
+  - {x0: 46, y0: 33, x1: 46, y1: 35}
+  # South approach (sparser, wider hops)
+  - {x0: 14, y0: 42, x1: 15, y1: 43}
+  - {x0: 21, y0: 45, x1: 23, y1: 45}
+  - {x0: 28, y0: 42, x1: 29, y1: 43}
+  - {x0: 34, y0: 45, x1: 35, y1: 46}
+  - {x0: 37, y0: 42, x1: 38, y1: 43}
+  # West home-turf scatter (red side)
+  - {x0: 10, y0: 25, x1: 11, y1: 25}
+  - {x0: 9, y0: 35, x1: 10, y1: 36}
+  # Blue-side scatter
+  - {x0: 50, y0: 22, x1: 51, y1: 23}
+  - {x0: 49, y0: 40, x1: 50, y1: 41}
+  - {x0: 55, y0: 35, x1: 55, y1: 36}
+sudden_death_start_tick: 120
+sudden_death_damage_base: 8
