@@ -105,9 +105,11 @@ from steel_onslaught.match.utility_effects import (
 from steel_onslaught.pilots.persona_prompts import ModelSOMatchPromptProvenance
 from steel_onslaught.pilots.programming import ModelSOCardRulePackProvenance
 from steel_onslaught.pilots.schemas import ModelSOPosition, PilotProtocol
-from steel_onslaught.reducers.damage import (
-    compute_armor_reduction,
-    compute_effective_damage_after_vulnerability,
+from steel_onslaught.reducers.damage import compute_effective_damage_after_vulnerability
+from steel_onslaught.reducers.defense_handlers import (
+    DefenseResolutionRegistry,
+    ModelSODefenseResolutionRequest,
+    default_defense_registry,
 )
 from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.mode import (
@@ -254,6 +256,7 @@ class MatchRunner:
         card_cadence: Literal["atomic", "paced"] = "atomic",
         progress_gate: ProgressGate | None = None,
         utility_handler_ids: tuple[str, ...] | None = None,
+        defense_handler_ids: tuple[str, ...] | None = None,
     ) -> None:
         self._identity = identity
         self._match_id = identity.match_id
@@ -283,6 +286,15 @@ class MatchRunner:
         self._utility_registry: UtilityResolutionRegistry = default_utility_registry()
         if utility_handler_ids is not None:
             self._utility_registry = self._utility_registry.select(utility_handler_ids)
+        # Allowlisted defense-resolution (armor) handlers, selected fail-closed
+        # by the typed overlay.  Unlike utility handlers this seam is never
+        # off — every weapon hit resolves through exactly one active handler
+        # (``.active``) — so its provenance is always recorded on
+        # MATCH_STARTED below, not conditionally like the opt-in packs.
+        self._defense_registry: DefenseResolutionRegistry = default_defense_registry()
+        if defense_handler_ids is not None:
+            self._defense_registry = self._defense_registry.select(defense_handler_ids)
+        self._defense_handler_pack_provenance = self._defense_registry.provenance()
         self._sudden_death_start_tick = self._arena.sudden_death_start_tick
         self._sudden_death_damage_base = self._arena.sudden_death_damage_base
         if max_ticks is None and self._sudden_death_start_tick is None:
@@ -414,6 +426,11 @@ class MatchRunner:
             # Phase 4 finish-line seam: every new ledger names the exact
             # arena/objective contract it flew on (self-verifying digest).
             "arena_contract_hash": arena_contract_hash(self._arena),
+            # Defense-resolution (armor) seam is always active — unlike the
+            # opt-in packs below, its provenance is unconditional.
+            "defense_handler_pack_provenance": (
+                self._defense_handler_pack_provenance.model_dump(mode="json")
+            ),
         }
         if self._launch_provenance is not None:
             started_payload["launch_provenance"] = self._launch_provenance.model_dump(mode="json")
@@ -1437,10 +1454,17 @@ class MatchRunner:
         damage_type = spec.damage_type
         effectiveness = spec.target_class_effectiveness[target.chassis_class]
         damage_raw = int(spec.damage * effectiveness)
-        armor_reduction = compute_armor_reduction(
-            damage_raw=damage_raw,
-            armor_value=target.armor_value,
-            weapon_damage_type=damage_type,
+        # Defense-resolution seam (allowlisted handler pack, OMN defense
+        # seam refactor): the active handler owns the mitigation math today
+        # (``defense.armor.v1`` == the original ``compute_armor_reduction``
+        # call, byte-identical); a future shield/ablative mechanic is a new
+        # handler id, not an engine change here.
+        armor_reduction = self._defense_registry.active.handle(
+            ModelSODefenseResolutionRequest(
+                damage_raw=damage_raw,
+                armor_value=target.armor_value,
+                weapon_damage_type=damage_type,
+            )
         )
         absorbed = armor_reduction.absorbed
         vulnerability = self._catalog.chassis[target.chassis_id].penalties.heat_weapon_vulnerability

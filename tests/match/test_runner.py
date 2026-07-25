@@ -36,6 +36,7 @@ def _run_match(
     seed: int = 12345,
     max_ticks: int = 8,
     ledger: SQLiteLedger | None = None,
+    defense_handler_ids: tuple[str, ...] | None = None,
 ) -> tuple[Any, list[ModelSOEventEnvelope]]:
     bus = InProcessEventBus()
     collected: list[ModelSOEventEnvelope] = []
@@ -49,6 +50,7 @@ def _run_match(
         loadout_a=load_loadout(LOADOUT_A),
         loadout_b=load_loadout(LOADOUT_B),
         max_ticks=max_ticks,
+        defense_handler_ids=defense_handler_ids,
     )
     final = runner.run()
     return final, collected
@@ -73,6 +75,35 @@ def test_first_event_is_match_started_recording_seed() -> None:
     assert first.payload["seed"] == 777
     assert first.payload["max_ticks"] == 3
     assert len(first.payload["mechs"]) == 2
+
+
+@pytest.mark.integration
+def test_match_started_records_default_defense_handler_pack_provenance() -> None:
+    """Defense resolution is never off: every new match names its active pack."""
+    _, events = _run_match(max_ticks=1)
+    payload = events[0].payload
+    provenance = payload["defense_handler_pack_provenance"]
+    assert provenance["pack_id"] == "defense.resolution.v1"
+    assert [h["handler_id"] for h in provenance["handlers"]] == ["defense.armor.v1"]
+    assert len(provenance["content_sha256"]) == 64
+
+
+@pytest.mark.integration
+def test_explicit_defense_handler_ids_selection_matches_default() -> None:
+    """Explicitly selecting the default handler id is byte-identical to omitting it."""
+    _, default_events = _run_match(seed=42, max_ticks=5)
+    _, explicit_events = _run_match(seed=42, max_ticks=5, defense_handler_ids=("defense.armor.v1",))
+    default_provenance = default_events[0].payload["defense_handler_pack_provenance"]
+    explicit_provenance = explicit_events[0].payload["defense_handler_pack_provenance"]
+    assert default_provenance == explicit_provenance
+
+
+@pytest.mark.integration
+def test_unknown_defense_handler_id_fails_closed_at_construction() -> None:
+    from steel_onslaught.reducers.defense_handlers import DefenseHandlerSelectionError
+
+    with pytest.raises(DefenseHandlerSelectionError, match="not registered"):
+        _run_match(max_ticks=1, defense_handler_ids=("defense.shield.v1",))
 
 
 @pytest.mark.integration

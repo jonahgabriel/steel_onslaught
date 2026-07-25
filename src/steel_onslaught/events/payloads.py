@@ -57,6 +57,7 @@ from steel_onslaught.pilots.schemas import (
     SOPilotAction,
     SOPilotReasonCode,
 )
+from steel_onslaught.reducers.defense_handlers import ModelSODefenseHandlerPackProvenance
 
 WeaponFireRejectionReason = Literal[
     "insufficient_pressure",
@@ -159,6 +160,15 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         pattern=r"^[0-9a-f]{64}$",
         exclude_if=lambda value: value is None,
     )
+    # Content-addressed identity of the active defense-resolution (armor)
+    # handler pack (defense seam refactor). Optional only because ledgers
+    # recorded before this seam existed lack it; the runner stamps it on
+    # every new match unconditionally — unlike the opt-in packs above, this
+    # seam is never off, so a new match is never missing this field.
+    defense_handler_pack_provenance: ModelSODefenseHandlerPackProvenance | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _arena_contract_hash_matches_arena(self) -> ModelSOMatchStartedPayload:
@@ -195,6 +205,17 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
     @field_validator("card_rule_pack_provenance", mode="before")
     @classmethod
     def _normalize_card_rule_pack_provenance(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            normalized = thaw_json_mapping(value)
+            handlers = normalized.get("handlers")
+            if isinstance(handlers, list):
+                normalized["handlers"] = tuple(handlers)
+            return normalized
+        return value
+
+    @field_validator("defense_handler_pack_provenance", mode="before")
+    @classmethod
+    def _normalize_defense_handler_pack_provenance(cls, value: object) -> object:
         if isinstance(value, Mapping):
             normalized = thaw_json_mapping(value)
             handlers = normalized.get("handlers")
