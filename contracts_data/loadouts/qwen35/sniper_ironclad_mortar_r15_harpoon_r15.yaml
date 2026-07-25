@@ -1,0 +1,53 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.qwen35_sniper_ironclad_mortar_r15_harpoon_r15
+# SO-STANDOFF arm (mortar_r15 + harpoon_r15, session 2026-07-25): additive
+# loadout variant of contracts_data/loadouts/qwen35/sniper_ironclad_mortar_r15
+# .yaml (rung 1, SO-RANGECAP) with EXACTLY ONE further module swap --
+# weapon.heavy.harpoon_gun -> weapon.heavy.harpoon_gun_r15 (range 30 -> 15,
+# every other weapon field identical -- see that file). The mortar module
+# stays at weapon.siege.artillery_mortar_r15 (rung 1's own swap, unchanged
+# here). Every other module and field (chassis, boiler, pilot, sensors,
+# gizmos, budgets) is byte-identical to qwen35/sniper_ironclad.yaml,
+# qwen35/sniper_ironclad_mortar_r30.yaml, and qwen35/
+# sniper_ironclad_mortar_r15.yaml. None of those three files, nor
+# harpoon_gun.yaml, artillery_mortar.yaml, or artillery_mortar_r30.yaml, is
+# modified by this one.
+#
+# LADDER CONTEXT: this is rung 2 of the 3-rung monotone ladder (rung 0 = P6
+# mortar30/harpoon30, rung 1 = SO-RANGECAP mortar15/harpoon30, rung 2 =
+# this file, mortar15/harpoon15) -- see harpoon_gun_r15.yaml for the full
+# ladder table and rung-1 lineage.
+#
+# Budget note: weapon module contracts carry no mass field --
+# match/runner.py::_module_budgets hardcodes mass=0 for every weapon, and
+# range/cooldown/accuracy do not feed the MASS/SLOTS/PRESSURE budget axes
+# at all (confirmed by sniper_ironclad_mortar_r15.yaml's own budget note,
+# re-verified here for the harpoon swap) -- so swapping to the
+# further-range-capped harpoon variant changes zero budget arithmetic.
+# Declared budgets below are therefore identical to the rung-0 and rung-1
+# sniper loadouts.
+chassis_id: chassis.heavy.ironclad_mk1
+boiler_id: boiler.industrial.bessemer_90
+pilot_id: pilot.llm.qwen35_sniper
+modules:
+  weapons:
+    - weapon.siege.artillery_mortar_r15
+    - weapon.heavy.harpoon_gun_r15
+  sensors:
+    - sensor.long_range_radar
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.cooling.emergency_condenser
+    - gizmo.efficiency.efficient_regulator
+budgets:
+  points_used: 96
+  points_max: 100
+  mass_used: 112
+  mass_max: 160
+  slots_used: 6
+  slots_max: 8
+  expected_heat_peak: 22
+  expected_signature: 92

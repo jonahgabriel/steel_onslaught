@@ -1,0 +1,292 @@
+# SO-STANDOFF arm (harpoon_r15 on top of mortar_r15, x red-dmg-x16, session
+# 2026-07-25) battery overlay. NEW, additive overlay -- the v1 combined
+# overlay, the standalone arm-1 overlay, the P1-P7 pair-sweep overlays,
+# and the SO-RANGECAP overlay are all untouched.
+#
+# This overlay is the SAME U-GATE + O-GATE combined shape as the P1-P7 /
+# SO-RANGECAP overlays (design 2026-07-22 Sec5: asym objective arena + the
+# third split-deck utility pile, over-deal 10 / program 5, no balance knob
+# touched here in the overlay itself). This arm is byte-identical to the
+# SO-RANGECAP overlay except for the blue loadout id, the pre-registration
+# comment block, and the isolated ledger paths -- the ONLY experimental
+# delta against SO-RANGECAP is blue's harpoon_gun range (r30 -> r15), ON
+# TOP OF SO-RANGECAP's own mortar cut (r30 -> r15, already applied and
+# unchanged here); red's dose is HELD at dmg16, unchanged across all three
+# rungs:
+#   - arena: ``foundry_60_asym_v1`` -- UNCHANGED, otherwise-stock (this arm
+#     does not touch the arena).
+#   - blue loadout: ``loadout.llm.qwen35_sniper_ironclad_mortar_r15_harpoon_r15``
+#     (``contracts_data/loadouts/qwen35/sniper_ironclad_mortar_r15_harpoon_r15.yaml``)
+#     -- the range-lever under test THIS arm: swaps ONLY
+#     ``weapon.heavy.harpoon_gun`` -> ``weapon.heavy.harpoon_gun_r15``
+#     (range 30 -> 15) on top of SO-RANGECAP's own
+#     ``weapon.siege.artillery_mortar_r30`` -> ``_r15`` swap (unchanged,
+#     carried forward from rung 1). Every other weapon field, and every
+#     other loadout field, identical to the r30 loadout held constant
+#     across P1-P7 and to the rung-1 mortar_r15 loadout. Bound via
+#     ``--blue-loadout`` at launch, not referenced inside this overlay
+#     file.
+#   - red loadout: ``loadout.llm.qwen35_berserker_dmg16``
+#     (``contracts_data/loadouts/llm_qwen35_berserker_dmg16.yaml``) --
+#     UNCHANGED from P6 and from SO-RANGECAP (rung 1), the arm this
+#     battery compares against. Bound via ``--red-loadout`` at launch, not
+#     referenced inside this overlay file.
+#
+# LADDER DESIGN (3 rungs, seeds 5001-5030 shared across all three, fixed
+# red dose dmg16 -- this ladder IS the point of this arm, stated
+# explicitly so it is not mistaken for a confound):
+#   rung 0 = P6            (mortar 30, harpoon 30) = 17/30 = 56.67%
+#     decided-match red win rate, zero aborts
+#     (docs/evidence/2026-07-24-pair_p6_dmg16-battery.md)
+#   rung 1 = SO-RANGECAP   (mortar 15, harpoon 30) = 21/30 = 70.00%
+#     all-basis (21/29 = 72.41% decided-basis, 1 abort)
+#     (docs/evidence/2026-07-25-rangecap_r15_dmg16-battery.md, PR #197,
+#     merged 65a679a)
+#   rung 2 = SO-STANDOFF   (mortar 15, harpoon 15) = THIS ARM
+# This arm is deliberately NOT single-axis versus rung 0 -- rung 1 already
+# cut the mortar, and this arm carries that cut forward unchanged while
+# adding the harpoon cut. Versus RUNG 1 (its comparison baseline, not
+# rung 0), this arm IS single-axis: exactly one further property changes
+# (harpoon_gun range 30 -> 15). Any win-rate delta against rung 1 is
+# attributable to the harpoon cut alone. Any win-rate delta against rung 0
+# reflects BOTH cuts combined and is reported for ladder completeness only,
+# not scored.
+#
+# WHY x16, not x24: same reasoning as SO-RANGECAP's own header -- x24 (P7,
+# dmg24) is more deeply saturated but its loadout/overlay files are not
+# on origin/main as of this arm's branch point (verified 2026-07-25:
+# origin/main HEAD 65a679a has llm_qwen35_berserker_dmg16.yaml but no
+# _dmg24 file). x16 (P6/rung 0) is on origin/main, is the baseline rung 1
+# already used, and keeps all three ladder rungs on one shared seed-base
+# and dose for a clean comparison.
+#
+# SINGLE-AXIS MANIPULATION (vs rung 1, the declared comparison baseline):
+# exactly one property of the engagement geometry changes -- blue's
+# harpoon_gun range (30 -> 15). Blue's mortar (already at r15 from rung 1),
+# red's dose, the arena, and the utility deck are byte-identical to rung 1.
+#
+# ACCURACY-CURVE INDEPENDENCE CHECK (performed before authoring
+# harpoon_gun_r15.yaml, per house rule -- see that file's header for the
+# full derivation): src/steel_onslaught/reducers/weapons.py::
+# interpolate_accuracy(curve, distance) is keyed on the ACTUAL Chebyshev
+# distance to the target, never on the weapon's declared ``range`` field.
+# ``range`` is consulted only as a fire-eligibility gate
+# (src/steel_onslaught/reducers/sensors.py:182,
+# pilot_tick.py:144/195). Cutting harpoon_gun's range 30 -> 15 therefore
+# does NOT alter its accuracy_curve in any way -- the manipulation is
+# clean, matching the same property already confirmed for the mortar cut
+# in rung 1.
+#
+# PRE-REGISTERED, FALSIFIABLE hypothesis pair (written BEFORE this battery
+# ran), framed on the LADDER against RUNG 1 as the comparison baseline:
+#
+#   Baseline: rung 1 (SO-RANGECAP, mortar_r15 x harpoon_r30 x dmg16,
+#   docs/evidence/2026-07-25-rangecap_r15_dmg16-battery.md) scored, on the
+#   ALL-MATCH basis (n=30 fixed denominator, chosen as the PRIMARY basis
+#   for this arm's criterion specifically to avoid the denominator
+#   ambiguity rung 1's own evidence doc flagged as a limitation when it
+#   had an unanticipated abort -- Sec 1b/8 of that document): 21/30 =
+#   0.70000 red win rate. Rung 0 (P6) scored 17/30 = 0.56667, zero
+#   aborts, all-match and decided-match bases identical for that rung.
+#
+#   H_MONOTONE (blue's range is a genuinely additive/roughly-linear driver
+#   of the residual capping mechanism -- collapsing the SECOND half of
+#   blue's standoff envelope, symmetric in kind to the first, buys a
+#   further gain of AT LEAST the same magnitude as the first half-cut's
+#   own observed gain): rung-2 (this arm) all-match red win count >= 25/30.
+#
+#   ARITHMETIC (independently verified before commit): rung 0 -> rung 1
+#   gain, all-match basis = 21/30 - 17/30 = 4/30 = 0.13333 (13.33pp),
+#   i.e. exactly 4 additional wins (17 -> 21). Matched-magnitude
+#   threshold = rung-1 win count + rung0->rung1 win-count gain = 21 + 4 =
+#   25. 25/30 = 0.83333. H_MONOTONE requires this arm's all-match win
+#   count to reach or exceed 25/30.
+#
+#   H_FLAT (the mortar cut alone carried the residual-capping-mechanism
+#   effect; the harpoon cut, though a real and equally large-in-kind
+#   manipulation at the engine layer, does not reproduce a comparable
+#   further gain -- "removing the rest of the advantage changed nothing"
+#   relative to rung 1, a fully real, publishable, first-class negative
+#   result per house rule): rung-2 all-match red win count <= 24/30.
+#
+#   FORMAL CRITERION (the ONLY criterion this arm is scored against, ALL-
+#   MATCH basis, n=30, chosen deliberately over decided-match basis to
+#   avoid rung 1's own flagged denominator ambiguity): red win count
+#   (all-match, n=30 denominator, any abort counted as a non-win) >= 25
+#   supports H_MONOTONE. Win count <= 24 supports H_FLAT. Both outcomes
+#   are informative and neither is favored: 25/30 (83.33%) is a large but
+#   not saturating ask (blue would need to win 5 or fewer of 30), and
+#   24/30 or below spans the entire space from "identical to rung 1" (21)
+#   through "some further gain, but short of matching the first cut's own
+#   magnitude" (22-24) -- all read as H_FLAT under this bright line, by
+#   design, since the hypothesis under test is specifically WHETHER the
+#   second cut matches the first cut's magnitude, not merely whether it is
+#   directionally positive.
+#
+# No illustrative percentage band is given alongside the formal criterion
+# (the lesson from P7's "Verdict" section, restated in SO-RANGECAP's own
+# header: an illustrative aside not re-derived from the formal criterion's
+# own arithmetic can drift out of sync with it and make the verdict
+# arguable after the fact). The 25/30 threshold above IS the criterion,
+# arithmetic shown inline, nothing else is scored.
+#
+# Decided-match win rate (elimination-only denominator, matching this
+# program's Method section) will still be reported alongside the primary
+# all-match criterion for continuity with rungs 0/1, but is NOT itself the
+# scored criterion for this arm.
+#
+# This arm does NOT pre-favor either hypothesis -- report whichever is
+# better supported, or report that n=30 cannot distinguish them (a fully
+# acceptable answer, and the expected shape per this program's own record:
+# no adjacent-arm comparison at n=30 has ever reached significance, and
+# this ladder step is a considerably larger, harder-to-clear bar than a
+# typical adjacent-arm comparison).
+#
+# Neither the v1 overlay, the arm-1 overlay, the P1-P7 overlays, the
+# SO-RANGECAP overlay, the arena contract, nor any baseline loadout/weapon
+# is modified -- ``foundry_60_asym_v1``, ``llm_qwen35_berserker_dmg16
+# .yaml``, ``qwen35/sniper_ironclad.yaml``, ``qwen35/
+# sniper_ironclad_mortar_r30.yaml``, ``qwen35/
+# sniper_ironclad_mortar_r15.yaml``, ``weapons/harpoon_gun.yaml``, and
+# ``weapons/artillery_mortar_r15.yaml`` all stay byte-frozen so historical
+# replays remain valid. Ledger paths are isolated under a NEW state
+# directory so this arm's battery does not collide with any other lane.
+#
+# Pre-declared method (matched to P1-P7 and SO-RANGECAP, SAME seed-base as
+# both rungs this arm's ladder compares against): n=30, seed-base 5000
+# (seeds 5001-5030, identical seed-base to every prior pair-sweep arm in
+# this family), model pin qwen35 (Qwen3.6-35B-A3B, same provider block as
+# P1-P7/SO-RANGECAP, unchanged below), --fresh on first launch only.
+#
+# NOT YET LAUNCHED. Pre-registration only -- this overlay is committed
+# before any battery runs against it, per house rule.
+#
+# The O-GATE battery driver would select it via (command grounded verbatim
+# in the SO-RANGECAP overlay header's own launch command,
+# contracts_data/overlays/
+# tactical_split_overdeal_utility_asym_rangecap_r15_dmg16_qwen.yaml, with
+# only --overlay / --blue-loadout / --state-root swapped):
+# ``scripts/run_ogate_objectives_battery.py --overlay <this file>
+# --red-loadout contracts_data/loadouts/llm_qwen35_berserker_dmg16.yaml
+# --blue-loadout contracts_data/loadouts/qwen35/sniper_ironclad_mortar_r15_harpoon_r15.yaml
+# --n 30 --seed-base 5000 --fresh
+# --state-root .onex_state/steel_onslaught/standoff_r15_dmg16``
+# (--expected-arena stays the driver default, foundry_60_asym_v1).
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/standoff_r15_dmg16/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/standoff_r15_dmg16/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/standoff_r15_dmg16/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/standoff_r15_dmg16/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/standoff_r15_dmg16/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/standoff_r15_dmg16/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v1
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500
