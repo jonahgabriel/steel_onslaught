@@ -1,0 +1,55 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.weapon
+id: weapon.light.machine_gun_dmg24
+display_name: "Steam Machine Gun (Damage x24)"
+# Pair-sweep arm P7 (mortar_r30 x red-dmg-x24, session 2026-07-25):
+# additive weapon variant of contracts_data/weapons/machine_gun.yaml with
+# EXACTLY ONE field changed -- damage 8 -> 192 (x24, the next dose above
+# the confirmed 0% (x1) -> 3.4% (x3) -> 17.2% (x5.5) -> 27.6% (x8) -> 43.3%
+# (x11) -> 56.7% (x16) curve; paired here with the mortar_r30 approach fix
+# held constant, exactly as in P1/P2/P4/P5/P6). Every other field (range,
+# pressure_cost, heat_generated, cooldown_ticks, accuracy_curve,
+# target_class_effectiveness, damage_type, compatibility) is byte-identical
+# to the baseline machine gun. machine_gun.yaml itself stays untouched --
+# this is a NEW weapon id, bound only via the P7 berserker loadout variant
+# (contracts_data/loadouts/llm_qwen35_berserker_dmg24.yaml).
+#
+# This arm is a further extension of the P6 discriminating test (see the
+# overlay's own header comment for the full rationale): H1 (continued
+# marginal-rate deceleration but still climbing) vs H2 (kill-speed-parity
+# ceiling near ~50-57%, already reached at x16). P6 (x16) scored 56.7% with
+# a marginal rate of only 2.67pp/unit (down from x11's 5.25pp/unit) and
+# match length plateaued (median 23.0, flat vs x11) -- both consistent with
+# H2. This arm (x24) tests whether that deceleration continues (further
+# support for H2) or whether win rate re-accelerates / match length drops
+# (undermining H2, implicating a different, unidentified capping mechanism
+# per P6 section on the open question).
+#
+# Engine-layer dose prediction (for the verifier to check against the
+# reconstructed per-hit raw damage, per the P1/P2/P4/P5/P6 method): blue is
+# chassis_class=heavy, so target_class_effectiveness.heavy=0.7 applies and
+# damage_raw = int(192 x 0.7) = 134, against the baseline int(8 x 0.7) = 5.
+weapon_class: light
+range: 12
+damage: 192
+pressure_cost: 4
+heat_generated: 3
+cooldown_ticks: 1
+accuracy_curve:
+  - range: 0
+    hit_probability: 0.95
+  - range: 5
+    hit_probability: 0.85
+  - range: 10
+    hit_probability: 0.65
+  - range: 12
+    hit_probability: 0.50
+target_class_effectiveness:
+  light: 1.2
+  medium: 1.0
+  heavy: 0.7
+damage_type: standard
+compatibility:
+  compatible_chassis_classes:
+    - light
+    - medium
