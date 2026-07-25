@@ -25,6 +25,7 @@ from steel_onslaught.contracts.arena import (
     arena_contract_hash,
 )
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeProvenance
+from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.contracts.live_learning import ModelSOSeatPolicyProvenance
 from steel_onslaught.contracts.mode import (
     ModeId,
@@ -169,6 +170,37 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    # Structural in-register utility incentive (SO-UTIL-MECH).  The bounty is
+    # a DECISION INPUT and a SCORING RULE at once, so it must be durable in
+    # the ledger: the fold pays it from this recorded field, never from live
+    # overlay config, which is what keeps a replay's VP totals identical to
+    # the live match's.  Absent (the default) on every incentive-free match,
+    # so historical payloads and their re-serialization stay byte-identical.
+    utility_incentive: ModelSOUtilityIncentive | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def _incentive_requires_settleable_arena(self) -> ModelSOMatchStartedPayload:
+        """A VP bounty on an arena that cannot settle VP is a silent no-op.
+
+        Fail closed at the payload boundary (live AND replay): the bounty pays
+        into ``vp_totals``, and ``vp_totals`` only decides a match on an arena
+        that declares objectives and a ``vp_threshold``.  Paying into a total
+        nothing reads is exactly the "configured but inert" class this program
+        keeps catching after the fact.
+        """
+        if self.utility_incentive is not None and (
+            not self.arena.objectives or self.arena.vp_threshold is None
+        ):
+            raise ValueError(
+                "utility_incentive requires an arena declaring objectives and vp_threshold; "
+                f"arena {self.arena.arena_id!r} declares "
+                f"{len(self.arena.objectives)} objective(s) and "
+                f"vp_threshold={self.arena.vp_threshold!r}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _arena_contract_hash_matches_arena(self) -> ModelSOMatchStartedPayload:
@@ -193,6 +225,17 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
             if isinstance(assignments, list):
                 normalized["seat_assignments"] = tuple(assignments)
             return normalized
+        return value
+
+    @field_validator("utility_incentive", mode="before")
+    @classmethod
+    def _normalize_frozen_utility_incentive(cls, value: object) -> object:
+        # The bus freezes published payloads into MappingProxyType; strict
+        # mode will not coerce one into a nested model, so thaw it exactly
+        # like every sibling provenance block above.  Without this the fold
+        # cannot re-read its own recorded incentive off the wire.
+        if isinstance(value, Mapping):
+            return thaw_json_mapping(value)
         return value
 
     @field_validator("card_runtime_provenance", mode="before")

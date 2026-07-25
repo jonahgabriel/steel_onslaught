@@ -56,6 +56,7 @@ from steel_onslaught.contracts.arena import (
 from steel_onslaught.contracts.boiler import ModelSOBoilerSpec
 from steel_onslaught.contracts.chassis import ModelSOChassisSpec
 from steel_onslaught.contracts.gizmo import GizmoCategory, ModelSOGizmoSpec
+from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.contracts.mode import (
     ModeId,
     ModelSOModeTransition,
@@ -234,12 +235,25 @@ class MatchStateFold:
         self._mech_states: dict[str, ModelSOMechRuntimeState] = {}
         self._arena: ModelSOCurrentLiveArenaSnapshot | None = None
         # Per-player VP, folded deterministically from MATCH_TICK over the
-        # arena's objectives (Phase 4).  Stays empty on objective-free arenas.
+        # arena's objectives (Phase 4) and — when a match records a
+        # ``utility_incentive`` — from UTILITY_DEPLOYED bounties
+        # (SO-UTIL-MECH).  Stays empty on objective-free arenas.
         self._vp_totals: dict[str, int] = {}
         # Deployed, still-active utility effects (Phase 2), folded from
         # UTILITY_DEPLOYED and pruned per MATCH_TICK by ``expiry_tick``.  Stays
         # empty on matches with no utility deployment (replay identity).
         self._active_utility_effects: list[ModelSOUtilityEffect] = []
+        # Structural in-register utility incentive (SO-UTIL-MECH), read from
+        # the MATCH_STARTED payload so the payout derives from the LEDGER and
+        # replays identically.  ``None`` on every incentive-free match, which
+        # makes every branch below inert and the VP derivation byte-identical
+        # to the pre-incentive tree.
+        self._utility_incentive: ModelSOUtilityIncentive | None = None
+        # Set when a bounty was paid since the last threshold evaluation, so
+        # the existing MATCH_TICK threshold check also settles a win reached
+        # purely on bounty VP.  Stays False for the whole match when the
+        # incentive is off.
+        self._utility_bounty_unsettled = False
         # Active emission buffer; set per `apply` call (commit-then-emit).
         self._sink: list[ModelSOEventEnvelope] | None = None
 
@@ -470,6 +484,11 @@ class MatchStateFold:
 
     def _on_match_started(self, payload: ModelSOMatchStartedPayload) -> None:
         self._arena = payload.arena
+        # Recorded, not configured: the bounty rate this match's VP totals are
+        # derived from comes from the ledger, so replay cannot silently pay a
+        # different rate than the live match did.  The payload validator has
+        # already rejected an incentive on an arena that cannot settle VP.
+        self._utility_incentive = payload.utility_incentive
         self._mech_states = dict(self._lifecycle.state.mech_states)
         # Objective arenas start every player at zero VP; objective-free
         # arenas keep the historical empty mapping (replay identity).
@@ -514,9 +533,23 @@ class MatchStateFold:
         The effect's ``expiry_tick`` is deployment tick + ``duration_ticks``, so
         it bites from the deploying tick and is pruned in ``_on_match_tick`` once
         that tick is reached — the same derivation live and on replay.
+
+        When the match recorded a ``utility_incentive`` on MATCH_STARTED, this
+        is ALSO the payout site (SO-UTIL-MECH): the deploying player is
+        credited ``vp_per_deploy`` victory points, in the same ``_vp_totals``
+        objective control scores into and against the same ``vp_threshold``.
+        The reward is therefore structural — it changes the win condition —
+        rather than advisory.  Paid on resolution, never on programming, so a
+        card the pilot programs but that never resolves (heat lock, death,
+        match end) pays nothing.
         """
 
         payload = ModelSOUtilityDeployedPayload.model_validate(event.payload)
+        incentive = self._utility_incentive
+        if incentive is not None:
+            player_id = event.subject.player_id
+            self._vp_totals[player_id] = self._vp_totals.get(player_id, 0) + incentive.vp_per_deploy
+            self._utility_bounty_unsettled = True
         self._active_utility_effects = [
             *self._active_utility_effects,
             ModelSOUtilityEffect(
@@ -541,8 +574,10 @@ class MatchStateFold:
         is still in the sink un-folded, and scoring past it would race a
         second terminal into the lifecycle's consistency guard.
 
-        VP state mutates HERE (the MATCH_TICK derivation), identically live
-        and on replay; the emitted ``OBJECTIVE_SCORED`` events are durable
+        Objective VP state mutates HERE (the MATCH_TICK derivation),
+        identically live and on replay — the one other VP mutation site is
+        the SO-UTIL-MECH bounty in ``_on_utility_deployed``, whose threshold
+        settlement this method also performs; the emitted ``OBJECTIVE_SCORED`` events are durable
         telemetry that re-folds as a no-op, and the ``VICTORY_DECLARED``
         threshold intent folds through the lifecycle exactly like the
         elimination backstop's.  A threshold tie (both players reaching the
@@ -590,7 +625,15 @@ class MatchStateFold:
                     },
                 )
             )
-        if not scored_any:
+        # A bounty paid since the last evaluation must be settled here too:
+        # otherwise a player could cross ``vp_threshold`` on bounty VP alone
+        # and the match would never declare, because the pre-incentive code
+        # only evaluated the threshold on a round where an objective scored.
+        # ``_utility_bounty_unsettled`` is permanently False when the
+        # incentive is off, so the incentive-free path is unchanged.
+        bounty_unsettled = self._utility_bounty_unsettled
+        self._utility_bounty_unsettled = False
+        if not scored_any and not bounty_unsettled:
             return
 
         threshold = arena.vp_threshold

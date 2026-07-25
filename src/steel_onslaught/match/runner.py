@@ -43,6 +43,7 @@ from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
+from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.contracts.live_learning import ModelSOSeatPolicyProvenance
 from steel_onslaught.contracts.loadout import ModelSOLoadout
 from steel_onslaught.contracts.mode import ModeId, ModelSOModeSwitchIntentPayload
@@ -257,6 +258,7 @@ class MatchRunner:
         progress_gate: ProgressGate | None = None,
         utility_handler_ids: tuple[str, ...] | None = None,
         defense_handler_ids: tuple[str, ...] | None = None,
+        utility_incentive: ModelSOUtilityIncentive | None = None,
     ) -> None:
         self._identity = identity
         self._match_id = identity.match_id
@@ -283,6 +285,13 @@ class MatchRunner:
         # None keeps the full default pack (smoke/chaff/flares); a typed overlay
         # ``utility_handler_pack`` narrows it to the named subset.  ``select``
         # fails closed on unknown/duplicate/empty ids.
+        # Structural in-register utility incentive (SO-UTIL-MECH).  Recorded
+        # on MATCH_STARTED below (and NOWHERE else): the runner never pays the
+        # bounty itself -- ``MatchStateFold`` derives every VP from the
+        # recorded stream, which is what makes the payout replay-identical.
+        # ``None`` is OFF: the field is excluded from the payload entirely, so
+        # an incentive-free ledger is byte-identical to the pre-incentive one.
+        self._utility_incentive = utility_incentive
         self._utility_registry: UtilityResolutionRegistry = default_utility_registry()
         if utility_handler_ids is not None:
             self._utility_registry = self._utility_registry.select(utility_handler_ids)
@@ -432,6 +441,8 @@ class MatchRunner:
                 self._defense_handler_pack_provenance.model_dump(mode="json")
             ),
         }
+        if self._utility_incentive is not None:
+            started_payload["utility_incentive"] = self._utility_incentive.model_dump(mode="json")
         if self._launch_provenance is not None:
             started_payload["launch_provenance"] = self._launch_provenance.model_dump(mode="json")
         card_provenance = (
