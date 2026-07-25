@@ -132,6 +132,24 @@
 # "n=30 CANNOT DISTINGUISH THEM" IS AN ACCEPTABLE ANSWER. This arm does not
 # pre-favour either hypothesis in its analysis, and no re-run to chase a
 # different number is permitted: the battery reports the 30 seeds it ran.
+#
+# DISCARD RULE (amended 2026-07-25, BEFORE the scored run, after two runs died
+# on provider transport errors; the criterion above is UNCHANGED). The single
+# shared vLLM endpoint is not exclusive to this lane and the overlay's provider
+# binding carries ``retry.max_attempts: 1`` — byte-identical to the U-GATE
+# baseline and deliberately NOT modified, since changing it would break the
+# one-lever property this arm's keep-rate comparison rests on. A concurrent
+# battery on the same endpoint, or an isolated provider blip, therefore kills
+# whole seeds outright (``LlmTransportError``/``provider_error``) rather than
+# producing an in-match abort.
+#   A run is DISCARDED if and only if it fails to complete all 30 seeds — i.e.
+#   the driver reports ANY entry in ``skipped_seeds``. That condition is
+#   mechanically checkable from ``battery_summary.json`` alone, is entirely
+#   independent of the primary outcome, and is evaluated BEFORE any keep-rate
+#   is computed. No other discard reason is permitted. Every discarded run is
+#   retained on disk under a ``_DISCARDED_<reason>`` lane name with its full
+#   run log, and is disclosed by seed list in the arm's evidence document.
+#   The FIRST run that completes 30/30 is the scored run; it is not re-run.
 # ==============================================================================
 #
 schema_version: "1"
