@@ -1837,6 +1837,15 @@ def build_runtime_dependencies(
                     f"{len(incentive_arena.objectives)} objective(s) and "
                     f"vp_threshold={incentive_arena.vp_threshold!r}"
                 )
+            #   (3) the arena must actually SETTLE VP -- a decoy-scoring arena
+            #       (SO-OBJ-DECOY) declares both of the above yet never runs a
+            #       settlement, so the bounty would pay into a dead total.
+            if incentive_arena.objective_scoring == "decoy":
+                raise ValueError(
+                    "utility_incentive requires an arena that settles VP; arena "
+                    f"{incentive_arena.arena_id!r} declares objective_scoring='decoy', "
+                    "which suppresses every VP award and the threshold check"
+                )
         if card_binding is not None and card_binding.programmers:
             if card_programmers is not None:
                 raise ValueError(

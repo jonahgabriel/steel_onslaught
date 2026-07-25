@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 
@@ -13,6 +13,40 @@ from steel_onslaught.pilots.schemas import ModelSOPosition
 
 _ARENA_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _OBJECTIVE_ID_PATTERN = re.compile(r"^objective\.[a-z][a-z0-9_]*$")
+
+# Whether the arena's declared objectives actually PAY (SO-OBJ-DECOY).
+#
+#   "scoring" — the shipped behaviour and the default: control of an objective
+#               cell awards ``vp_per_round`` and can cross ``vp_threshold``
+#               into a VP victory.  Every arena authored before this field
+#               existed is exactly this, and the field is omitted from
+#               serialization at this value (see ``_objective_scoring_field``),
+#               so their ``arena_contract_hash`` digests and their
+#               ``MATCH_STARTED`` bytes are unchanged.
+#   "decoy"   — the objectives are still DECLARED, still rendered into the
+#               pilot observation and the programming prompt (cells,
+#               ``vp_per_round``, control, distance, the VP scoreboard and the
+#               ``vp_threshold`` rule line), but control NEVER awards VP, no
+#               ``OBJECTIVE_SCORED`` is emitted, and no VP victory can be
+#               declared.  This isolates the *stated goal in the decision
+#               context* from *realized capture reward*, which the SO-SCEN-OBJ
+#               battery could not separate (`docs/evidence/
+#               2026-07-25-scenobj-asym-noobj-battery.md` §6a).
+SOObjectiveScoring = Literal["scoring", "decoy"]
+
+
+def _objective_scoring_field() -> Any:
+    """The ``objective_scoring`` field, byte-invisible at its default.
+
+    ``exclude_if`` is what makes this additive rather than breaking: at
+    ``"scoring"`` the key is dropped from ``model_dump``, so the canonical JSON
+    that ``arena_contract_hash`` digests — and the ``MATCH_STARTED`` payload
+    that embeds the snapshot — are byte-identical to the pre-change tree for
+    every existing arena and every historical ledger.  Same technique the
+    ``MATCH_STARTED`` optional provenance fields use.
+    """
+
+    return Field(default="scoring", exclude_if=lambda value: value == "scoring")
 
 
 class _ClosedArenaModel(BaseModel):
@@ -62,18 +96,31 @@ def _validate_objectives(
     obstacles: frozenset[tuple[int, int]],
     objectives: tuple[ModelSOArenaObjective, ...],
     vp_threshold: int | None,
+    objective_scoring: SOObjectiveScoring = "scoring",
 ) -> None:
     """Objective layout invariants shared by the spec and the live snapshot.
 
     Presence is paired: an arena either has objectives AND a VP threshold, or
     neither.  A threshold without scoring cells (or cells without a finish
     line) would be a silently unreachable victory contract.
+
+    ``objective_scoring="decoy"`` is only meaningful on an arena that HAS
+    objectives to decoy: on an objective-free arena the mode would be a
+    configured no-op, which is exactly the "configured but inert" class this
+    codebase fails closed on.
     """
 
     if bool(objectives) != (vp_threshold is not None):
         raise ValueError(
             f"arena {arena_id!r} must declare objectives and vp_threshold together "
             f"(objectives={len(objectives)}, vp_threshold={vp_threshold!r})"
+        )
+    if objective_scoring == "decoy" and not objectives:
+        raise ValueError(
+            f"arena {arena_id!r} declares objective_scoring='decoy' but no objectives; "
+            "decoy mode suppresses scoring for objectives that are still SHOWN to the "
+            "pilot, so an objective-free decoy arena is a no-op (spell it 'scoring' and "
+            "omit the objectives instead)"
         )
     ids = [objective.objective_id for objective in objectives]
     duplicate_ids = sorted({oid for oid in ids if ids.count(oid) > 1})
@@ -146,6 +193,10 @@ class ModelSOCurrentLiveArenaSnapshot(_ClosedArenaModel):
     # half-configured".
     objectives: tuple[ModelSOArenaObjective, ...] = ()
     vp_threshold: StrictInt | None = Field(default=None, gt=0)
+    # Recorded, never configured (SO-OBJ-DECOY): the fold suppresses scoring
+    # from THIS field on the embedded snapshot, so a replay of a decoy match
+    # re-derives the same (empty) VP history from the ledger alone.
+    objective_scoring: SOObjectiveScoring = _objective_scoring_field()
 
     @property
     def obstacle_cells(self) -> frozenset[tuple[int, int]]:
@@ -171,6 +222,7 @@ class ModelSOCurrentLiveArenaSnapshot(_ClosedArenaModel):
             obstacles=frozenset(cells),
             objectives=self.objectives,
             vp_threshold=self.vp_threshold,
+            objective_scoring=self.objective_scoring,
         )
         return self
 
@@ -191,6 +243,7 @@ class ModelSOArenaSpec(_ClosedArenaModel):
     sudden_death_damage_base: StrictInt = Field(default=8, gt=0)
     objectives: tuple[ModelSOArenaObjective, ...] = ()
     vp_threshold: StrictInt | None = Field(default=None, gt=0)
+    objective_scoring: SOObjectiveScoring = _objective_scoring_field()
 
     @property
     def obstacle_cells(self) -> frozenset[tuple[int, int]]:
@@ -219,6 +272,7 @@ class ModelSOArenaSpec(_ClosedArenaModel):
             obstacles=self.obstacle_cells,
             objectives=self.objectives,
             vp_threshold=self.vp_threshold,
+            objective_scoring=self.objective_scoring,
         )
         return self
 
@@ -235,6 +289,7 @@ class ModelSOArenaSpec(_ClosedArenaModel):
             sudden_death_damage_base=self.sudden_death_damage_base,
             objectives=self.objectives,
             vp_threshold=self.vp_threshold,
+            objective_scoring=self.objective_scoring,
         )
 
 
@@ -283,6 +338,7 @@ __all__ = [
     "ModelSOArenaRect",
     "ModelSOArenaSpec",
     "ModelSOCurrentLiveArenaSnapshot",
+    "SOObjectiveScoring",
     "arena_contract_hash",
     "neutral_historical_arena_snapshot",
 ]

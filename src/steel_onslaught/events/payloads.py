@@ -200,6 +200,16 @@ class ModelSOMatchStartedPayload(_ClosedPayload):
                 f"{len(self.arena.objectives)} objective(s) and "
                 f"vp_threshold={self.arena.vp_threshold!r}"
             )
+        # Same failure, one step subtler (SO-OBJ-DECOY): a decoy arena DOES
+        # declare objectives and a threshold, but its fold never settles VP, so
+        # a bounty paid into ``vp_totals`` there could never decide anything.
+        if self.utility_incentive is not None and self.arena.objective_scoring == "decoy":
+            raise ValueError(
+                "utility_incentive cannot be recorded on a decoy-scoring arena: "
+                f"arena {self.arena.arena_id!r} declares objective_scoring='decoy', so "
+                "no VP settlement ever runs and the bounty would pay into a total "
+                "nothing reads"
+            )
         return self
 
     @model_validator(mode="after")
