@@ -1,12 +1,9 @@
-# SO-UTIL-MECH arm overlay — the structural in-register utility incentive.
+# SO-UTIL-REWARD arm overlay — the structural in-register utility incentive.
 #
-# NOT YET LAUNCHED, and NOT YET PRE-REGISTERED. This file ships with the
-# MECHANISM PR so the config path is exercised end to end; the battery is a
-# separate lane. Per house rule the pre-registration — the hypothesis pair and
-# the ONE formal criterion with its arithmetic shown inline — must be written
-# into this header and COMMITTED before the first ``match_started`` event is
-# emitted against it. Do not run a battery on this overlay until that commit
-# exists.
+# PRE-REGISTERED. The mechanism shipped unlaunched in the SO-UTIL-MECH PR
+# (#201, merged c6d0d9c). This commit adds the pre-registration below and is
+# the LAST commit before the first ``match_started`` event is emitted against
+# this overlay. n = 30, seeds 5001-5030.
 #
 # WHAT IS DIFFERENT FROM THE BASELINE. This overlay is the U-GATE + O-GATE
 # combined shape (``tactical_split_overdeal_utility_asym_v1_qwen.yaml``:
@@ -41,6 +38,119 @@
 # The blue standoff configuration this family inherits (the P1-P7 harpoon
 # framing error, OMN-15119) applies here unchanged and must be stated in the
 # arm's limitations.
+#
+# ============================== PRE-REGISTRATION ==============================
+#
+# CONFIGURATION UNDER TEST (everything except the incentive is the U-GATE
+# baseline, stated explicitly so no reader has to infer it):
+#   * Red DOSE: UNSCALED BASELINE. Red carries the stock berserker loadout
+#     ``loadout.llm.qwen35_berserker`` -> ``weapon.light.machine_gun``
+#     (damage 8, range 12) and ``weapon.light.shrapnel_thrower`` (damage 12,
+#     range 8). This is NOT any P1-P7 dose-ladder variant: no ``_dmg3``,
+#     ``_dmg8``, ``_dmg11``, ``_dmg16``, ``_dmg24``, ``_dmg55`` or ``_armor8``
+#     file is referenced anywhere in this arm.
+#   * Blue RANGE: UNCUT BASELINE. Blue carries the stock sniper loadout
+#     ``loadout.llm.qwen35_sniper_ironclad`` -> ``weapon.siege.artillery_mortar``
+#     (range 50, damage 45) and ``weapon.heavy.harpoon_gun`` (range 30,
+#     damage 28). This is NOT the SO-RANGECAP / SO-STANDOFF ladder: no
+#     ``_r30`` / ``_r15`` weapon or loadout variant is referenced.
+#   * Arena ``foundry_60_asym_v1``, ``vp_threshold: 15``; over-deal 10
+#     (4 movement + 4 weapon + 2 utility), program 5; utility handler pack
+#     ``utility.resolution.v1`` complete. Both seats live Qwen3.6-35B-A3B.
+#   The dose/range ladders are deliberately NOT applied because the scored
+#   quantity here is KEEP-RATE, and the only prior arms with a published,
+#   independently recomputed keep-rate on this exact overlay shape are the
+#   un-laddered ones. Holding dose and range at baseline keeps this arm
+#   EXACTLY ONE lever away from the U-GATE baseline arm.
+#
+# CHANCE-LEVEL KEEP-RATE BASELINE (recomputed from prior utility_asym arm
+# artifacts, NOT eyeballed). Keep-rate is defined exactly as the U-GATE arm
+# defined it: for each seat, pair every ``hand_dealt`` with the
+# ``plan_committed`` that follows it for the same (match_id, seat) in ledger
+# order; keep-rate = (cards of the category appearing in
+# ``plan_committed.registers[].card_id``) / (cards of that category appearing
+# in ``hand_dealt.card_ids``). Unpaired hands are excluded from BOTH sides.
+#   * STRUCTURAL chance floor p0 = register_count / hand_size = 5 / 10 = 0.5000.
+#   * EMPIRICAL confirmation, recomputed over the 16 clean n=30 utility_asym
+#     qwen35 arm ledgers held under the sibling SO-* worktrees: pooled
+#     all-card keep-rate = 31,640 / 63,280 = 0.500000 EXACTLY. Pilots keep
+#     cards at chance in aggregate; they dump UTILITY specifically.
+#   * OBSERVED prior utility keep-rate over those same 16 arms (context only,
+#     not the criterion): pooled 1,037 / 12,656 = 0.081937.
+#   * DIRECT baseline arm (this overlay minus the incentive,
+#     ``ugate_asym_utility_battery``): pooled 30 / 812 = 0.036946;
+#     red 7 / 406 = 0.017241, blue 23 / 406 = 0.056650.
+#
+# HYPOTHESES:
+#   H_PRICED — the drafting bias is a PREFERENCE the model will trade against
+#     a stated in-game price. Paying victory points per resolved utility
+#     deploy, surfaced as game state rather than as instruction text, lifts
+#     utility keep-rate above the chance floor.
+#   H_PRIOR — the drafting bias is a PRIOR the model holds regardless of
+#     price. The structural incentive fails to lift keep-rate above chance,
+#     exactly as prompt-level steering failed in L-GATE-2. A fully real,
+#     publishable, first-class negative result per house rule, and the
+#     prior-favoured outcome given the 0.0819 pooled baseline.
+#
+# FORMAL CRITERION — the ONLY criterion this arm is scored against.
+#   Quantity: POOLED (red + blue) utility keep-rate, n = 30, seeds 5001-5030,
+#   computed by the paired hand_dealt/plan_committed method above.
+#   ARITHMETIC (independently verified before this commit):
+#     p0    = 5 / 10 = 0.500000            (chance floor, confirmed empirically
+#                                           at 0.500000 exact, 31,640/63,280)
+#     N_min = 620                          (smallest pooled utility-dealt count
+#                                           observed in any of the 16 clean
+#                                           n=30 arms — pair_p4_dmg8)
+#     SE    = sqrt(p0 * (1 - p0) / N_min)
+#           = sqrt(0.25 / 620) = sqrt(0.00040322580645) = 0.02008048
+#     z     = 1.645                        (one-sided, alpha = 0.05)
+#     delta = z * SE = 1.645 * 0.02008048 = 0.03303239
+#     bar   = p0 + delta = 0.500000 + 0.03303239 = 0.53303239
+#           -> rounded UP to 4 dp = 0.5331 (rounding up is conservative: it
+#              makes H_PRICED harder, never easier, to support)
+#   DECISION: pooled utility keep-rate >= 0.5331 supports H_PRICED.
+#             pooled utility keep-rate <  0.5331 supports H_PRIOR.
+#   N_min is used rather than this arm's own (unknown-in-advance) N so the bar
+#   is a fixed rate a reader can check before the battery runs. If this arm's
+#   realised N exceeds 620 the fixed bar is conservative, never permissive.
+#
+# SECONDARY OBSERVABLES — PRE-DECLARED HERE, REPORTED, NEVER SCORED. Declaring
+# them in advance is what stops a large-but-sub-chance move from being written
+# up post hoc as a rescue: per-seat utility keep-rate; red (brawler) win rate
+# and terminal-class mix; match length; ``utility_deployed`` counts by kind and
+# by seat; VP composition (bounty VP vs objective VP) and whether any match
+# terminates on ``vp_threshold``; completion health. A move from 0.0819 to,
+# say, 0.30 would score H_PRIOR under the criterion above while still being a
+# large effect — it will be reported as exactly that, an unscored secondary,
+# with no claim that the criterion was met.
+#
+# WIN RATE IS A KNOWN CONFOUND IN THIS ARM AND IS NOT A BALANCE RESULT. At
+# ``vp_per_deploy: 2`` against ``vp_threshold: 15``, eight resolved deploys
+# win outright, so win rate here measures the bounty as much as it measures
+# the seats. It is a secondary observable only.
+#
+# "n=30 CANNOT DISTINGUISH THEM" IS AN ACCEPTABLE ANSWER. This arm does not
+# pre-favour either hypothesis in its analysis, and no re-run to chase a
+# different number is permitted: the battery reports the 30 seeds it ran.
+#
+# DISCARD RULE (amended 2026-07-25, BEFORE the scored run, after two runs died
+# on provider transport errors; the criterion above is UNCHANGED). The single
+# shared vLLM endpoint is not exclusive to this lane and the overlay's provider
+# binding carries ``retry.max_attempts: 1`` — byte-identical to the U-GATE
+# baseline and deliberately NOT modified, since changing it would break the
+# one-lever property this arm's keep-rate comparison rests on. A concurrent
+# battery on the same endpoint, or an isolated provider blip, therefore kills
+# whole seeds outright (``LlmTransportError``/``provider_error``) rather than
+# producing an in-match abort.
+#   A run is DISCARDED if and only if it fails to complete all 30 seeds — i.e.
+#   the driver reports ANY entry in ``skipped_seeds``. That condition is
+#   mechanically checkable from ``battery_summary.json`` alone, is entirely
+#   independent of the primary outcome, and is evaluated BEFORE any keep-rate
+#   is computed. No other discard reason is permitted. Every discarded run is
+#   retained on disk under a ``_DISCARDED_<reason>`` lane name with its full
+#   run log, and is disclosed by seed list in the arm's evidence document.
+#   The FIRST run that completes 30/30 is the scored run; it is not re-run.
+# ==============================================================================
 #
 schema_version: "1"
 bus:
