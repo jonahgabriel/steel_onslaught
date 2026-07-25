@@ -5,7 +5,7 @@
 out of ``main``'s loop and killed the entire battery process -- the V-IMG
 vision arm lost 29 of 30 seeds to a single first-call 429. ``main`` now catches
 per-seed and continues, but a shrunken-but-silently-"clean" battery would be
-worse than the crash it replaces, so three properties are guarded here:
+worse than the crash it replaces, so four properties are guarded here:
 
 - a dead seed is skipped, not fatal: the remaining seeds still run and are
   scored;
@@ -14,7 +14,14 @@ worse than the crash it replaces, so three properties are guarded here:
   seed + error in ``skipped_seeds``, and force-fails ``o_gate_pass`` even when
   the matches that DID run would otherwise have passed the gate;
 - ``battery_raw.jsonl`` -- the evidence ledger of matches that actually ran --
-  never gets a synthetic row for a seed that never produced one.
+  never gets a synthetic row for a seed that never produced one;
+- 2026-07-25 (SO-COMP-CA / SO-COMP-R1): the *process exit code* is non-zero
+  whenever any seed was skipped. This was NOT true before that fix -- ``main``
+  unconditionally returned 0, so a retry loop keyed on exit code (rather than
+  row presence in ``battery_raw.jsonl``) silently lost seeds. See
+  ``tests/cli/test_ogate_objectives_battery_exit_code.py`` for the dedicated
+  RED/GREEN coverage of that fix; the assertion below is updated to match the
+  corrected contract rather than continuing to pin the bug.
 """
 
 from __future__ import annotations
@@ -94,7 +101,9 @@ def test_dead_seed_is_skipped_not_fatal(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     exit_code = main()
 
-    assert exit_code == 0
+    # 2026-07-25: a skipped seed must be loud on `$?`, not just in the summary
+    # -- see the module docstring and test_ogate_objectives_battery_exit_code.py.
+    assert exit_code != 0
     summary = json.loads((tmp_path / "battery_summary.json").read_text(encoding="utf-8"))
     # The two live seeds still ran and scored; only the dead seed is absent.
     assert summary["n"] == 2
@@ -199,8 +208,9 @@ def test_no_skips_leaves_summary_shape_byte_identical_to_pre_fix(
         ],
     )
 
-    main()
+    exit_code = main()
 
+    assert exit_code == 0
     summary = json.loads((tmp_path / "battery_summary.json").read_text(encoding="utf-8"))
     assert summary["n"] == 2
     assert summary["requested_n"] == 2
