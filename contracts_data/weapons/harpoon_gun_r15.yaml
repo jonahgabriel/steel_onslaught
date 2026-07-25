@@ -1,0 +1,67 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.weapon
+id: weapon.heavy.harpoon_gun_r15
+display_name: "Harpoon Gun (Range 15)"
+# SO-STANDOFF arm (mortar_r15 + harpoon_r15 x red-dmg-x16, session
+# 2026-07-25): additive weapon variant of
+# contracts_data/weapons/harpoon_gun.yaml with EXACTLY ONE field changed --
+# range 30 -> 15. Every other field (damage, cooldown_ticks,
+# heat_generated, pressure_cost, accuracy_curve, target_class_effectiveness,
+# damage_type, compatibility) is byte-identical to the baseline harpoon_gun
+# -- that file is not modified by this one.
+#
+# LADDER CONTEXT (rung 2 of 3, seeds 5001-5030 shared across all rungs,
+# fixed red dose dmg16):
+#   rung 0 = P6            (mortar 30, harpoon 30) = 17/30 = 56.67%
+#   rung 1 = SO-RANGECAP   (mortar 15, harpoon 30) = 21/30 = 70.00%
+#     (21/29 decided = 72.41%)
+#   rung 2 = SO-STANDOFF   (mortar 15, harpoon 15) = this arm
+# SO-RANGECAP (PR #197, docs/evidence/2026-07-25-rangecap_r15_dmg16
+# -battery.md) cut only the mortar, deliberately leaving harpoon_gun at
+# r30, and flagged the untouched harpoon as removing only "roughly HALF"
+# of blue's total standoff advantage. This file cuts the other half --
+# blue's second and last long-range weapon -- fully collapsing blue's
+# engagement envelope down to r15 across both weapons.
+#
+# ACCURACY-CURVE CHECK (performed before authoring this file, per house
+# rule -- mirrors the check SO-RANGECAP's artillery_mortar_r15.yaml
+# performed for the mortar): src/steel_onslaught/reducers/weapons.py::
+# interpolate_accuracy(curve, distance) takes the ACTUAL Chebyshev distance
+# to the target at fire time as its argument, not the weapon's declared
+# `range` field -- the two are read from separate places entirely.
+# `range` is consulted only as a hard fire-eligibility gate (see
+# src/steel_onslaught/reducers/sensors.py:182, `if true_distance >
+# spec.range`, and pilot_tick.py:144/195, which pass `spec.range` through
+# to the plan/legality check, never into the accuracy lookup). Cutting
+# `range` from 30 to 15 therefore does NOT touch `accuracy_curve` in any
+# way -- it only makes the weapon illegal to fire at true_distance > 15;
+# for any shot still in range (distance <= 15) the SAME accuracy_curve
+# breakpoints (0 -> 0.88, 10 -> 0.78, 20 -> 0.62, 30 -> 0.45) interpolate
+# exactly as before (e.g. distance=15 still yields the same
+# linearly-interpolated value between the 10 and 20 breakpoints, 0.70,
+# that it always would have). The manipulation is clean: range alone
+# changes, accuracy-at-a-given-distance is unaffected.
+weapon_class: heavy
+range: 15
+damage: 28
+pressure_cost: 14
+heat_generated: 6
+cooldown_ticks: 4
+accuracy_curve:
+  - range: 0
+    hit_probability: 0.88
+  - range: 10
+    hit_probability: 0.78
+  - range: 20
+    hit_probability: 0.62
+  - range: 30
+    hit_probability: 0.45
+target_class_effectiveness:
+  light: 0.8
+  medium: 1.0
+  heavy: 1.2
+damage_type: standard
+compatibility:
+  compatible_chassis_classes:
+    - medium
+    - heavy
