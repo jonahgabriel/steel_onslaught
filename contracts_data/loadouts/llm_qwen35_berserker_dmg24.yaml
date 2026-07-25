@@ -1,0 +1,47 @@
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.qwen35_berserker_dmg24
+# Pair-sweep arm P7 (mortar_r30 x red-dmg-x24, session 2026-07-25):
+# additive loadout variant of llm_qwen35_berserker.yaml with EXACTLY ONE
+# module swap per weapon slot -- weapon.light.machine_gun ->
+# weapon.light.machine_gun_dmg24 and weapon.light.shrapnel_thrower ->
+# weapon.light.shrapnel_thrower_dmg24 (damage x24 on both -- the next dose
+# above the confirmed 0% (x1) -> 3.4% (x3) -> 17.2% (x5.5) -> 27.6% (x8) ->
+# 43.3% (x11) -> 56.7% (x16) curve, with the mortar_r30 approach fix held
+# constant exactly as in P1/P2/P4/P5/P6 -- every other weapon field
+# identical, see those files). Every other module and field (chassis,
+# boiler, pilot, sensors, cooling, armor, gizmos, budgets) is byte-identical
+# to the baseline berserker loadout. llm_qwen35_berserker.yaml itself stays
+# untouched.
+#
+# This is a pre-registered discriminating extension of the P6 test -- see
+# the overlay's own header comment for the full rationale -- H1 (marginal
+# rate continues decelerating but win rate keeps climbing above 56.7%) vs
+# H2 (kill-speed-parity ceiling already reached at x16; win rate near-flat
+# or a further-decelerated small increment, match length stays flat).
+# Neither prediction is favored going in.
+#
+# Budget note: weapon module contracts carry no mass field --
+# match/runner.py::_module_budgets hardcodes mass=0 for every weapon, and
+# damage does not feed the MASS/SLOTS/PRESSURE budget axes at all -- so
+# swapping to the damage-x24 variants changes zero budget arithmetic.
+# Declared budgets below are therefore identical to the baseline berserker
+# loadout (and to the P1/P2/P4/P5/P6 variants).
+chassis_id: chassis.light.scout_mk1
+boiler_id: boiler.compact.v1
+pilot_id: pilot.llm.qwen35
+modules:
+  weapons: [weapon.light.machine_gun_dmg24, weapon.light.shrapnel_thrower_dmg24]
+  sensors: [sensor.short_range_scanner]
+  cooling: []
+  armor: []
+  gizmos: []
+budgets:
+  points_used: 40
+  points_max: 100
+  mass_used: 30
+  mass_max: 60
+  slots_used: 3
+  slots_max: 4
+  expected_heat_peak: 30
+  expected_signature: 35
