@@ -20,6 +20,7 @@ import pytest
 
 from steel_onslaught.contracts.application import ModelSODelegationProviderBinding
 from steel_onslaught.llm.client_delegation import (
+    _TACTICAL_RESPONSE_CONTRACT,
     LlmBusDelegationClient,
     ProtocolDelegationCliRunner,
 )
@@ -211,6 +212,48 @@ def test_payload_forwards_configured_backend_id_omn15170(tmp_path: Path) -> None
     client.complete(_request())
 
     assert captured["backend_id"] == "local-coder-mlx"
+
+
+def test_payload_declares_the_tactical_response_contract_schema_omn15193(
+    tmp_path: Path,
+) -> None:
+    """OMN-15193: the client always declares its closed tactical-decision
+    response schema on the wire via ``response_contract``, so the platform's
+    delegation quality gate validates structurally instead of running the
+    task-class keyword heuristics (which false-positived on a legitimate
+    ``rationale`` substring like "i cannot").
+
+    The declared schema must be present, exact, and derived from -- never
+    looser than -- this repo's own decision-parsing contract
+    (``steel_onslaught.llm.pilot._ModelSOLlmPilotResponse``): ``action`` and
+    ``rationale`` are non-empty strings, ``action_params`` is a JSON object,
+    ``confidence`` is a number bounded to ``[0.0, 1.0]``, all four fields are
+    required, and no additional properties are allowed (mirroring the
+    Pydantic model's ``extra="forbid"``).
+    """
+    captured: dict[str, object] = {}
+
+    def _stdout(argv: tuple[str, ...]) -> str:
+        input_path = Path(argv[argv.index("--input") + 1])
+        captured.update(json.loads(input_path.read_text(encoding="utf-8")))
+        return _skill_result_json(correlation_id=str(captured["correlation_id"]))
+
+    client = _client(runner=_RecordingRunner(_stdout), tmp_path=tmp_path)
+    client.complete(_request())
+
+    assert "response_contract" in captured
+    assert captured["response_contract"] == _TACTICAL_RESPONSE_CONTRACT
+    assert captured["response_contract"] == {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "minLength": 1},
+            "action_params": {"type": "object"},
+            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "rationale": {"type": "string", "minLength": 1},
+        },
+        "required": ["action", "action_params", "confidence", "rationale"],
+        "additionalProperties": False,
+    }
 
 
 def test_payload_composes_system_and_user_prompt_with_json_mode_instruction(
