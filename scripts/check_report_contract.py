@@ -63,6 +63,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
 
+# OMN-15162: ROLE_TO_MODEL/SODispatchRole are re-exported aliases over the
+# fleet-generic omnibase_core.models.dispatch.report port (core PR #1510) --
+# this script keeps working unchanged against the re-exported models.
 from steel_onslaught.contracts.dispatch_report import ROLE_TO_MODEL, SODispatchRole
 
 

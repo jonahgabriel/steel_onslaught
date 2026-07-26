@@ -400,8 +400,8 @@ wheels = [
 
 [[package]]
 name = "omnibase-core"
-version = "0.46.7"
-source = { registry = "https://pypi.org/simple" }
+version = "0.46.8"
+source = { git = "https://github.com/OmniNode-ai/omnibase_core?rev=3f2998b3337e4050b4758e0dd2a0fe1061ce0d98#3f2998b3337e4050b4758e0dd2a0fe1061ce0d98" }
 dependencies = [
     { name = "blake3" },
     { name = "click" },
@@ -410,15 +410,12 @@ dependencies = [
     { name = "dependency-injector" },
     { name = "httpx" },
     { name = "jsonschema" },
+    { name = "pathspec" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
     { name = "tree-sitter" },
     { name = "tree-sitter-python" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/68/51/e89d9832e703200dfc21c9f32d4b247ad3bfcdd1a36b4053884d71357c95/omnibase_core-0.46.7.tar.gz", hash = "sha256:71f675a1461af2aa7ce3ce28e99728dd9a04c9038a828e60a091cc0bab18a3a7", size = 9065896, upload-time = "2026-07-09T08:00:55.548Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/21/4e02df34674e66308c4154dea2b1b7971f0635e475ebadda77ded36d2dc1/omnibase_core-0.46.7-py3-none-any.whl", hash = "sha256:b37ef287830fba6e04ea712ed3ebf3fe4eabbf236cd30c13951941731579f5d3", size = 6392503, upload-time = "2026-07-09T07:57:59.652Z" },
 ]
 
 [[package]]
@@ -747,7 +744,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
-    { name = "omnibase-core", specifier = ">=0.46.2" },
+    { name = "omnibase-core", git = "https://github.com/OmniNode-ai/omnibase_core?rev=3f2998b3337e4050b4758e0dd2a0fe1061ce0d98" },
     { name = "omnibase-spi", specifier = ">=0.22.0" },
     { name = "pillow", specifier = ">=10.4,<11" },
     { name = "playwright", marker = "extra == 'dev'", specifier = ">=1.45" },

@@ -823,6 +823,66 @@ def test_main_fails_when_merge_sha_does_not_resolve_lander(
     assert "does not resolve to a real commit" in err
 
 
+def test_main_lander_blocked_without_merge_sha_now_passes(tmp_path: Path) -> None:
+    """OMN-15162 reconciliation: core PR #1510 (omnibase_core.models.dispatch.
+    report.model_dispatch_report_lander.ModelDispatchReportLander) made
+    ``merge_sha`` conditional on ``verdict == MERGED`` via a
+    ``@model_validator`` instead of this repo's PR #213 original, which
+    required ``merge_sha: GitSha`` unconditionally. A ``BLOCKED`` land
+    attempt happens before any merge commit exists, so a report that omits
+    ``merge_sha`` for a ``blocked`` verdict is now GREEN -- it was RED
+    (forced to fabricate a SHA) before the OMN-15162 re-export swap.
+    """
+    report_path = _write_report(
+        tmp_path / "report.json",
+        {
+            "role": "lander",
+            "pr_number": 4821,
+            "verdict": "blocked",
+            "summary": (
+                "Land attempt blocked: PR #4821 has an unresolved CodeRabbit thread and CI "
+                "is red on the deploy-gate check; handing back to the implementer lane."
+            ),
+        },
+    )
+    exit_code = main(["--role", "lander", "--report", str(report_path)])
+    assert exit_code == 0
+
+
+def test_main_lander_merge_sha_forbidden_when_not_merged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """OMN-15162 reconciliation, the inverse of the case above: core PR
+    #1510's model_validator also rejects a non-``MERGED`` verdict that DOES
+    carry a ``merge_sha`` (no merge commit exists for a blocked/aborted
+    land, so a present SHA can only be fabricated or stale) -- this
+    combination was previously unchecked (merge_sha was simply always
+    required, so "required and also present" was never itself a violation).
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    sha = _commit_file(repo, "a.txt", "x\n")
+    report_path = _write_report(
+        tmp_path / "report.json",
+        {
+            "role": "lander",
+            "pr_number": 4821,
+            "merge_sha": sha,
+            "verdict": "aborted",
+            "summary": (
+                "Land aborted: the operator issued an explicit hold before the merge queue "
+                "picked up PR #4821; no merge commit was ever created."
+            ),
+        },
+    )
+    exit_code = main(
+        ["--role", "lander", "--report", str(report_path), "--git-dir", str(repo / ".git")]
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "merge_sha must not be set when verdict is" in err
+
+
 # --------------------------------------------------------------------------
 # main() -- scout role
 # --------------------------------------------------------------------------
