@@ -190,6 +190,29 @@ def test_payload_carries_source_external_client_and_configured_task_type(
     UUID(str(captured["correlation_id"]))
 
 
+def test_payload_forwards_configured_backend_id_omn15170(tmp_path: Path) -> None:
+    """OMN-15170: ``backend_id`` must reach the wire payload verbatim.
+
+    Regression for the gap this client's own module docstring previously
+    documented as deferred: ``ModelSODelegationProviderBinding.backend_id``
+    was captured for "documentation/provenance" only and never forwarded --
+    OMN-15180 landed the wire-model + handler support this needed, and this
+    client must actually use it or the pin is dead on arrival despite being
+    reachable end-to-end.
+    """
+    captured: dict[str, object] = {}
+
+    def _stdout(argv: tuple[str, ...]) -> str:
+        input_path = Path(argv[argv.index("--input") + 1])
+        captured.update(json.loads(input_path.read_text(encoding="utf-8")))
+        return _skill_result_json(correlation_id=str(captured["correlation_id"]))
+
+    client = _client(runner=_RecordingRunner(_stdout), tmp_path=tmp_path)
+    client.complete(_request())
+
+    assert captured["backend_id"] == "local-coder-mlx"
+
+
 def test_payload_composes_system_and_user_prompt_with_json_mode_instruction(
     tmp_path: Path,
 ) -> None:
