@@ -61,6 +61,18 @@ actually sent. Live routing determinism to ``local-coder-mlx`` is proven by
 OMN-15170's driver test (``tests/live/``), not by this module's own
 (hermetic, fake-runner) unit tests.
 
+**Contract-declared response validation (OMN-15193):** ``ModelDelegateSkillRequest``
+gained an optional ``response_contract`` field (a JSON Schema) that, when
+set, makes the platform's delegation quality gate validate the response
+structurally against it instead of running the generic task-class keyword
+heuristics. ``complete()`` below always forwards
+``_TACTICAL_RESPONSE_CONTRACT`` -- the closed tactical-decision shape derived
+from this repo's own ``_ModelSOLlmPilotResponse`` decision-parsing contract
+(``steel_onslaught.llm.pilot``) -- since this client has exactly one response
+shape and no request variant should fall back to the keyword heuristics
+(which previously false-positived on a legitimate ``rationale`` containing
+"i cannot" as coherent prose).
+
 **Known, deliberate fidelity gaps** (the consumer-facing delegation wire
 model has no equivalent field):
 
@@ -105,6 +117,46 @@ _SUBPROCESS_TIMEOUT_GRACE_SECONDS = 30.0
 # has no ``response_format`` field, so json_mode is expressed as a prompt
 # instruction instead of a wire parameter.
 _JSON_MODE_INSTRUCTION = "\n\nRespond with a single JSON object only. No prose outside the JSON."
+
+# OMN-15170/OMN-15193: the closed tactical-decision response shape this client
+# always expects back, declared as a JSON Schema and forwarded verbatim on
+# every request via ``ModelDelegateSkillRequest.response_contract`` (landed on
+# the omnimarket side by OMN-15193, PR #1908). Derived field-for-field from
+# this repo's own decision-parsing contract --
+# ``steel_onslaught.llm.pilot._ModelSOLlmPilotResponse`` (the closed,
+# ``extra="forbid"``, ``strict=True`` Pydantic boundary the pilot validates
+# every LLM response against) -- so the schema never declares anything looser
+# than what this client already requires downstream:
+#   - ``action``: ``StrictStr`` with ``min_length=1`` -> ``{"type": "string",
+#     "minLength": 1}``.
+#   - ``action_params``: ``FrozenJSONMapping`` (a JSON object) -> ``{"type":
+#     "object"}``; its per-action inner shape is validated separately by
+#     ``_parse_response`` against the matched intent-payload model, not by
+#     this contract.
+#   - ``confidence``: ``StrictFloat`` with ``ge=0.0, le=1.0`` -> ``{"type":
+#     "number", "minimum": 0.0, "maximum": 1.0}``.
+#   - ``rationale``: ``StrictStr`` with ``min_length=1`` -> ``{"type":
+#     "string", "minLength": 1}``.
+# ``additionalProperties: false`` mirrors the Pydantic model's
+# ``extra="forbid"``: this is a closed shape, not an open one. Declaring this
+# schema on the wire makes the platform's delegation quality gate
+# (``handler_quality_gate.py``) validate structurally against it instead of
+# running its generic task-class keyword heuristics (``sub_tasks_verified``
+# substring matching, ``no_refusal`` phrase matching) -- which is what closes
+# the false-positive class where a legitimate ``rationale`` containing "i
+# cannot" as coherent prose (not a refusal) previously tripped the
+# ``no_refusal`` heuristic.
+_TACTICAL_RESPONSE_CONTRACT: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "minLength": 1},
+        "action_params": {"type": "object"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "rationale": {"type": "string", "minLength": 1},
+    },
+    "required": ["action", "action_params", "confidence", "rationale"],
+    "additionalProperties": False,
+}
 
 
 @runtime_checkable
@@ -356,6 +408,14 @@ class LlmBusDelegationClient:
             # docstring documented ("declaring the intended backend_id here
             # ... leaves the field ready the moment the wire path opens").
             "backend_id": self._config.backend_id,
+            # OMN-15193: always declare the closed tactical-decision response
+            # schema (see ``_TACTICAL_RESPONSE_CONTRACT`` above) so the
+            # platform's delegation quality gate validates structurally
+            # against it instead of the generic task-class keyword
+            # heuristics. Unconditional -- this client has exactly one
+            # response shape (the pilot's tactical decision), so there is no
+            # request variant that should omit it.
+            "response_contract": _TACTICAL_RESPONSE_CONTRACT,
         }
         if self._config.max_tokens is not None:
             payload["max_tokens"] = self._config.max_tokens
