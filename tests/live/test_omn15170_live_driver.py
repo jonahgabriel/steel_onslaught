@@ -117,7 +117,7 @@ _MAX_TICKS = 3
 _DELEGATION_MAX_TOKENS = 96
 _DELEGATION_TIMEOUT_SECONDS = 180.0
 _PRODUCER_FLUSH_TIMEOUT_SECONDS = 30.0
-_CONSUMER_TIMEOUT_SECONDS = 60.0
+_CONSUMER_TIMEOUT_SECONDS = 180.0
 
 
 def _require_live_opt_in() -> None:
@@ -334,6 +334,17 @@ def test_live_match_produces_real_kafka_terminal_event_via_delegation_pin(
     producer = confluent_kafka.Producer({"bootstrap.servers": bootstrap})
     transport = _KafkaProducerTransport(producer)
 
+    # Create and subscribe consumer BEFORE the match runs to ensure no events are missed
+    consumer = confluent_kafka.Consumer(
+        {
+            "bootstrap.servers": bootstrap,
+            "group.id": f"omn15170-live-driver-{uuid4().hex}",
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": False,
+        }
+    )
+    consumer.subscribe([STEEL_MATCH_TERMINAL_TOPIC])
+
     served_models: list[str] = []
 
     def _capture_served_model(event: ModelSOEventEnvelope) -> None:
@@ -386,15 +397,6 @@ def test_live_match_produces_real_kafka_terminal_event_via_delegation_pin(
         "the actual served backend"
     )
 
-    consumer = confluent_kafka.Consumer(
-        {
-            "bootstrap.servers": bootstrap,
-            "group.id": f"omn15170-live-driver-{uuid4().hex}",
-            "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,
-        }
-    )
-    consumer.subscribe([STEEL_MATCH_TERMINAL_TOPIC])
     try:
         deadline = time.monotonic() + _CONSUMER_TIMEOUT_SECONDS
         matched_message = None
