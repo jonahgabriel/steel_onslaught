@@ -1,0 +1,18 @@
+# OMN-15166 display-salience arm #1, DEFAULT-salience corner, red seat.
+# Identical persona/provider pairing to pilot.llm.qwen35 (fire_dense_qwen
+# registry) -- provider is delegation-bound instead of direct HTTP, and
+# `display_salience` is left at its shipped default (omitted here on
+# purpose: this pilot's whole job is to prove the omitted-field path
+# resolves through the real delegation-bound provider, not just the
+# `SODisplaySalience.DEFAULT` literal spelled out explicitly -- see the
+# PROMINENT sibling in this same directory for the explicit spelling).
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.delegation_salience_default_berserker
+display_name: "Qwen3.6-35B-A3B-8bit (ONEX delegation, local-coder-mlx) -- salience default, berserker"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: berserker
+  provider: onex-local-coder-mlx

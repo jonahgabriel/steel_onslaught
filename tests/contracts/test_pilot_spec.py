@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from steel_onslaught.contracts.pilot import (
     ModelSOLlmPilotParams,
     ModelSOPilotSpec,
+    SODisplaySalience,
     SOWeaponPreference,
 )
 
@@ -299,6 +300,45 @@ def test_llm_pilot_params_accepts_authored_programming_guidance() -> None:
 def test_llm_pilot_params_rejects_blank_programming_guidance() -> None:
     with pytest.raises(ValidationError):
         ModelSOLlmPilotParams(persona="berserker", provider="qwen35", programming_guidance="")
+
+
+# ---------------------------------------------------------------------------
+# LLM archetype: ``display_salience`` (OMN-15166, display-salience arm #1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_llm_pilot_params_display_salience_defaults_to_default() -> None:
+    """Every existing pilot spec (no ``display_salience`` authored) resolves
+    to ``SODisplaySalience.DEFAULT`` -- golden-stable, byte-identical prompt."""
+    params = ModelSOLlmPilotParams(persona="berserker", provider="qwen35")
+    assert params.display_salience is SODisplaySalience.DEFAULT
+
+
+@pytest.mark.unit
+def test_llm_pilot_params_accepts_authored_prominent_display_salience() -> None:
+    params = ModelSOLlmPilotParams(
+        persona="berserker", provider="qwen35", display_salience=SODisplaySalience.PROMINENT
+    )
+    assert params.display_salience is SODisplaySalience.PROMINENT
+
+
+@pytest.mark.unit
+def test_llm_pilot_params_accepts_display_salience_from_raw_string() -> None:
+    """YAML authors a bare string ("default"/"prominent"); it must resolve to
+    the closed enum, not merely round-trip as a str."""
+    params = ModelSOLlmPilotParams.model_validate(
+        {"persona": "berserker", "provider": "qwen35", "display_salience": "prominent"}
+    )
+    assert params.display_salience is SODisplaySalience.PROMINENT
+
+
+@pytest.mark.unit
+def test_llm_pilot_params_rejects_unknown_display_salience() -> None:
+    with pytest.raises(ValidationError):
+        ModelSOLlmPilotParams.model_validate(
+            {"persona": "berserker", "provider": "qwen35", "display_salience": "extreme"}
+        )
 
 
 @pytest.mark.unit

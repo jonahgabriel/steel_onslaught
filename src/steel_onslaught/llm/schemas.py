@@ -18,6 +18,7 @@ from pydantic import (
 )
 
 from steel_onslaught.contracts.application import ModelSOThinkingBinding
+from steel_onslaught.contracts.pilot import SODisplaySalience
 
 if TYPE_CHECKING:
     from steel_onslaught.contracts.application import ModelSOSecretRef
@@ -81,6 +82,13 @@ class ModelSOLlmPilotSelection(_ClosedStrictModel):
     provider_id: StrictStr = Field(min_length=1)
     persona_id: StrictStr = Field(min_length=1)
     opponent_trace: StrictStr | None
+    # Display-salience arm #1 (OMN-15166) -- threaded verbatim from
+    # ``ModelSOLlmPilotParams.display_salience`` through
+    # ``ApplicationPilotFactory.from_spec``/``.llm_pilot`` into
+    # ``LLMPilot.__init__``. Defaulted here (not just on the pilot-spec
+    # model) so every pre-existing direct construction of this selection
+    # (tests, tuner code) keeps resolving "default" without modification.
+    display_salience: SODisplaySalience = SODisplaySalience.DEFAULT
 
 
 class ModelSOOpenAITextContentPart(_ClosedStrictModel):

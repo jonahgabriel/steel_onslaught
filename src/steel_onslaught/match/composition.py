@@ -321,6 +321,7 @@ class ApplicationPilotFactory:
                         provider_id=spec.parameters.provider,
                         persona_id=spec.parameters.persona,
                         opponent_trace=None,
+                        display_salience=spec.parameters.display_salience,
                     )
                 )
         raise ValueError(f"unknown pilot archetype {spec.archetype!r} (spec id: {spec.id!r})")
@@ -342,6 +343,7 @@ class ApplicationPilotFactory:
             persona=self._personas.require(selection.persona_id),
             failure_policy=self._failure_policy,
             image_attachment=self._image_attachments.get(selection.provider_id),
+            display_salience=selection.display_salience,
         )
 
 

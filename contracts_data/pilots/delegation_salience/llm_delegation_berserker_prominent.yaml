@@ -1,0 +1,16 @@
+# OMN-15166 display-salience arm #1, PROMINENT-salience corner, red seat.
+# Byte-identical to llm_delegation_berserker_default.yaml except for the
+# ONE manipulated field, display_salience: prominent -- everything else
+# (persona, provider, lineage) is held constant, matching the #210/#215
+# single-field-change discipline this family always documents explicitly.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.delegation_salience_prominent_berserker
+display_name: "Qwen3.6-35B-A3B-8bit (ONEX delegation, local-coder-mlx) -- salience prominent, berserker"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: berserker
+  provider: onex-local-coder-mlx
+  display_salience: prominent

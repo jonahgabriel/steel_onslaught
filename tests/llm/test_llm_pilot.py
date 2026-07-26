@@ -12,6 +12,7 @@ import pytest
 from steel_onslaught.contracts.application import ModelSOLlmImageAttachmentBinding
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
+from steel_onslaught.contracts.pilot import ModelSOLlmPilotParams, SODisplaySalience
 from steel_onslaught.llm.effect import LlmSemanticError
 from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.pilot import _IMAGE_ATTACHMENT_NOTE, LLMPilot
@@ -896,6 +897,231 @@ def test_objective_free_per_tick_prompt_is_unchanged() -> None:
     assert client.request is not None
     assert "OBJECTIVES" not in client.request.user_prompt
     assert "victory_points" not in client.request.user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Display-salience arm #1 (OMN-15166): SODisplaySalience.DEFAULT/.PROMINENT
+# ---------------------------------------------------------------------------
+
+_SALIENCE_OBJECTIVES = (
+    ModelSOObjectiveView(
+        objective_id="objective.west_yard",
+        cell=ModelSOPosition(x=18, y=30),
+        vp_per_round=1,
+        control="unclaimed",
+        own_distance_chebyshev=14,
+    ),
+)
+_SALIENCE_VP = ModelSOVictoryPointsView(own_vp=2, enemy_vp=5, vp_threshold=15)
+
+
+def _salience_observation() -> ModelSOPilotObservation:
+    return _observation(objectives=_SALIENCE_OBJECTIVES, victory_points=_SALIENCE_VP)
+
+
+@pytest.mark.unit
+def test_default_display_salience_is_byte_identical_to_pre_omn15166_rendering() -> None:
+    """Golden-stability (the #210 standard): omitting ``display_salience`` --
+    every pilot spec authored before OMN-15166 -- reproduces EXACTLY the
+    OBJECTIVES block ``test_objective_view_reaches_per_tick_llm_prompt``
+    (pre-existing, unmodified by this ticket) asserts against."""
+
+    client = _RecordingClient()
+    pilot = LLMPilot(client=client, persona=_persona("berserker"))
+    pilot.decide(_salience_observation())
+
+    assert client.request is not None
+    prompt = client.request.user_prompt
+    assert (
+        "--- OBJECTIVES (hold a cell within 1, uncontested, to score; first to 15 VP wins) ---"
+    ) in prompt
+    assert "victory_points: you 2 vs enemy 5" in prompt
+    assert (
+        "  - objective.west_yard: cell=(18,30) vp_per_round=1 control=unclaimed your_distance=14"
+    ) in prompt
+    # The prominent-only markers must never appear on the default rendering.
+    assert "!!!" not in prompt
+    assert "REMINDER" not in prompt
+
+
+@pytest.mark.unit
+def test_explicit_default_matches_omitted_display_salience_construction() -> None:
+    """``LLMPilot(..., display_salience=SODisplaySalience.DEFAULT)`` and
+    omitting the kwarg entirely must produce the IDENTICAL wire request --
+    proves the default is truly a no-op, not merely "renders the same
+    objectives block" by coincidence."""
+
+    omitted_client = _RecordingClient()
+    LLMPilot(client=omitted_client, persona=_persona("berserker")).decide(_salience_observation())
+
+    explicit_client = _RecordingClient()
+    LLMPilot(
+        client=explicit_client,
+        persona=_persona("berserker"),
+        display_salience=SODisplaySalience.DEFAULT,
+    ).decide(_salience_observation())
+
+    assert omitted_client.request is not None
+    assert explicit_client.request is not None
+    assert omitted_client.request.user_prompt == explicit_client.request.user_prompt
+
+
+@pytest.mark.unit
+def test_prominent_display_salience_renders_the_same_facts_with_emphasis() -> None:
+    """PROMINENT changes formatting only -- same ids/coords/counts, no new
+    information, no dropped information."""
+
+    client = _RecordingClient()
+    pilot = LLMPilot(
+        client=client,
+        persona=_persona("berserker"),
+        display_salience=SODisplaySalience.PROMINENT,
+    )
+    pilot.decide(_salience_observation())
+
+    assert client.request is not None
+    prompt = client.request.user_prompt
+    assert "!!! OBJECTIVES -- SCORING NOW" in prompt
+    assert "FIRST TO 15 VP WINS" in prompt
+    assert "VICTORY POINTS: YOU 2  --  ENEMY 5" in prompt
+    assert (
+        "  * objective.west_yard: cell=(18,30) vp_per_round=1 control=unclaimed your_distance=14"
+    ) in prompt
+    assert "REMINDER: capturing objectives is how this match is won." in prompt
+    # The default header must never co-appear with the prominent one.
+    assert "--- OBJECTIVES" not in prompt
+    assert "victory_points: you 2 vs enemy 5" not in prompt
+
+
+@pytest.mark.unit
+def test_prominent_delta_from_default_is_confined_to_the_objectives_block() -> None:
+    """Byte-level proof, same standard as #210/MASK
+    (``tests/contracts/test_objmask_overlay.py::
+    test_objmask_prompt_stream_delta_from_the_paying_corner_is_exactly_the_display_block``):
+    strip the contiguous OBJECTIVES span out of both renderings and assert
+    what remains is byte-identical -- nothing outside the block moves."""
+
+    default_client = _RecordingClient()
+    LLMPilot(client=default_client, persona=_persona("berserker")).decide(_salience_observation())
+    prominent_client = _RecordingClient()
+    LLMPilot(
+        client=prominent_client,
+        persona=_persona("berserker"),
+        display_salience=SODisplaySalience.PROMINENT,
+    ).decide(_salience_observation())
+
+    assert default_client.request is not None
+    assert prominent_client.request is not None
+    default_lines = default_client.request.user_prompt.split("\n")
+    prominent_lines = prominent_client.request.user_prompt.split("\n")
+
+    default_start = next(
+        i for i, line in enumerate(default_lines) if line.startswith("--- OBJECTIVES")
+    )
+    default_end = next(i for i, line in enumerate(default_lines) if line.startswith("--- ENEMY"))
+    prominent_start = next(i for i, line in enumerate(prominent_lines) if line.startswith("=" * 60))
+    prominent_end = next(
+        i for i, line in enumerate(prominent_lines) if line.startswith("--- ENEMY")
+    )
+
+    default_stripped = default_lines[:default_start] + default_lines[default_end:]
+    prominent_stripped = prominent_lines[:prominent_start] + prominent_lines[prominent_end:]
+    assert default_stripped == prominent_stripped
+    assert "\n".join(default_stripped) == "\n".join(prominent_stripped)
+
+
+@pytest.mark.unit
+def test_prominent_display_salience_is_a_noop_without_objectives() -> None:
+    """Salience only ever modulates a block that is already being rendered --
+    an objective-free observation stays byte-identical whichever value is
+    set, exactly like DEFAULT's own no-op guard."""
+
+    default_client = _RecordingClient()
+    LLMPilot(client=default_client, persona=_persona("berserker")).decide(_observation())
+    prominent_client = _RecordingClient()
+    LLMPilot(
+        client=prominent_client,
+        persona=_persona("berserker"),
+        display_salience=SODisplaySalience.PROMINENT,
+    ).decide(_observation())
+
+    assert default_client.request is not None
+    assert prominent_client.request is not None
+    assert default_client.request.user_prompt == prominent_client.request.user_prompt
+    assert "OBJECTIVES" not in prominent_client.request.user_prompt
+
+
+@pytest.mark.unit
+def test_display_salience_threads_from_pilot_spec_through_the_pilot_factory() -> None:
+    """Wiring proof: ``ModelSOLlmPilotParams.display_salience`` reaches the
+    prompt via the REAL composition seam
+    (``ApplicationPilotFactory.from_spec`` -> ``.llm_pilot``), not a
+    hand-built ``LLMPilot`` -- the same seam ``composition.py``'s
+    production root uses."""
+
+    from steel_onslaught.contracts.pilot import ModelSOPilotLineage, ModelSOPilotSpec
+    from steel_onslaught.llm.client_http import StaticLlmClientFactory
+    from steel_onslaught.llm.personas import PersonaRegistry
+    from steel_onslaught.match.composition import ApplicationPilotFactory
+
+    client = _RecordingClient()
+    factory = ApplicationPilotFactory(
+        clients=StaticLlmClientFactory({"stub": client}),
+        personas=PersonaRegistry({"berserker": _persona("berserker")}),
+    )
+    spec = ModelSOPilotSpec(
+        id="pilot.llm.test_salience",
+        display_name="Test salience pilot",
+        archetype="llm",
+        lineage=ModelSOPilotLineage(parent="pilot.template.llm"),
+        parameters=ModelSOLlmPilotParams(
+            persona="berserker",
+            provider="stub",
+            display_salience=SODisplaySalience.PROMINENT,
+        ),
+    )
+    pilot = factory.from_spec(spec)
+    pilot.decide(_salience_observation())
+
+    assert client.request is not None
+    prompt = client.request.user_prompt
+    assert "!!! OBJECTIVES -- SCORING NOW" in prompt
+    assert "--- OBJECTIVES" not in prompt
+
+
+@pytest.mark.unit
+def test_display_salience_omitted_pilot_spec_threads_default_through_the_pilot_factory() -> None:
+    """The wiring counterpart of the golden-stability test above: a pilot
+    spec that predates OMN-15166 (no ``display_salience`` key at all) still
+    resolves through ``ApplicationPilotFactory`` to the byte-identical
+    default rendering."""
+
+    from steel_onslaught.contracts.pilot import ModelSOPilotLineage, ModelSOPilotSpec
+    from steel_onslaught.llm.client_http import StaticLlmClientFactory
+    from steel_onslaught.llm.personas import PersonaRegistry
+    from steel_onslaught.match.composition import ApplicationPilotFactory
+
+    client = _RecordingClient()
+    factory = ApplicationPilotFactory(
+        clients=StaticLlmClientFactory({"stub": client}),
+        personas=PersonaRegistry({"berserker": _persona("berserker")}),
+    )
+    spec = ModelSOPilotSpec(
+        id="pilot.llm.test_salience_default",
+        display_name="Test salience default pilot",
+        archetype="llm",
+        lineage=ModelSOPilotLineage(parent="pilot.template.llm"),
+        parameters=ModelSOLlmPilotParams(persona="berserker", provider="stub"),
+    )
+    pilot = factory.from_spec(spec)
+    pilot.decide(_salience_observation())
+
+    assert client.request is not None
+    prompt = client.request.user_prompt
+    assert (
+        "--- OBJECTIVES (hold a cell within 1, uncontested, to score; first to 15 VP wins) ---"
+    ) in prompt
+    assert "!!!" not in prompt
 
 
 # ---------------------------------------------------------------------------

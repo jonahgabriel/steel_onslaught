@@ -1,0 +1,108 @@
+# OMN-15166 -- display-salience arm #1, DEFAULT-salience lane (this arm's
+# own reference corner).
+#
+# The pre-registration -- hypothesis, primary statistic, decision bands,
+# escapes, seat-split clause, alternatives named-and-rejected, manipulation-
+# landed gate, contamination gate, statistical-honesty note, and the
+# corner-provenance disclosure -- lives in full on the PROMINENT overlay's
+# header, foundry_60_asym_v1_salience_prominent_delegation.yaml, following
+# this family's convention of committing the pre-registration on the
+# manipulated arm's own file. Read that header FIRST; nothing here
+# contradicts or restates it except the summary below.
+#
+# This overlay differs from that sibling in EXACTLY ONE way:
+# contracts.pilot_registry_dir points at the "_default" pilot specs
+# (contracts_data/pilots/delegation_salience/llm_delegation_{berserker,
+# sniper}_default.yaml, `display_salience` omitted -> SODisplaySalience.
+# DEFAULT) rather than the "_prominent" ones. Arena (foundry_60_asym_v1,
+# byte-untouched -- objective_scoring=scoring, objective_display=visible,
+# both shipped defaults, neither overridden), loadouts' chassis/boiler/
+# weapons/sensors/budgets, provider (backend_id/task_type/model/timeout/
+# max_tokens), and every other overlay field are held byte-constant across
+# the pair -- asserted field-by-field in
+# tests/contracts/test_display_salience_overlays_omn15166.py.
+#
+# Bound to the SAME delegation-backed provider as the PROMINENT lane (`kind:
+# onex_delegation`, backend_id local-coder-mlx) -- this arm's DEFAULT corner
+# is measured on the identical provider/model/transport as its PROMINENT
+# counterpart, precisely to avoid the provider-confound the PROMINENT
+# overlay's ALTERNATIVE READINGS item (1) names and rejects (substituting
+# ASYM_OBJ's qwen35-provider published rate directly as this corner).
+#
+# NOT card mode (contracts.card_catalog omitted), for the identical reason
+# stated on the PROMINENT overlay.
+#
+# BATTERY STATUS AT MERGE: DEFERRED (see PROMINENT overlay's header for the
+# full disposition -- battery execution is OMN-15172's acceptance run).
+#
+# The registry dir is SHARED with the PROMINENT overlay (see that file's own
+# note); launch THIS lane only with the "_default" loadouts:
+#
+#   so run --overlay contracts_data/overlays/foundry_60_asym_v1_salience_default_delegation.yaml \
+#          --loadout-a contracts_data/loadouts/delegation_salience/red_default.yaml \
+#          --loadout-b contracts_data/loadouts/delegation_salience/blue_default.yaml --seed 5001
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_default_delegation/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_default_delegation/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_default_delegation/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_default_delegation/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_default_delegation/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_default_delegation/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/delegation_salience
+  arena_id: foundry_60_asym_v1
+llm:
+  providers:
+    - kind: onex_delegation
+      provider_id: onex-local-coder-mlx
+      backend_id: local-coder-mlx
+      task_type: agent_delegation
+      source: external-client
+      model: mlx-community/Qwen3.6-35B-A3B-8bit
+      max_tokens: 2048
+      timeout_seconds: 180.0
+      omnibase_infra_path: ../omnibase_infra
+      state_root: .onex_state/steel_onslaught/foundry_60_asym_v1_salience_default_delegation/delegation_state
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.onex_local_coder_mlx
+      display_name: "Qwen3.6-35B-A3B-8bit (ONEX delegation, local-coder-mlx)"
+      provider_binding_id: onex-local-coder-mlx
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

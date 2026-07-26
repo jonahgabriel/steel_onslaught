@@ -1,0 +1,14 @@
+# OMN-15166 display-salience arm #1, PROMINENT-salience corner, blue seat.
+# Byte-identical to llm_delegation_sniper_default.yaml except for the ONE
+# manipulated field, display_salience: prominent.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.delegation_salience_prominent_sniper
+display_name: "Qwen3.6-35B-A3B-8bit (ONEX delegation, local-coder-mlx) -- salience prominent, sniper"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: sniper
+  provider: onex-local-coder-mlx
+  display_salience: prominent
