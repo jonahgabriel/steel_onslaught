@@ -1,0 +1,322 @@
+# SO-UTIL-THRESH arm overlay — discharges the vp-ladder PAYOUT-THRESHOLD
+# confound at a fixed dose (vp_per_deploy stays 6, the rung-3 price).
+#
+# PRE-REGISTERED. This commit adds the pre-registration below and is the LAST
+# commit before the first ``match_started`` event is emitted against this
+# overlay. n = 30, seeds 5001-5030.
+#
+# WHAT IS DIFFERENT FROM THE vp6 OVERLAY. This overlay is the SO-UTIL-VP6
+# (rung 3) arm overlay
+# (``tactical_split_overdeal_utility_asym_incentive_vp6_qwen.yaml``) with
+# EXACTLY ONE experimental change — ``contracts.arena_id``
+# ``foundry_60_asym_v1`` -> ``foundry_60_asym_v1_vpthresh48`` (a sibling
+# arena contract identical in every field except ``vp_threshold`` 15 -> 48;
+# see that file's header for the full derivation) — plus an isolated ledger
+# state root. ``vp_per_deploy`` stays 6, UNCHANGED. No loadout, deck, weapon,
+# persona, prompt, handler pack, provider binding, or retry policy is
+# touched. Mechanically: the body of this file below ``schema_version``
+# differs from the vp6 overlay's body in exactly EIGHT lines (verified by
+# direct diff of the two file bodies) — six isolated state-root paths, the
+# ``contracts.arena_id`` value, and the one inline comment restating the new
+# ``vp_threshold`` in prose. (The vp6 overlay's own diff from vp2 also
+# changed eight lines, there because it moved ``vp_per_deploy`` instead;
+# this arm holds that constant and moves the arena_id/threshold, the mirror
+# manipulation.)
+#
+# WHY THIS ARM EXISTS — THE UNDISCHARGED PAYOUT-THRESHOLD CONFOUND.
+# ``docs/evidence/2026-07-25-util_incentive_vp6-battery.md`` scored
+# H_SATURATE for the vp2/vp4/vp6 dose ladder: pooled utility keep-rate went
+# 0.168129 (vp2) -> 0.211656 (vp4) -> 0.188017 (vp6), an inverted-U. That
+# document's own §7 (limitations) and §3 name, but do not discharge, a
+# structural confound: the ``utility_deploy_vp_bounty`` mechanism
+# (``src/steel_onslaught/contracts/incentive.py``, PR #201) pays victory
+# points that COUNT TOWARD the SAME arena's ``vp_threshold: 15`` the match
+# ends on. ``deploys-to-threshold = ceil(vp_threshold / vp_per_deploy)``
+# shrinks as the price rises — 8 at vp2, 4 at vp4, 3 at vp6 — so higher
+# bounty levels can end a match on FEWER resolved deploys, mechanically
+# truncating the drafting/keep opportunities the pooled keep-rate is
+# measured over. At the baseline vp6 arena this bit hard: 12 of 30 matches
+# (40%) ended on the bounty in exactly 3 deploys, vs vp2's 1 of 30. The vp6
+# dip could therefore be a payout-threshold-times-match-length artifact
+# rather than a true interior optimum in incentive strength — the ladder
+# never varied the OTHER term in the ``ceil()`` formula, only the price.
+#
+# WHAT THE ROUND-CAPPED CHECK IN #209 ALREADY SHOWS, AND WHY IT IS NOT
+# SUFFICIENT ON ITS OWN. The vp6 evidence doc's pre-declared truncation-immune
+# secondary (rounds 1-2 only, identical window across all three rungs) read
+# 0.188596 — 0.0006 from the full-battery 0.188017, agreeing in direction.
+# That is a POST-HOC ANALYTIC control (discard late rounds from the SAME
+# truncated matches); it shows truncation does not explain the WITHIN-arm
+# rounds-1-3-vs-4+ drift, but it cannot show what keep-rate would have been
+# measured had those matches been ALLOWED to run past 3 deploys in the first
+# place — a match that ends at deploy 3 never generates a round 4+
+# ``hand_dealt``/``plan_committed`` pair to include in any reading, capped or
+# not. Only an EXPERIMENTAL manipulation of ``vp_threshold`` itself — this
+# arm — can observe those otherwise-unplayed late rounds.
+#
+# THE MANIPULATION. Hold ``vp_per_deploy: 6`` fixed and raise
+# ``vp_threshold`` 15 -> 48 (arena ``foundry_60_asym_v1_vpthresh48``), so
+# that ``ceil(48 / 6) = 8`` — the SAME deploys-to-threshold tier as the vp2
+# rung (``ceil(15 / 2) = 8``), the ladder's own least-truncated, cleanest
+# rung on this exact axis (1/30 ``vp_threshold`` terminals). This is the
+# minimal single-lever design that relieves the confound: it does not re-run
+# the price ladder, touch the mechanism, or change any other arena field: it
+# reproduces vp2's OWN relief condition at vp6's price, at the tightest
+# threshold that clears that tier (``ceil(T/6)=8`` first holds at T=43; 48 is
+# the clean multiple of 6 inside that band).
+#
+# HYPOTHESES:
+#   H_ARTIFACT — the vp6 dip below vp4 was a payout-threshold-truncation
+#     artifact. Relieving the truncation (raising deploys-to-threshold to
+#     vp2's own tier, at the same vp_per_deploy) lets the pooled keep-rate
+#     recover to at least vp4's published level. The measured dip does not
+#     survive discharging the confound.
+#   H_INTERIOR — the vp6 dip is a true interior optimum in incentive
+#     strength (the SO-UTIL-VP6 "response stopped and turned over" finding
+#     stands). Relieving the truncation does not lift the pooled keep-rate
+#     back to vp4's level; the model's drafting response genuinely peaked at
+#     vp4 and declined by vp6, independent of match-length truncation.
+#
+# FORMAL CRITERION — the ONLY criterion this arm is scored against, exactly
+# the reading named in the operator's 2026-07-25 handoff directive, stated
+# as one number so it reads only one way before the run.
+#   Quantity: POOLED (red + blue) utility keep-rate, n = 30, seeds
+#   5001-5030, U-GATE paired ``hand_dealt``/``plan_committed`` method
+#   (identical definition every rung in this program has used): for each
+#   seat, pair every ``hand_dealt`` with the ``plan_committed`` that follows
+#   it for the same ``(match_id, seat)`` in ledger order; keep-rate =
+#   (utility cards in ``plan_committed.registers[].card_id``) / (utility
+#   cards in ``hand_dealt.card_ids``); unpaired hands excluded from BOTH
+#   numerator and denominator.
+#   BAR — read verbatim off the published SO-UTIL-VP4 evidence document
+#   (``docs/evidence/2026-07-25-util_incentive_vp4-battery.md``), so a reader
+#   can check it before this battery runs:
+#     bar = vp4 rung's own pooled utility keep-rate = 138 / 652 = 0.211656
+#   DECISION (single reading, fixed before the first match):
+#     pooled utility keep-rate >= 0.211656  ->  supports H_ARTIFACT
+#     pooled utility keep-rate <  0.211656  ->  supports H_INTERIOR
+#   ">= 0.211656" is "recovers to AT LEAST vp4's level" read literally as a
+#   greater-than-or-equal comparison against vp4's own published point
+#   estimate — not a CI-scaled bar, not a two-proportion significance test
+#   against vp4, and not a comparison against this arm's OWN vp6-baseline
+#   reading (0.188017). Those three alternative readings are named here and
+#   explicitly REJECTED as the criterion, precisely so this pre-registration
+#   cannot be read two ways after the fact. The unscored two-proportion tests
+#   against vp6-baseline and vp4 are reported in the evidence doc as
+#   secondaries (below), never in place of this criterion.
+#
+# WHY A POINT COMPARISON, NOT A CI-SCALED ONE. Every prior rung in this
+# ladder scored a NEW DOSE against a bar derived from Wilson CI width
+# (``bar = A + steps * W``), because the ladder was asking "does the price
+# response keep climbing." This arm asks a different, binary question at a
+# FIXED dose — "does relieving one specific mechanical confound move the
+# measured rate back up to a previously observed level" — and the operator's
+# directive named that level explicitly ("keep-rate recovering to at least
+# vp4's level implies artifact; staying down implies true interior
+# optimum"). A CI-scaled bar would silently change the question this arm
+# answers; the point comparison is the literal, single-reading form of the
+# directive as written.
+#
+# CONFOUNDS — pre-declared, all four, before the run.
+#   (1) RAISING vp_threshold DOES NOT ONLY RELIEVE TRUNCATION — IT ALSO
+#       LENGTHENS MATCHES THAT WOULD OTHERWISE HAVE ENDED ON THE BOUNTY, AND
+#       LONGER MATCHES EXPOSE MORE LATE ROUNDS. The vp6 baseline's own
+#       rounds-1-3-vs-4+ stationarity check found late rounds read LOWER
+#       (0.209877 vs 0.143750, z=1.752, p=0.0799) — the WEAKEST stationarity
+#       result of any rung, and the pre-registration for that rung flagged it
+#       as the specific risk this design now tests. If that drift is real,
+#       relieving truncation should, if anything, pull the pooled rate DOWN
+#       toward the late-round rate, not up toward vp4 — i.e. THIS CONFOUND
+#       CUTS AGAINST H_ARTIFACT, not for it. It is disclosed here, before the
+#       run, so a reader can judge whether a H_ARTIFACT verdict survives it:
+#       this arm's own per-round-index table (mandatory secondary, see
+#       below) is what settles that question, not the pooled figure alone.
+#   (2) A HIGHER vp_threshold CANNOT BE ASSUMED TO PRESERVE THE OTHER
+#       TERMINAL-CLASS MIX. At vp_threshold=15, elimination and vp_threshold
+#       terminals compete on similar timescales; at 48, elimination (or the
+#       tick-120 sudden-death backstop, or the tick-1000 failsafe) may
+#       dominate far more heavily, changing which matches are even sampled
+#       into the keep-rate denominator. Terminal-class mix, and any tick_cap
+#       or sudden-death terminals (absent from every prior rung in this
+#       family), are reported as a mandatory secondary.
+#   (3) THE BLUE STANDOFF CONFIGURATION IS UNCHANGED (the P1-P7 harpoon
+#       framing error, OMN-15119 class), inherited verbatim from every
+#       sibling rung. Blue keeps ``weapon.siege.artillery_mortar`` (range 50)
+#       and ``weapon.heavy.harpoon_gun`` (range 30) against red's range-12
+#       machine gun and range-8 shrapnel thrower. Every win-rate and terminal
+#       figure in this arm's evidence document must be read against it.
+#   (4) WIN RATE AND VP COMPOSITION ARE NOT A BALANCE RESULT HERE EITHER.
+#       Raising the threshold changes how much objective VP can matter
+#       relative to bounty VP before a match ends, which could shift the VP
+#       composition share reported in every prior rung (97.6%-98.8% bounty).
+#       VP composition is reported, never scored.
+#
+# SECONDARY OBSERVABLES — PRE-DECLARED HERE, REPORTED, NEVER SCORED: per-seat
+# utility keep-rate; per-round-index keep-rate table (the confound-1 check);
+# terminal-class mix including any tick_cap/sudden-death terminals; the
+# per-match objective-VP disclosure; match length; ``utility_deployed``
+# counts by kind and seat; programmed-to-resolved conversion; VP composition
+# (bounty vs objective); completion health; two unscored two-proportion
+# tests — this arm vs the vp6 baseline (91/484 = 0.188017) and this arm vs
+# the vp4 bar (138/652 = 0.211656) — reported alongside the scored point
+# comparison so "recovers to >= the bar" and "is statistically
+# indistinguishable from vp4" stay separate, checkable claims.
+#
+# DISCARD RULE (inherited verbatim in substance from every prior rung in this
+# family, committed here BEFORE the run; the criterion above is UNCHANGED by
+# it). The single shared vLLM endpoint is not exclusive to this lane and the
+# overlay's provider binding carries ``retry.max_attempts: 1`` — byte-
+# identical to every sibling rung and deliberately NOT modified, since
+# changing it would break the one-lever property this arm's keep-rate
+# comparison rests on. A concurrent battery on the same endpoint, or an
+# isolated provider blip, therefore kills whole seeds outright
+# (``LlmTransportError``/``provider_error``) rather than producing an
+# in-match abort.
+#   A run is DISCARDED if and only if it fails to complete all 30 seeds — i.e.
+#   the driver reports ANY entry in ``skipped_seeds`` (equivalently, exits
+#   non-zero: ``scripts/run_ogate_objectives_battery.py`` returns 1 on any
+#   skipped seed as of #204). That condition is mechanically checkable from
+#   ``battery_summary.json`` and ``$?`` alone, is entirely independent of the
+#   primary outcome, and is evaluated BEFORE any keep-rate is computed. No
+#   other discard reason is permitted. Every discarded run is retained on
+#   disk under a ``_DISCARDED_<reason>`` lane name with its full run log, and
+#   is disclosed by seed list in this arm's evidence document. The FIRST run
+#   that completes 30/30 is the scored run; it is not re-run.
+# ==============================================================================
+#
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/util_incentive_vp6_vpthresh48/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/util_incentive_vp6_vpthresh48/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/util_incentive_vp6_vpthresh48/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/util_incentive_vp6_vpthresh48/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/util_incentive_vp6_vpthresh48/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/util_incentive_vp6_vpthresh48/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v1_vpthresh48
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  # Phase 2 — utility resolution handlers selected by this typed overlay
+  # (design §6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+  # THE ONLY EXPERIMENTAL DELTA IN THIS FILE (SO-UTIL-MECH).  Each resolved
+  # UTILITY_DEPLOYED credits the deploying player 6 victory points, folded
+  # into the same ``vp_totals`` objective control scores into and settled
+  # against the same ``vp_threshold: 48``.  Absent this block the whole
+  # mechanism is off and every byte downstream -- prompt, MATCH_STARTED
+  # payload, VP derivation -- is identical to the baseline overlay.
+  utility_incentive:
+    kind: utility_deploy_vp_bounty
+    vp_per_deploy: 6
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # Keyless: the only provider carries ``secret_ref: null``, so no resolver
+    # capability is required.  ``none`` lets ``so run --overlay`` and the O-GATE
+    # battery driver launch this overlay directly (``injected`` would raise
+    # "requires a resolver capability" on the keyless CLI path).
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500
