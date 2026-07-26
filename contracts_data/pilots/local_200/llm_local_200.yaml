@@ -1,0 +1,17 @@
+# OMN-15160: tracked pilot spec for the local_200 provider (MLX server on
+# stickybeatz-studio, port 8401). Migrated out of the untracked top-level
+# ``pilots/llm_local_200.yaml`` scratch file into the tracked
+# contracts_data/pilots provider-reference shape (dedicated registry dir,
+# same pattern as tactical_qwen27/, tactical_gemini/, vision_gemini/, ...).
+# Same persona (berserker) as the other single-provider local lanes
+# (pilot.llm.qwen35) -- provider is the only new fact this spec carries.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.local_200
+display_name: "Qwen3.6-35B-A3B-8bit (stickybeatz-studio MLX, :8401)"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: berserker
+  provider: local_200

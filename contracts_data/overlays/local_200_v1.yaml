@@ -1,0 +1,85 @@
+# OMN-15160: tracked provider-reference overlay for local_200 (MLX server on
+# stickybeatz-studio, port 8401) -- migrates the untracked top-level
+# ``pilots/llm_local_200.yaml`` scratch config into the tracked contracts_data
+# provider-reference pattern (endpoint_url/model carried on the overlay's
+# llm.providers[] entry, exactly like standard_v1_qwen.yaml carries
+# provider_id qwen35).
+#
+# Deliberately NOT card mode (contracts.card_catalog omitted -- optional per
+# ModelSOContractBindings, same choice the vision_foundry_60_asym_v2_* text/img
+# overlays make): this overlay's job is to prove the local_200 provider binds
+# and resolves, not to stand up a playable battery lane. contracts.arena_id
+# reuses the shared foundry_60 arena already used by the qwen35/qwen27/openrouter
+# lanes; no new arena content is introduced.
+#
+# endpoint_url is a bare Tailscale MagicDNS short hostname (no IP literal), the
+# same shape already committed for the qwen35/qwen27/deepseek local lanes
+# (omninode-pc.tail75df5e.ts.net, stickybeatz-studio.tail75df5e.ts.net) --
+# passes scripts/check_sanitization.py (it only forbids raw CGNAT/LAN IP
+# literals and absolute developer-machine paths, not hostnames).
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/local_200_v1/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/local_200_v1/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/local_200_v1/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/local_200_v1/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/local_200_v1/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/local_200_v1/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/local_200
+  arena_id: foundry_60
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: local_200
+      endpoint_url: http://stickybeatz-studio:8401/v1/chat/completions
+      model: mlx-community/Qwen3.6-35B-A3B-8bit
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.local_200
+      display_name: "Qwen3.6-35B-A3B-8bit (stickybeatz-studio MLX)"
+      provider_binding_id: local_200
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500
