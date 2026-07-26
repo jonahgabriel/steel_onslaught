@@ -17,6 +17,11 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
 from steel_onslaught.bus.in_process import InProcessEventBus
+from steel_onslaught.bus.kafka_forwarder import (
+    TERMINAL_EVENT_TYPES,
+    KafkaTerminalEventForwarder,
+    ProtocolTerminalEventTransport,
+)
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.cards.dealer import DealerCompute
 from steel_onslaught.cards.registers import RegisterExecutionReducer
@@ -406,6 +411,14 @@ class RuntimeDependencies:
     # resolution (card mode enabled + arena declares objectives/vp_threshold)
     # so a mis-authored overlay fails at composition, not mid-match.
     utility_incentive: ModelSOUtilityIncentive | None = None
+    # OMN-15167 -- optional terminal-event Kafka-forwarding capability.
+    # ``None`` (the default) means no forwarder is ever subscribed onto the
+    # bus: byte-identical, golden-stable behavior to before this ticket.
+    # Built by ``build_runtime_dependencies`` from an injected
+    # ``kafka_transport`` capability; never constructed from a raw Kafka
+    # client here (DI-confinement -- see
+    # ``steel_onslaught.bus.kafka_forwarder`` module docstring).
+    kafka_forwarder: KafkaTerminalEventForwarder | None = None
 
     def __post_init__(self) -> None:
         if self.card_cadence not in {"atomic", "paced"}:
@@ -1600,6 +1613,7 @@ def build_runtime_dependencies(
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
+    kafka_transport: ProtocolTerminalEventTransport | None = None,
 ) -> RuntimeDependencies:
     """Construct every selected outer adapter exactly once."""
     if selected_provider_id is not None and selected_provider_ids is not None:
@@ -1899,6 +1913,16 @@ def build_runtime_dependencies(
             raise ValueError(
                 f"unknown arena_id {overlay.contracts.arena_id!r} in application overlay"
             ) from exc
+        # OMN-15167 -- the forwarder is transport-injected: composition never
+        # constructs a Kafka client itself. ``kafka_transport is None`` (the
+        # default) means no forwarder is built at all, so
+        # ``assemble_match_with_dependencies`` never subscribes it onto the
+        # bus -- golden-stable no-op.
+        kafka_forwarder = (
+            KafkaTerminalEventForwarder(transport=kafka_transport)
+            if kafka_transport is not None
+            else None
+        )
         return RuntimeDependencies(
             bus=bus,
             ledger=ledger,
@@ -1926,6 +1950,7 @@ def build_runtime_dependencies(
             utility_handler_ids=utility_handler_ids,
             defense_handler_ids=defense_handler_ids,
             utility_incentive=utility_incentive,
+            kafka_forwarder=kafka_forwarder,
         )
     except Exception:
         if owns_llm:
@@ -2436,6 +2461,19 @@ def assemble_match_with_dependencies(
             learning_handler.handle,
             event_types=[SOEventType.MATCH_SCORED],
         )
+    # OMN-15167 -- terminal-event Kafka-forwarding subscriber. Only the 4
+    # terminal SOEventType members ever cross the platform-bus boundary
+    # (steel-node-dispatch integration plan §2 step 5, §3 P2, §4b); every
+    # other event class (intents, telemetry, LLM-completion evidence) stays
+    # match-internal. ``kafka_forwarder`` is ``None`` unless a
+    # ``kafka_transport`` capability was injected at
+    # ``build_runtime_dependencies`` -- absent that, this is a no-op and
+    # match composition is byte-identical to before this ticket.
+    if dependencies.kafka_forwarder is not None:
+        dependencies.bus.subscribe(
+            dependencies.kafka_forwarder.publish,
+            event_types=list(TERMINAL_EVENT_TYPES),
+        )
     return LiveMatchStack(
         identity=identity,
         bus=dependencies.bus,
@@ -2619,12 +2657,14 @@ def assemble_match_live(
     secret_resolver: ProtocolSecretResolver | None = None,
     http_transport: ProtocolHttpTransport | None = None,
     sleeper: ProtocolSleeper | None = None,
+    kafka_transport: ProtocolTerminalEventTransport | None = None,
 ) -> LiveMatchStack:
     dependencies = build_runtime_dependencies(
         overlay,
         secret_resolver=secret_resolver,
         http_transport=http_transport,
         sleeper=sleeper,
+        kafka_transport=kafka_transport,
     )
     try:
         identity = MatchIdentity(
