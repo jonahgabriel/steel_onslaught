@@ -13,7 +13,7 @@ dependencies = [
     # clones and hosted CI do not depend on a developer's workspace layout.
     # Core provides the event/envelope/reducer/intent models; SPI provides the
     # protocol contracts. Infra is intentionally excluded from this engine.
-    "omnibase-core>=0.46.2",
+    "omnibase-core>=0.46.2",  # short-term git pin -- see [tool.uv.sources] below (OMN-15162, operator ruling 2026-07-26)
     "omnibase-spi>=0.22.0",
     # httpx is the LLM client transport (transitive via omnibase-core, but
     # declared explicitly for the LLM pilot/tuner effect node).
@@ -44,6 +44,18 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/steel_onslaught"]
+
+# Short-term git pin per operator ruling 2026-07-26 (OMN-15162): the
+# omnibase-core PyPI release train has not yet shipped OMN-15161's
+# fleet-generic dispatch-report-contract port (core PR #1510, squash
+# 3f2998b3337e4050b4758e0dd2a0fe1061ce0d98 -- the tip of origin/dev at pin
+# time), so steel pins the git dev squash commit instead of waiting for a
+# release. Revert this source override back to plain PyPI-registry
+# resolution (">=0.46.2"-style range in [project.dependencies]) at the next
+# omnibase-core release that includes this squash. Never pin a branch head
+# (reference_never_pin_a_feature_branch_head) -- only a squash commit sha.
+[tool.uv.sources]
+omnibase-core = { git = "https://github.com/OmniNode-ai/omnibase_core", rev = "3f2998b3337e4050b4758e0dd2a0fe1061ce0d98" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
