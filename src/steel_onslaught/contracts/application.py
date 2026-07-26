@@ -522,17 +522,15 @@ class ModelSODelegationProviderBinding(_ClosedBinding):
     (``LlmBusDelegationClient`` pins ``event_bus=inmemory`` by default -- see
     its docstring).
 
-    ``backend_id`` is carried for documentation/provenance and a future
-    direct pin: OMN-15156 threaded an optional ``backend_id`` kwarg through
-    ``LocalDelegationDispatchPort.dispatch()``, but that pin is NOT reachable
-    from the consumer-facing ``ModelDelegateSkillRequest`` wire model this
-    binding's client actually constructs (no ``backend_id`` field there, and
-    ``HandlerDelegateSkill.handle()`` never reads one from ``metadata``) --
-    tracked as OMN-15180, discovered building this binding. Until that lands,
-    live routing is by ``task_type`` alone; declaring the intended
-    ``backend_id`` here documents the seam and leaves the field ready the
-    moment the wire path opens, rather than silently omitting the mapping
-    the plan's seam table (§4a) requires.
+    ``backend_id`` is an explicit backend PIN, forwarded verbatim by
+    ``LlmBusDelegationClient.complete()`` on the wire request's
+    ``backend_id`` field (OMN-15170). OMN-15156 threaded the pin through
+    ``LocalDelegationDispatchPort.dispatch()``; OMN-15180 closed the
+    remaining wire-model + handler gap (``ModelDelegateSkillRequest`` gained
+    the field, ``HandlerDelegateSkill.handle()`` threads it to the dispatch
+    port). A non-matching or unresolvable ``backend_id`` fails loud at
+    ``resolve_delegation_backend`` -- this binding never silently falls back
+    to ``task_type``-only tier selection.
 
     ``task_type`` must be an existing member of the omnimarket closed
     ``ModelDelegateSkillRequest.task_type`` Literal (13 values as of

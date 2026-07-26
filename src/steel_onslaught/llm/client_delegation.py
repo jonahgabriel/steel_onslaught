@@ -46,20 +46,20 @@ body): three options were evaluated in the plan's stated preference order.
    (:func:`_parse_skill_result`) -- no shadow model of the platform's wire
    contract is declared here.
 
-**Known, discovered gap (OMN-15180, filed building this client):** the
-``backend_id`` pin OMN-15156 threaded through
-``LocalDelegationDispatchPort.dispatch()`` is NOT reachable from the
+**Formerly discovered gap, closed by OMN-15170:** at the time this client was
+built, the ``backend_id`` pin OMN-15156 threaded through
+``LocalDelegationDispatchPort.dispatch()`` was NOT reachable from the
 consumer-facing ``ModelDelegateSkillRequest`` wire model this client
-constructs -- that model has no ``backend_id`` field, and
-``HandlerDelegateSkill.handle()`` never reads one from ``metadata`` either.
-Separately, the ``local-coder-mlx`` backend OMN-15155 registered in
-``bifrost_delegation.yaml`` is absent from ``routing_tiers.yaml``'s ``local``
-tier ``models[]`` list, so no ``task_type``-based tier selection can reach it
-today regardless of which ``task_type`` is configured. Live routing
-determinism to a specific backend is NOT proven by this module or its unit
-tests -- that live call is OMN-15170's scope. This client is correct
-plumbing against the documented wire contract; OMN-15180 tracks the routing
-gap that must close before OMN-15170's live proof can pass.
+constructs (no ``backend_id`` field on the model, and
+``HandlerDelegateSkill.handle()`` never read one from ``metadata`` either).
+OMN-15180 closed that gap on the omnimarket side (wire field +
+handler/port/resolver threading, ``routing_tiers.yaml`` local-tier
+same-tier-fallback proof). OMN-15170 closed the remaining half on this side:
+``complete()`` below now forwards ``config.backend_id`` into the payload --
+previously captured on the binding for documentation only and never
+actually sent. Live routing determinism to ``local-coder-mlx`` is proven by
+OMN-15170's driver test (``tests/live/``), not by this module's own
+(hermetic, fake-runner) unit tests.
 
 **Known, deliberate fidelity gaps** (the consumer-facing delegation wire
 model has no equivalent field):
@@ -345,6 +345,17 @@ class LlmBusDelegationClient:
             "task_type": self._config.task_type,
             "source": self._config.source,
             "correlation_id": str(correlation_id),
+            # OMN-15170: OMN-15180 landed the wire-path this binding's
+            # docstring named as a precondition (ModelDelegateSkillRequest
+            # gained a `backend_id` field, threaded through
+            # HandlerDelegateSkill.handle() -> dispatch_port.dispatch() ->
+            # resolve_delegation_backend(task_type, backend_id=...) on the
+            # bus-less LocalDelegationDispatchPort). `backend_id` is a
+            # required (non-empty) field on ModelSODelegationProviderBinding,
+            # so it is always forwarded -- this closes the gap the binding's
+            # docstring documented ("declaring the intended backend_id here
+            # ... leaves the field ready the moment the wire path opens").
+            "backend_id": self._config.backend_id,
         }
         if self._config.max_tokens is not None:
             payload["max_tokens"] = self._config.max_tokens
