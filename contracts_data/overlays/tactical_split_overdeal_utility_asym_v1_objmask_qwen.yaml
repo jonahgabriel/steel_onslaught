@@ -1,0 +1,362 @@
+# SO-OBJ-MASK isolating arm: objectives genuinely SCORED by the engine
+# (exactly as on foundry_60_asym_v1 / the ASYM_OBJ paying corner), but the
+# objectives/victory_points VIEW is withheld from every pilot observation --
+# `contracts.arena_id: foundry_60_asym_v1_objmask` (`objective_display:
+# masked`, `objective_scoring` left at its default "scoring").
+#
+# This overlay is byte-identical to
+# contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_qwen.yaml
+# except for (a) contracts.arena_id, which points at the masked-display copy
+# foundry_60_asym_v1_objmask, and (b) the .onex_state path stems, which are
+# renamed for hygiene only (the battery driver's _lane_overlay() rewrites
+# every durable path from --state-root at runtime, so those strings are
+# cosmetic, not functional).  Loadouts, dose, deck policy, over-deal quotas,
+# utility_handler_pack, provider, retry and timeout are all unchanged and
+# unmodified.  tests/contracts/test_objmask_overlay.py asserts that
+# field-by-field, so the single free variable across the lanes is the arena
+# binding.
+#
+# ----------------------------------------------------------------------------
+# PRE-REGISTERED HYPOTHESIS AND DECISION CRITERION
+# Committed BEFORE the first match_started event of this arm's battery.
+# ----------------------------------------------------------------------------
+#
+# QUESTION.  This is the live-stakes complement to SO-OBJ-DECOY (PR #210/#212,
+# docs/evidence/2026-07-25-objdecoy-asym-battery.md).  DECOY held the pilot's
+# view of objectives fixed (still shown, byte-identical prompt) and removed
+# the payout (`objective_scoring: decoy`); it landed CAPTURE-ATTRIBUTABLE,
+# g_pooled = 0.2115 -- with the payout removed, keep-rate collapsed to
+# statistically indistinguishable from the no-objectives corner (p = 0.314)
+# and distinguishable from the objectives corner (p = 0.0024). That result
+# named the complementary arm it could not run: hold the payout fixed (the
+# fold scores VP exactly as it always has) and remove the DISPLAY instead.
+# This arena is that arm (`objective_display: masked`).
+#
+# Two rival readings of "does behaviour track the hidden real incentive, or
+# does visible feedback matter independently of payout":
+#
+#   H_HIDDEN_TRACKS (behaviour tracks the hidden, now-invisible payout).
+#     Masking the objectives/VP view from the prompt does not move keep-rate
+#     off the paying-visible corner, because SOME channel -- a display leak
+#     this arm's own CI battery of tests is built to rule out before launch,
+#     or a genuinely emergent correlation between the engine's real state and
+#     the pilot's terrain-level tactical read -- lets drafting still respond
+#     to the real incentive even though it is never named in the prompt.
+#   H_DISPLAY_NECESSARY (visible feedback is the necessary channel,
+#     independent of realized payout).  An LLM pilot's policy is a pure
+#     function of its prompt (there is no in-context reward signal, no
+#     gradient update, no channel back from "VP actually accrued" into next-
+#     token generation unless the prompt says so).  With the objectives/VP
+#     view withheld, keep-rate collapses to the no-objectives baseline
+#     regardless of what the fold is doing behind the scenes.
+#
+# MECHANICAL PRIOR, STATED HONESTLY BEFORE THE RUN.  Unlike DECOY (where
+# either hypothesis was a live, physically plausible outcome), this arm's
+# engine construction makes H_DISPLAY_NECESSARY the a priori expected
+# outcome: `objective_display: masked` makes `ModelSOPilotObservation.
+# objectives`/`.victory_points` structurally identical to an objective-free
+# arena's observation for the whole match (`src/steel_onslaught/match/
+# runner.py`), so nothing about the real VP total, the real objective cells,
+# or the real threshold reaches either serializer
+# (`steel_onslaught.llm.pilot._serialize_observation`,
+# `steel_onslaught.llm.programming._serialize_programming_observation`).
+# A departure from m_pooled ~= 0 is therefore either (a) evidence of an
+# undiscovered leak this arm's own pre-battery CI suite failed to catch, or
+# (b) a genuinely interesting finding that something OTHER than the named
+# objectives/VP fields is carrying incentive-correlated signal (e.g. terrain-
+# cued movement toward objective-adjacent cover that happens to also be
+# combat-favourable). This pre-registration commits to scoring m_pooled
+# exactly as measured, in either direction, precisely because the honest
+# prior is not a coin flip.
+#
+# THE ISOLATING MANIPULATION.  Arena foundry_60_asym_v1_objmask is
+# foundry_60_asym_v1 with ONE field changed: objective_display: masked. The
+# three objective cells, their vp_per_round, and vp_threshold: 15 are all
+# still declared and the fold still scores them exactly as on the source
+# arena -- OBJECTIVE_SCORED and (at threshold) VICTORY_DECLARED fire
+# normally, and a VP victory is fully reachable. What is suppressed is only
+# the pilot's VIEW: no objectives block, no VP scoreboard, no vp_threshold
+# rule line, in either serializer, for the whole match
+# (tests/contracts/test_objmask_overlay.py,
+# tests/match/test_objective_scoring_masked.py).
+#
+# FIXED REFERENCE CONSTANTS.  The same two corners DECOY was scored against,
+# unchanged, on the same model (Qwen3.6-35B-A3B, both seats), the same n=30
+# seeds 5001-5030, the same stock loadouts, and the same keep-rate method
+# (dealt = utility-partition card count summed over each seat's hand_dealt
+# events; programmed = plan_committed register slots whose card_id matches
+# card.utility.*). Quoted from
+# docs/evidence/2026-07-25-objdecoy-asym-battery.md §0a (itself recomputed
+# from docs/evidence/2026-07-25-scenobj-asym-noobj-battery.md and
+# docs/evidence/2026-07-23-utility-surfacing-fix-remeasure.md):
+#
+#   ASYM_OBJ    (ledger ugate_surfacing_fix_battery, arena foundry_60_asym_v1,
+#                objective_scoring=scoring, objective_display=visible):
+#       red  = 20/362 = 0.055249      blue = 60/362 = 0.165746
+#   ASYM_NOOBJ  (ledger ugate_scenobj_asym_noobj_battery_r3,
+#                arena foundry_60_asym_v1_noobj):
+#       red  =  7/398 = 0.017588      blue = 35/398 = 0.087940
+#
+#   d_obj_red   = 0.055249 - 0.017588 = 0.037661
+#   d_obj_blue  = 0.165746 - 0.087940 = 0.077806
+#   d_obj_pooled = 0.037661 + 0.077806 = 0.115467
+#
+# MEASURED QUANTITIES.  From this arm's own n=30 ledger, identical method:
+#   MASK_red  = programmed_red  / dealt_red
+#   MASK_blue = programmed_blue / dealt_blue
+#
+# PRIMARY STATISTIC (one number, pooled over seats exactly as DECOY's
+# g_pooled was -- numerator and denominator summed, not seat fractions
+# averaged):
+#
+#   m_pooled = [(MASK_red - 0.017588) + (MASK_blue - 0.087940)] / 0.115467
+#
+# WHY THIS ARITHMETIC SEPARATES THE TWO HYPOTHESES CLEANLY.  Identical
+# construction to DECOY's g_pooled, placing this arm on the same interpolated
+# interval between the same two fixed corners, so each rival hypothesis
+# predicts an exact endpoint:
+#
+#   If H_HIDDEN_TRACKS is right, the masked arm reproduces ASYM_OBJ:
+#     numerator = (0.055249-0.017588) + (0.165746-0.087940) = 0.115467
+#     m_pooled  = 0.115467 / 0.115467 = 1.0000
+#   If H_DISPLAY_NECESSARY is right, the masked arm collapses to ASYM_NOOBJ:
+#     numerator = (0.017588-0.017588) + (0.087940-0.087940) = 0.000000
+#     m_pooled  = 0.000000 / 0.115467 = 0.0000
+#
+# DECISION (disjunctive, exactly one criterion, no illustrative bands --
+# identical thresholds to DECOY's, for a directly comparable family):
+#   m_pooled >= 0.65          => HIDDEN-INCENTIVE-ATTRIBUTABLE
+#                                (>=65% of the measured objectives effect
+#                                 survives with the display removed; the
+#                                 real, invisible payout accounts for >=65%)
+#   m_pooled <= 0.35          => DISPLAY-ATTRIBUTABLE
+#                                (masking the view collapses <=35% of the
+#                                 effect to survive; visible feedback
+#                                 accounts for >=65%)
+#   0.35 < m_pooled < 0.65    => BOTH-CONTRIBUTE; report both components and
+#                                do NOT force a single-cause verdict.
+#
+# OUT-OF-INTERVAL ESCAPE (same two named excursions DECOY pre-registered, kept
+# unclamped for the same reason -- SO-SCEN-OBJ's pre-registration failed
+# exactly here once, by not contemplating a component carrying the opposite
+# sign):
+#   m_pooled < 0   (MASK pooled keep-rate BELOW ASYM_NOOBJ)  => SUB-NOOBJ.
+#   m_pooled > 1   (MASK pooled keep-rate ABOVE ASYM_OBJ)    => SUPER-OBJ.
+# Either is reported QUALITATIVELY, with the raw per-seat rates, and is NOT
+# clamped or folded into the 0-1 scale.
+#
+# SEAT SPLIT (reported, not a second criterion; identical clause to DECOY's).
+# Per-seat fractions
+#   m_red  = (MASK_red  - 0.017588) / 0.037661
+#   m_blue = (MASK_blue - 0.087940) / 0.077806
+# are always reported alongside m_pooled. If they straddle the decision
+# boundaries (one >= 0.65 while the other <= 0.35), the arm is reported
+# SEAT-SPLIT and the pooled verdict is stated as not supported by both seats.
+# The formal criterion remains m_pooled; this clause governs how honestly it
+# is narrated, not what it decides.
+#
+# ALTERNATIVE READINGS -- NAMED AND EXPLICITLY REJECTED AS THE CRITERION
+# (mirrors SO-UTIL-THRESH's practice, PR #214): each is a legitimate
+# secondary, reported below if computed, but NONE of them is the scored rule.
+#   (1) A raw two-proportion z-test of MASK pooled vs ASYM_OBJ pooled
+#       (significant/not) -- REJECTED as the criterion because a binary
+#       significance call cannot express a partial (BOTH-CONTRIBUTE) reading,
+#       and this program's n=30 clustered-proportion p-values are already
+#       flagged anti-conservative (see STATISTICAL HONESTY below); reported
+#       only as a secondary alongside DECOY's own corner comparisons.
+#   (2) MASK's bare pooled keep-rate, uninterpolated against the two fixed
+#       corners -- REJECTED because a bare rate cannot be read without the
+#       same two anchors DECOY established as this program's interpretive
+#       frame; a number with no corner to compare it to answers no question.
+#   (3) A per-seat majority vote (score the arm on whichever single seat
+#       crosses a boundary first) as a substitute for the pooled statistic --
+#       REJECTED for the same reason DECOY rejected it: SEAT SPLIT is a
+#       disclosure clause on top of the pooled criterion, never a second
+#       criterion or a tie-breaker for it.
+#
+# MANIPULATION-LANDED GATE (must pass before any scoring; this is what makes
+# the arm a genuine display mask rather than a rename).  Two independent
+# checks, because DECOY's own gate (an engine-side event count) proves the
+# wrong half of this arm's claim -- MASK's engine is UNCHANGED, so an
+# event-count gate here would be vacuous:
+#   (a) DISPLAY SUPPRESSED, checked from the arm's own recorded prompts (the
+#       literal `user_prompt`/`system_prompt` text on every
+#       `llm_completion_requested` row in this arm's ledger): none of
+#       "OBJECTIVES", "objectives", "vp_per_round", "vp_threshold", "own_vp",
+#       "enemy_vp", "victory_points", or an "objective." id prefix may appear
+#       anywhere in any recorded prompt.  This is a direct string search over
+#       the ledger this arm actually ran on, not a re-assertion from the
+#       overlay file.
+#   (b) PAYOUT LIVE, proven pre-battery in CI rather than re-derived from a
+#       live run's contingent play (whether any pilot actually captures an
+#       objective in 30 live matches is a strategy outcome, not a
+#       manipulation check): `tests/match/test_objective_scoring_masked.py`
+#       drives a real match on this exact arena through the real runner to a
+#       genuine `VICTORY_DECLARED`/`vp_threshold` terminal, with
+#       `OBJECTIVE_SCORED` events firing and `vp_totals` accruing exactly as
+#       they do on `foundry_60_asym_v1` -- the same `MatchStateFold` code
+#       path, unmodified by this field.  This arm's own ledger additionally
+#       reports its observed `objective_scored`/VP-terminal counts (whatever
+#       they are), descriptively, alongside DECOY's and ASYM_OBJ's own
+#       counts -- with no gate on the number, since live capture rate is an
+#       empirical outcome of this battery, not a precondition for it.
+#
+# CONTAMINATION GATE.  The ledger must show EXACTLY 30 match_started rows, 30
+# distinct match_ids, and seeds 5001-5030 each exactly once.  Anything else
+# means the arm is contaminated and must be re-run in a fresh --state-root
+# before any scoring.
+#
+# STATISTICAL HONESTY.  Adjacent-arm two-proportion z-tests at n=30 rarely
+# reach significance in this program, and card-level proportions are
+# CLUSTERED WITHIN MATCHES (~6-12 rounds x 2 utility cards per seat per
+# match), so any p-value computed on the nominal denominator is anti-
+# conservative -- read as a rank ordering of effect strength, never as
+# calibrated evidence.  A non-significant comparison here is the expected
+# shape and must not be over-read in either direction. n=30 does not support
+# a claim stronger than the pre-registered verdict label.
+#
+# UNCONTROLLED STANDOFF (OMN-15119 disclosure class, inherited unchanged from
+# every sibling in this family).  Blue's stock loadout
+# qwen35/sniper_ironclad.yaml carries weapon.siege.artillery_mortar (range
+# 50) and weapon.heavy.harpoon_gun (range 30); red's
+# llm_qwen35_berserker.yaml carries weapon.light.machine_gun (range 12) and
+# weapon.light.shrapnel_thrower (range 8). Blue therefore holds an
+# uncontrolled ~18-38 cell range advantage. This arm inherits that asymmetry
+# UNCHANGED and deliberately -- all corners it is compared against carry the
+# identical loadout pairing, so the standoff is constant and cannot generate
+# the difference being measured.
+#
+# BATTERY STATUS AT MERGE: DEFERRED.  This overlay ships pre-registered and
+# UNLAUNCHED. Launch with:
+#   uv run python scripts/run_ogate_objectives_battery.py \
+#     --overlay contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_objmask_qwen.yaml \
+#     --expected-arena foundry_60_asym_v1_objmask \
+#     --state-root .onex_state/steel_onslaught/ugate_objmask_battery \
+#     --n 30 --seed-base 5000 --fresh
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_objmask_qwen/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_objmask_qwen/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_objmask_qwen/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_objmask_qwen/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_objmask_qwen/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_objmask_qwen/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/fire_dense_qwen
+  arena_id: foundry_60_asym_v1_objmask
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+        - side: blue
+          archetype: sniper
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          utility_deck_id: deck.utility.v1
+          # Over-deal + utility: deal 10 (4 movement + 4 weapon + 2 utility),
+          # program 5 — utility competes for the same registers.
+          hand_quota:
+            movement: 4
+            weapon: 4
+            utility: 2
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35
+        failure_policy: raise
+      - side: blue
+        pilot_spec_id: pilot.llm.qwen35_sniper
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+  # Phase 2 — utility resolution handlers selected by this typed overlay
+  # (design §6 Handlers row).  The full pack is named explicitly so the
+  # runner's fail-closed ``select`` is driven by the overlay, not a hardcoded
+  # default.  Narrowing this list (e.g. dropping ``utility.flares.v1``) would
+  # make that kind fail closed at resolution time.
+  utility_handler_pack:
+    kind: utility_resolution_handlers
+    pack_id: utility.resolution.v1
+    handler_ids:
+      - utility.smoke.v1
+      - utility.chaff.v1
+      - utility.flares.v1
+llm:
+  providers:
+    - kind: openai_compatible
+      provider_id: qwen35
+      endpoint_url: http://omninode-pc.tail75df5e.ts.net:8000/v1/chat/completions
+      model: Qwen3.6-35B-A3B
+      secret_ref: null
+      timeout_seconds: 45.0
+      max_tokens: 2048
+      retry:
+        max_attempts: 1
+        initial_backoff_seconds: 0.0
+        backoff_multiplier: 1.0
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35
+      display_name: Qwen3.6-35B-A3B (AI PC 5090)
+      provider_binding_id: qwen35
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # Keyless: the only provider carries ``secret_ref: null``, so no resolver
+    # capability is required.  ``none`` lets ``so run --overlay`` and the O-GATE
+    # battery driver launch this overlay directly (``injected`` would raise
+    # "requires a resolver capability" on the keyless CLI path).
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

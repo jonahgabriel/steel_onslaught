@@ -280,6 +280,26 @@ class MatchRunner:
         self._facing_b = facing_b
         self._arena_size = self._arena.size
         self._obstacles = self._arena.obstacle_cells
+        # SO-OBJ-MASK: the objectives/victory_points VIEW handed to every
+        # pilot observation can be independently withheld from the engine's
+        # real scoring.  ``MatchStateFold._score_objectives`` reads
+        # ``self._arena`` directly and never consults ``objective_display``,
+        # so VP keeps accruing from real ``OBJECTIVE_SCORED`` events exactly
+        # as it does on a visible arena; only the two values below (what this
+        # runner passes into every ``build_pilot_observation``/
+        # ``ReducerPilotTick`` call) change.  At "visible" (default) these are
+        # exactly ``self._arena.objectives``/``self._arena.vp_threshold``,
+        # unchanged from the pre-flag behaviour.  At "masked" they are
+        # ``()``/``None`` -- the exact absent-objectives shape
+        # ``build_pilot_observation`` already renders as "no objectives
+        # block", so a masked prompt is byte-identical to an objective-free
+        # arena's prompt at the same match state.
+        self._observation_objectives = (
+            self._arena.objectives if self._arena.objective_display == "visible" else ()
+        )
+        self._observation_vp_threshold = (
+            self._arena.vp_threshold if self._arena.objective_display == "visible" else None
+        )
         # Allowlisted utility resolution handlers (Phase 2), selected fail-closed
         # by the typed overlay (design §6 Handlers row).  ``utility_handler_ids``
         # None keeps the full default pack (smoke/chaff/flares); a typed overlay
@@ -550,8 +570,8 @@ class MatchRunner:
                         event_factory=self._events,
                         obstacles=self._obstacles,
                         arena_size=self._arena_size,
-                        objectives=self._arena.objectives,
-                        vp_threshold=self._arena.vp_threshold,
+                        objectives=self._observation_objectives,
+                        vp_threshold=self._observation_vp_threshold,
                     ).apply(tick_event)
             except LlmCompletionBoundaryError:
                 # A live provider that exhausts its output budget or typed
@@ -742,8 +762,8 @@ class MatchRunner:
                 self._catalog.weapons,
                 obstacles=self._obstacles,
                 arena_size=self._arena_size,
-                objectives=self._arena.objectives,
-                vp_threshold=self._arena.vp_threshold,
+                objectives=self._observation_objectives,
+                vp_threshold=self._observation_vp_threshold,
             )
             spatial = self._spatial_seat_kwargs(seat, mech)
             seats.append(
@@ -855,8 +875,8 @@ class MatchRunner:
                     self._catalog.weapons,
                     obstacles=self._obstacles,
                     arena_size=self._arena_size,
-                    objectives=self._arena.objectives,
-                    vp_threshold=self._arena.vp_threshold,
+                    objectives=self._observation_objectives,
+                    vp_threshold=self._observation_vp_threshold,
                 )
                 spatial = self._spatial_seat_kwargs(seat, mech)
                 seats.append(
