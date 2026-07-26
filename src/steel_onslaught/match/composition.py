@@ -39,6 +39,7 @@ from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSOCardCatalogBinding,
     ModelSOCardProgrammerBinding,
+    ModelSODelegationProviderBinding,
     ModelSOLlmImageAttachmentBinding,
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOStubLlmProviderBinding,
@@ -107,6 +108,7 @@ from steel_onslaught.learning.selection_outcome import SelectionOutcomeEvaluator
 from steel_onslaught.learning.spec_adapter import bounds_for_archetype
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
+from steel_onslaught.llm.client_delegation import LlmBusDelegationClient
 from steel_onslaught.llm.client_http import (
     BoundedLlmClient,
     HttpxJsonTransport,
@@ -1504,6 +1506,20 @@ def build_llm_dependencies(
         for provider in providers:
             if isinstance(provider, ModelSOStubLlmProviderBinding):
                 clients[provider.provider_id] = StubLlmClient(model=provider.model)
+            elif isinstance(provider, ModelSODelegationProviderBinding):
+                # OMN-15157/OMN-15159: routes through the ONEX platform
+                # delegation chain rather than a direct HTTP provider call --
+                # no httpx transport/secret resolver/sleeper needed (the
+                # delegation node resolves secrets and retries internally).
+                # omnibase_infra_path/state_root are explicit overlay config
+                # (binding fields), never an os.environ read -- this
+                # codebase's DI-confinement gate (test_di_enforcement.py)
+                # permits zero os.environ usages anywhere.
+                delegation_identities = SystemIdentityProvider()
+                clients[provider.provider_id] = LlmBusDelegationClient(
+                    config=provider,
+                    new_correlation_id=delegation_identities.new_correlation_id,
+                )
             else:
                 assert resolved_transport is not None
                 assert resolved_sleeper is not None

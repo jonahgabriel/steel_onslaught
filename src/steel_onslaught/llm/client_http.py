@@ -15,6 +15,7 @@ from types import MappingProxyType
 import httpx
 
 from steel_onslaught.contracts.application import (
+    ModelSODelegationProviderBinding,
     ModelSOOpenAICompatibleProviderBinding,
     ModelSOSecretRef,
     ModelSOStubLlmProviderBinding,
@@ -272,7 +273,11 @@ class SelectedOnlyLlmClientBuilder:
     def select(
         self,
         *,
-        providers: Sequence[ModelSOStubLlmProviderBinding | ModelSOOpenAICompatibleProviderBinding],
+        providers: Sequence[
+            ModelSOStubLlmProviderBinding
+            | ModelSOOpenAICompatibleProviderBinding
+            | ModelSODelegationProviderBinding
+        ],
         selected_provider_id: str,
     ) -> ModelSOOpenAICompatibleProviderBinding:
         """Return the exact selected HTTP binding without constructing effects.
@@ -302,7 +307,11 @@ class SelectedOnlyLlmClientBuilder:
     def select_many(
         self,
         *,
-        providers: Sequence[ModelSOStubLlmProviderBinding | ModelSOOpenAICompatibleProviderBinding],
+        providers: Sequence[
+            ModelSOStubLlmProviderBinding
+            | ModelSOOpenAICompatibleProviderBinding
+            | ModelSODelegationProviderBinding
+        ],
         selected_provider_ids: Sequence[str],
     ) -> tuple[ModelSOOpenAICompatibleProviderBinding, ...]:
         """Return each explicitly selected live provider exactly once."""

@@ -191,6 +191,14 @@ _APPROVED_CALLS = Counter(
             "build_llm_dependencies",
             "steel_onslaught.llm.client_http.NoSecretResolver",
         ): 1,
+        (
+            # OMN-15157/OMN-15159: LlmBusDelegationClient needs a UUID-minting
+            # capability for its per-call correlation_id (DI-confinement, not
+            # a direct uuid.uuid4() call inside client_delegation.py -- see
+            # that module's __init__ docstring).
+            "build_llm_dependencies",
+            "steel_onslaught.match.composition.SystemIdentityProvider",
+        ): 1,
         ("build_llm_dependencies", "httpx.Client"): 1,
         (
             "build_llm_dependencies",

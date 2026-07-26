@@ -510,8 +510,90 @@ class ModelSOOpenAICompatibleProviderBinding(_ClosedBinding):
         return value
 
 
+class ModelSODelegationProviderBinding(_ClosedBinding):
+    """Routes completions through the ONEX platform delegation chain.
+
+    Named for what it actually does -- routes via the platform's
+    ``node_delegate_skill_orchestrator`` def-B CONTRACT+NODE+HANDLER path
+    (OMN-15157/OMN-15159) -- not ``...Kafka...`` as the plan's placeholder
+    name suggested. Steel's client never talks Kafka directly; the event-bus
+    backend the delegation node ultimately dispatches through (in-memory vs.
+    Kafka) is an internal platform decision the client does not control here
+    (``LlmBusDelegationClient`` pins ``event_bus=inmemory`` by default -- see
+    its docstring).
+
+    ``backend_id`` is carried for documentation/provenance and a future
+    direct pin: OMN-15156 threaded an optional ``backend_id`` kwarg through
+    ``LocalDelegationDispatchPort.dispatch()``, but that pin is NOT reachable
+    from the consumer-facing ``ModelDelegateSkillRequest`` wire model this
+    binding's client actually constructs (no ``backend_id`` field there, and
+    ``HandlerDelegateSkill.handle()`` never reads one from ``metadata``) --
+    tracked as OMN-15180, discovered building this binding. Until that lands,
+    live routing is by ``task_type`` alone; declaring the intended
+    ``backend_id`` here documents the seam and leaves the field ready the
+    moment the wire path opens, rather than silently omitting the mapping
+    the plan's seam table (§4a) requires.
+
+    ``task_type`` must be an existing member of the omnimarket closed
+    ``ModelDelegateSkillRequest.task_type`` Literal (13 values as of
+    OMN-15158) -- this binding does not widen that set.
+
+    ``omnibase_infra_path``/``state_root`` are explicit overlay config, not
+    environment-derived: the DI-confinement gate
+    (``tests/test_di_enforcement.py``) allows exactly zero ``os.environ``
+    reads anywhere in this codebase (steel's config flows through the
+    validated overlay only, never ambient env vars -- no exception was ever
+    carved out for this binding). Declaring both paths here, rather than
+    resolving ``$OMNI_HOME`` inside the composition root, keeps that
+    invariant intact and matches this repo's existing pattern of explicit,
+    legible config over env-var indirection (e.g. ``endpoint_url`` is always
+    a literal string here, never resolved from an env var at construction
+    time).
+    """
+
+    kind: Literal["onex_delegation"]
+    provider_id: StrictStr = Field(min_length=1)
+    backend_id: StrictStr = Field(min_length=1)
+    task_type: Literal[
+        "test",
+        "document",
+        "research",
+        "code_generation",
+        "code_review",
+        "refactor",
+        "reasoning",
+        "complex_reasoning",
+        "planning",
+        "review",
+        "summarization",
+        "agent_delegation",
+        "escalation",
+    ]
+    # Fixed, not caller-configurable: identifies every request this binding's
+    # client constructs as originating from a non-adapter caller (neither the
+    # Claude Code CLI nor Codex). OMN-15158 widened the wire Literal with this
+    # exact third member for this exact caller.
+    source: Literal["external-client"] = "external-client"
+    # Documentation/pin of the expected served model (plan §4a: "must match
+    # ... verbatim on both sides"). The delegation response echoes whichever
+    # model actually served the request; the client validates the echo
+    # against this value rather than trusting it silently.
+    model: StrictStr = Field(min_length=1)
+    max_tokens: StrictInt | None = Field(default=None, gt=0, le=200000)
+    timeout_seconds: StrictFloat = Field(gt=0.0, le=900.0, allow_inf_nan=False)
+    # Local clone of omnibase_infra whose `onex` CLI dispatches the delegation
+    # call (`uv run --project <this> onex node node_delegate_skill_orchestrator`).
+    omnibase_infra_path: Path
+    # Scratch root for the per-call request payload JSON
+    # (`<state_root>/tmp/delegate-input-<correlation_id>.json`), mirroring the
+    # platform's own `onex delegate` convention.
+    state_root: Path
+
+
 LlmProviderBinding = Annotated[
-    ModelSOStubLlmProviderBinding | ModelSOOpenAICompatibleProviderBinding,
+    ModelSOStubLlmProviderBinding
+    | ModelSOOpenAICompatibleProviderBinding
+    | ModelSODelegationProviderBinding,
     Field(discriminator="kind"),
 ]
 SecretResolverBinding = Annotated[
@@ -651,6 +733,7 @@ __all__ = [
     "ModelSOCardDeckPolicy",
     "ModelSOCardProgrammerBinding",
     "ModelSOContractBindings",
+    "ModelSODelegationProviderBinding",
     "ModelSOFilesystemLearningArtifactsBinding",
     "ModelSOFrontendBootstrap",
     "ModelSOFrontendCommandGatewayBinding",
