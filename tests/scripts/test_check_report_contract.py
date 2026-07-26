@@ -130,6 +130,45 @@ def test_validate_substantive_report_text_rejects_empty() -> None:
         validate_substantive_report_text("   ")
 
 
+@pytest.mark.parametrize(
+    "literal",
+    [
+        "Done. Done. Done. Done. Done. Done. Done.",
+        "test. test. test. test. test. test. test.",
+        "ok. ok. ok. ok. ok. ok. ok. ok. ok.",
+    ],
+)
+def test_validate_substantive_report_text_rejects_padded_repeated_literal(literal: str) -> None:
+    """A banned bare-acknowledgement/placeholder literal repeated with
+    sentence separators past the length minimum must still be rejected --
+    the whole padded string is never itself an exact match for the bare
+    literal, so this is a distinct detector from the exact-literal check.
+    """
+    with pytest.raises(ValueError, match="repetitive low-content padding"):
+        validate_substantive_report_text(literal)
+
+
+def test_validate_substantive_report_text_rejects_keyboard_mash_filler() -> None:
+    """A short unit repeated with no separators at all (no real content,
+    just enough characters to clear ``_MIN_SUBSTANTIVE_LENGTH``) must be
+    rejected on the same grounds as padded-literal repetition.
+    """
+    with pytest.raises(ValueError, match="repetitive low-content padding"):
+        validate_substantive_report_text("asdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdf")
+
+
+def test_validate_substantive_report_text_accepts_prose_with_incidental_repeated_word() -> None:
+    """Real prose that happens to repeat a word a couple of times (not the
+    entire content, not a short-unit blob) must never be flagged -- the
+    padding detector requires the repeated unit to dominate the text.
+    """
+    text = (
+        "Reviewed the diff twice: once for correctness, once for style, and confirmed "
+        "the tests still pass both times before opening the PR."
+    )
+    assert validate_substantive_report_text(text) == text
+
+
 # --------------------------------------------------------------------------
 # check_content_anchors -- unit-level, real git repo + real filesystem
 # --------------------------------------------------------------------------
@@ -175,6 +214,60 @@ def test_check_content_anchors_all_clean_on_real_repo(tmp_path: Path) -> None:
     )
     violations = check_content_anchors(report, git_dir=repo / ".git", repo_root=repo)
     assert violations == []
+
+
+def test_check_content_anchors_rejects_relative_traversal_outside_repo_root(
+    tmp_path: Path,
+) -> None:
+    """A '../../../../../../../etc/hosts'-style artifact path must never pass
+    just because it happens to resolve to a real file outside the repo --
+    containment under --repo-root is required, not mere existence.
+    """
+    repo = tmp_path / "nested" / "worktree" / "repo"
+    _init_repo(repo)
+    sha = _commit_file(repo, "a.txt", "x\n")
+    report = ModelSOImplementerReport.model_validate_json(
+        json.dumps(
+            {
+                "role": "implementer",
+                "pr_number": 1,
+                "branch": "b",
+                "head_sha": sha,
+                "verdict": "implemented",
+                "files_changed_paths": ["../../../../../../../etc/hosts"],
+                "summary": _SUBSTANTIVE_SUMMARY,
+            }
+        )
+    )
+    violations = check_content_anchors(report, git_dir=repo / ".git", repo_root=repo)
+    assert any(
+        "escapes" in v and "etc/hosts" in v and "files_changed_paths" in v for v in violations
+    )
+
+
+def test_check_content_anchors_rejects_absolute_path_escape(tmp_path: Path) -> None:
+    """An absolute artifact path silently discards --repo-root under plain
+    pathlib '/' semantics (``repo_root / "/etc/hosts" == Path("/etc/hosts")``)
+    -- this must be caught as an escape, same as a relative traversal.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    sha = _commit_file(repo, "a.txt", "x\n")
+    report = ModelSOImplementerReport.model_validate_json(
+        json.dumps(
+            {
+                "role": "implementer",
+                "pr_number": 1,
+                "branch": "b",
+                "head_sha": sha,
+                "verdict": "implemented",
+                "files_changed_paths": ["/etc/hosts"],
+                "summary": _SUBSTANTIVE_SUMMARY,
+            }
+        )
+    )
+    violations = check_content_anchors(report, git_dir=repo / ".git", repo_root=repo)
+    assert any("escapes" in v and "files_changed_paths" in v for v in violations)
 
 
 # --------------------------------------------------------------------------
@@ -315,6 +408,86 @@ def test_main_fails_when_head_sha_does_not_resolve_implementer(
     err = capsys.readouterr().err
     assert exit_code == 1
     assert "does not resolve to a real commit" in err
+
+
+def test_main_fails_when_artifact_path_escapes_repo_root_implementer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Mandatory seeded RED, live-entrypoint level: a report citing
+    '../../../../../../../etc/hosts' against a nested --repo-root resolves
+    to a real file (/etc/hosts) and must still fail closed -- containment,
+    not mere existence, is the contract.
+    """
+    repo = tmp_path / "nested" / "worktree" / "repo"
+    _init_repo(repo)
+    sha = _commit_file(repo, "scripts/check_report_contract.py", "# fixture\n")
+    report_path = _write_report(
+        tmp_path / "report.json",
+        {
+            "role": "implementer",
+            "pr_number": 4821,
+            "branch": "jonah/so-report-contracts-golden",
+            "head_sha": sha,
+            "verdict": "implemented",
+            "files_changed_paths": ["../../../../../../../etc/hosts"],
+            "summary": _SUBSTANTIVE_SUMMARY,
+        },
+    )
+    exit_code = main(
+        [
+            "--role",
+            "implementer",
+            "--report",
+            str(report_path),
+            "--git-dir",
+            str(repo / ".git"),
+            "--repo-root",
+            str(repo),
+        ]
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "escapes" in err
+    assert "etc/hosts" in err
+
+
+def test_main_fails_on_padded_repeated_literal_summary_implementer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Mandatory seeded RED, live-entrypoint level: a bare-acknowledgement
+    literal repeated past the length floor must fail through main(), not
+    just at the pure-function level.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    sha = _commit_file(repo, "scripts/check_report_contract.py", "# fixture\n")
+    report_path = _write_report(
+        tmp_path / "report.json",
+        {
+            "role": "implementer",
+            "pr_number": 4821,
+            "branch": "jonah/so-report-contracts-golden",
+            "head_sha": sha,
+            "verdict": "implemented",
+            "files_changed_paths": ["scripts/check_report_contract.py"],
+            "summary": "Done. Done. Done. Done. Done. Done. Done.",
+        },
+    )
+    exit_code = main(
+        [
+            "--role",
+            "implementer",
+            "--report",
+            str(report_path),
+            "--git-dir",
+            str(repo / ".git"),
+            "--repo-root",
+            str(repo),
+        ]
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "repetitive low-content padding" in err
 
 
 def test_main_fails_when_artifact_path_does_not_exist_implementer(

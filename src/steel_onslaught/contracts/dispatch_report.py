@@ -28,7 +28,13 @@ contract whose required fields carry CONTENT anchors, not mere shape --
 * every free-text field is rejected on placeholder literals (``"test"``,
   ``"todo"``, ``"placeholder"``, ``"lorem"``, ...), on bare-acknowledgement
   literals (``"done"``, ``"task complete"``, ``"no further action taken"``,
-  ...), and on any report under ``_MIN_SUBSTANTIVE_LENGTH`` characters.
+  ...), on any report under ``_MIN_SUBSTANTIVE_LENGTH`` characters, and on
+  repetitive low-content padding used to defeat the length floor without
+  saying anything -- a banned literal repeated with separators past the
+  minimum length (``"Done. Done. Done. Done. Done. Done. Done."``) or a
+  short unit repeated with no separators at all (keyboard-mash filler like
+  ``"asdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdf"``) are both rejected, not
+  just the exact single-literal case.
 
 Four dispatch roles are modeled here: ``implementer`` (builds/fixes code and
 opens or updates a PR), ``verifier`` (independently re-checks an
@@ -46,6 +52,7 @@ automatically -- no per-field wiring needed there.
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -146,6 +153,66 @@ def _normalize_for_literal_match(value: str) -> str:
     return stripped.rstrip(".!? \t").strip()
 
 
+# Splits on one-or-more sentence-terminating characters, used by the
+# repeated-padding detector below to find "Done. Done. Done." style repeats
+# of a single literal that individually normalize past the exact-match check
+# (the whole string ``"done. done. done."`` is not itself equal to ``"done"``)
+# but are transparently the same banned literal repeated to pad length.
+_SENTENCE_SPLIT_PATTERN = re.compile(r"[.!?]+")
+
+# A blob is treated as degenerate keyboard-mash filler once a repeating unit
+# of at most this many characters accounts for this fraction of the
+# alphanumeric-only content -- e.g. "asdfasdfasdf..." (unit "asdf", period 4)
+# covers 100% of itself. Kept conservative (short unit, high coverage, >=3
+# repeats) so real prose is never caught by accidental short repeats.
+_MAX_DEGENERATE_UNIT_LENGTH = 16
+_MIN_DEGENERATE_COMPACT_LENGTH = 12
+_MIN_DEGENERATE_COVERAGE_RATIO = 0.9
+_MIN_DEGENERATE_REPEATS = 3
+
+
+def _is_repetitive_padding(stripped: str) -> bool:
+    """True if ``stripped`` is content-free padding used to defeat the
+    length minimum, rather than genuine substantive text.
+
+    Two independent detectors, because the two adversarial classes look
+    nothing alike on the wire:
+
+    1. A single word/phrase repeated with sentence-style separators, e.g.
+       ``"Done. Done. Done. Done. Done. Done. Done."`` -- splitting on
+       ``.``/``!``/``?`` yields >=3 non-empty segments that all normalize to
+       the exact same text. This catches a banned literal (or any other
+       single phrase) padded past ``_MIN_SUBSTANTIVE_LENGTH`` by repetition,
+       which the whole-string exact-literal match above cannot see because
+       the padded string as a whole is never equal to the bare literal.
+    2. A short unit repeated with NO separators at all, e.g. keyboard-mash
+       filler like ``"asdfasdfasdfasdfasdfasdfasdfasdfasdfasdfasdf"`` --
+       there is nothing to split on, so this checks whether the
+       alphanumeric-only content is (almost) entirely a short repeating
+       unit.
+    """
+    segments = [seg.strip() for seg in _SENTENCE_SPLIT_PATTERN.split(stripped) if seg.strip()]
+    if len(segments) >= _MIN_DEGENERATE_REPEATS:
+        normalized_segments = {seg.lower() for seg in segments}
+        if len(normalized_segments) == 1:
+            return True
+
+    compact = re.sub(r"[^a-z0-9]", "", stripped.lower())
+    if len(compact) >= _MIN_DEGENERATE_COMPACT_LENGTH:
+        max_period = min(_MAX_DEGENERATE_UNIT_LENGTH, len(compact) // _MIN_DEGENERATE_REPEATS)
+        for period in range(1, max_period + 1):
+            unit = compact[:period]
+            repeats = len(compact) // period
+            if repeats < _MIN_DEGENERATE_REPEATS:
+                continue
+            covered = unit * repeats
+            if compact.startswith(covered) and len(covered) / len(compact) >= (
+                _MIN_DEGENERATE_COVERAGE_RATIO
+            ):
+                return True
+    return False
+
+
 def validate_substantive_report_text(value: str, *, field_name: str = "report text") -> str:
     """Reject placeholder literals, bare acknowledgements, and short filler.
 
@@ -167,6 +234,11 @@ def validate_substantive_report_text(value: str, *, field_name: str = "report te
     if normalized in _BARE_ACKNOWLEDGEMENT_LITERALS:
         raise ValueError(
             f"{field_name} is a bare acknowledgement ({stripped!r}) with no typed result content"
+        )
+    if _is_repetitive_padding(stripped):
+        raise ValueError(
+            f"{field_name} is repetitive low-content padding ({stripped!r}) -- a short "
+            "literal or unit repeated to defeat the length minimum, not a substantive report"
         )
     if len(stripped) < _MIN_SUBSTANTIVE_LENGTH:
         raise ValueError(

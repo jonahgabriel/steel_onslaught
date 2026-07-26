@@ -13,7 +13,10 @@ checks (verdict is a closed enum, ``pr_number`` is a positive int, free text
 is rejected on placeholder/bare-ack patterns and on under-length filler),
 plus a second pass here for the checks that need live repo state -- a git
 SHA field must resolve to a real commit, and artifact-path fields must
-resolve to files that actually exist.
+resolve, *and stay contained*, under ``--repo-root``, to files that actually
+exist -- an artifact path that escapes the repo root (``../../../etc/hosts``,
+or an absolute path such as ``/etc/hosts``) is rejected even if it resolves
+to a real file on disk.
 
 Usage
 -----
@@ -43,9 +46,11 @@ Exit codes
 
 Field-name-suffix convention (mirrors ``contracts/dispatch_report.py``): any
 field ending ``_sha`` is checked via ``git cat-file -e`` in ``--git-dir``;
-any field ending ``_paths`` (a list of strings) is checked for existence
-under ``--repo-root``. This is generic over all four current roles and any
-future role added to ``ROLE_TO_MODEL`` without touching this script.
+any field ending ``_paths`` (a list of strings) is resolved under
+``--repo-root`` and checked both for containment (the resolved path must
+stay under ``--repo-root``) and for existence. This is generic over all four
+current roles and any future role added to ``ROLE_TO_MODEL`` without
+touching this script.
 """
 
 from __future__ import annotations
@@ -134,8 +139,27 @@ def check_content_anchors(
                     "--repo-root was not provided -- an unchecked anchor is a fail-closed violation"
                 )
                 continue
+            resolved_root = repo_root.resolve()
             for artifact in value:
-                if not (repo_root / artifact).exists():
+                # Resolve BEFORE checking existence, and require the resolved
+                # path to stay under resolved_root. Existence alone is not
+                # containment: pathlib silently discards repo_root entirely
+                # when `artifact` is itself absolute (`repo_root / "/etc/hosts"
+                # == Path("/etc/hosts")`), and `../../../etc/hosts` walks out
+                # via `..` segments -- both resolve to a real file outside the
+                # repo and must never pass. `.resolve()` also follows
+                # symlinks, so a committed symlink pointing outside the repo
+                # is caught the same way.
+                resolved_artifact = (repo_root / artifact).resolve()
+                try:
+                    resolved_artifact.relative_to(resolved_root)
+                except ValueError:
+                    violations.append(
+                        f"field '{field_name}' cites an artifact path that escapes "
+                        f"--repo-root {repo_root} (resolves to {resolved_artifact}): {artifact}"
+                    )
+                    continue
+                if not resolved_artifact.exists():
                     violations.append(
                         f"field '{field_name}' cites an artifact path that does not exist under "
                         f"--repo-root {repo_root}: {artifact}"
