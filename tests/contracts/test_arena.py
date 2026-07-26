@@ -28,6 +28,7 @@ def test_shipped_arena_catalog_is_typed_and_snapshot_is_canonical() -> None:
         "foundry_60_asym_v1_leapfrog_cover",
         "foundry_60_asym_v1_noobj",
         "foundry_60_asym_v1_decoyobj",
+        "foundry_60_asym_v1_objmask",
         "foundry_60_asym_v1_vpthresh48",
         "open_field",
     }
@@ -308,16 +309,20 @@ def test_arena_spec_rejects_invalid_objectives(
 
 
 # Objective-victory fields (Phase 4) plus the objective-scoring MODE
-# (SO-OBJ-DECOY) are the ONLY compat-optional snapshot fields: pre-Phase-4
-# MATCH_STARTED payloads carry none of them, and each defaults (()/None/
-# "scoring") so historical ledgers parse to the objective-free, scoring arena
-# they were recorded on.  ``objective_scoring`` is additionally excluded from
-# serialization at its default, so adding it moved no existing arena's
-# ``arena_contract_hash`` (proven in
-# tests/match/test_objective_scoring_decoy.py against pre-flag goldens).  This
-# census is exact — a new optional field must be added here deliberately, never
-# inherited silently.
-_COMPAT_OPTIONAL_SNAPSHOT_FIELDS = frozenset({"objectives", "vp_threshold", "objective_scoring"})
+# (SO-OBJ-DECOY) and the objective-display MODE (SO-OBJ-MASK) are the ONLY
+# compat-optional snapshot fields: pre-Phase-4 MATCH_STARTED payloads carry
+# none of them, and each defaults (()/None/"scoring"/"visible") so historical
+# ledgers parse to the objective-free, scoring, visible arena they were
+# recorded on.  ``objective_scoring``/``objective_display`` are additionally
+# excluded from serialization at their default, so adding either moved no
+# existing arena's ``arena_contract_hash`` (proven in
+# tests/match/test_objective_scoring_decoy.py and
+# tests/match/test_objective_scoring_masked.py against pre-flag goldens).
+# This census is exact — a new optional field must be added here
+# deliberately, never inherited silently.
+_COMPAT_OPTIONAL_SNAPSHOT_FIELDS = frozenset(
+    {"objectives", "vp_threshold", "objective_scoring", "objective_display"}
+)
 
 
 @pytest.mark.unit
@@ -337,6 +342,7 @@ def test_current_live_snapshot_is_closed_and_requires_every_field() -> None:
         ],
         "vp_threshold": 15,
         "objective_scoring": "decoy",
+        "objective_display": "masked",
     }
     snapshot = ModelSOCurrentLiveArenaSnapshot.model_validate(raw)
     assert snapshot.model_fields_set == frozenset(ModelSOCurrentLiveArenaSnapshot.model_fields)
@@ -363,9 +369,11 @@ def test_current_live_snapshot_is_closed_and_requires_every_field() -> None:
     assert legacy_snapshot.objectives == ()
     assert legacy_snapshot.vp_threshold is None
     assert legacy_snapshot.objective_scoring == "scoring"
-    # ...and re-serializes without the mode key, so a historical ledger's
+    assert legacy_snapshot.objective_display == "visible"
+    # ...and re-serializes without either mode key, so a historical ledger's
     # recorded arena_contract_hash still verifies against its own snapshot.
     assert "objective_scoring" not in legacy_snapshot.model_dump(mode="json")
+    assert "objective_display" not in legacy_snapshot.model_dump(mode="json")
     # Half-configured objective views fail closed.
     with pytest.raises(ValidationError, match="together"):
         ModelSOCurrentLiveArenaSnapshot.model_validate({**raw, "vp_threshold": None})

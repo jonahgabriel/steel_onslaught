@@ -49,6 +49,59 @@ def _objective_scoring_field() -> Any:
     return Field(default="scoring", exclude_if=lambda value: value == "scoring")
 
 
+# Whether the arena's declared objectives are shown to the pilot (SO-OBJ-MASK).
+#
+# This is the complementary axis to ``objective_scoring`` above, and the two
+# are DELIBERATELY independent: ``objective_scoring`` is read only by
+# ``MatchStateFold._score_objectives`` (does the engine pay?); this field is
+# read only by ``MatchRunner`` where it decides what to pass into
+# ``build_pilot_observation``/``ReducerPilotTick`` (does the pilot see it?).
+# Crossing them completes the 2x2 the SO-OBJ-DECOY arm named but could not
+# build alone:
+#
+#   scoring + visible  — the shipped, pre-existing behaviour (every arena
+#                         authored before this field existed).
+#   decoy   + visible  — SO-OBJ-DECOY (PR #210): objectives shown, never paid.
+#   scoring + masked   — SO-OBJ-MASK (this field): objectives genuinely paid
+#                         VP exactly as the shipped behaviour, but the
+#                         ``objectives``/``victory_points`` view is withheld
+#                         from every observation, so no VP total, objective
+#                         cell, or ``vp_threshold`` reaches the model's
+#                         prompt.  ``MatchStateFold`` is untouched: VP
+#                         accrues, ``OBJECTIVE_SCORED``/``VICTORY_DECLARED``
+#                         fire, and a VP victory is fully reachable — the
+#                         match is played exactly as an ordinary objective
+#                         match, just never narrated to the pilot.
+#   decoy   + masked   — a legal but degenerate combination (no payout, no
+#                         display); not built or scored by any arm here.
+#
+#   "visible" — the shipped behaviour and the default: identical to every
+#               arena authored before this field existed, and omitted from
+#               serialization at this value (see ``_objective_display_field``)
+#               so digests and ``MATCH_STARTED`` bytes are unchanged.
+#   "masked"  — the objectives/vp_threshold view is withheld from the pilot
+#               observation the runner builds (``ModelSOPilotObservation.
+#               objectives`` stays ``()``, ``victory_points`` stays ``None``,
+#               regardless of how many objectives the arena declares or how
+#               many the match has scored), so the serialized prompt is
+#               byte-identical to an objective-free arena's prompt at the
+#               same match state.  The fold's scoring is NOT read or altered
+#               by this field.
+SOObjectiveDisplay = Literal["visible", "masked"]
+
+
+def _objective_display_field() -> Any:
+    """The ``objective_display`` field, byte-invisible at its default.
+
+    Same ``exclude_if`` technique as ``_objective_scoring_field`` and for the
+    same reason: at ``"visible"`` the key is dropped from ``model_dump``, so
+    every existing arena's ``arena_contract_hash`` and every historical
+    ``MATCH_STARTED`` payload are unaffected by this field's addition.
+    """
+
+    return Field(default="visible", exclude_if=lambda value: value == "visible")
+
+
 class _ClosedArenaModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -97,6 +150,7 @@ def _validate_objectives(
     objectives: tuple[ModelSOArenaObjective, ...],
     vp_threshold: int | None,
     objective_scoring: SOObjectiveScoring = "scoring",
+    objective_display: SOObjectiveDisplay = "visible",
 ) -> None:
     """Objective layout invariants shared by the spec and the live snapshot.
 
@@ -107,7 +161,9 @@ def _validate_objectives(
     ``objective_scoring="decoy"`` is only meaningful on an arena that HAS
     objectives to decoy: on an objective-free arena the mode would be a
     configured no-op, which is exactly the "configured but inert" class this
-    codebase fails closed on.
+    codebase fails closed on.  ``objective_display="masked"`` (SO-OBJ-MASK)
+    fails closed the same way, for the same reason: masking the view of
+    objectives that were never declared is a no-op, not a mode.
     """
 
     if bool(objectives) != (vp_threshold is not None):
@@ -121,6 +177,13 @@ def _validate_objectives(
             "decoy mode suppresses scoring for objectives that are still SHOWN to the "
             "pilot, so an objective-free decoy arena is a no-op (spell it 'scoring' and "
             "omit the objectives instead)"
+        )
+    if objective_display == "masked" and not objectives:
+        raise ValueError(
+            f"arena {arena_id!r} declares objective_display='masked' but no objectives; "
+            "masked mode withholds a pilot view that would already be empty on an "
+            "objective-free arena, so this is a no-op (spell it 'visible' and omit the "
+            "objectives instead)"
         )
     ids = [objective.objective_id for objective in objectives]
     duplicate_ids = sorted({oid for oid in ids if ids.count(oid) > 1})
@@ -197,6 +260,12 @@ class ModelSOCurrentLiveArenaSnapshot(_ClosedArenaModel):
     # from THIS field on the embedded snapshot, so a replay of a decoy match
     # re-derives the same (empty) VP history from the ledger alone.
     objective_scoring: SOObjectiveScoring = _objective_scoring_field()
+    # Recorded, never configured (SO-OBJ-MASK): the RUNNER withholds the
+    # objectives/victory_points observation view from THIS field on the
+    # embedded snapshot, never the fold — a masked match's VP history is real
+    # and replays identically to a visible one; only what the LIVE pilot saw
+    # differs, and that is not something replay reconstructs from state.
+    objective_display: SOObjectiveDisplay = _objective_display_field()
 
     @property
     def obstacle_cells(self) -> frozenset[tuple[int, int]]:
@@ -223,6 +292,7 @@ class ModelSOCurrentLiveArenaSnapshot(_ClosedArenaModel):
             objectives=self.objectives,
             vp_threshold=self.vp_threshold,
             objective_scoring=self.objective_scoring,
+            objective_display=self.objective_display,
         )
         return self
 
@@ -244,6 +314,7 @@ class ModelSOArenaSpec(_ClosedArenaModel):
     objectives: tuple[ModelSOArenaObjective, ...] = ()
     vp_threshold: StrictInt | None = Field(default=None, gt=0)
     objective_scoring: SOObjectiveScoring = _objective_scoring_field()
+    objective_display: SOObjectiveDisplay = _objective_display_field()
 
     @property
     def obstacle_cells(self) -> frozenset[tuple[int, int]]:
@@ -273,6 +344,7 @@ class ModelSOArenaSpec(_ClosedArenaModel):
             objectives=self.objectives,
             vp_threshold=self.vp_threshold,
             objective_scoring=self.objective_scoring,
+            objective_display=self.objective_display,
         )
         return self
 
@@ -290,6 +362,7 @@ class ModelSOArenaSpec(_ClosedArenaModel):
             objectives=self.objectives,
             vp_threshold=self.vp_threshold,
             objective_scoring=self.objective_scoring,
+            objective_display=self.objective_display,
         )
 
 
@@ -338,6 +411,7 @@ __all__ = [
     "ModelSOArenaRect",
     "ModelSOArenaSpec",
     "ModelSOCurrentLiveArenaSnapshot",
+    "SOObjectiveDisplay",
     "SOObjectiveScoring",
     "arena_contract_hash",
     "neutral_historical_arena_snapshot",
