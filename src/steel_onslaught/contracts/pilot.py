@@ -20,6 +20,39 @@ PILOT_ID_PATTERN = r"^pilot\.[a-z0-9_]+\.[a-z0-9_]+$"
 PilotId = Annotated[str, StringConstraints(pattern=PILOT_ID_PATTERN)]
 
 
+class SODisplaySalience(StrEnum):
+    """Rendering STRENGTH of the objectives+VP block (display-salience arm #1).
+
+    Sixth lever family (steel PRs #212/#215): the 2x2 established that
+    VISIBLE feedback is the necessary channel (display-alone retains ~21% of
+    the objectives effect, PR #210/#212; payout-alone retains ~0%, PR #215).
+    Both of those arms toggled PRESENCE (``objective_scoring``/
+    ``objective_display`` on ``ModelSOCurrentLiveArenaSnapshot`` — arena-
+    level, because they change what the engine pays or what the runner
+    includes in the observation at all). This axis is orthogonal: it holds
+    presence fixed at "on" (real payout, real display —
+    ``objective_scoring="scoring"``, ``objective_display="visible"``, both
+    their shipped defaults, untouched by this field) and asks whether the
+    STRENGTH of an already-visible display modulates the effect further.
+
+    ``DEFAULT`` (the default) renders the exact pre-existing OBJECTIVES/VP
+    block ``steel_onslaught.llm.pilot._serialize_observation`` has always
+    produced -- byte-identical, zero behavior change for every pilot spec
+    authored before this field existed (golden-stable).
+    ``PROMINENT`` renders the SAME information -- the same objective cells,
+    the same ``vp_threshold``, the same ``victory_points`` totals, no new
+    content and no new numbers -- with emphasized formatting only: banner
+    rules, an upper-cased header, and a closing reminder line. This is
+    deliberately a presentation-only change: widening it to add information
+    the default rendering omits would confound "salience" with "content",
+    which is exactly the confound #210/#212/#215 spent two arms isolating
+    OUT of the objectives-effect measurement.
+    """
+
+    DEFAULT = "default"
+    PROMINENT = "prominent"
+
+
 class SOWeaponPreference(StrEnum):
     """Primary weapon sort policy for the aggressive archetype (addendum §5.1).
 
@@ -112,6 +145,22 @@ class ModelSOLlmPilotParams(BaseModel):
     # one-line spatial-read field in the response format before register
     # selection (schema-tolerant: an omitted field is logged, never aborted).
     spatial_representation: Literal["none", "grid", "grid_scaffold"] = "none"
+    # Display-salience arm #1 (OMN-15166, sixth lever family — see
+    # ``SODisplaySalience`` docstring above). Bound to the PILOT SPEC, not
+    # the arena (``objective_display``/``objective_scoring``) or the
+    # provider binding (``image_attachment``): unlike those two, rendering
+    # STRENGTH changes neither what the engine scores nor what the runner
+    # includes in the observation -- it is a pure prompt-serialization
+    # concern with no effect on match state or replay -- so it lives here,
+    # next to ``spatial_representation``/``programming_guidance``, this
+    # codebase's existing home for declarative "how do we render this
+    # pilot's prompt" arms. It is also provider-agnostic by construction:
+    # the same prompt text is produced whichever provider binding
+    # (``openai_compatible``, ``onex_delegation``, ``stub``) ultimately
+    # serves the call, since only ``steel_onslaught.llm.pilot.LLMPilot``
+    # reads it. ``SODisplaySalience.DEFAULT`` (the default) keeps every
+    # existing pilot spec's resolved prompt byte-identical.
+    display_salience: SODisplaySalience = SODisplaySalience.DEFAULT
 
 
 class ModelSOHumanPilotParams(BaseModel):

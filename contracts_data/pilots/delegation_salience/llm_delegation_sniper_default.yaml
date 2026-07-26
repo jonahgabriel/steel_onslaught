@@ -1,0 +1,15 @@
+# OMN-15166 display-salience arm #1, DEFAULT-salience corner, blue seat.
+# Same persona/loadout pairing as pilot.llm.qwen35_sniper (fire_dense_qwen
+# registry, paired with contracts_data/loadouts/qwen35/sniper_ironclad.yaml)
+# -- provider swapped to the delegation-bound binding, display_salience
+# omitted (resolves to SODisplaySalience.DEFAULT).
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.delegation_salience_default_sniper
+display_name: "Qwen3.6-35B-A3B-8bit (ONEX delegation, local-coder-mlx) -- salience default, sniper"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: sniper
+  provider: onex-local-coder-mlx

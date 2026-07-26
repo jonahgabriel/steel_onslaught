@@ -1,0 +1,353 @@
+# OMN-15166 -- display-salience arm #1, PROMINENT-salience lane.
+#
+# Sixth lever family (steel PRs #212/#215, docs/evidence/2026-07-25-objdecoy-
+# asym-battery.md + docs/evidence/2026-07-26-objmask-battery.md): the 2x2
+# established that VISIBLE feedback is the necessary channel -- display alone
+# (objectives shown, never paid) retains ~21% of the objectives effect
+# (g_pooled = 0.2115, PR #210/#212); payout alone (paid, view withheld)
+# retains ~0% (m_pooled = -0.0218, PR #215). Both of those arms toggled
+# PRESENCE. This arm holds presence fixed at "on" -- arena_id
+# foundry_60_asym_v1, byte-untouched, `objective_scoring: scoring` and
+# `objective_display: visible` are both this arena's shipped defaults and
+# neither is overridden anywhere in this overlay or its paired sibling --
+# and asks a new question: does the STRENGTH of an already-visible display
+# modulate the effect further?
+#
+# NOT card mode, deliberately (contracts.card_catalog omitted -- same choice
+# local_200_v1.yaml makes, for a related reason stated there and restated
+# here specifically): the manipulated field, `display_salience` (contracts/
+# pilot.py `SODisplaySalience`, consumed by
+# steel_onslaught.llm.pilot._serialize_observation), changes ONLY the
+# free-text formatting of the plain per-tick OBJECTIVES/VP block. Card
+# mode's whole-round programming observation
+# (steel_onslaught.llm.programming._serialize_programming_observation)
+# renders objectives as a JSON object, not free text -- there is no
+# "prominent formatting" of a JSON key/value pair that is not simply adding
+# a new field, i.e. adding INFORMATION, which is exactly the confound this
+# axis is designed to isolate OUT (see SODisplaySalience's own docstring).
+# This arm is therefore scoped to the plain (non-card) match path only; card
+# mode is out of scope, not silently skipped.
+#
+# Bound to the DELEGATION-BACKED provider (`kind: onex_delegation`), NOT
+# OpenAICompatibleClient, per this ticket's explicit requirement --
+# `LlmBusDelegationClient` (steel PR #217, OMN-15157/OMN-15159) routes
+# through the ONEX platform's `node_delegate_skill_orchestrator` def-B
+# CONTRACT+NODE+HANDLER path rather than a direct HTTP call.  provider_id/
+# backend_id/task_type/model below are the EXACT live-proven values from
+# `tests/live/test_omn15170_live_driver.py` (OMN-15170's own live driver
+# test against this same `.200:8401` MLX endpoint) -- not invented here.
+#
+# omnibase_infra_path/state_root are explicit overlay config (never
+# environment-derived -- ModelSODelegationProviderBinding's own docstring;
+# this codebase's DI-confinement gate permits zero os.environ reads
+# anywhere). NEITHER field is overlay-relative-resolved by
+# `load_application_overlay` (only event_ledger/leaderboard/catalog_dir/
+# pilot_registry_dir/personas_dir/image_attachment.render_output_dir are --
+# see that function's own comment at composition.py "Providers themselves
+# carry no other resolvable path today"), so both are interpreted relative
+# to the process's CWD at launch time. Every documented launch invocation in
+# this repo (see e.g. tactical_split_overdeal_utility_asym_v1_qwen.yaml's
+# own header) runs `so run --overlay contracts_data/overlays/<this file>`
+# from the steel_onslaught repo root, so `../omnibase_infra` correctly
+# reaches the sibling clone under the shared `omni_home/` workspace root
+# from that CWD, and `state_root` below is likewise repo-root-relative.
+#
+# BATTERY STATUS AT MERGE: DEFERRED. Battery EXECUTION through the ONEX
+# platform node path is OMN-15172's acceptance run, not this ticket's (see
+# ROLLING_WORK_LEDGER / epic OMN-15154 plan §3 P3). This overlay ships
+# pre-registered and UNLAUNCHED except for one optional, explicitly
+# QUARANTINED smoke match (never battery evidence) permitted only AFTER
+# this file's pre-registration commit, per this ticket's own instructions.
+# The registry dir (contracts.pilot_registry_dir) is SHARED with the paired
+# _default overlay -- it carries all four pilot specs (default/prominent x
+# berserker/sniper); which archetype actually plays is selected by the
+# LOADOUT, not the overlay. Launch THIS lane only with the "_prominent"
+# loadouts -- pairing this overlay with a "_default" loadout (or vice versa
+# on the sibling overlay) silently runs the wrong condition:
+#
+#   so run --overlay contracts_data/overlays/foundry_60_asym_v1_salience_prominent_delegation.yaml \
+#          --loadout-a contracts_data/loadouts/delegation_salience/red_prominent.yaml \
+#          --loadout-b contracts_data/loadouts/delegation_salience/blue_prominent.yaml --seed 5001
+#
+# ----------------------------------------------------------------------------
+# PRE-REGISTERED HYPOTHESIS AND DECISION CRITERION
+# Committed BEFORE the first match_started event of this arm's battery.
+# ----------------------------------------------------------------------------
+#
+# QUESTION.  At FIXED real payout (objective_scoring=scoring) and FIXED
+# display presence (objective_display=visible) -- both held at their shipped
+# defaults, unmodified by this arm -- does increasing the RENDERING STRENGTH
+# of the already-visible objectives/VP block change objective-capture
+# behaviour?
+#
+# Two rival readings:
+#   H_SALIENCE_INERT (behaviour is driven by the presence of the channel,
+#     not its intensity).  #212/#215 already showed that TURNING THE CHANNEL
+#     ON AT ALL carries the effect (visible feedback is the necessary
+#     channel, PR #215's own verdict).  If an LLM pilot's attention to an
+#     already-present fact is saturated by mere presence, additional
+#     emphasis on the SAME fact should move nothing.
+#   H_SALIENCE_DOSE_RESPONSIVE (behaviour scales with display intensity,
+#     not just its presence).  If the model's effective attention to a fact
+#     in a long prompt is graded rather than binary, a louder framing of the
+#     same fact should measurably increase objective-directed behaviour --
+#     the same "salience" effect widely reported for in-context instruction
+#     framing (and the OWN in-repo precedent this overlay must reckon with:
+#     the O-GATE battery's imperative-in-data finding, documented in
+#     src/steel_onslaught/llm/programming.py's "objectives" block comment --
+#     11/413 completions in that battery answered an imperative rule line
+#     with a malformed single-action response instead of the required
+#     whole-round program. This arm's PROMINENT rendering is deliberately
+#     NOT a new imperative sentence -- REMINDER is one line, added once, and
+#     the response-shape contract (a validated JSON pilot action) is
+#     untouched by this arm -- but a compliance-shape regression showing up
+#     as an increase in llm_completion_failed on the PROMINENT lane, if it
+#     occurs, would be evidence for a THIRD reading this pre-registration
+#     also commits to reporting: H_SALIENCE_DISRUPTS_COMPLIANCE (louder
+#     framing degrades response-shape compliance rather than, or in addition
+#     to, moving objective-capture behaviour). Escaped, not folded into the
+#     primary criterion below -- see SECONDARY.)
+#
+# MECHANICAL PRIOR, STATED HONESTLY BEFORE THE RUN.  Unlike DECOY (either
+# hypothesis was a live, physically plausible outcome) and closer to MASK
+# (whose engine-construction argument made H_DISPLAY_NECESSARY the a priori
+# expected outcome), this arm's prior is genuinely uncertain in EITHER
+# direction: #215's own finding (visible feedback is necessary, full stop)
+# is agnostic about whether the channel, once open, has further headroom.
+# This pre-registration commits to scoring the criterion exactly as
+# measured, in either direction.
+#
+# THE ISOLATING MANIPULATION.  This overlay differs from its paired sibling,
+# foundry_60_asym_v1_salience_default_delegation.yaml, in EXACTLY ONE way:
+# contracts.pilot_registry_dir points at the "_prominent" pilot specs
+# (contracts_data/pilots/delegation_salience/llm_delegation_{berserker,
+# sniper}_prominent.yaml, `display_salience: prominent`) rather than the
+# "_default" ones (`display_salience` omitted). Arena, loadouts' chassis/
+# boiler/weapons/sensors/budgets, provider (backend_id/task_type/model/
+# timeout/max_tokens), and every other overlay field are held byte-constant
+# across the pair -- asserted field-by-field in
+# tests/contracts/test_display_salience_overlays_omn15166.py, this ticket's
+# own held-fields test, following the #215/test_objmask_overlay.py
+# `_HELD_FIELDS` pattern.
+#
+# FIXED REFERENCE CONTEXT (published, cited for CONTEXT and PLAUSIBILITY
+# BOUNDS only -- NOT substituted as this criterion's literal DEFAULT
+# corner; see ALTERNATIVE READINGS item (1) below for why not):
+#   ASYM_OBJ (qwen35/omninode-pc:8000, arena foundry_60_asym_v1, default
+#     rendering): 2 objective_scored events in 30 matches (docs/evidence/
+#     2026-07-25-objdecoy-asym-battery.md §2a).
+#   SO-OBJ-MASK (same qwen35 provider, payout-live/display-masked arena):
+#     14 objective_scored events in 30 matches (docs/evidence/
+#     2026-07-26-objmask-battery.md, engine-layer confirmation).
+#   These bound the plausible ORDER OF MAGNITUDE for this metric on this
+#   arena/model family (single digits to teens per 30-match battery) but
+#   were measured on a DIFFERENT provider/model (qwen35, direct HTTP,
+#   "Qwen3.6-35B-A3B") than this arm's delegation-bound
+#   "mlx-community/Qwen3.6-35B-A3B-8bit" -- cited as context, not as this
+#   criterion's DEFAULT_total.
+#
+# MEASURED QUANTITIES.  From each lane's own n=30 ledger (seeds 5001-5030):
+#   DEFAULT_total  = pooled OBJECTIVE_SCORED event count,
+#                    foundry_60_asym_v1_salience_default_delegation.yaml
+#   PROMINENT_total = pooled OBJECTIVE_SCORED event count, THIS overlay
+#   DEFAULT_red/DEFAULT_blue, PROMINENT_red/PROMINENT_blue -- the same
+#     counts split by seat, reported alongside (SECONDARY, see SEAT SPLIT).
+#
+# PRIMARY STATISTIC (one number):
+#
+#   s = PROMINENT_total / DEFAULT_total
+#
+# DECISION (disjunctive, exactly one criterion, no illustrative bands):
+#   s >= 1.5                 => SALIENCE-AMPLIFIES
+#                                (prominent rendering at least 1.5x the
+#                                 default lane's objective-capture rate)
+#   s <= 0.6667 (2/3)         => SALIENCE-DAMPENS
+#                                (prominent rendering at most 2/3 the
+#                                 default lane's rate -- symmetric on the
+#                                 log scale with the amplify threshold,
+#                                 1.5 = 1/0.6667)
+#   0.6667 < s < 1.5          => SALIENCE-INERT
+#                                (supports H_SALIENCE_INERT -- the channel's
+#                                 mere presence, not its intensity, carries
+#                                 the effect)
+#
+# OUT-OF-INTERVAL ESCAPE (pre-declared, unclamped, for the degenerate
+# denominator DEFAULT_total = 0 -- a genuinely possible outcome given the
+# published context above is single digits to teens per 30, not guaranteed
+# nonzero):
+#   DEFAULT_total = 0 AND PROMINENT_total = 0  => SALIENCE-INERT (reported
+#     directly: both lanes measured zero objective-capture events; the
+#     ratio is undefined but the qualitative reading -- no detectable
+#     effect in either direction -- is unambiguous).
+#   DEFAULT_total = 0 AND PROMINENT_total > 0  => SALIENCE-EMERGENT
+#     (qualitative escape, NOT folded into the 0-Inf ratio scale --
+#     reported with the raw PROMINENT_total and both lanes' full context).
+#
+# SEAT SPLIT (reported, not a second criterion; identical clause to every
+# prior arm in this family).  Per-seat ratios s_red = PROMINENT_red /
+# DEFAULT_red, s_blue = PROMINENT_blue / DEFAULT_blue (same escapes as
+# above, per seat) are always reported alongside s. If they straddle the
+# decision boundaries (one >= 1.5 while the other <= 0.6667), the arm is
+# reported SEAT-SPLIT and the pooled verdict is stated as not supported by
+# both seats. The formal criterion remains s; this clause governs how
+# honestly it is narrated, not what it decides.
+#
+# SECONDARY (pre-declared, NOT scored as the primary criterion, reported
+# alongside it): llm_completion_failed rate on each lane, compared for a
+# material increase on PROMINENT (the H_SALIENCE_DISRUPTS_COMPLIANCE
+# reading named above). "Material" is deliberately NOT given a numeric
+# threshold here -- unlike the primary criterion, this is a qualitative
+# safety check, following the same STATISTICAL HONESTY discipline the whole
+# family applies to n=30 secondary reads.
+#
+# ALTERNATIVE READINGS -- NAMED AND EXPLICITLY REJECTED AS THE CRITERION
+# (mirrors SO-UTIL-THRESH's practice, PR #214, and SO-OBJ-MASK's practice,
+# PR #215): each is a legitimate secondary, reported below if computed, but
+# NONE of them is the scored rule.
+#   (1) Substituting ASYM_OBJ's published rate (2/30) directly as
+#       DEFAULT_total, skipping the paired _default_delegation lane
+#       entirely -- REJECTED. ASYM_OBJ ran on a DIFFERENT provider AND
+#       DIFFERENT model (qwen35 direct HTTP, "Qwen3.6-35B-A3B") than this
+#       arm's required delegation-bound "mlx-community/Qwen3.6-35B-A3B-
+#       8bit". Substituting it would confound provider/model identity with
+#       the salience manipulation under test -- exactly the confound class
+#       PR #215's own §6 disclosed when flagging its secondary prompt-length
+#       comparison as "not a controlled same-match-state comparison". This
+#       arm instead measures its OWN same-provider DEFAULT corner.
+#   (2) utility-card keep-rate (g_pooled/m_pooled's own DV, the metric every
+#       other arm in this family scores) -- REJECTED as THIS arm's DV. It is
+#       a card-mode-only measurement and this arm is deliberately non-card
+#       (see the header note above on why). objective_scored event count is
+#       used instead: it is already-instrumented (reported descriptively in
+#       every ASYM_OBJ/DECOY/MASK battery to date, never before scored as
+#       primary), needs no card apparatus, and is directly and only about
+#       objective-capture behaviour -- arguably a MORE direct measure of
+#       "did the display change objective-directed play" than a downstream
+#       utility-drafting proxy.
+#   (3) A per-match binary "captured at least one objective" two-proportion
+#       z-test -- REJECTED. At the published ASYM_OBJ base rate (2 events in
+#       30 matches, ~7% of matches), a per-match binary collapse would
+#       discard most of the signal a pooled event count preserves and could
+#       not support any calibrated significance claim at this n. The pooled
+#       ratio is reported honestly as a ratio of small counts, not dressed
+#       up as a p-value.
+#   (4) A per-seat majority vote (score the arm on whichever seat crosses a
+#       boundary first) -- REJECTED for the same reason DECOY/MASK reject
+#       it: SEAT SPLIT is a disclosure clause on the pooled criterion, never
+#       a second criterion or a tie-breaker for it.
+#
+# MANIPULATION-LANDED GATE (must pass before any scoring).  Since this arm
+# changes neither engine payout nor display presence (unlike DECOY/MASK,
+# whose gates had to prove an engine-side or observation-side change
+# landed), the gate here is:
+#   (a) SALIENCE LANDED, checked from each lane's own recorded prompts (the
+#       literal `user_prompt` text on every `llm_completion_requested` row):
+#       every PROMINENT-lane prompt with a nonempty objectives block must
+#       contain the literal "!!! OBJECTIVES" and must NOT contain the
+#       literal "--- OBJECTIVES"; every DEFAULT-lane prompt with a nonempty
+#       objectives block must contain "--- OBJECTIVES" and must NOT contain
+#       "!!! OBJECTIVES". This is a direct string search over the ledger
+#       each lane actually ran on, matching MASK's own gate standard.
+#       Structurally guaranteed pre-battery by CI
+#       (tests/llm/test_llm_pilot.py's display-salience section,
+#       specifically test_prominent_delta_from_default_is_confined_to_the_
+#       objectives_block and its siblings) -- this clause is the LIVE
+#       re-confirmation of that structural guarantee, not a substitute for
+#       it.
+#   (b) PAYOUT + DISPLAY PRESENCE UNCHANGED, proven structurally: both lanes
+#       declare `contracts.arena_id: foundry_60_asym_v1` -- the SAME,
+#       byte-untouched arena file -- so both lanes' `arena_contract_hash`
+#       (recorded on every match_started row) must be identical to each
+#       other AND to every other battery that has ever run on
+#       foundry_60_asym_v1 unmodified (drift in objective_scoring or
+#       objective_display would change the hash).
+#
+# CONTAMINATION GATE.  Standard #207 form, run independently against EACH
+# lane's own state root: exactly 30 match_started rows, 30 distinct
+# match_ids, seeds 5001-5030 each exactly once. `scripts/
+# check_contamination_gate.py` and `scripts/check_preregistration_timing.py`
+# (both merged in #207) must be run against BOTH lanes, quoted verbatim,
+# before either lane's OBJECTIVE_SCORED counts are read for scoring.
+#
+# STATISTICAL HONESTY.  n=30 per lane, small integer counts (single digits
+# to teens per the published context above) -- a ratio of two such counts
+# is a rank-ordering of effect strength, never calibrated evidence. Read
+# generously toward INERT: this pre-registration does not claim n=30 can
+# resolve anything short of the 1.5x/0.6667x bands declared above.
+#
+# CORNER PROVENANCE NOTE (disclosed limitation, not smoothed over).  Unlike
+# every prior arm in this family, THIS arm's DEFAULT corner is not
+# independently pre-existing evidence (ASYM_OBJ/ASYM_NOOBJ each have their
+# own separate battery history) -- it is measured in a SEPARATE battery
+# launch from the PROMINENT lane, same seed range, same infra, same
+# session-adjacent timing. A shared-infrastructure confound (e.g. an
+# endpoint drift or model-version change between the two launches) could in
+# principle move both lanes' absolute levels together without being
+# visible in either lane alone. The RATIO s is more robust to this than
+# either raw total would be, but it is not immune to it, and this is
+# disclosed here rather than assumed away.
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_prominent_delegation/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_prominent_delegation/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_prominent_delegation/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_prominent_delegation/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_prominent_delegation/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/foundry_60_asym_v1_salience_prominent_delegation/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  pilot_registry_dir: ../pilots/delegation_salience
+  arena_id: foundry_60_asym_v1
+llm:
+  providers:
+    - kind: onex_delegation
+      provider_id: onex-local-coder-mlx
+      backend_id: local-coder-mlx
+      task_type: agent_delegation
+      source: external-client
+      model: mlx-community/Qwen3.6-35B-A3B-8bit
+      max_tokens: 2048
+      timeout_seconds: 180.0
+      omnibase_infra_path: ../omnibase_infra
+      state_root: .onex_state/steel_onslaught/foundry_60_asym_v1_salience_prominent_delegation/delegation_state
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.onex_local_coder_mlx
+      display_name: "Qwen3.6-35B-A3B-8bit (ONEX delegation, local-coder-mlx)"
+      provider_binding_id: onex-local-coder-mlx
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    kind: none
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

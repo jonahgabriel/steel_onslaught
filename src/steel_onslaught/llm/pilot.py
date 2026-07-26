@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictStr, Valid
 
 from steel_onslaught.contracts.application import ModelSOLlmImageAttachmentBinding
 from steel_onslaught.contracts.mode import ModelSOModeSwitchIntentPayload
+from steel_onslaught.contracts.pilot import SODisplaySalience
 from steel_onslaught.events.payloads import (
     ModelSOEmptyPayload,
     ModelSOMoveIntentPayload,
@@ -93,7 +94,12 @@ class _ModelSOLlmPilotResponse(BaseModel):
     rationale: StrictStr = Field(min_length=1)
 
 
-def _serialize_observation(obs: ModelSOPilotObservation, *, persona_id: str) -> str:
+def _serialize_observation(
+    obs: ModelSOPilotObservation,
+    *,
+    persona_id: str,
+    display_salience: SODisplaySalience = SODisplaySalience.DEFAULT,
+) -> str:
     """Compact one-mech observation → prompt text (own state + noisy enemy)."""
     b = obs.boiler
     lines = [
@@ -139,18 +145,43 @@ def _serialize_observation(obs: ModelSOPilotObservation, *, persona_id: str) -> 
     if obs.objectives and obs.victory_points is not None:
         # Objective-victory legibility (Phase 4).  Rendered ONLY on objective
         # arenas so every objective-free prompt stays byte-identical.
+        #
+        # Display-salience arm #1 (OMN-15166): ``display_salience`` selects
+        # ONLY the formatting of this block -- both branches emit the exact
+        # same facts (the same objective cells, the same vp_threshold, the
+        # same victory_points totals), so a diff between the two renderings
+        # is confined to header/emphasis characters, never to a value or a
+        # new fact.  ``SODisplaySalience.DEFAULT`` (below) is byte-for-byte
+        # the block this codebase has rendered since Phase 4 -- unchanged by
+        # this ticket.
         vp = obs.victory_points
-        lines.append(
-            f"--- OBJECTIVES (hold a cell within 1, uncontested, to score; "
-            f"first to {vp.vp_threshold} VP wins) ---"
-        )
-        lines.append(f"victory_points: you {vp.own_vp} vs enemy {vp.enemy_vp}")
-        for objective in obs.objectives:
+        if display_salience is SODisplaySalience.PROMINENT:
+            lines.append("=" * 60)
             lines.append(
-                f"  - {objective.objective_id}: cell=({objective.cell.x},{objective.cell.y}) "
-                f"vp_per_round={objective.vp_per_round} control={objective.control} "
-                f"your_distance={objective.own_distance_chebyshev}"
+                "!!! OBJECTIVES -- SCORING NOW (hold a cell within 1, uncontested, "
+                f"to score; FIRST TO {vp.vp_threshold} VP WINS) !!!"
             )
+            lines.append(f"VICTORY POINTS: YOU {vp.own_vp}  --  ENEMY {vp.enemy_vp}")
+            for objective in obs.objectives:
+                lines.append(
+                    f"  * {objective.objective_id}: cell=({objective.cell.x},{objective.cell.y}) "
+                    f"vp_per_round={objective.vp_per_round} control={objective.control} "
+                    f"your_distance={objective.own_distance_chebyshev}"
+                )
+            lines.append("REMINDER: capturing objectives is how this match is won.")
+            lines.append("=" * 60)
+        else:
+            lines.append(
+                f"--- OBJECTIVES (hold a cell within 1, uncontested, to score; "
+                f"first to {vp.vp_threshold} VP wins) ---"
+            )
+            lines.append(f"victory_points: you {vp.own_vp} vs enemy {vp.enemy_vp}")
+            for objective in obs.objectives:
+                lines.append(
+                    f"  - {objective.objective_id}: cell=({objective.cell.x},{objective.cell.y}) "
+                    f"vp_per_round={objective.vp_per_round} control={objective.control} "
+                    f"your_distance={objective.own_distance_chebyshev}"
+                )
     if obs.enemy_observations:
         lines.append("--- ENEMY (noisy sensor readings, newest last) ---")
         for r in obs.enemy_observations[-3:]:  # last 3 readings
@@ -199,6 +230,7 @@ class LLMPilot:
         persona: Persona,
         failure_policy: LlmPilotFailurePolicy = "fallback",
         image_attachment: ModelSOLlmImageAttachmentBinding | None = None,
+        display_salience: SODisplaySalience = SODisplaySalience.DEFAULT,
     ) -> None:
         if failure_policy not in ("fallback", "raise"):
             raise ValueError(f"unknown LLM pilot failure policy: {failure_policy!r}")
@@ -210,6 +242,10 @@ class LLMPilot:
         # which keeps ``decide`` producing the exact same request it always
         # has.
         self._image_attachment_config = image_attachment
+        # Display-salience arm #1 (OMN-15166). ``SODisplaySalience.DEFAULT``
+        # for every pilot spec authored before this field existed, which
+        # keeps ``_serialize_observation`` producing a byte-identical prompt.
+        self._display_salience = display_salience
         # Remember only each mech's own observed HP trend.  This is pilot
         # context, not authoritative match state: the observation remains the
         # sole source of truth and the maps are intentionally not serialized
@@ -290,7 +326,11 @@ class LLMPilot:
 
     def _serialize_observation_with_memory(self, observation: ModelSOPilotObservation) -> str:
         """Serialize the current observation with the pilot's remembered HP trend."""
-        base = _serialize_observation(observation, persona_id=self._persona.persona_id)
+        base = _serialize_observation(
+            observation,
+            persona_id=self._persona.persona_id,
+            display_salience=self._display_salience,
+        )
         previous_hp = self._last_hp_percent_by_mech.get(observation.mech_id)
         if previous_hp is None:
             hp_delta = 0.0
