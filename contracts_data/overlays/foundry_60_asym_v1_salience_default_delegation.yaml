@@ -41,6 +41,15 @@
 #   so run --overlay contracts_data/overlays/foundry_60_asym_v1_salience_default_delegation.yaml \
 #          --loadout-a contracts_data/loadouts/delegation_salience/red_default.yaml \
 #          --loadout-b contracts_data/loadouts/delegation_salience/blue_default.yaml --seed 5001
+#
+# AMENDMENT (2026-07-27): see the PROMINENT overlay's own AMENDMENT note in
+# full (OMN-15239, bounded semantic retry for the plain per-tick decide()
+# path -- execution-infrastructure parity with the card-mode battery path,
+# not a hypothesis/criterion/prompt change, landed BEFORE any acceptance
+# re-run of either lane). It applies identically to THIS lane, which is where
+# OMN-15172's acceptance run actually observed the defect (20 of 30 seeds
+# skipped by the pre-fix bare-``LlmSemanticError`` escape); nothing here
+# restates it.
 schema_version: "1"
 bus:
   kind: in_process

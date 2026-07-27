@@ -344,6 +344,7 @@ class ApplicationPilotFactory:
             failure_policy=self._failure_policy,
             image_attachment=self._image_attachments.get(selection.provider_id),
             display_salience=selection.display_salience,
+            provider_id=selection.provider_id,
         )
 
 

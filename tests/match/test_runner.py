@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,9 @@ from steel_onslaught.contracts.weapon import UnknownWeaponError
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.immutable import thaw_json_mapping
 from steel_onslaught.ledger.sqlite_ledger import SQLiteLedger
+from steel_onslaught.llm.personas import Persona
+from steel_onslaught.llm.pilot import LLMPilot
+from steel_onslaught.llm.schemas import LlmResponse, LlmUsage, ModelSOLlmCompletionRequest
 from steel_onslaught.match.composition import load_loadout, load_pilot_registry
 from steel_onslaught.match.runner import MatchIdentity, MatchRunner
 from steel_onslaught.match.state import SOMatchEndReason, SOMatchStatus
@@ -267,3 +271,172 @@ def test_unknown_loadout_weapon_fails_with_typed_deterministic_error() -> None:
         f"unknown_weapon_id: weapon {unknown_id!r} referenced by {loadout.id!r} "
         "is absent from the injected weapon catalog"
     )
+
+
+class _AlwaysInvalidWeaponClient:
+    """Always answers a well-formed ``fire_weapon`` action naming an unknown
+    weapon id -- the hermetic repro of the OMN-15239 live-battery defect
+    (``invalid_action_parameters`` on every attempt, never ``malformed_json``).
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        self.calls += 1
+        return LlmResponse(
+            text=json.dumps(
+                {
+                    "action": "fire_weapon",
+                    "action_params": {"weapon_id": "weapon.unknown"},
+                    "confidence": 0.9,
+                    "rationale": "invalid weapon",
+                }
+            ),
+            usage=LlmUsage(prompt_tokens=1, completion_tokens=1, cost_usd=0.0),
+            model="fixture",
+            finish_reason="stop",
+        )
+
+
+@pytest.mark.integration
+def test_plain_decide_semantic_exhaustion_reaches_provider_semantic_failure_terminal() -> None:
+    """OMN-15239: the plain (non-card) per-tick ``decide()`` path must reach the
+    same graceful ``provider_semantic_failure`` terminal card mode already has
+    for a persistent semantic failure -- not an uncaught crash that kills the
+    whole match (and, in the live battery, the whole seed: 20/30 default-corner
+    skips).
+
+    Before the fix, ``LLMPilot.decide()`` under the ``raise`` failure policy
+    (the live-match default; see ``build_llm_dependencies``) raised the bare
+    ``LlmSemanticError`` on the FIRST semantic rejection with no retry. That
+    exception is not one of the two types the tick loop's ``except`` clauses
+    catch (``LlmCompletionBoundaryError``/``LlmSemanticExhaustedError``), so it
+    propagated straight out of ``runner.run()`` uncaught.
+    """
+
+    client = _AlwaysInvalidWeaponClient()
+    persona = Persona(
+        persona_id="fixture",
+        display_name="Fixture",
+        system_prompt="Return a valid pilot action as JSON.",
+        temperature=0.5,
+    )
+    llm_pilot = LLMPilot(client=client, persona=persona, failure_policy="raise")
+
+    registry = load_pilot_registry(Path("contracts_data/pilots"))
+    loadout_a = load_loadout(LOADOUT_A)
+    loadout_b = load_loadout(LOADOUT_B)
+    pilots = {
+        "mech.a.01": llm_pilot,
+        "mech.b.01": pilot_from_spec(registry.resolve(loadout_b)),
+    }
+
+    bus = InProcessEventBus()
+    collected: list[ModelSOEventEnvelope] = []
+    bus.subscribe(collected.append)
+    runner, _runtime = match_runner(
+        bus=bus,
+        match_id=MATCH_ID,
+        seed=1,
+        loadout_a=loadout_a,
+        loadout_b=loadout_b,
+        max_ticks=8,
+        pilots_override=pilots,
+    )
+
+    final = runner.run()
+
+    assert final.status is SOMatchStatus.ENDED
+    assert final.end_reason is SOMatchEndReason.PROVIDER_SEMANTIC_FAILURE
+    # Terminated by the semantic-exhaustion path, not by hitting max_ticks.
+    assert final.tick < 8
+
+    ended = [e for e in collected if e.event_type is SOEventType.MATCH_ENDED]
+    assert ended
+    assert ended[-1].payload["reason"] == "provider_semantic_failure"
+    assert ended[-1].payload["winner_id"] is None
+    # Bounded retry actually happened: more than one real provider call before
+    # the terminal, each with its own durable evidence.
+    assert client.calls > 1
+
+
+@pytest.mark.integration
+def test_plain_decide_transient_semantic_failure_recovers_and_match_keeps_playing() -> None:
+    """OMN-15239 happy-retry end to end: one invalid action, then the match
+    plays on to its ordinary terminal instead of aborting."""
+
+    class _InvalidThenRemainClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            self.calls += 1
+            if self.calls == 1:
+                text = json.dumps(
+                    {
+                        "action": "fire_weapon",
+                        "action_params": {"weapon_id": "weapon.unknown"},
+                        "confidence": 0.9,
+                        "rationale": "invalid weapon",
+                    }
+                )
+            else:
+                text = json.dumps(
+                    {
+                        "action": "remain",
+                        "action_params": {},
+                        "confidence": 0.7,
+                        "rationale": "recovered",
+                    }
+                )
+            return LlmResponse(
+                text=text,
+                usage=LlmUsage(prompt_tokens=1, completion_tokens=1, cost_usd=0.0),
+                model="fixture",
+                finish_reason="stop",
+            )
+
+    client = _InvalidThenRemainClient()
+    persona = Persona(
+        persona_id="fixture",
+        display_name="Fixture",
+        system_prompt="Return a valid pilot action as JSON.",
+        temperature=0.5,
+    )
+    llm_pilot = LLMPilot(client=client, persona=persona, failure_policy="raise")
+
+    registry = load_pilot_registry(Path("contracts_data/pilots"))
+    loadout_a = load_loadout(LOADOUT_A)
+    loadout_b = load_loadout(LOADOUT_B)
+    pilots = {
+        "mech.a.01": llm_pilot,
+        "mech.b.01": pilot_from_spec(registry.resolve(loadout_b)),
+    }
+
+    bus = InProcessEventBus()
+    collected: list[ModelSOEventEnvelope] = []
+    bus.subscribe(collected.append)
+    runner, _runtime = match_runner(
+        bus=bus,
+        match_id=MATCH_ID,
+        seed=1,
+        loadout_a=loadout_a,
+        loadout_b=loadout_b,
+        max_ticks=4,
+        pilots_override=pilots,
+    )
+
+    final = runner.run()
+
+    assert final.status is SOMatchStatus.ENDED
+    # The match ends on its own terms (max_ticks draw), never on the
+    # provider-failure terminal.
+    assert final.end_reason is not SOMatchEndReason.PROVIDER_SEMANTIC_FAILURE
+    assert final.tick == 4
+    assert client.calls >= 2
+
+    decisions = [e for e in collected if e.event_type is SOEventType.PILOT_DECISION_MADE]
+    mech_a_decisions = [e for e in decisions if e.subject.mech_id == "mech.a.01"]
+    assert len(mech_a_decisions) == 3
+    assert mech_a_decisions[0].payload["reason_code"] == "llm_decision"
