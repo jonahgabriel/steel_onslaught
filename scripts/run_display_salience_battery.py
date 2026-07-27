@@ -58,6 +58,21 @@ own pre-registration discipline for its real battery is unaffected -- it
 was already committed in #223, and this smoke run makes no hypothesis or
 statistical claim).
 
+Before the seed loop starts, :func:`_preflight_delegation_cli` issues one
+real completion through the exact delegation-CLI path every seed uses and
+fails the whole run (exit 2, no seeds attempted) on any transport error --
+OMN-15240, added after a 2026-07-27 acceptance run burned 58 dead seeds
+across both corners on one environmental failure (the omnibase_infra
+venv's co-installed ``omnimarket`` drifting from the canonical
+``$OMNI_HOME/omnimarket`` clone mid-run) that this probe would have caught
+in seconds. Every per-seed skip record (``battery_summary.json``'s
+``skipped_seeds``) also now carries the FULL, untruncated error text plus
+``argv``/``exit_code``/``stderr`` when the failure is a CLI subprocess
+exit -- only the console print stays truncated -- so a masked tail (the
+same OMN-15240 root cause: a ~190-char benign uv ``VIRTUAL_ENV`` warning
+ate a downstream 240-char truncation budget and hid the real error) can
+never recur undiagnosed.
+
 Requires the ``live`` extra (a real Kafka client -- see
 ``pyproject.toml``'s own ``live`` extra docstring for why this is opt-in
 and never installed by CI) and ``$OMNI_HOME`` set (resolves the local
@@ -99,7 +114,10 @@ from steel_onslaught.events.payloads import (
     ModelSOObjectiveScoredPayload,
     ModelSOVictoryDeclaredPayload,
 )
+from steel_onslaught.llm.client_delegation import LlmBusDelegationClient
+from steel_onslaught.llm.schemas import LlmTransportError, ModelSOLlmCompletionRequest
 from steel_onslaught.match.composition import (
+    SystemIdentityProvider,
     assemble_match_live,
     load_application_overlay,
     load_match_contract_catalog,
@@ -269,6 +287,61 @@ def _lane_overlay(
     )
 
 
+_PREFLIGHT_PROMPT = (
+    "Respond with exactly this JSON object and nothing else: "
+    '{"action": "remain", "action_params": {}, "confidence": 1.0, '
+    '"rationale": "preflight"}'
+)
+
+
+def _preflight_delegation_cli(overlay: ModelSOApplicationOverlay) -> None:
+    """OMN-15240: prove the delegation-CLI transport this arm depends on is
+    healthy BEFORE burning any seeds on it.
+
+    Root cause this closes: the 2026-07-27 acceptance run burned all 28-30
+    remaining seeds of BOTH the default and prominent corners (58 dead seeds
+    total) on an entirely environmental failure -- the omnibase_infra venv's
+    co-installed ``omnimarket`` package drifted from the canonical
+    ``$OMNI_HOME/omnimarket`` clone mid-run (a `git pull --ff-only` fast-
+    forwarded the local clone 5 commits ahead without the venv being
+    reinstalled), tripping OMN-14060's own ``OmnimarketDriftError``
+    fail-closed pre-flight guard inside the ``onex`` CLI itself. Every
+    subsequent seed's delegation call exited 1 near-instantly (~3.5s, per
+    live reproduction) instead of ever reaching the LLM -- a single up-front
+    probe here would have caught it before burning ~2h40m of wall-clock
+    across both corners.
+
+    One real, minimal-cost completion call through the exact same
+    ``LlmBusDelegationClient`` -> ``onex node node_delegate_skill_orchestrator``
+    path every seed's pilot decision uses (never a separate/parallel
+    mechanism) -- so this probe fails on ANY transport-boundary problem
+    (drift guard, missing venv, CLI crash, unreachable MLX endpoint), not
+    just the one root cause observed here. Raises ``LlmTransportError``
+    (uncaught here -- the caller decides how to report/exit) on failure; a
+    no-op for overlays with no ``onex_delegation`` provider bound (this
+    driver's own committed overlays always have one -- see
+    :func:`_lane_overlay` -- but this stays defensive rather than assuming).
+    """
+    provider = next(
+        (p for p in overlay.llm.providers if isinstance(p, ModelSODelegationProviderBinding)),
+        None,
+    )
+    if provider is None:
+        return
+    identity = SystemIdentityProvider()
+    client = LlmBusDelegationClient(config=provider, new_correlation_id=identity.new_correlation_id)
+    client.complete(
+        ModelSOLlmCompletionRequest(
+            system_prompt="Preflight health check for the delegation CLI transport.",
+            user_prompt=_PREFLIGHT_PROMPT,
+            persona="preflight",
+            temperature=0.0,
+            json_mode=True,
+            evidence_context=None,
+        )
+    )
+
+
 def _terminal_class(end_reason: str | None, victory_kind: str | None) -> str:
     """Same terminal-class taxonomy every battery in this program reports.
 
@@ -405,7 +478,7 @@ def _summarize(
     *,
     corner: str,
     requested_n: int,
-    skipped: list[dict[str, str]],
+    skipped: list[dict[str, Any]],
 ) -> dict[str, Any]:
     n = len(rows)
     classes = Counter(row["terminal_class"] for row in rows)
@@ -506,12 +579,24 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    try:
+        _preflight_delegation_cli(overlay)
+    except LlmTransportError as exc:
+        print(
+            "delegation CLI preflight FAILED (OMN-15240 guard) -- aborting "
+            f"before any seed runs: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        if exc.stderr is not None:
+            print(f"full subprocess stderr:\n{exc.stderr}", file=sys.stderr)
+        return 2
+
     rows: list[dict[str, Any]] = []
     # A dead seed (provider error, transport drop, Kafka delivery failure)
     # is skipped, never fatal to the whole battery -- but always recorded
     # loudly and never written a synthetic row. Same contract as every
     # other battery driver in this program (2026-07-25 SO-COMP-CA fix).
-    skipped: list[dict[str, str]] = []
+    skipped: list[dict[str, Any]] = []
     for index in range(1, args.n + 1):
         seed = args.seed_base + index
         try:
@@ -528,9 +613,32 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             raise
         except Exception as exc:  # broad on purpose: one dead seed must not kill the battery
-            detail = " ".join(f"{type(exc).__name__}: {exc}".split())[:240]
-            skipped.append({"seed": str(seed), "error": detail})
-            print(f"[{index}/{args.n}] seed={seed} SKIPPED — {detail}", flush=True)
+            # OMN-15240: the PERSISTED record (this dict, written verbatim
+            # into battery_summary.json) must never be truncated -- only the
+            # console preview below is. A prior version truncated this same
+            # "error" text to 240 chars, which is what let a ~190-char benign
+            # uv VIRTUAL_ENV warning at the front of a CLI subprocess's
+            # stderr eat the entire budget and hide the real error that
+            # followed it (root cause of the 38/60 acceptance-seed skips).
+            full_detail = " ".join(f"{type(exc).__name__}: {exc}".split())
+            skip_record: dict[str, Any] = {"seed": str(seed), "error": full_detail}
+            # Dedicated structured fields, present only when the raised
+            # exception actually carries them (e.g. LlmTransportError from
+            # SubprocessDelegationCliRunner on a non-zero onex CLI exit) --
+            # absent for every other exception shape, so this never invents
+            # data the failure didn't actually provide.
+            argv = getattr(exc, "argv", None)
+            exit_code = getattr(exc, "exit_code", None)
+            stderr = getattr(exc, "stderr", None)
+            if argv is not None:
+                skip_record["argv"] = list(argv)
+            if exit_code is not None:
+                skip_record["exit_code"] = exit_code
+            if stderr is not None:
+                skip_record["stderr"] = stderr
+            skipped.append(skip_record)
+            console_detail = full_detail[:240]
+            print(f"[{index}/{args.n}] seed={seed} SKIPPED — {console_detail}", flush=True)
             continue
         rows.append(row)
         with raw_path.open("a", encoding="utf-8") as sink:

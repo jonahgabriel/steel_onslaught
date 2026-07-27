@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -23,6 +24,7 @@ from steel_onslaught.llm.client_delegation import (
     _TACTICAL_RESPONSE_CONTRACT,
     LlmBusDelegationClient,
     ProtocolDelegationCliRunner,
+    SubprocessDelegationCliRunner,
 )
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
@@ -478,3 +480,68 @@ def test_payload_written_under_the_caller_supplied_state_root(tmp_path: Path) ->
 
     assert len(captured_paths) == 1
     assert captured_paths[0].is_relative_to(tmp_path / "state")
+
+
+# --- OMN-15240: SubprocessDelegationCliRunner -- full stderr/exit_code/argv ---
+#
+# Unlike every other test in this module (which fakes ProtocolDelegationCliRunner
+# so no subprocess is ever spawned -- see the module docstring), these tests
+# exercise the REAL subprocess boundary (SubprocessDelegationCliRunner) with a
+# throwaway ``python3 -c`` child process. This is the exact seam that masked
+# the OMN-15240 acceptance-battery failures: a benign ~190-char uv
+# VIRTUAL_ENV warning at the FRONT of stderr ate a downstream 240-char
+# console-truncation budget, hiding the real error that followed it. The
+# fix is verified here at the layer that must never lose the tail: the
+# raised LlmTransportError's own attributes, not the truncated message text.
+
+
+def _python_argv(script: str) -> tuple[str, ...]:
+    return (sys.executable, "-c", script)
+
+
+def test_nonzero_exit_attaches_full_argv_exit_code_and_stderr() -> None:
+    """A non-zero CLI exit must attach the exact argv, exit code, and the
+    COMPLETE (unsliced) stderr onto the raised LlmTransportError -- not just
+    bake a truncated preview into the message string. This is what lets a
+    caller (e.g. a battery driver's skip record) persist the full diagnostic
+    text regardless of its own display-layer truncation.
+    """
+    tail_marker = "REAL_ERROR_TAIL_MARKER_qqzz9182"
+    # A long benign preamble (mimics the uv VIRTUAL_ENV warning that, in
+    # production, sits at the very front of stderr) followed by the real
+    # error at the tail -- long enough in total that a naive head-truncation
+    # (e.g. [:240]) would never reach the marker.
+    script = (
+        "import sys\n"
+        f"sys.stderr.write('warning: ' + ('x' * 300) + '\\n')\n"
+        f"sys.stderr.write('filler ' * 50 + '\\n')\n"
+        f"sys.stderr.write('Error: {tail_marker}\\n')\n"
+        "sys.exit(1)\n"
+    )
+    argv = _python_argv(script)
+    runner = SubprocessDelegationCliRunner()
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        runner.run(argv, timeout_seconds=30.0)
+
+    exc = excinfo.value
+    assert exc.exit_code == 1
+    assert exc.argv == argv
+    assert exc.stderr is not None
+    assert tail_marker in exc.stderr
+    # The truncated console-style preview a caller might derive from this
+    # exception must NOT reliably contain the tail marker -- proving the
+    # marker's survival depends on reading the structured `.stderr` field,
+    # not the flattened message string sliced to a short preview.
+    preview = " ".join(f"{type(exc).__name__}: {exc}".split())[:240]
+    assert tail_marker not in preview
+
+
+def test_zero_exit_returns_stdout_without_raising() -> None:
+    """Control case: a clean exit never raises, full stop."""
+    runner = SubprocessDelegationCliRunner()
+    argv = _python_argv("print('ok')")
+
+    stdout = runner.run(argv, timeout_seconds=30.0)
+
+    assert stdout.strip() == "ok"
