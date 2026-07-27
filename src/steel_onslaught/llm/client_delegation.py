@@ -197,6 +197,14 @@ class SubprocessDelegationCliRunner:
             raise LlmTransportError(
                 f"onex delegation CLI exited {completed.returncode}: {completed.stderr[-2000:]}",
                 retryable=False,
+                # OMN-15240: the message above stays capped at the last 2000
+                # chars (unchanged, existing behavior) -- these three fields
+                # carry the FULL, unsliced diagnostic context (exact argv,
+                # exit code, complete stderr) so a persisted record never
+                # loses it to a downstream display-truncation budget.
+                argv=argv,
+                exit_code=completed.returncode,
+                stderr=completed.stderr,
             )
         return completed.stdout
 

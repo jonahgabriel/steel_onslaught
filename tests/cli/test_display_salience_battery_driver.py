@@ -41,6 +41,7 @@ from scripts.run_display_salience_battery import (
     _build_kafka_transport,
     _build_parser,
     _lane_overlay,
+    _preflight_delegation_cli,
     _run_seed,
     main,
 )
@@ -51,6 +52,7 @@ from steel_onslaught.contracts.application import (
 )
 from steel_onslaught.contracts.arena import arena_contract_hash
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
+from steel_onslaught.llm.schemas import LlmTransportError
 from steel_onslaught.match.composition import load_match_contract_catalog
 from tests.overlay import complete_test_overlay
 
@@ -360,7 +362,12 @@ def _fake_row(seed: int) -> dict[str, Any]:
     }
 
 
-def _install_fakes(monkeypatch: pytest.MonkeyPatch, *, dead_seed: int | None = None) -> None:
+def _install_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    dead_seed: int | None = None,
+    dead_seed_exc: Exception | None = None,
+) -> None:
     def _fake_run_seed(
         overlay: object,
         *,
@@ -374,7 +381,7 @@ def _install_fakes(monkeypatch: pytest.MonkeyPatch, *, dead_seed: int | None = N
         **_kwargs: object,
     ) -> dict[str, Any]:
         if seed == dead_seed:
-            raise RuntimeError("simulated LlmTransportError: connection reset")
+            raise dead_seed_exc or RuntimeError("simulated LlmTransportError: connection reset")
         return _fake_row(seed)
 
     monkeypatch.setattr("scripts.run_display_salience_battery._run_seed", _fake_run_seed)
@@ -389,6 +396,15 @@ def _install_fakes(monkeypatch: pytest.MonkeyPatch, *, dead_seed: int | None = N
     monkeypatch.setattr(
         "scripts.run_display_salience_battery.load_match_contract_catalog",
         lambda root: load_match_contract_catalog(root),
+    )
+    # OMN-15240: the delegation-CLI preflight probe issues a REAL LLM call
+    # against a real overlay -- every test here uses a fake, provider-less
+    # overlay object (see _lane_overlay's fake above), so the preflight is a
+    # no-op by default. Tests that specifically cover the preflight contract
+    # override this back to the real function or a failing fake.
+    monkeypatch.setattr(
+        "scripts.run_display_salience_battery._preflight_delegation_cli",
+        lambda overlay: None,
     )
 
 
@@ -454,6 +470,54 @@ def test_dead_seed_is_skipped_and_forces_nonzero_exit(
     assert dead_seed not in recorded_seeds
 
 
+def test_dead_seed_with_long_stderr_surfaces_full_tail_in_persisted_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """OMN-15240: a subprocess failing with a long stderr whose tail matters
+    must surface the tail in the persisted record.
+
+    Reproduces the exact acceptance-battery failure mode: the CLI subprocess
+    stderr begins with a long, benign preamble (the real uv VIRTUAL_ENV
+    warning was ~190 chars) and the actual, actionable error sits at the
+    tail. The console print may stay short, but ``battery_summary.json`` --
+    the durable, persisted record -- must never lose the tail to truncation.
+    """
+    dead_seed = 90000 + 2
+    tail_marker = "REAL_ERROR_TAIL_MARKER_qqzz9182"
+    long_stderr = (
+        "warning: `VIRTUAL_ENV=.venv` does not match the project environment "
+        "path and will be ignored; use `--active` to target the active "
+        "environment instead " + ("filler " * 40) + f"Error: {tail_marker}"
+    )
+    argv = ("uv", "run", "--project", "/fake/omnibase_infra", "onex", "node", "fake")
+    dead_seed_exc = LlmTransportError(
+        f"onex delegation CLI exited 1: {long_stderr[-2000:]}",
+        retryable=False,
+        argv=argv,
+        exit_code=1,
+        stderr=long_stderr,
+    )
+    _install_fakes(monkeypatch, dead_seed=dead_seed, dead_seed_exc=dead_seed_exc)
+    monkeypatch.setattr(sys, "argv", _argv(n=3, seed_base=90000, state_root=tmp_path))
+
+    exit_code = main()
+
+    assert exit_code != 0
+    summary = json.loads((tmp_path / "battery_summary.json").read_text(encoding="utf-8"))
+    skipped = summary["skipped_seeds"]
+    assert len(skipped) == 1
+    record = skipped[0]
+    assert record["seed"] == str(dead_seed)
+    # The persisted "error" text itself must never be truncated to a short
+    # console-style preview -- the tail marker must survive.
+    assert tail_marker in record["error"]
+    # Dedicated structured fields (OMN-15240) let a caller act on the exact
+    # failure without re-parsing a flattened message string.
+    assert record["exit_code"] == 1
+    assert record["argv"] == list(argv)
+    assert tail_marker in record["stderr"]
+
+
 def test_kafka_unavailable_exits_2_before_any_seed_runs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -471,3 +535,55 @@ def test_kafka_unavailable_exits_2_before_any_seed_runs(
 
     assert exit_code == 2
     assert not (tmp_path / "battery_raw.jsonl").exists()
+
+
+def test_delegation_cli_preflight_failure_exits_2_before_any_seed_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """OMN-15240: a broken delegation-CLI transport must fail the WHOLE
+    battery before any seed runs -- never burn N seeds one at a time to
+    discover it (the exact waste the 2026-07-27 acceptance run incurred:
+    58 dead seeds across both corners on one environmental failure).
+    """
+
+    def _raise_preflight(overlay: object) -> None:
+        raise LlmTransportError(
+            "onex delegation CLI exited 1: Error: omnimarket venv is STALE",
+            retryable=False,
+            argv=("uv", "run", "onex", "node", "fake"),
+            exit_code=1,
+            stderr="Error: omnimarket venv is STALE: installed commit abc != canonical def",
+        )
+
+    def _unreachable_run_seed(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        raise AssertionError("_run_seed must never be called when the preflight fails")
+
+    monkeypatch.setattr(
+        "scripts.run_display_salience_battery._build_kafka_transport",
+        lambda bootstrap: (_FakeProducer(_FakeKafkaTransport()), _FakeKafkaTransport()),
+    )
+    monkeypatch.setattr(
+        "scripts.run_display_salience_battery._lane_overlay",
+        lambda state_root, corner, *, omnibase_infra_path: object(),
+    )
+    monkeypatch.setattr(
+        "scripts.run_display_salience_battery._preflight_delegation_cli", _raise_preflight
+    )
+    monkeypatch.setattr("scripts.run_display_salience_battery._run_seed", _unreachable_run_seed)
+    monkeypatch.setattr(sys, "argv", _argv(n=2, seed_base=90000, state_root=tmp_path))
+
+    exit_code = main()
+
+    assert exit_code == 2
+    assert not (tmp_path / "battery_raw.jsonl").exists()
+    assert not (tmp_path / "battery_summary.json").exists()
+
+
+def test_preflight_is_a_noop_for_a_delegation_less_overlay(tmp_path: Path) -> None:
+    """A non-delegation-bound overlay (no ``onex_delegation`` provider) must
+    never be probed -- this driver's own overlays always have one, but the
+    function stays defensive rather than assuming."""
+    overlay = _hermetic_overlay(tmp_path)
+    assert not any(isinstance(p, ModelSODelegationProviderBinding) for p in overlay.llm.providers)
+
+    _preflight_delegation_cli(overlay)  # must not raise

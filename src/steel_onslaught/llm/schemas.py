@@ -175,11 +175,36 @@ class SecretResolutionError(RuntimeError):
 
 
 class LlmTransportError(RuntimeError):
-    """Sanitized transport failure carrying only retry classification."""
+    """Sanitized transport failure carrying only retry classification.
 
-    def __init__(self, message: str, *, retryable: bool) -> None:
+    ``argv``/``exit_code``/``stderr`` are optional, CLI-subprocess-specific
+    diagnostic fields (OMN-15240): ``None`` for every transport that isn't a
+    subprocess exit (HTTP, semantic, boundary). When set (by
+    :class:`~steel_onslaught.llm.client_delegation.SubprocessDelegationCliRunner`
+    on a non-zero ``onex`` CLI exit), ``stderr`` carries the COMPLETE,
+    unsliced subprocess stderr -- deliberately not the ``[-2000:]`` slice
+    baked into ``message`` -- so a caller building a persisted record (a
+    battery's skip entry, a durable log line) can preserve the full
+    diagnostic text even when its own display layer truncates. Root cause
+    this closes: a ~190-char benign ``uv`` ``VIRTUAL_ENV`` warning at the
+    front of stderr previously ate an entire downstream 240-char console
+    truncation budget, hiding the real CLI error for every affected caller.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool,
+        argv: tuple[str, ...] | None = None,
+        exit_code: int | None = None,
+        stderr: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.argv = argv
+        self.exit_code = exit_code
+        self.stderr = stderr
 
 
 class LlmCompletionBoundaryError(LlmTransportError):
