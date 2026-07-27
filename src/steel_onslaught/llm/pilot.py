@@ -8,6 +8,17 @@ Implements ``PilotProtocol.decide(observation) -> ModelSOPilotDecision`` by:
      on any failure (timeout, malformed JSON, invalid action) — never crashing
      the match.
 
+Under the ``failure_policy="raise"`` used by live composition (see
+``build_llm_dependencies``), a *semantic* failure (malformed JSON, unknown/
+unavailable action, invalid action parameters) is not an immediate raise: the
+same model is reprompted with the exact rejection so it can self-correct, up
+to a small bounded budget (OMN-15239, mirroring the whole-round card
+programmer's ``LLMProgrammingPilot`` reprompt loop). Exhausting that budget
+raises ``LlmSemanticExhaustedError`` so the match runner ends the match with a
+distinct ``provider_semantic_failure`` terminal instead of letting a bare
+``LlmSemanticError`` escape the tick loop's boundary-only catch and kill the
+whole match.
+
 Nondeterministic by design (the LLM samples), but replay-validity holds: the
 fold ignores ``PILOT_DECISION_MADE`` events (they're telemetry), and the
 recorded ledger's resolved events replay identically regardless of how the
@@ -33,10 +44,17 @@ from steel_onslaught.events.payloads import (
 from steel_onslaught.immutable import FrozenJSONMapping, thaw_json_mapping
 from steel_onslaught.llm.effect import LlmSemanticError, consume_llm_completion
 from steel_onslaught.llm.personas import Persona
+
+# The bounded same-model reprompt budget is owned by card-mode
+# (``LLMProgrammingPilot``); OMN-15239 reuses that exact value for the
+# plain per-tick path rather than inventing a second constant that could
+# silently drift from it.
+from steel_onslaught.llm.programming import _DEFAULT_SEMANTIC_RETRY_LIMIT
 from steel_onslaught.llm.render import render_blank_png, render_observation_png
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
     LlmResponse,
+    LlmSemanticExhaustedError,
     ModelSOLlmCompletionRequest,
     ModelSOLlmEvidenceContext,
     ModelSOLlmImageAttachment,
@@ -231,12 +249,22 @@ class LLMPilot:
         failure_policy: LlmPilotFailurePolicy = "fallback",
         image_attachment: ModelSOLlmImageAttachmentBinding | None = None,
         display_salience: SODisplaySalience = SODisplaySalience.DEFAULT,
+        provider_id: str | None = None,
+        semantic_retry_limit: int = _DEFAULT_SEMANTIC_RETRY_LIMIT,
     ) -> None:
         if failure_policy not in ("fallback", "raise"):
             raise ValueError(f"unknown LLM pilot failure policy: {failure_policy!r}")
+        if semantic_retry_limit < 0:
+            raise ValueError("semantic_retry_limit must not be negative")
         self._client = client
         self._persona = persona
         self._failure_policy = failure_policy
+        # Diagnostic-only (never part of the wire request): threaded through so
+        # a bounded-retry exhaustion's ``LlmSemanticExhaustedError`` names the
+        # provider it exhausted against, mirroring
+        # ``LLMProgrammingPilot._provider_id``.
+        self._provider_id = provider_id
+        self._semantic_retry_limit = semantic_retry_limit
         # Present only for the V-IMG arm's provider binding (2026-07-24
         # vision-representation experiment). ``None`` for every other pilot,
         # which keeps ``decide`` producing the exact same request it always
@@ -265,35 +293,157 @@ class LLMPilot:
         image_attachment = self._render_image_attachment(observation)
         if image_attachment is not None:
             user_prompt = f"{user_prompt}\n\n{_IMAGE_ATTACHMENT_NOTE}"
+        request = self._build_request(observation, user_prompt, image_attachment)
         try:
             return consume_llm_completion(
                 client=self._client,
-                request=ModelSOLlmCompletionRequest(
-                    system_prompt=self._persona.system_prompt,
-                    user_prompt=user_prompt,
-                    persona=self._persona.persona_id,
-                    temperature=self._persona.temperature,
-                    json_mode=True,
-                    evidence_context=ModelSOLlmEvidenceContext(
-                        match_id=observation.match_id,
-                        mech_id=observation.mech_id,
-                        player_id=observation.player_id,
-                        tick=observation.tick,
-                        correlation_id=None,
-                    ),
-                    image_attachment=image_attachment,
-                ),
+                request=request,
                 consumer=lambda response: self._parse_response(response, observation),
             )
         except LlmCompletionBoundaryError:
             # Provider length/timeout boundaries are terminal live-match
             # failures. Never convert them into a deterministic REMAIN action.
             raise
+        except LlmSemanticError as exc:
+            if self._failure_policy == "raise":
+                # OMN-15239: a live per-tick decision is LLM-only under the
+                # ``raise`` policy (the live-match default -- see
+                # ``build_llm_dependencies``), exactly like whole-round card
+                # programming. A bare ``LlmSemanticError`` used to propagate
+                # straight past this point: it is not one of the two types the
+                # match runner's tick loop catches
+                # (``LlmCompletionBoundaryError``/``LlmSemanticExhaustedError``),
+                # so it escaped the tick loop and killed the whole match/seed.
+                # Mirror ``LLMProgrammingPilot``'s bounded reprompt loop: retry
+                # the SAME model with the exact rejection so it can
+                # self-correct, and only raise the classified, catchable
+                # ``LlmSemanticExhaustedError`` once the budget is spent.
+                return self._reprompt_or_terminate(observation, request, first_error=exc)
+            _LOG.warning("LLM call failed (%s)", type(exc).__name__)
+            return _fallback_decision(type(exc).__name__)
         except Exception as exc:
             _LOG.warning("LLM call failed (%s)", type(exc).__name__)
             if self._failure_policy == "raise":
                 raise
             return _fallback_decision(type(exc).__name__)
+
+    def _build_request(
+        self,
+        observation: ModelSOPilotObservation,
+        user_prompt: str,
+        image_attachment: ModelSOLlmImageAttachment | None,
+    ) -> ModelSOLlmCompletionRequest:
+        return ModelSOLlmCompletionRequest(
+            system_prompt=self._persona.system_prompt,
+            user_prompt=user_prompt,
+            persona=self._persona.persona_id,
+            temperature=self._persona.temperature,
+            json_mode=True,
+            evidence_context=ModelSOLlmEvidenceContext(
+                match_id=observation.match_id,
+                mech_id=observation.mech_id,
+                player_id=observation.player_id,
+                tick=observation.tick,
+                correlation_id=None,
+            ),
+            image_attachment=image_attachment,
+        )
+
+    def _reprompt_or_terminate(
+        self,
+        observation: ModelSOPilotObservation,
+        base_request: ModelSOLlmCompletionRequest,
+        *,
+        first_error: LlmSemanticError,
+    ) -> ModelSOPilotDecision:
+        """Reprompt the same model up to the bounded budget, then terminate.
+
+        Mirrors ``LLMProgrammingPilot._reprompt_or_terminate`` (card mode):
+        every attempt is a real provider completion with its own durably
+        recorded evidence (``llm_completion_requested``/``_failed``); a
+        completion boundary (length/timeout) during a repair belongs to its
+        own terminal path and is re-raised unchanged; any other repair-time
+        failure is treated as a spent attempt so the match still reaches a
+        durable terminal rather than freezing.
+        """
+
+        last_error = first_error
+        for attempt in range(1, self._semantic_retry_limit + 1):
+            repair_request = self._build_repair_request(base_request, last_error, attempt=attempt)
+            try:
+                return consume_llm_completion(
+                    client=self._client,
+                    request=repair_request,
+                    consumer=lambda response: self._parse_response(response, observation),
+                )
+            except LlmCompletionBoundaryError:
+                raise
+            except LlmSemanticError as exc:
+                last_error = exc
+            except Exception:
+                _LOG.warning(
+                    "live provider repair attempt %d raised an unclassified error "
+                    "for mech %s (persona=%s)",
+                    attempt,
+                    observation.mech_id,
+                    self._persona.persona_id,
+                )
+        total_attempts = self._semantic_retry_limit + 1
+        _LOG.warning(
+            "live provider exhausted %d decide attempt(s) for mech %s "
+            "(persona=%s, provider=%s, last_code=%s)",
+            total_attempts,
+            observation.mech_id,
+            self._persona.persona_id,
+            self._provider_id,
+            last_error.code,
+        )
+        raise LlmSemanticExhaustedError(
+            seat=observation.mech_id,
+            semantic_failure_code=last_error.code,
+            attempts=total_attempts,
+            provider_id=self._provider_id,
+        )
+
+    def _build_repair_request(
+        self,
+        base_request: ModelSOLlmCompletionRequest,
+        error: LlmSemanticError,
+        *,
+        attempt: int,
+    ) -> ModelSOLlmCompletionRequest:
+        """Build a same-model repair request annotated with the exact rejection.
+
+        Keeps the identical observation/user_prompt (a per-tick prompt is
+        small; there is no oversized-hand-data reason to shrink it the way
+        card mode's ``malformed_json`` repair does) and prepends a correction
+        note to the system prompt, exactly like card mode's non-``malformed_json``
+        repair branch.
+        """
+
+        correction = self._correction_note(error)
+        return base_request.model_copy(
+            update={
+                "system_prompt": f"{correction}\n\n{base_request.system_prompt}",
+                "temperature": 0.0,
+                "persona": f"{self._persona.persona_id}.repair.{attempt}",
+            }
+        )
+
+    @staticmethod
+    def _correction_note(error: LlmSemanticError) -> str:
+        note = (
+            "Your previous action response was REJECTED by the strict rules "
+            f"engine (reason: {error.code})."
+        )
+        if error.detail:
+            note += f" Details: {error.detail}"
+        return (
+            note + " Return a corrected response using ONLY this exact JSON shape: "
+            '{"action":"...","action_params":{...},"confidence":0.0,"rationale":"..."}. '
+            "Choose action from available_actions, supply exactly the parameters that "
+            "action requires, and add no extra fields."
+        )
 
     def _render_image_attachment(
         self, observation: ModelSOPilotObservation

@@ -286,6 +286,28 @@
 # visible in either lane alone. The RATIO s is more robust to this than
 # either raw total would be, but it is not immune to it, and this is
 # disclosed here rather than assumed away.
+#
+# AMENDMENT (2026-07-27, BEFORE any acceptance re-run of either lane; the
+# hypothesis, primary statistic, decision bands, and every other clause above
+# are UNCHANGED). OMN-15172's acceptance run against this exact pair surfaced
+# a plain (non-card) per-tick decide() defect, filed as OMN-15239:
+# ``LLMPilot.decide()`` called ``llm/effect.py``'s ``consume_llm_completion``
+# exactly ONCE, with no retry, so a single semantic rejection
+# (``LlmSemanticError: invalid_action_parameters``) escaped
+# ``match/runner.py``'s tick-loop catch (which handled only
+# ``LlmCompletionBoundaryError`` and ``LlmSemanticExhaustedError``) and killed
+# the whole match/seed outright -- 20 of this DEFAULT-corner's 30 seeds were
+# skipped this way (see the sibling ``_default_delegation.yaml`` overlay,
+# whose own AMENDMENT note points back here).  OMN-15239 adds the SAME bounded
+# same-model reprompt loop whole-round card programming (``LLMProgrammingPilot``
+# in ``llm/programming.py``) already had to the plain ``decide()`` path, so a
+# semantic slip is retried within a small fixed budget and only a genuinely
+# exhausted provider ends the match (via the pre-existing, distinct
+# ``provider_semantic_failure`` terminal card mode already used). This is
+# execution-infrastructure parity with the card-mode battery path, applied
+# identically to BOTH lanes of this pair -- it is not a hypothesis, criterion,
+# prompt, or arm-mechanism change of any kind, and it is landed BEFORE any
+# (re-)run of either lane is scored.
 schema_version: "1"
 bus:
   kind: in_process

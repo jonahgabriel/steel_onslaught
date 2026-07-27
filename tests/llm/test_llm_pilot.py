@@ -16,7 +16,12 @@ from steel_onslaught.contracts.pilot import ModelSOLlmPilotParams, SODisplaySali
 from steel_onslaught.llm.effect import LlmSemanticError
 from steel_onslaught.llm.personas import Persona
 from steel_onslaught.llm.pilot import _IMAGE_ATTACHMENT_NOTE, LLMPilot
-from steel_onslaught.llm.schemas import LlmResponse, LlmUsage, ModelSOLlmCompletionRequest
+from steel_onslaught.llm.schemas import (
+    LlmResponse,
+    LlmSemanticExhaustedError,
+    LlmUsage,
+    ModelSOLlmCompletionRequest,
+)
 from steel_onslaught.llm.stub import StubLlmClient
 from steel_onslaught.pilots.schemas import (
     ModelSOObjectiveView,
@@ -718,12 +723,55 @@ class _CrashingClient:
 
 
 class _SemanticResponseClient:
+    """Always answers with the same (semantically rejected) response text."""
+
     def __init__(self, response_text: str) -> None:
         self._response_text = response_text
+        self.calls = 0
 
     def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        self.calls += 1
         return LlmResponse(
             text=self._response_text,
+            usage=LlmUsage(prompt_tokens=1, completion_tokens=1, cost_usd=0.0),
+            model="semantic-fixture",
+            finish_reason="stop",
+        )
+
+
+class _InvalidThenRemainClient:
+    """Reject exactly the first action, then answer a valid REMAIN forever.
+
+    Proves the happy-retry path (OMN-15239): a single semantic slip
+    self-corrects on the same model, so ``decide`` returns a decision instead
+    of raising and the match keeps playing.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+        self.calls += 1
+        if self.calls == 1:
+            text = json.dumps(
+                {
+                    "action": "fire_weapon",
+                    "action_params": {"weapon_id": "weapon.unknown"},
+                    "confidence": 0.9,
+                    "rationale": "invalid weapon",
+                }
+            )
+        else:
+            text = json.dumps(
+                {
+                    "action": "remain",
+                    "action_params": {},
+                    "confidence": 0.7,
+                    "rationale": "recovered",
+                }
+            )
+        return LlmResponse(
+            text=text,
             usage=LlmUsage(prompt_tokens=1, completion_tokens=1, cost_usd=0.0),
             model="semantic-fixture",
             finish_reason="stop",
@@ -776,21 +824,92 @@ class _SemanticResponseClient:
         ),
     ],
 )
-def test_raise_policy_surfaces_closed_semantic_failure_code(
+def test_raise_policy_exhausts_bounded_retry_and_surfaces_closed_semantic_failure_code(
     response_text: str,
     weapon_cooldown: int,
     expected_code: str,
 ) -> None:
+    """OMN-15239: a persistent semantic failure under the ``raise`` policy is
+    bounded-retried (mirroring card mode's ``LLMProgrammingPilot``) and only
+    then raises the classified, catchable ``LlmSemanticExhaustedError`` --
+    never the bare ``LlmSemanticError`` this test asserted pre-fix (a bare
+    ``LlmSemanticError`` is not one of the two types the match runner's tick
+    loop catches, so it used to escape and kill the whole match)."""
+    client = _SemanticResponseClient(response_text)
     pilot = LLMPilot(
-        client=_SemanticResponseClient(response_text),
+        client=client,
         persona=_persona("semantic-errors"),
         failure_policy="raise",
     )
 
-    with pytest.raises(LlmSemanticError) as raised:
+    with pytest.raises(LlmSemanticExhaustedError) as raised:
         pilot.decide(_observation(weapons=[_weapon(cooldown=weapon_cooldown)]))
 
-    assert raised.value.code == expected_code
+    assert not isinstance(raised.value, LlmSemanticError)
+    assert raised.value.semantic_failure_code == expected_code
+    # One initial attempt + the bounded reprompt budget -- every attempt is a
+    # real provider call against the persistently failing fixture.
+    assert client.calls == raised.value.attempts
+    assert client.calls > 1
+
+
+@pytest.mark.unit
+def test_omn15239_semantic_exhaustion_raises_llm_semantic_exhausted_not_bare_semantic_error() -> (
+    None
+):
+    """OMN-15239 repro/fix, direct form: a permanently invalid ``fire_weapon``
+    action (well-formed JSON, unavailable weapon id -- exactly the live-battery
+    ``invalid_action_parameters`` defect) must never escape ``decide()`` as a
+    bare ``LlmSemanticError``. Pre-fix this raised immediately on the FIRST
+    attempt (``client.calls == 1``) with no retry at all. Post-fix it is
+    bounded-retried and raises ``LlmSemanticExhaustedError`` once exhausted."""
+
+    class _AlwaysInvalidWeaponClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            self.calls += 1
+            return LlmResponse(
+                text=json.dumps(
+                    {
+                        "action": "fire_weapon",
+                        "action_params": {"weapon_id": "weapon.unknown"},
+                        "confidence": 0.9,
+                        "rationale": "invalid weapon",
+                    }
+                ),
+                usage=LlmUsage(prompt_tokens=1, completion_tokens=1, cost_usd=0.0),
+                model="fixture",
+                finish_reason="stop",
+            )
+
+    client = _AlwaysInvalidWeaponClient()
+    pilot = LLMPilot(client=client, persona=_persona("berserker"), failure_policy="raise")
+
+    with pytest.raises(LlmSemanticExhaustedError) as raised:
+        pilot.decide(_observation())
+
+    assert not isinstance(raised.value, LlmSemanticError)
+    assert raised.value.semantic_failure_code == "invalid_action_parameters"
+    assert client.calls == raised.value.attempts
+    assert client.calls > 1
+
+
+@pytest.mark.unit
+def test_omn15239_transient_semantic_failure_recovers_within_bounds() -> None:
+    """OMN-15239: a single semantic slip self-corrects on the same model --
+    ``decide`` returns a decision instead of raising, so the match keeps
+    playing rather than aborting on a one-off provider mistake."""
+
+    client = _InvalidThenRemainClient()
+    pilot = LLMPilot(client=client, persona=_persona("berserker"), failure_policy="raise")
+
+    decision = pilot.decide(_observation())
+
+    assert decision.action is SOPilotAction.REMAIN
+    assert decision.reason_code is SOPilotReasonCode.LLM_DECISION
+    assert client.calls == 2
 
 
 @pytest.mark.unit
