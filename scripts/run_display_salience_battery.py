@@ -73,6 +73,21 @@ same OMN-15240 root cause: a ~190-char benign uv ``VIRTUAL_ENV`` warning
 ate a downstream 240-char truncation budget and hid the real error) can
 never recur undiagnosed.
 
+OMN-15265 belt: the launch-time preflight above is structurally blind to
+drift that lands HOURS into a run -- exactly what killed the 2026-07-27
+evening re-run (5h22m of healthy execution, then a concurrent session's
+merge advanced the canonical ``$OMNI_HOME/omnimarket`` clone mid-battery).
+:func:`_drift_recheck` re-runs the SAME in-process, no-network guard
+(``omnibase_infra.cli.omnimarket_drift_guard.check_omnimarket_drift``,
+loaded directly by file path -- never
+``scripts/check-omnimarket-venv-drift.sh``, which does a live ``git
+fetch`` and false-positives against a pinned hermetic snapshot clone that
+is intentionally behind the remote by design) every
+``_DRIFT_RECHECK_INTERVAL_SEEDS`` completed seeds, turning a
+multi-hour/20-dead-seed burn into a seconds-fast abort. This only ever
+touches the RUNNING process's own ``$OMNI_HOME`` -- it cannot affect, and
+is not affected by, any other lane's environment.
+
 Requires the ``live`` extra (a real Kafka client -- see
 ``pyproject.toml``'s own ``live`` extra docstring for why this is opt-in
 and never installed by CI) and ``$OMNI_HOME`` set (resolves the local
@@ -92,6 +107,7 @@ shape; pass ``--n 2`` for a smoke run):
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -158,6 +174,13 @@ _TERMINAL_EVENT_TYPE_VALUES = frozenset(member.value for member in TERMINAL_EVEN
 _DEFAULT_KAFKA_BOOTSTRAP = "100.109.203.94:39092"  # sanitize-ok
 _ENV_BOOTSTRAP = "STEEL_LIVE_KAFKA_BOOTSTRAP"
 _KAFKA_FLUSH_TIMEOUT_SECONDS = 30.0
+
+# OMN-15265: how often (in COMPLETED seeds, never attempted/skipped ones)
+# the mid-run drift belt re-checks. 5 trades a small, cheap (local
+# `git rev-parse HEAD`, no network, ~2s timeout) recheck cost against how
+# long a drifted run can burn before being caught.
+_DRIFT_RECHECK_INTERVAL_SEEDS = 5
+_OMNI_HOME_ENV = "OMNI_HOME"
 
 
 class KafkaLiveTransportUnavailableError(RuntimeError):
@@ -340,6 +363,61 @@ def _preflight_delegation_cli(overlay: ModelSOApplicationOverlay) -> None:
             evidence_context=None,
         )
     )
+
+
+def _load_omnimarket_drift_checker(omnibase_infra_path: Path) -> Any:
+    """Load ``omnibase_infra.cli.omnimarket_drift_guard.check_omnimarket_drift``
+    directly by file path, bypassing ``import omnibase_infra`` entirely
+    (OMN-15265).
+
+    ``import omnibase_infra...`` would first execute
+    ``omnibase_infra/__init__.py``, which eagerly imports the rest of that
+    package (including ``asyncpg`` and other runtime dependencies this repo
+    deliberately never installs -- pyproject.toml's own dependency list:
+    "Infra is intentionally excluded from this engine"). The guard module
+    itself has zero such dependencies (stdlib-only: json / logging /
+    subprocess / importlib.metadata / pathlib), so loading it as a
+    standalone file sidesteps that whole chain and keeps this driver's own
+    venv untouched.
+    """
+    module_path = (
+        omnibase_infra_path / "src" / "omnibase_infra" / "cli" / "omnimarket_drift_guard.py"
+    )
+    spec = importlib.util.spec_from_file_location("_steel_omnimarket_drift_guard", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            f"cannot load the omnimarket drift guard module from {module_path} -- "
+            "is --omnibase-infra-path/$OMNI_HOME/omnibase_infra a real checkout?"
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.check_omnimarket_drift
+
+
+def _drift_recheck(*, omnibase_infra_path: Path, omni_home: str | None) -> None:
+    """OMN-15265 belt: re-run the IN-PROCESS, no-network drift gate mid-run.
+
+    Deliberately the SAME check ``_preflight_delegation_cli`` never touches
+    -- ``omnibase_infra.cli.omnimarket_drift_guard.check_omnimarket_drift``,
+    never ``scripts/check-omnimarket-venv-drift.sh``. That shell script does
+    a live ``git fetch`` against the remote and compares against the
+    fetched ref -- it FALSE-POSITIVES on a pinned hermetic snapshot clone
+    (this ticket's own frozen-execution-environment battery) that is
+    intentionally behind the remote by design. This function only compares
+    the current interpreter's installed omnimarket commit against the run's
+    own ``$OMNI_HOME/omnimarket`` checkout -- never the network -- so a
+    pinned snapshot with a stable local HEAD reads as clean, exactly as it
+    should.
+
+    Raises whatever ``check_omnimarket_drift`` raises (an
+    ``OmnimarketDriftError`` naming both the installed and canonical SHAs)
+    on a real trip; the caller decides how to abort. Fails open only when
+    ``check_omnimarket_drift`` itself would (no ``$OMNI_HOME`` / no
+    canonical clone present) -- this function adds no additional fallback
+    of its own.
+    """
+    checker = _load_omnimarket_drift_checker(omnibase_infra_path)
+    checker(omni_home=omni_home)
 
 
 def _terminal_class(end_reason: str | None, victory_kind: str | None) -> str:
@@ -565,6 +643,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.omnibase_infra_path is not None
         else Path(os.environ["OMNI_HOME"]) / "omnibase_infra"
     ).resolve(strict=True)
+    # OMN-15265 belt: the RUN's own $OMNI_HOME, read directly (not derived
+    # from omnibase_infra_path above, which may be independently overridden
+    # via --omnibase-infra-path) -- `.get()`, not `[...]`, because
+    # `check_omnimarket_drift` itself documents unset $OMNI_HOME as "cannot
+    # determine" and fails open; this is that guard's own contract, not a
+    # silent fallback introduced here.
+    omni_home_env = os.environ.get(_OMNI_HOME_ENV)
 
     catalog = load_match_contract_catalog(_REPO_ROOT / "contracts_data")
     expected_arena_hash = arena_contract_hash(catalog.arenas[_ARENA_ID].to_snapshot())
@@ -650,6 +735,33 @@ def main(argv: list[str] | None = None) -> int:
             f"kafka_forwarded={row['kafka_forwarded_event_types']}",
             flush=True,
         )
+
+        # OMN-15265 belt: re-check every N completed seeds, not just once at
+        # launch -- catches drift a concurrent session introduces hours into
+        # a run (both real OMN-15172 acceptance kills: 13:04:22Z and
+        # 19:23:26Z, neither present at this run's own launch-time
+        # preflight). FAIL FAST -- abort the whole battery immediately, do
+        # not keep burning seeds against a now-unverifiable environment.
+        if len(rows) % _DRIFT_RECHECK_INTERVAL_SEEDS == 0:
+            try:
+                _drift_recheck(omnibase_infra_path=omnibase_infra_path, omni_home=omni_home_env)
+            except Exception as exc:  # OmnimarketDriftError from the loaded guard module
+                print(
+                    f"BATTERY ABORTED (OMN-15265 mid-run drift belt): {len(rows)} seed(s) "
+                    f"completed cleanly, then a mid-run omnimarket drift was detected -- "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                abort_summary = _summarize(
+                    rows, corner=args.corner, requested_n=args.n, skipped=skipped
+                )
+                abort_summary["aborted"] = True
+                abort_summary["abort_reason"] = f"{type(exc).__name__}: {exc}"
+                (state_root / "battery_summary.json").write_text(
+                    json.dumps(abort_summary, indent=2, sort_keys=True), encoding="utf-8"
+                )
+                return 3
 
     summary = _summarize(rows, corner=args.corner, requested_n=args.n, skipped=skipped)
     summary_path = state_root / "battery_summary.json"
