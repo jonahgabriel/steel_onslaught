@@ -2,6 +2,16 @@
 
 Status: proposed execution plan (revised 2026-07-21 from the finish audit)  
 Baseline: `main` at `4752a7f` (2026-07-20)  
+**Reconciled 2026-07-28 (OMN-15341)** against merged reality on `main` at `375c980`
+— 122 PRs ahead of this baseline (`gh pr list --repo jonahgabriel/steel_onslaught
+--state merged`, verified count #108→#229). This plan itself (PR #108) is now
+merged (`c1deb4f`, 2026-07-28) — earlier text in this document still describing
+it as unmerged is stale. See the
+[2026-07-28 session update — phase-status reconciliation](#2026-07-28-session-update--phase-status-reconciliation)
+at the end of this document for corrected per-phase status and the
+demo-readiness delta. Nothing above this line was rewritten; corrections are
+appended, per the plan's own operating rule 8 (treat history as inventory, not
+something to silently rewrite).  
 Scope: `steel_onslaught` only  
 Evidence: [canonical & viral finish audit](../2026-07-21-steel-onslaught-finish-audit.md) —
 90 findings (6 blocker / 12 high / 32 medium / 40 low), each cited to `file:line` and
@@ -218,6 +228,27 @@ Unresolved; the operator picks. Costs below come from the same verified trace.
   the tests pinned to each overlay — but it is the only option that stops the
   overlay set from accreting further unreferenced files.
 
+**Reality update (2026-07-28, NOT a decision — this remains open, flagged for
+the operator).** Option (a)'s two named blockers are both closed in code now.
+`so play`'s `--overlay` has a working default —
+`DEFAULT_OVERLAY_RELATIVE = "contracts_data/overlays/tactical_split_v1_qwen.yaml"`
+(`src/steel_onslaught/cli/play.py:1891`, landed in **PR #113**, `1833251`,
+2026-07-22) — contradicting this section's "there is no default overlay
+anywhere" premise as literally stated. The overlay's
+`secret_resolver` is now `kind: injected`, not `none`
+(`contracts_data/overlays/tactical_split_v1_qwen.yaml:92-96`; the file's own
+comment documents the fix: "Declaring `none` refused to bind them and made the
+default 60x60 split-deck board unlaunchable from the browser deck" — same PR
+#113). `README.md:11-36` documents this as the maintained, current "one
+command" demo path. So option (a)'s stated blockers no longer exist in
+`main` — but no dated operator ruling ever closed this decision, the option
+set below was never updated to say so, and the roster-path seat rebind gap
+option (a) also named is UNVERIFIED as fixed (see the phase-status
+reconciliation, Phase 6). The overlay inventory has also grown from 8 files to
+~60 (`contracts_data/overlays/`, counted live) via the depth/science program,
+so option (c)'s "eight card overlays" premise is separately stale. This
+paragraph updates facts only; it does not resolve the decision.
+
 **Separate decision, flagged explicitly: is the demo provider GLM or local
 Qwen?** This is not implied by the overlay choice and needs its own call. The
 catalog default is GLM 5.2 over `api.z.ai` with `secret://llm/glm` ←
@@ -287,7 +318,12 @@ operating rule 9 has to be applied to whichever is chosen.
   (preferred-range handler) are **closed as superseded by #114**. **Open, NOT on
   `main`:** **#116** (balance investigation — CI green, unmerged, open merge
   decision; see the balance section), **#117** (depth Phase A / over-deal — CI
-  green, mergeable, unmerged), **#108** (this plan). **The stall-blocked live run
+  green, mergeable, unmerged), **#108** (this plan).
+  **[Corrected 2026-07-28 — see the phase-status reconciliation at the end of
+  this document.] Only #116 is still open**, re-verified live: head `74216c9`,
+  CI still green, still unmerged. **#117 merged** `2e6a31e` (2026-07-22) and
+  **#108 (this plan) merged** `c1deb4f` (2026-07-28) — both stale in this
+  bullet's original framing. **The stall-blocked live run
   above is now superseded:** keyless launch (#113), stall recovery (#115),
   per-seat model selection (#112), and editable prompts / plug-in handlers (#114)
   are all on `main`, so `uv run so play` now launches keyless and plays a full
@@ -1150,3 +1186,205 @@ Queued this session; not scheduled, not staffed, no timeline commitment.
   computed in the battery docs); position against prompt-sensitivity /
   reward-shaping literature; IP check is mechanism-scoped (findings are steel
   science, not RSD internals); venue/timing = operator decision.
+
+## 2026-07-28 session update — phase-status reconciliation
+
+OMN-15341. Reconciling this plan against merged reality ahead of the Aug 4-6
+demo. Method: `gh pr list --repo jonahgabriel/steel_onslaught --state merged
+--limit 200` (229 merged PRs, #1→#229), `git log --oneline origin/main -50`,
+and `docs/design/2026-07-22-unified-depth-learning-design.md` (its Rev-2
+OBSERVED corrections are reused below with citation, not re-derived — see
+its §0 and §4.6). `main` is at `375c980` (2026-07-28); this plan's stated
+baseline (`4752a7f`, 2026-07-20) is 122 PRs stale. Every status below is
+either evidence-cited (PR #, merge SHA, or file:line at `origin/main`) or
+marked **UNVERIFIED** — no status was guessed. Nothing prior in this document
+was rewritten; see the inline `[Corrected 2026-07-28 ...]` breadcrumbs above
+for the two load-bearing PR-state claims this section supersedes.
+
+### Finish line — unchanged, re-confirmed
+
+The "durable terminal result is GREEN" claim holds. **#115** (stall recovery,
+`9a01ee3c8`) and **#111** (`fix(match): correct every wrong or missing match
+terminal`, `1b8ac8f85`) are both merged. No regression found.
+
+### Current baseline — PR-state bullet corrected (see inline breadcrumb above)
+
+Only **#116** remains open (re-verified live: head `74216c9f2`, CI green,
+`mergeable: UNKNOWN`, unmerged — matches this plan's own citation exactly).
+**#117** merged `2e6a31e` (2026-07-22) and **#108** (this plan) merged
+`c1deb4f` (2026-07-28).
+
+### Audit-confirmed blocking defects — all six now closed
+
+The five seat-identity defects (`contracts-data-01`, `llm-providers-01`,
+`match-composition-01`, `projections-cli-01`, `product-viral-01`) closed via
+**#110** (`05fd8ae70`) — `tests/match/test_seat_identity_overlay.py` still
+exists at `origin/main` and still targets `tactical_split_v1_qwen.yaml` as
+`_DEMO_OVERLAY`, i.e. the cross-boundary regression this plan's Phase 2
+required is real and present, not a surrogate. `learning-adaptation-01`
+(live loop dead code) closed via **#123** (`7dc970e1c`) — reused from the
+design doc §0.4, cited there to file:line reads that session.
+
+### Design decisions — decision 3 (map/speed-range tradeoff) now has its arena
+
+Decision 1 (unbounded, objective-driven convergence) and decision 3 (asymmetric
+cover in a new versioned arena) both cite Phase 4 as the delivery vehicle.
+Phase 4 shipped: **#132** (`91c21d7d4`, "Phase 4 — objective VP victory,
+`victory_kind` classification, and the `foundry_60_asym_v1` arena"). Confirmed
+live: `contracts_data/arenas/foundry_60_asym_v1.yaml` exists, plus derivative
+variants (`_decoyobj`, `_noobj`, `_objmask`, `_corridor_spawn`,
+`_leapfrog_cover`, `_vpthresh48`, and a `foundry_60_asym_v2.yaml`) — the
+legacy `foundry_60`/`foundry` contracts were not touched (grep found no
+edits to those files' names in the arena directory listing;
+**UNVERIFIED** at the byte level this session).
+
+### Ordered execution phases — current status, evidence-cited
+
+**Phase 0 (inventory/landing hygiene) — PARTIAL.** #81/#100 confirmed
+CLOSED (`gh pr view 81/100`, both state `CLOSED`), matching this plan's own
+"superseded by #114" claim. Dead-surface deletion is **NOT confirmed done**:
+`OneShotLlmClient` is still present (`src/steel_onslaught/llm/client_http.py`,
+`tests/llm/test_client_http.py`), `ReducerModeTransition` is still present
+(`src/steel_onslaught/reducers/mode.py`), and a REST replay-endpoint comment
+survives at `src/steel_onslaught/cli/serve.py:172`. Whether these are truly
+still dead (vs. now-wired) is **UNVERIFIED** — flagging as OPEN, not closed.
+
+**Phase 1 (reliable real-provider browser match) — SUBSTANTIALLY DONE.**
+One-command launch + bootstrap generation shipped in **#113** (`1833251`);
+`so play` no longer fails as this plan's "Fix or delete `so play`" bullet
+demanded — `README.md:1-36` (also from #113) documents it as the maintained
+demo path. Combined with #115/#111 above, the terminal-defect bullet is
+closed. **UNVERIFIED:** a fresh Playwright trace covering all four UI states
+(setup/running/terminal/replay) post-#115 — only the 2026-07-21 partial run
+evidence (`docs/evidence/2026-07-21-live-run/`) exists, and this plan's own
+text already flags the `MATCH_ENDED` re-arm/supersession behaviors as
+unproven; no later evidence closing that gap was found.
+
+**Phase 2 (interesting, rule-driven combat) — SUBSTANTIALLY DONE, science-heavy.**
+Seat identity DONE (#110, above). Over-deal DONE (**#117**, `2e6a31e`).
+The 20-match-battery requirement is exceeded by orders of magnitude: dozens of
+per-overlay batteries ran between #159 and #229 (tournament arms, pair-sweep
+dose-response P1-P7, composition arms, utility-surfacing, cross-model/
+cross-architecture arms), each reporting winner-side distribution per this
+plan's own Phase 2 exit-evidence requirement. Deck-policy archetype /
+movement-multiplier declarative field: **UNVERIFIED** this session.
+
+**Phase 2.5 (objectives + keywords) — PARTIAL.** Objective-based VP victory
+DONE (#132, above). Utility cards (smoke/chaff/flares) DONE — **#136**
+(`632025ae5`), confirmed live at `contracts_data/cards/utility_{smoke,chaff,
+flares}.yaml`. **Heavy/Assault weapon keywords: NOT FOUND** — grepped
+`src/steel_onslaught/contracts/` and `match/` for the keyword mechanic
+described; only chassis/weapon *class* literals ("light"/"medium"/"heavy")
+exist, not the 40k-style resolution-modifying keyword this plan specifies.
+Still OPEN. O-GATE battery result (reused from design doc §5, not
+re-derived): CONDITIONAL PASS — 30/30 play terminals (no clock/abort) but
+0/30 VP terminals and brawler 0/30 — the objective mechanism has not yet
+decided a single match.
+
+**Phase 3 (live learning loop) — PARTIAL** (reused from design doc §5/§4.6,
+not re-derived). L-GATE-1 (wiring proof) PASSED, **#123**. L-GATE-2
+(efficacy): audit-half PASSED (**#126**), behavioral-half FAILED — the
+significance battery (`docs/evidence/2026-07-22-lgate2-significance-battery.md`,
+confirmed present at `origin/main`) found no parameterized-direction shift
+across two batteries. `MATCH_STARTED` policy provenance remains OPEN per the
+design doc's own §4.6(e).
+
+**Phase 4 (terrain/battlefield) — DONE for the v1 slice.** See Design
+decisions above; `foundry_60_asym_v1` + variants confirmed present.
+
+**Phase 5 (provider/operator matrix) — SUBSTANTIALLY DONE.** Cross-model/
+cross-architecture arms across Qwen35, Qwen27, GLM, Gemini, OpenRouter,
+DeepSeek, and Gemma landed (#141-#155) — smoke matches run per provider,
+exceeding this phase's "run a smoke match... for every catalog option" bar.
+`failure_policy: raise` on the demo overlay + a typed `plan_source` field:
+**UNVERIFIED** this session — not directly re-checked against the current
+`tactical_split_v1_qwen.yaml`.
+
+**Phase 6 (contract/dependency canonicalization) — PARTIAL.** `ledger-replay-03`
+(the audit's one uncertain finding, "post-terminal append legality") is
+RESOLVED per the design doc (§4.2 item 4, reused, not re-derived): legal,
+proven by #123's reprojection + replay-validity assertion. `extra="forbid"`
+at the envelope boundary confirmed live (`src/steel_onslaught/events/
+envelope.py:87,108`). The seat-selection path collapse (roster / catalog /
+bare-overlay → one path) is **NOT confirmed done**: the roster branch in
+current `cli/play.py` (~line 1683-1690) still loads the roster with no
+visible rebind call before composition, and the `_catalog_selection_overlay`
+function name this plan cites no longer appears anywhere in `src/` — the
+seat-rebind logic has clearly been refactored across the ~100 PRs since, but
+whether an equivalent rebind now covers the roster path specifically is
+**UNVERIFIED**, not confirmed closed.
+
+**Phase 7 (Pressure Deck UI) — PARTIAL.** `plan_committed.rationale`
+decision-row rendering DONE — **#109** (`f869d6a6b`, "render the card-cadence
+pilot reasoning in the deck"), matching this plan's own "cheapest change that
+makes the demo legible" ask. Accessibility/keyboard-focus fixes
+(`frontend-06/07`): **UNVERIFIED** this session.
+
+**Phase 8 (release/maintenance gate) — PARTIAL.** README/HANDOFF
+reconciliation DONE: both files carry the corrected demo instructions and an
+explicit HISTORICAL banner on `HANDOFF.md` (`git log -- README.md HANDOFF.md`
+shows both last touched by **#113**, `1833251`) — this phase's docs bullet
+is discharged. Full test-suite-green + Docker integration proof, and
+green-on-surrogate test retirement: **UNVERIFIED** this session (would require
+a live suite run, out of scope for a static reconciliation).
+
+### New program context (not scoped by this plan; noting existence only)
+
+Two additional programs landed on top of this plan's scope, neither of which
+this plan's phases anticipated:
+
+- **#201-#215** — a broader incentive-response empirical program (utility VP
+  bounty dose ladder, objectives-axis/geometry interaction, display-necessity
+  finding) layered on the depth space. Evidence in `docs/evidence/`.
+- **#216-#229** — a parallel steel-ONEX platform integration program (epic
+  OMN-15154): delegation-bound overlays, a Kafka terminal-event forwarder,
+  batteries runnable via the platform path, bounded semantic retry, transport-
+  error unmasking. **Per this ticket's hard exclusion: its acceptance battery
+  (OMN-15172/OMN-15166, display-salience arm #1) is mid-run and unverified as
+  of this session — noting existence only, no results cited.**
+
+### UNVERIFIED, explicit (this session)
+
+- Phase 0: whether `OneShotLlmClient`, `ReducerModeTransition`, and the REST
+  replay endpoint are truly still dead code or now wired.
+- Phase 1: a full four-state Playwright trace post-#115.
+- Phase 2: the deck-policy archetype / movement-multiplier declarative field.
+- Phase 2.5: Heavy/Assault keywords — searched and **not found** (treated as
+  OPEN, not unverified — this is evidence of absence, not absence of evidence).
+- Phase 5: `failure_policy: raise` + `plan_source` on the demo overlay.
+- Phase 6: roster-path seat-rebind unification.
+- Phase 7: accessibility/keyboard-focus fixes.
+- Phase 8: full suite green, Docker integration proof, surrogate-test
+  retirement.
+- Exact current test count (HANDOFF.md's "855 tests" figure predates ~100
+  merged PRs; not re-counted this session).
+
+### Demo-readiness delta
+
+Per finish-line criterion, current proven state vs. the acceptance matrix's
+required state. Evidence-cited; no plans, no scheduling.
+
+| Area | Required (acceptance matrix) | Current proven state | Evidence |
+| --- | --- | --- | --- |
+| Start/lifecycle | Start works once, setup hides, terminal re-arms, no refresh | Keyless happy path proven once (2026-07-21 live run) via the now-default split overlay (#113); re-arm/supersession still unproven post-stall-fix | `docs/evidence/2026-07-21-live-run/`; plan's own "unproven" note never re-verified |
+| Identity | Arena + match/overlay/catalog hashes agree | Proven for the one live run; automated hash-equality smoke **UNVERIFIED** | live-run evidence dir; Phase 1 bullet still open |
+| Seat identity | Distinct `(provider, persona)` pairs, fails closed unconditionally | PROVEN — fix + cross-boundary test both present | PR #110 `05fd8ae70`; `tests/match/test_seat_identity_overlay.py` at `origin/main` |
+| Providers | Real provider invoked; fallback classified in the ledger, not just logs | Multiple providers exercised live (#141-#155); ledger-level `plan_source` classification **UNVERIFIED** | PR range #141-#155; no `plan_source` field found this session |
+| Combat | Both sides select cards, actually change range/position, sometimes win | Over-deal selection proven intentful (#117); brawler win-rate stayed at 0/30 in the most recent measured objective battery | design doc §5 O-GATE row (reused, not re-derived) |
+| Objectives | Matches end on VP threshold, not a clock | Mechanism built (#132) and battery-tested; 0/30 matches actually ended on VP threshold | design doc §5 O-GATE row: "CONDITIONAL PASS... 0/30 VP terminals" |
+| Terminal | Every match reaches a durable terminal, no wedged RUNNING | DONE — stall + wrong/missing-terminal classes both closed | PR #115 `9a01ee3c8`, PR #111 `1b8ac8f85` |
+| Terrain | Obstacles affect movement/LOS per versioned contract | DONE — asymmetric arena shipped, blocking previously verified at 88% | PR #132 `91c21d7d4`; `contracts_data/arenas/foundry_60_asym_v1.yaml` |
+| Learning | Loop wired, promotion changes a later decision, replay-auditable | Wiring PASSED (L-GATE-1, #123); efficacy FAILED (L-GATE-2 behavioral half) | design doc §5 (reused); `docs/evidence/2026-07-22-lgate2-significance-battery.md` |
+| Architecture | Extra fields reject; one canonical seat-selection path | `extra="forbid"` confirmed at the envelope boundary; seat-path unification **UNVERIFIED** | `src/steel_onslaught/events/envelope.py:87,108`; Phase 6 above |
+| UI | Pressure Deck states + accessibility checklist complete | Decision-row rendering DONE (#109); accessibility checklist **UNVERIFIED** | PR #109 `f869d6a6b` |
+| Release | Tests/build/Docker/clean worktrees pass | README/HANDOFF reconciled (DONE, #113); full suite/Docker gate **UNVERIFIED** this session | `git log -- README.md HANDOFF.md` |
+
+**Net:** 4 of 12 acceptance-matrix rows (seat identity, terminal, terrain, and
+the docs half of release) are proven-DONE with live evidence. The rest are
+either PARTIAL with a named, cited gap (combat/objectives brawler win-rate,
+learning efficacy) or UNVERIFIED this session (providers'
+`plan_source`, architecture's path-unification, UI accessibility, full-suite/
+Docker release proof). The "which overlay is THE demo" decision stays formally
+open per governor instruction even though its stated code blockers are gone
+(see the Open-decision reality-update above) — that gap is a documentation/
+ratification gap, not a code gap.
