@@ -308,6 +308,26 @@
 # identically to BOTH lanes of this pair -- it is not a hypothesis, criterion,
 # prompt, or arm-mechanism change of any kind, and it is landed BEFORE any
 # (re-)run of either lane is scored.
+#
+# AMENDMENT (2026-07-28, BEFORE any acceptance run scored under it; the
+# hypothesis, primary statistic, decision bands, and every other clause above
+# remain UNCHANGED -- same execution-infrastructure-only class as the
+# 2026-07-27 amendment directly above). Filed as OMN-15265: the acceptance
+# run's launch-time preflight (OMN-15240) only catches an ``omnimarket``
+# drift PRESENT AT LAUNCH -- structurally blind to a concurrent session's
+# ``pull-all.sh``/merge advancing the canonical ``$OMNI_HOME/omnimarket``
+# clone HOURS into a run (the 2026-07-27 evening re-run: preflight passed
+# clean at 14:06Z, drift landed at 19:23:26Z, 20 of 30 seeds burned before
+# discovery). ``scripts/run_display_salience_battery.py`` now re-runs the
+# SAME in-process, no-network guard
+# (``omnibase_infra.cli.omnimarket_drift_guard.check_omnimarket_drift``)
+# every 5 completed seeds and aborts the whole battery immediately on any
+# trip, naming the drifted commits. Applied identically to BOTH lanes of
+# this pair (the belt lives in the shared driver, not per-overlay). Not a
+# hypothesis, criterion, prompt, or arm-mechanism change of any kind, and it
+# is landed BEFORE any (re-)run of either lane is scored. This amendment
+# does not and cannot retroactively affect any battery already in flight
+# under a prior driver build -- it governs FUTURE runs only.
 schema_version: "1"
 bus:
   kind: in_process

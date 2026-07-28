@@ -50,6 +50,12 @@
 # OMN-15172's acceptance run actually observed the defect (20 of 30 seeds
 # skipped by the pre-fix bare-``LlmSemanticError`` escape); nothing here
 # restates it.
+#
+# AMENDMENT (2026-07-28): see the PROMINENT overlay's own AMENDMENT note in
+# full (OMN-15265, driver-side mid-run ``omnimarket``-drift-recheck belt --
+# execution-infrastructure only, not a hypothesis/criterion/prompt change,
+# landed BEFORE any acceptance run is scored under it). Applies identically
+# to THIS lane; nothing here restates it.
 schema_version: "1"
 bus:
   kind: in_process

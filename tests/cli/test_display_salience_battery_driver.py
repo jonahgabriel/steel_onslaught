@@ -21,6 +21,11 @@ subprocess, no network):
   (2026-07-25 SO-COMP-CA / SO-COMP-R1 fix).
 - ``confluent_kafka`` absent -> ``KafkaLiveTransportUnavailableError``,
   never a bare ``ImportError`` traceback.
+- OMN-15265: the mid-run drift-recheck belt -- ``_drift_recheck`` loads and
+  calls the real ``omnibase_infra.cli.omnimarket_drift_guard`` module
+  (stubbed here, never the real omnibase_infra checkout) and ``main()``
+  invokes it every ``_DRIFT_RECHECK_INTERVAL_SEEDS`` completed seeds,
+  aborting the whole battery the moment it trips.
 """
 
 from __future__ import annotations
@@ -36,10 +41,12 @@ from scripts.run_display_salience_battery import (
     _BLUE,
     _CORNER_LOADOUTS,
     _CORNER_OVERLAYS,
+    _DRIFT_RECHECK_INTERVAL_SEEDS,
     _RED,
     KafkaLiveTransportUnavailableError,
     _build_kafka_transport,
     _build_parser,
+    _drift_recheck,
     _lane_overlay,
     _preflight_delegation_cli,
     _run_seed,
@@ -587,3 +594,128 @@ def test_preflight_is_a_noop_for_a_delegation_less_overlay(tmp_path: Path) -> No
     assert not any(isinstance(p, ModelSODelegationProviderBinding) for p in overlay.llm.providers)
 
     _preflight_delegation_cli(overlay)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# OMN-15265: mid-run drift-recheck belt
+# ---------------------------------------------------------------------------
+
+
+def _write_stub_drift_guard(root: Path, *, raise_error: bool) -> Path:
+    """Stand in for ``omnibase_infra.cli.omnimarket_drift_guard`` -- never the
+    real omnibase_infra checkout (importing the real PACKAGE would run
+    ``omnibase_infra/__init__.py``'s heavy transitive imports, e.g.
+    ``asyncpg``, which this repo deliberately never installs -- pyproject.toml's
+    own "Infra is intentionally excluded from this engine" comment)."""
+    guard_dir = root / "src" / "omnibase_infra" / "cli"
+    guard_dir.mkdir(parents=True, exist_ok=True)
+    if raise_error:
+        body = (
+            "class OmnimarketDriftError(RuntimeError):\n"
+            "    pass\n\n\n"
+            "def check_omnimarket_drift(omni_home=None, *, allow_drift=False):\n"
+            "    raise OmnimarketDriftError(\n"
+            "        'omnimarket venv is STALE: installed commit aaaaaaaaaaaa != '\n"
+            "        'canonical $OMNI_HOME/omnimarket HEAD bbbbbbbbbbbb'\n"
+            "    )\n"
+        )
+    else:
+        body = (
+            "class OmnimarketDriftError(RuntimeError):\n"
+            "    pass\n\n\n"
+            "def check_omnimarket_drift(omni_home=None, *, allow_drift=False):\n"
+            "    return None\n"
+        )
+    (guard_dir / "omnimarket_drift_guard.py").write_text(body, encoding="utf-8")
+    return root
+
+
+def test_drift_recheck_propagates_stubbed_guard_trip_naming_the_drift_shas(
+    tmp_path: Path,
+) -> None:
+    fake_infra = _write_stub_drift_guard(tmp_path / "fake_infra", raise_error=True)
+
+    with pytest.raises(RuntimeError, match="aaaaaaaaaaaa") as exc_info:
+        _drift_recheck(omnibase_infra_path=fake_infra, omni_home="/fake/omni_home")
+
+    assert "bbbbbbbbbbbb" in str(exc_info.value)
+    assert "STALE" in str(exc_info.value)
+
+
+def test_drift_recheck_is_a_noop_when_the_stubbed_guard_reports_clean(tmp_path: Path) -> None:
+    fake_infra = _write_stub_drift_guard(tmp_path / "fake_infra", raise_error=False)
+
+    _drift_recheck(omnibase_infra_path=fake_infra, omni_home="/fake/omni_home")  # must not raise
+
+
+def test_drift_recheck_missing_guard_module_raises_clearly(tmp_path: Path) -> None:
+    """The guard module file genuinely absent (a broken ``--omnibase-infra-path``)
+    is an execution-infra defect in its own right -- fail loudly, never silently
+    no-op (CLAUDE.md rule 8: fail-fast on missing env/state, not silent fallback)."""
+    empty_infra = tmp_path / "empty_infra"
+    empty_infra.mkdir()
+
+    with pytest.raises(Exception):  # noqa: B017 -- exact type is an implementation detail
+        _drift_recheck(omnibase_infra_path=empty_infra, omni_home="/fake/omni_home")
+
+
+# ---------------------------------------------------------------------------
+# OMN-15265: main() wires the belt in every _DRIFT_RECHECK_INTERVAL_SEEDS
+# completed seeds and aborts the whole battery the moment it trips
+# ---------------------------------------------------------------------------
+
+
+def test_drift_recheck_runs_at_the_right_cadence_when_clean(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_fakes(monkeypatch)
+    calls: list[int] = []
+
+    def _fake_drift_recheck(*, omnibase_infra_path: Path, omni_home: str | None) -> None:
+        calls.append(1)
+
+    monkeypatch.setattr("scripts.run_display_salience_battery._drift_recheck", _fake_drift_recheck)
+    n = 2 * _DRIFT_RECHECK_INTERVAL_SEEDS + 1  # 11 for the default interval of 5
+    monkeypatch.setattr(sys, "argv", _argv(n=n, seed_base=90000, state_root=tmp_path))
+
+    exit_code = main()
+
+    assert exit_code == 0
+    # Fires exactly once per completed _DRIFT_RECHECK_INTERVAL_SEEDS boundary
+    # (n // interval times), never on the remainder.
+    assert len(calls) == n // _DRIFT_RECHECK_INTERVAL_SEEDS
+    summary = json.loads((tmp_path / "battery_summary.json").read_text(encoding="utf-8"))
+    assert summary["n"] == n
+
+
+def test_drift_recheck_trip_aborts_the_battery_before_further_seeds_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_fakes(monkeypatch)
+    calls: list[int] = []
+
+    def _fake_drift_recheck(*, omnibase_infra_path: Path, omni_home: str | None) -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError(
+                "omnimarket venv is STALE: installed commit cccccccccccc != "
+                "canonical $OMNI_HOME/omnimarket HEAD dddddddddddd"
+            )
+
+    monkeypatch.setattr("scripts.run_display_salience_battery._drift_recheck", _fake_drift_recheck)
+    # Requesting far more seeds than the trip point proves the abort is real
+    # (a 20-dead-seed-style burn would otherwise keep running to completion).
+    n = 5 * _DRIFT_RECHECK_INTERVAL_SEEDS
+    monkeypatch.setattr(sys, "argv", _argv(n=n, seed_base=90000, state_root=tmp_path))
+
+    exit_code = main()
+
+    assert exit_code == 3
+    assert len(calls) == 1  # aborted before any later recheck boundary is reached
+    raw_lines = (tmp_path / "battery_raw.jsonl").read_text(encoding="utf-8").splitlines()
+    # Exactly the seeds completed before the trip -- the rest were never run.
+    assert len(raw_lines) == _DRIFT_RECHECK_INTERVAL_SEEDS
+    summary = json.loads((tmp_path / "battery_summary.json").read_text(encoding="utf-8"))
+    assert summary["aborted"] is True
+    assert "cccccccccccc" in summary["abort_reason"]
+    assert "dddddddddddd" in summary["abort_reason"]
