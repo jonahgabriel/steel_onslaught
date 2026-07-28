@@ -1124,3 +1124,29 @@ Kafka delegation (LLM plan R5) and the deferred omnimarket handler import (D3)
 remain separate integration projects unless product scope is expanded. They
 must not be used to mask a failing browser, provider, combat, learning, or UI
 gate.
+
+## 2026-07-28 session update — paper track queued
+
+Queued this session; not scheduled, not staffed, no timeline commitment.
+
+### Paper track — incentive-response program (operator-ratified queued 2026-07-28, OMN-15327)
+
+- **Deliverable:** arXiv preprint + LLM-agents workshop paper from the
+  preregistered incentive-response arc: display necessity (OBJ-MASK #215,
+  ~0% payout-alone m=-0.0218; DECOY #210/#212, ~21% display-alone g=0.2115),
+  incentive-dose interior optimum (vp_per_deploy ladder #205/#206/#209, peak
+  vp4; truncation confound eliminated by #214), display-salience dose-response
+  (arm-1, verification pending), and the falsified 4-round single-lever
+  balance program as a first-class preregistered negative. Methods section
+  leads with the reproducibility discipline: preregistration + dated
+  amendments, contamination gates, deterministic event-sourced replay,
+  hermetic frozen-environment execution, adversarial verification.
+- **Trigger (findings-gated, not dated):** pick up when arm-1 is verified AND
+  at least one headline result has a cross-model replication (crossarch
+  batteries partially cover this); never inside the Aug 4-6 demo window.
+  Known reviewer weaknesses to close before main-track: single bespoke
+  environment, uneven cross-model coverage, n=30 corners.
+- **When picked up:** draft from `docs/evidence/` (statistics already
+  computed in the battery docs); position against prompt-sensitivity /
+  reward-shaping literature; IP check is mechanism-scoped (findings are steel
+  science, not RSD internals); venue/timing = operator decision.
