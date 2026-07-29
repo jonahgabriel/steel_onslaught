@@ -42,11 +42,41 @@ Exit codes
 0   ``battery_raw.jsonl`` holds exactly the expected COMPLETED rows (each
     expected seed exactly once, no dupes, no gaps, no out-of-range seeds),
     and the ledger's completed-match set agrees with ``battery_raw.jsonl``'s
-    match_id set.
+    match_id set (after third-orphan-class reconciliation below).
 1   genuine contamination (wrong row count, duplicate seed, missing seed,
     out-of-range seed, or the ledger's completed-match set disagrees with
-    ``battery_raw.jsonl``) OR any required input is missing/unusable
-    (fail-closed).
+    ``battery_raw.jsonl`` in a way that does not reconcile) OR any required
+    input is missing/unusable (fail-closed).
+
+2026-07-29 lesson (OMN-15377), the third orphan class -- ``ended_not_in_raw``
+is NOT always genuine contamination. The battery driver's contract (see
+``run_ogate_objectives_battery.py``: "Skipped seeds are deliberately NOT
+written to battery_raw.jsonl") guarantees that when a match completes and
+persists ``match_started``/``match_ended`` to the append-only ledger but the
+post-match Kafka forward then fails, the row is correctly WITHHELD from
+``battery_raw.jsonl``, the failure is recorded in a preserved
+``battery_summary*.json``'s ``skipped_seeds``, and the seed is re-run under a
+fresh ``match_id`` that DOES land a row. That produces exactly one orphan in
+``ended_not_in_raw`` per withheld match -- indistinguishable in raw counts
+from genuine contamination, but not contamination.
+
+An orphan discharges into this third class (reported INFO, not FAIL) iff ALL
+of the following hold, mechanically, from artifacts already on disk:
+
+1. the orphan match_id's ``match_started`` event carries a ``payload.seed``
+   (the ledger is the source of truth for the seed binding -- never inferred
+   from error text or file names);
+2. that seed appears in a ``battery_summary*.json`` file's ``skipped_seeds``
+   list under ``state_root`` (the preserved skip record);
+3. that skip artifact's mtime predates the ``match_started.emitted_at`` of
+   the battery_raw.jsonl row that actually carries the same seed (the
+   "makeup run" completion) -- i.e. the skip record demonstrably existed
+   BEFORE the seed was successfully re-run, not written after the fact to
+   launder a real anomaly.
+
+Any orphan that does not provably satisfy all three stays in the FAIL path
+(fail-closed) -- this reconciliation only ever shrinks the failure set, never
+invents new failures, and it never touches the append-only events table.
 
 CI wiring: a deliberate non-goal
 ---------------------------------
@@ -68,7 +98,14 @@ import json
 import sqlite3
 import sys
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
+
+#: Named third orphan class (OMN-15377) -- a match that ledger-persisted
+#: before its post-match Kafka forward failed. Discharged to INFO, never
+#: FAIL, once reconciled against a preserved skip record (see module
+#: docstring "2026-07-29 lesson" above).
+THIRD_ORPHAN_CLASS = "ledger_persisted_forward_failed"
 
 
 class ContaminationCheckError(Exception):
@@ -129,17 +166,58 @@ class LedgerReconciliation:
         return not (self.ended_not_in_raw or self.raw_not_in_ended)
 
 
+@dataclass(frozen=True)
+class MatchStartedRecord:
+    """A single match's ``match_started`` seed + emitted_at, read from the
+    ledger. The seed binding is non-inferential: it comes only from the
+    canonical ``payload.seed`` field the runner writes at match start."""
+
+    seed: int
+    emitted_at: datetime
+
+
+@dataclass(frozen=True)
+class SkipArtifact:
+    """A parsed ``battery_summary*.json``-shaped file's skip record."""
+
+    path: Path
+    mtime: datetime
+    seeds: frozenset[int]
+
+
+@dataclass(frozen=True)
+class OrphanDischarge:
+    """An ``ended_not_in_raw`` orphan reconciled into the third orphan class
+    (``THIRD_ORPHAN_CLASS``): ledger-persisted before its post-match Kafka
+    forward failed, discharged against a preserved skip record."""
+
+    match_id: str
+    seed: int
+    skip_artifact: Path
+
+
 @dataclass
 class GateReport:
     rows_read: int
     seed_coverage: SeedCoverageResult
     reconciliation: LedgerReconciliation
     duplicate_match_ids: frozenset[str] = field(default_factory=frozenset)
+    discharged_orphans: frozenset[str] = field(default_factory=frozenset)
+    discharge_details: tuple[OrphanDischarge, ...] = field(default_factory=tuple)
+
+    @property
+    def unresolved_ended_not_in_raw(self) -> frozenset[str]:
+        """``ended_not_in_raw`` minus orphans reconciled into the third
+        class. Fail-closed: an orphan not provably discharged stays here."""
+        return self.reconciliation.ended_not_in_raw - self.discharged_orphans
 
     @property
     def clean(self) -> bool:
         return (
-            self.seed_coverage.clean and self.reconciliation.clean and not self.duplicate_match_ids
+            self.seed_coverage.clean
+            and not self.unresolved_ended_not_in_raw
+            and not self.reconciliation.raw_not_in_ended
+            and not self.duplicate_match_ids
         )
 
 
@@ -206,6 +284,125 @@ def load_ledger_match_ids(events_db: Path) -> tuple[frozenset[str], frozenset[st
         con.close()
 
 
+def load_match_started_records(
+    events_db: Path, match_ids: frozenset[str]
+) -> dict[str, MatchStartedRecord]:
+    """``match_id -> (seed, emitted_at)`` read from each match's
+    ``match_started`` event's ``payload_json``/``emitted_at`` columns. A
+    match_id whose payload/timestamp can't be parsed is simply omitted
+    (fail-closed: callers that can't resolve a seed/time for a match_id must
+    not discharge it)."""
+    if not match_ids:
+        return {}
+    con = sqlite3.connect(f"file:{events_db}?mode=ro", uri=True)
+    try:
+        placeholders = ",".join("?" for _ in match_ids)
+        query = (
+            "SELECT match_id, payload_json, emitted_at FROM events "
+            f"WHERE event_type = 'match_started' AND match_id IN ({placeholders})"
+        )
+        result: dict[str, MatchStartedRecord] = {}
+        for match_id, payload_json, emitted_at_raw in con.execute(query, tuple(match_ids)):
+            try:
+                seed = int(json.loads(payload_json)["seed"])
+                emitted_at = datetime.fromisoformat(emitted_at_raw)
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+            result[str(match_id)] = MatchStartedRecord(seed=seed, emitted_at=emitted_at)
+        return result
+    finally:
+        con.close()
+
+
+def load_skip_artifact(path: Path) -> SkipArtifact | None:
+    """Parse a ``battery_summary*.json``-shaped file for its
+    ``skipped_seeds`` record. Returns ``None`` (never raises) on any parse
+    failure or if it names no skipped seeds -- skip-artifact reconciliation
+    is best-effort supporting evidence for discharging an orphan, not a
+    required input; an artifact that can't be read simply contributes no
+    discharges (fail-closed: the orphan stays in the FAIL path)."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    seeds: set[int] = set()
+    for entry in payload.get("skipped_seeds") or []:
+        try:
+            seeds.add(int(entry["seed"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not seeds:
+        return None
+    mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    return SkipArtifact(path=path, mtime=mtime, seeds=frozenset(seeds))
+
+
+def discover_skip_artifacts(state_root: Path) -> list[SkipArtifact]:
+    """Every ``battery_summary*.json`` under ``state_root`` that names at
+    least one skipped seed, sorted by filename for deterministic output.
+    Matches the current run's own ``battery_summary.json`` (which, after a
+    clean makeup run, has an empty ``skipped_seeds`` and so is filtered out
+    by ``load_skip_artifact``) as well as any preserved pre-makeup copy an
+    operator saved under a distinct name (e.g. ``battery_summary_main_run.
+    json``) before a second invocation overwrote the canonical file."""
+    artifacts: list[SkipArtifact] = []
+    for path in sorted(state_root.glob("battery_summary*.json")):
+        artifact = load_skip_artifact(path)
+        if artifact is not None:
+            artifacts.append(artifact)
+    return artifacts
+
+
+def reconcile_forward_failure_orphans(
+    *,
+    ended_not_in_raw: frozenset[str],
+    events_db: Path,
+    skip_artifacts: list[SkipArtifact],
+    rows: list[BatteryRow],
+) -> tuple[frozenset[str], tuple[OrphanDischarge, ...]]:
+    """Discharge ``ended_not_in_raw`` orphans into the third orphan class
+    (``THIRD_ORPHAN_CLASS``) per the three-condition test in the module
+    docstring. Fail-closed at every step: any orphan that doesn't provably
+    satisfy all three conditions is left out of the returned discharge set
+    and remains in the existing FAIL path."""
+    if not ended_not_in_raw or not skip_artifacts:
+        return frozenset(), ()
+
+    seed_to_makeup_match_id = {row.seed: row.match_id for row in rows}
+    makeup_match_ids = frozenset(seed_to_makeup_match_id.values())
+    records = load_match_started_records(events_db, ended_not_in_raw | makeup_match_ids)
+
+    discharged: set[str] = set()
+    details: list[OrphanDischarge] = []
+    for match_id in sorted(ended_not_in_raw):
+        orphan_record = records.get(match_id)
+        if orphan_record is None:
+            continue  # condition 1 fails: no ledger-bound seed for this match_id
+        seed = orphan_record.seed
+
+        makeup_match_id = seed_to_makeup_match_id.get(seed)
+        if makeup_match_id is None:
+            continue  # no battery_raw row carries this seed at all
+        makeup_record = records.get(makeup_match_id)
+        if makeup_record is None:
+            continue  # can't establish when the makeup run actually started
+
+        for artifact in skip_artifacts:
+            if seed not in artifact.seeds:
+                continue  # condition 2 fails for this artifact
+            if artifact.mtime >= makeup_record.emitted_at:
+                continue  # condition 3 fails: artifact does not predate the makeup run
+            discharged.add(match_id)
+            details.append(
+                OrphanDischarge(match_id=match_id, seed=seed, skip_artifact=artifact.path)
+            )
+            break
+
+    return frozenset(discharged), tuple(details)
+
+
 def build_report(state_root: Path, *, seed_base: int, n: int) -> GateReport:
     raw_path = state_root / "battery_raw.jsonl"
     events_db = state_root / "events.sqlite3"
@@ -225,11 +422,21 @@ def build_report(state_root: Path, *, seed_base: int, n: int) -> GateReport:
         battery_raw_ids=frozenset(match_ids),
     )
 
+    skip_artifacts = discover_skip_artifacts(state_root)
+    discharged_orphans, discharge_details = reconcile_forward_failure_orphans(
+        ended_not_in_raw=reconciliation.ended_not_in_raw,
+        events_db=events_db,
+        skip_artifacts=skip_artifacts,
+        rows=rows,
+    )
+
     return GateReport(
         rows_read=len(rows),
         seed_coverage=seed_coverage,
         reconciliation=reconciliation,
         duplicate_match_ids=duplicate_match_ids,
+        discharged_orphans=discharged_orphans,
+        discharge_details=discharge_details,
     )
 
 
@@ -289,13 +496,26 @@ def main(argv: list[str] | None = None) -> int:
             f"ANOMALY -- match_ended with no match_started (should be structurally "
             f"impossible): {sorted(rec.orphaned_match_ended)}"
         )
+    unresolved = report.unresolved_ended_not_in_raw
     print(
-        f"Ledger match_ended vs battery_raw match_id sets bijective: {'yes' if rec.clean else 'NO'}"
+        f"Ledger match_ended vs battery_raw match_id sets bijective: "
+        f"{'yes' if not unresolved and not rec.raw_not_in_ended else 'NO'}"
     )
-    if rec.ended_not_in_raw:
+    if report.discharged_orphans:
         print(
-            f"  CONTAMINATION: ledger shows COMPLETED matches with no battery_raw row: "
-            f"{sorted(rec.ended_not_in_raw)}"
+            f"INFO -- {THIRD_ORPHAN_CLASS} (ledger-persisted before post-match Kafka "
+            f"forward failure, reconciled against a preserved skip record): "
+            f"{len(report.discharged_orphans)}"
+        )
+        for discharge in report.discharge_details:
+            print(
+                f"  INFO   {discharge.match_id} seed={discharge.seed} "
+                f"skip_artifact={discharge.skip_artifact}"
+            )
+    if unresolved:
+        print(
+            f"  CONTAMINATION: ledger shows COMPLETED matches with no battery_raw row "
+            f"and no reconciled skip record: {sorted(unresolved)}"
         )
     if rec.raw_not_in_ended:
         print(
@@ -310,7 +530,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"\nOK: battery_raw.jsonl holds exactly the {args.n} expected COMPLETED rows "
         f"(seeds {args.seed_base + 1}..{args.seed_base + args.n}), no dupes, no gaps, "
-        f"and the ledger's completed-match set agrees with it."
+        f"and the ledger's completed-match set agrees with it "
+        f"(after reconciling {len(report.discharged_orphans)} {THIRD_ORPHAN_CLASS} orphan(s))."
     )
     return 0
 
