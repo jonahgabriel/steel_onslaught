@@ -12,7 +12,7 @@ from uuid import UUID
 
 import pytest
 
-from steel_onslaught.bus.protocol import EventHandler
+from steel_onslaught.bus.protocol import AdmissionObserver, EventHandler
 from steel_onslaught.commands.authority import (
     ModelSOAuthenticatedSession,
     ModelSOHumanSeatAuthorityClaim,
@@ -59,6 +59,7 @@ from steel_onslaught.contracts.player_selection import (
 from steel_onslaught.events.envelope import ModelSOEventEnvelope, SOEventType
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.events.payloads import ModelSOMatchScoredPayload
+from steel_onslaught.ledger.admission_scoped import AdmissionScopedLedger
 from steel_onslaught.llm.schemas import ModelSOLlmPilotSelection, ProtocolLlmCompletionObserver
 from steel_onslaught.match import composition
 from steel_onslaught.match.card_adapter import CardRunnerAdapter
@@ -78,10 +79,17 @@ from steel_onslaught.reducers import scoring as scoring_module
 class _Bus:
     def __init__(self) -> None:
         self.handlers: list[EventHandler] = []
+        self.admission_observers: list[AdmissionObserver] = []
 
     def publish(self, event: ModelSOEventEnvelope) -> None:
         for handler in tuple(self.handlers):
             handler(event)
+        # Faithful substitution (OMN-15490): the real bus reports exactly one
+        # admission verdict per event after dispatch.  Nothing in this fake
+        # refuses, so every event is admitted -- an observer wired here is
+        # exercised rather than silently stranded.
+        for observer in tuple(self.admission_observers):
+            observer.on_event_admitted(event)
 
     def subscribe(
         self,
@@ -91,6 +99,18 @@ class _Bus:
         del event_types
         self.handlers.append(handler)
         return len(self.handlers)
+
+    def subscribe_admission(
+        self,
+        handler: EventHandler,
+        event_types: list[SOEventType] | None = None,
+    ) -> int:
+        # OMN-15490: dispatch position is identical; the flag only decides
+        # whether a refusal rolls the publish tree back.
+        return self.subscribe(handler, event_types)
+
+    def enlist_admission_observer(self, observer: AdmissionObserver) -> None:
+        self.admission_observers.append(observer)
 
     def unsubscribe(self, token: int) -> None:
         del token
@@ -549,7 +569,10 @@ def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
 
     assert stack.identity is identity
     assert stack.runner.identity is identity
-    assert stack.ledger is ledger
+    # OMN-15490: the stack exposes the admission-scoped facade, which must wrap
+    # the INJECTED port -- the assembly still builds no ledger of its own.
+    assert isinstance(stack.ledger, AdmissionScopedLedger)
+    assert stack.ledger.durable_ledger is ledger
     assert stack.bus is bus
     assert stack.runtime.match_id == stack.match_id
     assert stack.runtime.progress_gate is progress_gate

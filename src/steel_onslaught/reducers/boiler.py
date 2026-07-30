@@ -215,9 +215,9 @@ class ReducerBoiler:
             modifier_mode_switch_heat_delta=old_boiler.modifier_mode_switch_heat_delta,
         )
 
-        new_mech = mech.model_copy(update={"boiler": new_boiler})
+        new_mech = mech.evolve(update={"boiler": new_boiler})
         new_mech_states = {**state.mech_states, self._mech_id: new_mech}
-        new_state = state.model_copy(update={"mech_states": new_mech_states})
+        new_state = state.evolve(update={"mech_states": new_mech_states})
 
         subject = ModelSOEventSubject(
             mech_id=self._mech_id,

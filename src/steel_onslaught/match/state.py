@@ -5,9 +5,12 @@ reducer tasks (19-26: movement, sensors, pilot tick, boiler, mode, weapons,
 damage, failure cascade) run in parallel and are forbidden from editing this
 file, so every field they read or replace must already exist here.
 
-All models are frozen — reducers evolve state by constructing replacement
-instances (full construction re-runs validators; prefer it over
-``model_copy(update=...)`` when an invariant could be affected).
+All models are frozen AND fail-fast on every transition (OMN-15490): they
+derive from ``ModelFrozenValidated``, so reducers evolve state with
+``evolve(update=...)``, which re-runs every validator by full construction.
+``model_copy(update=...)`` is BANNED on these models — it writes straight into
+``__dict__`` and skips every field constraint and ``after`` validator, which
+silently admits invariant-violating canonical state instead of failing.
 """
 
 from __future__ import annotations
@@ -15,11 +18,11 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.mode import ModeId
-from steel_onslaught.immutable import FrozenMapping
+from steel_onslaught.immutable import FrozenMapping, ModelFrozenValidated
 from steel_onslaught.match.utility_effects import ModelSOUtilityEffect
 from steel_onslaught.pilots.schemas import ModelSOPosition
 
@@ -75,7 +78,7 @@ class SOMatchEndReason(StrEnum):
 # ---------------------------------------------------------------------------
 
 
-class ModelSOMechRuntimeState(BaseModel):
+class ModelSOMechRuntimeState(ModelFrozenValidated):
     """Runtime state of one fielded mech, owned by the reducer chain.
 
     Field consumers (Tasks 19-26):
@@ -211,7 +214,7 @@ class ModelSOMechRuntimeState(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ModelSOMatchState(BaseModel):
+class ModelSOMatchState(ModelFrozenValidated):
     """Canonical state of one match, folded from the event ledger.
 
     ``winner_id`` is the winning *player* id (``None`` on draws).

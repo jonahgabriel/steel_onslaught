@@ -111,6 +111,7 @@ from steel_onslaught.learning.promotion_fold import rehydrate_current_policy
 from steel_onslaught.learning.protocols import ModelSONumericBound
 from steel_onslaught.learning.selection_outcome import SelectionOutcomeEvaluator
 from steel_onslaught.learning.spec_adapter import bounds_for_archetype
+from steel_onslaught.ledger.admission_scoped import AdmissionScopedLedger
 from steel_onslaught.ledger.protocol import QueryableEventLedger
 from steel_onslaught.ledger.sqlite_ledger import ModelSOSQLiteLedgerConfig, SQLiteLedger
 from steel_onslaught.llm.client_delegation import LlmBusDelegationClient
@@ -2388,7 +2389,17 @@ def assemble_match_with_dependencies(
         )
         if card_adapter is not None:
             card_adapter = replace(card_adapter, programmers=match_card_programmers)
-    dependencies.bus.subscribe(dependencies.ledger.append)
+    # OMN-15490: every in-process ledger surface for this match goes through the
+    # admission-scoped facade, which stages an event and only writes it through
+    # once the fold (the admission subscriber, registered inside MatchRunner
+    # below) has accepted it.  Registration position is unchanged — first, so
+    # later subscribers of the same event still read their own writes; reads go
+    # through the facade so a staged event is visible to them.  Previously
+    # append autocommitted and the fold's ReducerError landed afterwards,
+    # permanently contaminating an append-only store that has no retract.
+    admission_ledger = AdmissionScopedLedger(dependencies.ledger)
+    dependencies.bus.subscribe(admission_ledger.append)
+    dependencies.bus.enlist_admission_observer(admission_ledger)
     resolved_progress_gate = progress_gate or dependencies.progress_gate or ConditionProgressGate()
     runner = MatchRunner(
         identity=identity,
@@ -2421,7 +2432,7 @@ def assemble_match_with_dependencies(
         emit=dependencies.bus.publish,
         event_factory=dependencies.event_factory,
         replay_validity_check=lambda: verify_replay_validity(
-            dependencies.ledger,
+            admission_ledger,
             identity.match_id,
             runner.fold.state,
             catalog=dependencies.catalog,
@@ -2442,7 +2453,7 @@ def assemble_match_with_dependencies(
         progress_gate=resolved_progress_gate,
         terminal_evidence=lambda match_id: any(
             event.event_type is SOEventType.MATCH_ENDED
-            for event in dependencies.ledger.read_all(match_id)
+            for event in admission_ledger.read_all(match_id)
         ),
     )
 
@@ -2454,7 +2465,7 @@ def assemble_match_with_dependencies(
 
     if learning_artifacts is not None:
         learning_handler = AfterMatchLearningHandler(
-            ledger=dependencies.ledger,
+            ledger=admission_ledger,
             artifacts=learning_artifacts,
             promotion=live_learning,
             emit=dependencies.bus.publish if live_learning is not None else None,
@@ -2481,7 +2492,7 @@ def assemble_match_with_dependencies(
         identity=identity,
         bus=dependencies.bus,
         runner=runner,
-        ledger=dependencies.ledger,
+        ledger=admission_ledger,
         scoring=scoring,
         leaderboard=dependencies.leaderboard,
         event_factory=dependencies.event_factory,
