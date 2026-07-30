@@ -133,6 +133,7 @@ def _lane_overlay(
     max_value: float,
     learning_player: str,
     step: float,
+    genesis: float = _GENESIS["aggression"],
 ) -> ModelSOApplicationOverlay:
     base = load_application_overlay(overlay_path)
     updates = _base_overlay_updates(base, state_root)
@@ -140,7 +141,7 @@ def _lane_overlay(
         kind="win_damage_differential_v1",
         archetype=_ARCHETYPE,
         learning_player_id=learning_player,
-        genesis_parameters=dict(_GENESIS),
+        genesis_parameters={"aggression": genesis},
         parameter="aggression",
         step=step,
         max_value=max_value,
@@ -352,9 +353,23 @@ def _summarize(rows: list[dict[str, Any]], *, learning_player: str) -> dict[str,
     }
 
 
+def _phase_caps(args: argparse.Namespace) -> tuple[float, float]:
+    """Baseline/post evaluator ``max_value`` caps derived from ``--genesis``/``--step``.
+
+    Baseline flies generation 0 capped at ``genesis`` (a candidate would have
+    to exceed the cap to promote, so promotion is impossible); post is capped
+    at ``genesis + step`` so the chain freezes at generation 1 (OMN-15488:
+    the ``--genesis`` knob generalizes the prior hardcoded ``_GENESIS["aggression"]
+    == 1.0`` so a decisive endpoint-regime contrast, e.g. 0.5 -> 2.5, can be
+    run without touching the driver).
+    """
+    return args.genesis, args.genesis + args.step
+
+
 def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> int:
     learning_player, learning_mech = _SEATS[args.seat]
     rows: list[dict[str, Any]] = []
+    baseline_cap, post_cap = _phase_caps(args)
 
     def _run_phase(
         phase: str, *, max_value: float, seeds: list[int], stop_on_promotion: bool
@@ -365,6 +380,7 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
             max_value=max_value,
             learning_player=learning_player,
             step=args.step,
+            genesis=args.genesis,
         )
         phase_rows: list[dict[str, Any]] = []
         for seed in seeds:
@@ -396,7 +412,7 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
 
     baseline = _run_phase(
         "baseline",
-        max_value=_GENESIS["aggression"],  # candidate would exceed the cap: never promotes
+        max_value=baseline_cap,  # == genesis: candidate would exceed the cap, never promotes
         seeds=[4000 + index for index in range(1, args.n + 1)],
         stop_on_promotion=False,
     )
@@ -422,7 +438,7 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
 
     post = _run_phase(
         "post",
-        max_value=_GENESIS["aggression"] + args.step,  # freeze the chain at generation 1
+        max_value=post_cap,  # == genesis + step: freeze the chain at generation 1
         seeds=[4200 + index for index in range(1, args.n + 1)],
         stop_on_promotion=False,
     )
@@ -442,6 +458,7 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
     )
     summary = {
         "seat": args.seat,
+        "genesis": args.genesis,
         "step": args.step,
         "baseline": _summarize(baseline, learning_player=learning_player),
         "promote": _summarize(promote, learning_player=learning_player),
@@ -594,6 +611,19 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n", type=int, default=10, help="matches per before/after phase")
     parser.add_argument(
         "--step", type=float, default=0.25, help="aggression perturbation per promotion"
+    )
+    parser.add_argument(
+        "--genesis",
+        type=float,
+        default=_GENESIS["aggression"],
+        help=(
+            "starting aggression value (OMN-15488): the baseline phase caps the "
+            "evaluator at this value (promotion impossible) and the post phase caps "
+            "it at genesis + step (chain frozen at generation 1). Default 1.0 "
+            "preserves the #126/#128 configuration; a decisive endpoint-regime "
+            "contrast (e.g. --genesis 0.5 --step 2.0) spans both named regimes of "
+            "the aggression semantics sentence without any other driver change."
+        ),
     )
     parser.add_argument(
         "--promote-attempts",

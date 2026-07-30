@@ -1,0 +1,59 @@
+# OMN-15488 -- mirror-pairing pilot spec, blue seat.
+#
+# NEW pilot spec, in a DEDICATED registry directory for this overlay
+# (contracts_data/pilots/tactical_split_overdeal_v1_delegation_learning/),
+# NOT the shared contracts_data/pilots/fire_dense_qwen/ that
+# tactical_split_overdeal_v1_qwen.yaml (and several sibling
+# tactical_split_overdeal_utility_asym_*_qwen.yaml overlays, including the
+# decoy-objective one exercised by
+# tests/match/test_objective_scoring_decoy.py) reference. This was an
+# empirical finding while building this overlay, not a stylistic choice:
+# ``_validate_llm_pilot_bindings`` (src/steel_onslaught/match/composition.py)
+# validates EVERY spec in a registry directory unconditionally (whenever a
+# caller does not pass ``selected_pilot_spec_ids``), regardless of which
+# overlay's card_catalog.programmers actually reference it. Adding this spec
+# (``provider: qwen35_mirror_blue``) directly into the shared
+# ``fire_dense_qwen/`` directory broke every OTHER overlay sharing that
+# registry whose own ``llm.providers`` list does not declare
+# ``qwen35_mirror_blue`` -- proven by
+# ``tests/match/test_objective_scoring_decoy.py::test_utility_incentive_on_a_decoy_arena_is_rejected_at_composition``
+# failing with ``ProviderRegistryError: unknown_provider: 'qwen35_mirror_blue'``
+# when this spec lived there. This dedicated directory (this file plus a
+# byte-identical copy of ``fire_dense_qwen/llm_qwen35.yaml``, see that copy's
+# own header) isolates the blast radius to this ticket's own overlay,
+# matching the display-salience arm's precedent of a dedicated
+# ``pilots/delegation_salience/`` registry rather than sharing
+# ``fire_dense_qwen/``.
+#
+# Same persona (berserker) as pilot.llm.qwen35 -- this is the whole point of
+# the L-GATE-2 decisive battery's mirror pairing (player.blue flies the SAME
+# berserker chassis/pilot as the learning seat, player.red) -- but a DISTINCT
+# ``provider`` id (``qwen35_mirror_blue`` vs ``qwen35``).
+#
+# WHY A DIFFERENT PROVIDER ID FOR AN OTHERWISE-IDENTICAL PILOT.
+# ``validate_seat_programmer_identity`` (src/steel_onslaught/match/composition.py)
+# unconditionally rejects two live card seats that resolve to the SAME
+# (provider, persona) identity -- "the check that stops a live match from
+# running an UNANNOUNCED mirror" (its own docstring). Reusing pilot.llm.qwen35
+# verbatim on both sides raises ``SeatIdentityError`` at match composition
+# (proven empirically while building this ticket:
+# `SeatIdentityError: live card seats must resolve to distinct card
+# programmer identities (model + persona); got blue='berserker'@'qwen35',
+# red='berserker'@'qwen35'`). This spec's ``provider: qwen35_mirror_blue``
+# resolves to a SECOND ``onex_delegation`` provider entry on the
+# tactical_split_overdeal_v1_delegation_learning.yaml overlay that is
+# functionally identical to ``qwen35`` in every dispatched field (backend_id,
+# model, task_type, timeout_seconds) -- an ANNOUNCED mirror, not an
+# unannounced one: the seat-identity check passes because the provider LABEL
+# differs, while the served model/backend are byte-identical to the learning
+# seat's.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen35_berserker_mirror_blue
+display_name: "Qwen3.6-35B Berserker Mirror (blue seat, stickybeatz-studio MLX)"
+archetype: llm
+lineage:
+  parent: pilot.llm.qwen35
+parameters:
+  persona: berserker
+  provider: qwen35_mirror_blue
