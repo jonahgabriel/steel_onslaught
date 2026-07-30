@@ -12,11 +12,61 @@
 # reuses the shared foundry_60 arena already used by the qwen35/qwen27/openrouter
 # lanes; no new arena content is introduced.
 #
-# endpoint_url is a bare Tailscale MagicDNS short hostname (no IP literal), the
-# same shape already committed for the qwen35/qwen27/deepseek local lanes
-# (omninode-pc.tail75df5e.ts.net, stickybeatz-studio.tail75df5e.ts.net) --
-# passes scripts/check_sanitization.py (it only forbids raw CGNAT/LAN IP
-# literals and absolute developer-machine paths, not hostnames).
+# MIGRATED to the delegation-backed provider shape (OMN-15174 batch 1,
+# 2026-07-30). The provider binding moved from ``kind: openai_compatible``
+# (direct HTTP to stickybeatz-studio:8401 via OpenAICompatibleClient) to
+# ``kind: onex_delegation`` (routed through the platform's
+# node_delegate_skill_orchestrator via LlmBusDelegationClient), pinning
+# ``backend_id: local-coder-mlx``.
+#
+# WHY THIS OVERLAY AND NO OTHER. Migrating openai_compatible ->
+# onex_delegation is NOT behaviour-preserving: LlmBusDelegationClient does
+# not forward ``temperature`` (OpenAICompatibleClient does --
+# src/steel_onslaught/llm/client_http.py), collapses the system/user message
+# split into one flat ``prompt`` string, expresses ``json_mode`` as an
+# appended prompt sentence rather than a wire parameter, rejects
+# ``image_attachment`` outright, and has no ``retry`` field at all. Any
+# overlay whose battery numbers are published under docs/evidence/ would
+# therefore have those numbers silently confounded by migration -- the exact
+# provider-confound the display-salience PROMINENT overlay's ALTERNATIVE
+# READINGS section names and rejects, and a violation of this repo's
+# "byte-frozen so historical replays remain valid" convention.
+#
+# local_200_v1 is the ONE overlay in the corpus where migration is provably
+# identity-preserving:
+#   * its ``model`` string matches local-coder-mlx's ``model_name`` VERBATIM
+#     (mlx-community/Qwen3.6-35B-A3B-8bit), and that backend resolves to the
+#     same stickybeatz-studio:8401 endpoint this overlay already named -- so
+#     the served model and host are unchanged, not merely "similar";
+#   * it has ZERO docs/evidence/ references -- no battery result exists to
+#     invalidate;
+#   * it is a binding-proof overlay, not a playable battery lane (see the
+#     "NOT card mode" note above), so the prompt-shape/temperature deltas
+#     change no measured statistic.
+# Every other openai_compatible overlay is blocked on at least one of those
+# three counts; the corpus census in
+# tests/contracts/test_overlay_delegation_migration_omn15174.py pins each
+# one's blocking reason and the remaining denominator.
+#
+# ``timeout_seconds`` is raised 45.0 -> 180.0 (matching the proven-live
+# delegation lanes foundry_60_asym_v1_salience_*_delegation.yaml): the
+# delegation path spawns an ``onex node`` subprocess in front of the same
+# MLX server, so the direct-HTTP budget no longer bounds the same work.
+# This is a deliberate, recorded config change, not an oversight.
+#
+# ``endpoint_url``/``secret_ref``/``retry`` are GONE from this binding --
+# ModelSODelegationProviderBinding does not carry them (the endpoint is
+# resolved platform-side from backend_id, secrets are resolved by the
+# delegation node, retries are the node's). The former bare-base-URL
+# regression guard that lived on this overlay's test is replaced by a
+# backend_id/model identity assertion, which is the equivalent guard on the
+# delegation shape.
+#
+# ``omnibase_infra_path``/``state_root`` are explicit overlay config, not
+# env-derived: this codebase's DI-confinement gate (tests/test_di_enforcement
+# .py) permits zero os.environ reads anywhere. Both are used verbatim as
+# given, relative to the process CWD -- same values the proven-live
+# display-salience delegation lanes carry.
 schema_version: "1"
 bus:
   kind: in_process
@@ -53,17 +103,16 @@ contracts:
   arena_id: foundry_60
 llm:
   providers:
-    - kind: openai_compatible
+    - kind: onex_delegation
       provider_id: local_200
-      endpoint_url: http://stickybeatz-studio:8401/v1/chat/completions
+      backend_id: local-coder-mlx
+      task_type: agent_delegation
+      source: external-client
       model: mlx-community/Qwen3.6-35B-A3B-8bit
-      secret_ref: null
-      timeout_seconds: 45.0
       max_tokens: 2048
-      retry:
-        max_attempts: 1
-        initial_backoff_seconds: 0.0
-        backoff_multiplier: 1.0
+      timeout_seconds: 180.0
+      omnibase_infra_path: ../omnibase_infra
+      state_root: .onex_state/steel_onslaught/local_200_v1/delegation_state
   model_identities:
     - schema_version: "1"
       kind: steel_onslaught.model_identity
