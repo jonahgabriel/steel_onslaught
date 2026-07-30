@@ -76,21 +76,30 @@ class ModelSOLlmCompletionRequest(_ClosedStrictModel):
     # ``OpenAICompatibleClient.complete`` emitting a byte-identical string
     # ``content`` field for every pre-existing (text-only) arm.
     image_attachment: ModelSOLlmImageAttachment | None = None
-    # OMN-15522: caller-selected signal for whether the response this
-    # request expects is the closed per-tick tactical-decision shape
-    # (``{action, action_params, confidence, rationale}``). Defaults
-    # ``True`` so every pre-existing call site (``LLMPilot``'s plain
-    # ``decide()`` path, ``llm/tuner.py``) keeps its byte-identical
-    # behavior without modification. ``LLMProgrammingPilot`` (card-mode
-    # whole-round programming) sets this ``False``: its response is a
-    # register/card plan, not a tactical decision, and forwarding the
-    # tactical contract on that path made the platform's delegation
-    # quality gate reject a correct programming response as
-    # ``SCHEMA_VIOLATION`` (see ``client_delegation.py``'s ``complete()``,
-    # which is the only consumer of this field -- every client without a
-    # wire-level response-contract concept, e.g. ``OpenAICompatibleClient``,
-    # ignores it, since response-shape validation there is owned entirely
-    # by steel's own parsers regardless of this flag).
+    # OMN-15522 (round 4 / AMENDMENT 2): caller-selected signal for WHICH
+    # closed wire response contract this request expects back -- the
+    # per-tick tactical-decision shape (``{action, action_params,
+    # confidence, rationale}``) when ``True``, or the whole-round
+    # card-programming shape (``{registers, confidence, rationale}``,
+    # optional ``spatial_read``) when ``False``. Defaults ``True`` so every
+    # pre-existing call site (``LLMPilot``'s plain ``decide()`` path,
+    # ``llm/tuner.py``) keeps its byte-identical behavior without
+    # modification. ``LLMProgrammingPilot`` (card-mode whole-round
+    # programming) sets this ``False``: its response is a register/card
+    # plan, not a tactical decision, and forwarding the tactical contract
+    # on that path made the platform's delegation quality gate reject a
+    # correct programming response as ``SCHEMA_VIOLATION``. Round 3
+    # (as originally shipped) omitted ``response_contract`` entirely on
+    # ``False`` rather than sending an alternate contract; the OMN-15488
+    # attempt-3 canary proved omitting it makes the platform validate
+    # against its own DEFAULT schema set instead, which also rejects the
+    # registers shape -- so ``False`` now selects
+    # ``_PROGRAMMING_RESPONSE_CONTRACT`` rather than omission (see
+    # ``client_delegation.py``'s ``complete()``, which is the only
+    # consumer of this field -- every client without a wire-level
+    # response-contract concept, e.g. ``OpenAICompatibleClient``, ignores
+    # it, since response-shape validation there is owned entirely by
+    # steel's own parsers regardless of this flag).
     wants_tactical_response_contract: StrictBool = True
 
 
@@ -193,18 +202,27 @@ class SecretResolutionError(RuntimeError):
 class LlmTransportError(RuntimeError):
     """Sanitized transport failure carrying only retry classification.
 
-    ``argv``/``exit_code``/``stderr`` are optional, CLI-subprocess-specific
-    diagnostic fields (OMN-15240): ``None`` for every transport that isn't a
-    subprocess exit (HTTP, semantic, boundary). When set (by
+    ``argv``/``exit_code``/``stderr``/``stdout`` are optional,
+    CLI-subprocess-specific diagnostic fields (OMN-15240, ``stdout`` added
+    OMN-15535): ``None`` for every transport that isn't a subprocess exit
+    (HTTP, semantic, boundary). When set (by
     :class:`~steel_onslaught.llm.client_delegation.SubprocessDelegationCliRunner`
-    on a non-zero ``onex`` CLI exit), ``stderr`` carries the COMPLETE,
-    unsliced subprocess stderr -- deliberately not the ``[-2000:]`` slice
-    baked into ``message`` -- so a caller building a persisted record (a
-    battery's skip entry, a durable log line) can preserve the full
-    diagnostic text even when its own display layer truncates. Root cause
-    this closes: a ~190-char benign ``uv`` ``VIRTUAL_ENV`` warning at the
-    front of stderr previously ate an entire downstream 240-char console
-    truncation budget, hiding the real CLI error for every affected caller.
+    on a non-zero ``onex`` CLI exit), ``stderr``/``stdout`` carry the
+    COMPLETE, unsliced subprocess streams -- deliberately not the
+    ``[-2000:]`` slices baked into ``message`` -- so a caller building a
+    persisted record (a battery's skip entry, a durable log line) can
+    preserve the full diagnostic text even when its own display layer
+    truncates. Root cause OMN-15240 closed: a ~190-char benign ``uv``
+    ``VIRTUAL_ENV`` warning at the front of stderr previously ate an entire
+    downstream 240-char console truncation budget, hiding the real CLI
+    error for every affected caller. Root cause OMN-15535 closes: in
+    ``--output receipt`` mode the CLI's actual diagnostic (the
+    ``ModelSkillResult`` JSON, including the delegation quality gate's
+    ``SCHEMA_VIOLATION`` detail) is printed to STDOUT, not stderr -- prior
+    to OMN-15535 that stream was never read on a non-zero exit at all, so
+    the one durable diagnostic surface for a receipt-mode failure was
+    silently dropped rather than merely truncated (OMN-15488 comment
+    ``bd30cc1b``).
     """
 
     def __init__(
@@ -215,12 +233,14 @@ class LlmTransportError(RuntimeError):
         argv: tuple[str, ...] | None = None,
         exit_code: int | None = None,
         stderr: str | None = None,
+        stdout: str | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.argv = argv
         self.exit_code = exit_code
         self.stderr = stderr
+        self.stdout = stdout
 
 
 class LlmCompletionBoundaryError(LlmTransportError):

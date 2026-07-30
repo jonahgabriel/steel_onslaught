@@ -117,7 +117,16 @@ _BLUE_MIRROR_LOADOUT = (
 #     content change to the pre-registration of record -- not an inline
 #     defect correction -- so the pin is re-taken to cover the amended
 #     header rather than left stale against pre-amendment text.
-_PREREG_HEADER_SHA256 = "36c8a569c87ca599ecd48a847da31bf00002d82982ce23dc4acfcf954174589c"
+#   round 4 -- AMENDMENT 2 appended verbatim (OMN-15522 fix lane): the
+#     round-3 fix (omit the wire response contract on the programming
+#     path) was disproven live by the attempt-3 canary (OMN-15488 comment
+#     bd30cc1b) -- with no caller-supplied contract, the platform
+#     validates against its own default schema set, which also rejects
+#     the registers shape. The corrected configuration sends
+#     _PROGRAMMING_RESPONSE_CONTRACT instead of omitting. Again a genuine
+#     content change to the pre-registration of record, so the pin is
+#     re-taken.
+_PREREG_HEADER_SHA256 = "fbae23aa211281e6464336401c187d8d2ad2b9609c18352ae1791189cece2ce7"
 
 _PREREG_MARKERS = (
     "PRE-REGISTERED HYPOTHESES",

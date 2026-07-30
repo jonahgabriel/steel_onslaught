@@ -62,29 +62,43 @@ OMN-15170's driver test (``tests/live/``), not by this module's own
 (hermetic, fake-runner) unit tests.
 
 **Contract-declared response validation (OMN-15193, caller-selected per
-OMN-15522):** ``ModelDelegateSkillRequest`` gained an optional
-``response_contract`` field (a JSON Schema) that, when set, makes the
-platform's delegation quality gate validate the response structurally
-against it instead of running the generic task-class keyword heuristics.
-``complete()`` below forwards ``_TACTICAL_RESPONSE_CONTRACT`` -- the closed
-tactical-decision shape derived from this repo's own
-``_ModelSOLlmPilotResponse`` decision-parsing contract
-(``steel_onslaught.llm.pilot``) -- only when the request's
-``wants_tactical_response_contract`` is ``True`` (the default). This client
-is shared, one instance per ``provider_id``, across both the plain
-per-tick ``decide()`` path (``LLMPilot``, whose response really is the
-tactical-decision shape -- the default preserves its wire payload
-byte-identically) and card-mode whole-round programming (``llm/programming.py``
-``LLMProgrammingPilot``, whose response is a register/card plan, an entirely
-different envelope). OMN-15522: forwarding the tactical contract
-unconditionally on the programming path made the quality gate reject a
-correct programming response as ``SCHEMA_VIOLATION`` (OMN-15482 comment
-14468f08, OMN-15488 canary) -- the model's response was schema-correct for
-what it was asked to produce, just validated against the wrong schema.
-``LLMProgrammingPilot`` now opts out (``wants_tactical_response_contract=
-False``), matching the HTTP path's semantics, where response-shape
-validation has never involved a wire-declared contract at all and is owned
-entirely by steel's own parsers.
+OMN-15522, corrected round 4/AMENDMENT 2):** ``ModelDelegateSkillRequest``
+gained an optional ``response_contract`` field (a JSON Schema) that, when
+set, makes the platform's delegation quality gate validate the response
+structurally against it instead of running the generic task-class keyword
+heuristics. This client is shared, one instance per ``provider_id``, across
+both the plain per-tick ``decide()`` path (``LLMPilot``, whose response
+really is the tactical-decision shape) and card-mode whole-round programming
+(``llm/programming.py`` ``LLMProgrammingPilot``, whose response is a
+register/card plan, an entirely different envelope). ``complete()`` below
+selects WHICH contract to forward from the request's
+``wants_tactical_response_contract`` flag -- it is never omitted:
+
+- ``True`` (the default, the plain ``decide()`` path): forwards
+  ``_TACTICAL_RESPONSE_CONTRACT``, the closed tactical-decision shape
+  derived from this repo's own ``_ModelSOLlmPilotResponse`` decision-parsing
+  contract (``steel_onslaught.llm.pilot``). Byte-identical to pre-OMN-15522
+  behavior for this path.
+- ``False`` (card-mode programming): forwards
+  ``_PROGRAMMING_RESPONSE_CONTRACT``, the closed whole-round register-plan
+  shape derived from this repo's own ``_ModelSOLlmProgrammingResponse``
+  parsing contract (``steel_onslaught.llm.programming``).
+
+**Round-4 history, why "omit" (round 3) was insufficient.** Round 3
+(OMN-15522 as originally shipped) made the programming path OMIT
+``response_contract`` entirely rather than send the (wrong) tactical
+contract, on the theory that this matched the HTTP path's semantics (which
+has no wire-level contract concept at all and relies solely on steel's own
+parser). The OMN-15488 attempt-3 canary (comment ``bd30cc1b``) disproved
+that theory live: with no caller-supplied contract, the platform's
+delegation quality gate validates against its own DEFAULT schema set, which
+does not include the card-mode programming shape, and rejected a
+correctly-shaped ``{"registers": [...], "confidence": ..., "rationale":
+...}`` response as ``SCHEMA_VIOLATION: <root>: {...} is not valid under any
+of the given schemas``. The OMN-15193 attempt-1 evidence had already proven
+the platform enforces a caller-SUPPLIED contract as given (not as a
+fallback/hint) -- so the correct fix is to send the RIGHT contract, not to
+send none. This is what ``_PROGRAMMING_RESPONSE_CONTRACT`` closes.
 
 **Known, deliberate fidelity gaps** (the consumer-facing delegation wire
 model has no equivalent field):
@@ -174,6 +188,70 @@ _TACTICAL_RESPONSE_CONTRACT: dict[str, object] = {
     "additionalProperties": False,
 }
 
+# OMN-15522 round 4 (AMENDMENT 2 on the OMN-15488 overlay): the closed
+# whole-round card-programming response shape the card-mode path
+# (``llm.programming.LLMProgrammingPilot``) expects back, forwarded via
+# ``ModelDelegateSkillRequest.response_contract`` whenever the request's
+# ``wants_tactical_response_contract`` is ``False`` (see ``complete()``
+# below). Round 3 shipped this path OMITTING ``response_contract``
+# entirely; the OMN-15488 attempt-3 canary (comment ``bd30cc1b``) proved
+# that omitting it makes the platform validate against its own DEFAULT
+# schema set instead, which rejects the registers shape as
+# ``SCHEMA_VIOLATION`` -- a caller-supplied contract is honored as given
+# (OMN-15193 attempt-1 evidence), so the fix is to send the right contract,
+# not none.
+#
+# Derived field-for-field from this repo's own whole-round-programming
+# parsing contract -- ``steel_onslaught.llm.programming.
+# _ModelSOLlmProgrammingResponse`` (the closed, ``extra="forbid"``,
+# ``strict=True`` Pydantic boundary the programming pilot validates every
+# LLM response against; see ``tests/llm/
+# test_programming_response_contract_omn15522.py`` for the fixture-bridge
+# proof that this schema is neither looser nor tighter than that parser on
+# its own structural fixtures) -- so the schema never declares anything
+# looser than what the parser already requires:
+#   - ``registers``: a JSON array of ``{register_index, card_id}`` objects
+#     (``register_index``: non-negative integer; ``card_id``: non-empty
+#     string), mirroring ``_ModelSOLlmProgrammingRegister``. No minimum
+#     item count is declared -- the parser itself has none; the
+#     register-count/legal-hand semantic checks belong to
+#     ``program_for_seat`` (observation-dependent, not expressible in a
+#     static response schema), exactly as ``_TACTICAL_RESPONSE_CONTRACT``'s
+#     own docstring notes for ``action_params``'s inner shape.
+#   - ``confidence``: ``{"type": "number", "minimum": 0.0, "maximum": 1.0}``.
+#   - ``rationale``: ``{"type": "string", "minLength": 1}``.
+#   - ``spatial_read``: OPTIONAL non-empty string -- mirrors the R2
+#     show-dont-tell scaffold field (``_ModelSOLlmProgrammingResponse.
+#     spatial_read``, ``StrictStr | None`` with ``min_length=1``, default
+#     ``None``). Declared as an allowed-but-not-required property (not
+#     folded into ``required``) so an R1/no-scaffold seat's response
+#     (which never carries this key) and an R2 seat's response (which
+#     does) are BOTH accepted, matching the parser's own tolerance.
+# ``additionalProperties: false`` mirrors the Pydantic model's
+# ``extra="forbid"``: this is a closed shape, not an open one.
+_PROGRAMMING_RESPONSE_CONTRACT: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "registers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "register_index": {"type": "integer", "minimum": 0},
+                    "card_id": {"type": "string", "minLength": 1},
+                },
+                "required": ["register_index", "card_id"],
+                "additionalProperties": False,
+            },
+        },
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "rationale": {"type": "string", "minLength": 1},
+        "spatial_read": {"type": "string", "minLength": 1},
+    },
+    "required": ["registers", "confidence", "rationale"],
+    "additionalProperties": False,
+}
+
 
 @runtime_checkable
 class ProtocolDelegationCliRunner(Protocol):
@@ -211,16 +289,29 @@ class SubprocessDelegationCliRunner:
             ) from None
         if completed.returncode != 0:
             raise LlmTransportError(
-                f"onex delegation CLI exited {completed.returncode}: {completed.stderr[-2000:]}",
+                f"onex delegation CLI exited {completed.returncode}: "
+                f"{completed.stderr[-2000:]}"
+                # OMN-15535: append a bounded stdout tail to the message too
+                # -- in ``--output receipt`` mode the CLI's actual
+                # diagnostic (the ModelSkillResult JSON, including the
+                # delegation quality gate's SCHEMA_VIOLATION detail) prints
+                # to stdout, not stderr, and was previously unreachable
+                # from this exception at all. Only appended when stdout is
+                # nonempty so a plain stderr-only failure keeps its
+                # existing message shape.
+                + (f" | stdout: {completed.stdout[-2000:]}" if completed.stdout else ""),
                 retryable=False,
-                # OMN-15240: the message above stays capped at the last 2000
-                # chars (unchanged, existing behavior) -- these three fields
-                # carry the FULL, unsliced diagnostic context (exact argv,
-                # exit code, complete stderr) so a persisted record never
+                # OMN-15240/OMN-15535: the message above stays capped at
+                # the last 2000 chars of each stream (unchanged, existing
+                # behavior for stderr; same convention now applied to
+                # stdout) -- these four fields carry the FULL, unsliced
+                # diagnostic context (exact argv, exit code, complete
+                # stderr, complete stdout) so a persisted record never
                 # loses it to a downstream display-truncation budget.
                 argv=argv,
                 exit_code=completed.returncode,
                 stderr=completed.stderr,
+                stdout=completed.stdout,
             )
         return completed.stdout
 
@@ -433,24 +524,25 @@ class LlmBusDelegationClient:
             # ... leaves the field ready the moment the wire path opens").
             "backend_id": self._config.backend_id,
         }
+        # OMN-15193/OMN-15522 (round 4 / AMENDMENT 2): the wire request
+        # ALWAYS carries a response_contract now -- caller-selected WHICH
+        # one, never omitted. This client is shared (one instance per
+        # provider_id, see match/composition.py) by both the plain
+        # decide() path -- whose response really is the tactical shape --
+        # and card-mode programming completions, whose response is a
+        # whole-round register plan. Round 3 forwarded the tactical
+        # contract unconditionally, which made the quality gate reject a
+        # correct programming response as SCHEMA_VIOLATION (OMN-15482
+        # comment 14468f08, OMN-15488 canary); round 3's own fix (omit the
+        # contract on the programming path) then proved insufficient live
+        # (OMN-15488 attempt-3 canary, comment bd30cc1b): with no
+        # caller-supplied contract, the platform validates against its own
+        # default schema set, which also rejects the registers shape.
+        # Sending the RIGHT contract on every path is the fix.
         if request.wants_tactical_response_contract:
-            # OMN-15193/OMN-15522: declare the closed tactical-decision
-            # response schema (see ``_TACTICAL_RESPONSE_CONTRACT`` above) so
-            # the platform's delegation quality gate validates structurally
-            # against it instead of the generic task-class keyword
-            # heuristics. Caller-selected via the request, not
-            # unconditional: this client is shared (one instance per
-            # provider_id, see match/composition.py) by both the plain
-            # decide() path -- whose response really is the tactical
-            # shape -- and card-mode programming completions, whose
-            # response is a whole-round register plan. Forwarding the
-            # tactical contract on the programming path made the quality
-            # gate reject a correct programming response as
-            # SCHEMA_VIOLATION (OMN-15482 comment 14468f08, OMN-15488
-            # canary) -- the model's response was schema-correct for what
-            # it was asked to produce, just validated against the wrong
-            # schema.
             payload["response_contract"] = _TACTICAL_RESPONSE_CONTRACT
+        else:
+            payload["response_contract"] = _PROGRAMMING_RESPONSE_CONTRACT
         if self._config.max_tokens is not None:
             payload["max_tokens"] = self._config.max_tokens
 
