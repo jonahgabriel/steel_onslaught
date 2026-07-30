@@ -704,10 +704,22 @@ class LLMProgrammingPilot:
             # per-tick tactical-decision response contract on this path
             # made the platform's delegation quality gate reject a correct
             # programming response as SCHEMA_VIOLATION (OMN-15482 comment
-            # 14468f08, OMN-15488 canary). Response-shape validation for
-            # this path is owned by ``_parse_response`` below plus the
-            # bounded reprompt loop, matching the HTTP client's semantics
-            # (which never had an equivalent wire-level contract concept).
+            # 14468f08, OMN-15488 canary). ``False`` here now selects the
+            # delegation client's ``_PROGRAMMING_RESPONSE_CONTRACT`` (round
+            # 4 / AMENDMENT 2) rather than omitting a wire contract
+            # entirely (round 3): the OMN-15488 attempt-3 canary proved
+            # omission makes the platform's delegation quality gate
+            # validate against its own default schema set instead, which
+            # also rejects the registers shape. Structural response-shape
+            # validation for this path is now doubly enforced -- on the
+            # wire by the platform's quality gate against
+            # ``_PROGRAMMING_RESPONSE_CONTRACT``, and here by
+            # ``_parse_response`` below plus the bounded reprompt loop
+            # (which additionally owns the observation-dependent semantic
+            # checks -- legal_hand membership, free_indices coverage --
+            # that a static wire schema cannot express). The HTTP client's
+            # semantics are unaffected: it has no equivalent wire-level
+            # contract concept and ignores this flag entirely.
             wants_tactical_response_contract=False,
         )
 

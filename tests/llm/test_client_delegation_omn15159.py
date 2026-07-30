@@ -21,6 +21,7 @@ import pytest
 
 from steel_onslaught.contracts.application import ModelSODelegationProviderBinding
 from steel_onslaught.llm.client_delegation import (
+    _PROGRAMMING_RESPONSE_CONTRACT,
     _TACTICAL_RESPONSE_CONTRACT,
     LlmBusDelegationClient,
     ProtocolDelegationCliRunner,
@@ -287,10 +288,10 @@ def test_decide_path_default_still_carries_the_tactical_response_contract_byte_i
     assert captured["response_contract"] == _TACTICAL_RESPONSE_CONTRACT
 
 
-def test_programming_path_completion_omits_the_tactical_response_contract_omn15522(
+def test_programming_path_completion_carries_the_programming_response_contract_omn15522(
     tmp_path: Path,
 ) -> None:
-    """OMN-15522 RED-FIRST regression.
+    """OMN-15522 round 4 RED-FIRST regression (AMENDMENT 2).
 
     Card-mode programming completions (``LLMProgrammingPilot``) opt out of
     the tactical-decision contract via
@@ -298,9 +299,14 @@ def test_programming_path_completion_omits_the_tactical_response_contract_omn155
     whole-round register plan, not a single tactical decision, and
     forwarding the tactical schema made the platform's delegation quality
     gate reject a correct programming response as ``SCHEMA_VIOLATION``
-    (OMN-15482 comment 14468f08, OMN-15488 canary). Must FAIL against the
-    unfixed client, which forwarded ``_TACTICAL_RESPONSE_CONTRACT``
-    unconditionally regardless of what the request asked for.
+    (OMN-15482 comment 14468f08, OMN-15488 canary). Round 3 fixed this by
+    OMITTING the wire contract on this path; the OMN-15488 attempt-3 canary
+    (comment bd30cc1b) proved that was insufficient live -- with no
+    caller-supplied contract, the platform validates against its own
+    DEFAULT schema set, which also rejects the registers shape. This
+    assertion must therefore FAIL against the round-3 client (which omits
+    ``response_contract`` on this path) and PASS only once the client sends
+    ``_PROGRAMMING_RESPONSE_CONTRACT`` instead.
     """
     captured: dict[str, object] = {}
 
@@ -312,12 +318,14 @@ def test_programming_path_completion_omits_the_tactical_response_contract_omn155
     client = _client(runner=_RecordingRunner(_stdout), tmp_path=tmp_path)
     client.complete(_request(wants_tactical_response_contract=False))
 
-    assert "response_contract" not in captured, (
-        "programming-path completion must not carry a wire-level response "
-        "contract -- response-shape validation for a register plan is owned "
-        "by steel's own programming parser + bounded reprompt loop, not the "
-        "per-tick tactical-decision schema"
+    assert "response_contract" in captured, (
+        "programming-path completion must carry a wire-level response "
+        "contract -- omitting one leaves the platform to validate against "
+        "its own default schema set, which rejects the registers shape "
+        "(OMN-15488 attempt-3 canary)"
     )
+    assert captured["response_contract"] == _PROGRAMMING_RESPONSE_CONTRACT
+    assert captured["response_contract"] != _TACTICAL_RESPONSE_CONTRACT
 
 
 def test_payload_composes_system_and_user_prompt_with_json_mode_instruction(
@@ -607,3 +615,86 @@ def test_zero_exit_returns_stdout_without_raising() -> None:
     stdout = runner.run(argv, timeout_seconds=30.0)
 
     assert stdout.strip() == "ok"
+
+
+# --- OMN-15535: SubprocessDelegationCliRunner -- stdout tail on CLI failure --
+#
+# OMN-15240 fixed stderr truncation but never touched stdout. In
+# ``--output receipt`` mode the CLI prints its actual diagnostic (the
+# ModelSkillResult JSON, including the delegation quality gate's
+# SCHEMA_VIOLATION detail) to STDOUT on a non-zero exit -- which
+# ``SubprocessDelegationCliRunner.run()`` never read at all, silently
+# dropping the one durable diagnostic surface for a receipt-mode failure
+# (OMN-15488 comment bd30cc1b).
+
+
+def test_nonzero_exit_attaches_full_stdout_alongside_stderr_omn15535() -> None:
+    """A non-zero CLI exit with nonempty stdout must attach the COMPLETE
+    (unsliced) stdout onto the raised ``LlmTransportError`` -- not just
+    stderr -- so a caller can recover the receipt-mode diagnostic without
+    reading files off disk (the exact recovery path the OMN-15488
+    attempt-3 canary was forced into)."""
+    stdout_marker = "STDOUT_RECEIPT_DIAGNOSTIC_MARKER_ab12cd34"
+    script = (
+        "import sys\n"
+        f'sys.stdout.write(\'{{"status": "error", "result": {{"error_message": '
+        f'"SCHEMA_VIOLATION: {stdout_marker}"}}}}\\n\')\n'
+        "sys.stderr.write('onex CLI: quality gate rejected the response\\n')\n"
+        "sys.exit(1)\n"
+    )
+    argv = _python_argv(script)
+    runner = SubprocessDelegationCliRunner()
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        runner.run(argv, timeout_seconds=30.0)
+
+    exc = excinfo.value
+    assert exc.exit_code == 1
+    assert exc.stdout is not None
+    assert stdout_marker in exc.stdout
+    # The stderr behavior OMN-15240 proved must be unchanged.
+    assert exc.stderr is not None
+    assert "quality gate rejected" in exc.stderr
+    # The bounded tail also reaches the message string itself.
+    assert stdout_marker in str(exc)
+
+
+def test_nonzero_exit_stdout_tail_survives_a_downstream_truncation_budget_omn15535() -> None:
+    """Same class of proof as OMN-15240's stderr test: the marker's survival
+    must depend on reading the structured ``.stdout`` field, and a long
+    benign prefix before the real diagnostic must not defeat a naive
+    head-truncation read of that field."""
+    tail_marker = "REAL_DIAGNOSTIC_STDOUT_TAIL_MARKER_zz77qq"
+    script = (
+        "import sys\n"
+        f"sys.stdout.write('warning: ' + ('x' * 300) + '\\n')\n"
+        f"sys.stdout.write('filler ' * 50 + '\\n')\n"
+        f"sys.stdout.write('SCHEMA_VIOLATION: {tail_marker}\\n')\n"
+        "sys.exit(1)\n"
+    )
+    argv = _python_argv(script)
+    runner = SubprocessDelegationCliRunner()
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        runner.run(argv, timeout_seconds=30.0)
+
+    exc = excinfo.value
+    assert exc.stdout is not None
+    assert tail_marker in exc.stdout
+
+
+def test_nonzero_exit_with_empty_stdout_omits_the_stdout_message_suffix_omn15535() -> None:
+    """A stderr-only failure (empty stdout) keeps its existing message shape
+    -- no dangling ``| stdout: `` suffix -- and ``exc.stdout`` reflects the
+    real empty string rather than a synthesized placeholder."""
+    script = "import sys\nsys.stderr.write('plain stderr failure\\n')\nsys.exit(1)\n"
+    argv = _python_argv(script)
+    runner = SubprocessDelegationCliRunner()
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        runner.run(argv, timeout_seconds=30.0)
+
+    exc = excinfo.value
+    assert exc.stdout == ""
+    assert "| stdout:" not in str(exc)
+    assert "plain stderr failure" in str(exc)

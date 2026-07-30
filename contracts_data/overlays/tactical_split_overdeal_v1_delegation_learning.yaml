@@ -324,6 +324,32 @@
 #    and the delegation node's own receipts, not by the ledger provider_id
 #    literal. The salience arm's ledger literal (onex-local-coder-mlx) was
 #    an overlay-local choice, not a program convention.
+#
+# AMENDMENT 2 (2026-07-30, BEFORE any scored match; execution-infrastructure
+# only — every hypothesis, endpoint, band, escape, and interpretation clause
+# above is UNCHANGED).
+#
+# The Amendment-1 fix (programming completions carry NO wire response
+# contract) held steel-side but did not hold end-to-end: the attempt-3
+# canary (2026-07-30T19:06Z, OMN-15488 comment bd30cc1b) produced a
+# correctly-shaped registers program that the platform delegation node's
+# DEFAULT schema set then rejected ("not valid under any of the given
+# schemas") — when the caller supplies no contract, the platform validates
+# against its own defaults, which do not include the card-mode programming
+# shape. The attempt-1 evidence already proved the platform enforces a
+# caller-SUPPLIED contract as given, so the correct configuration is to
+# send the right contract rather than none: card-mode programming
+# completions now carry a PROGRAMMING response contract
+# (_PROGRAMMING_RESPONSE_CONTRACT — registers / confidence / rationale,
+# derived from and tested against steel's own programming-response parser,
+# the single authority for the accepted shape). The plain decide() path
+# still sends _TACTICAL_RESPONSE_CONTRACT byte-identical (the
+# display-salience arm's proven configuration remains untouched). Ticketed
+# on OMN-15522; the diagnostic-masking defect that delayed this round's
+# root-cause (the delegation CLI runner drops stdout, where the receipt
+# diagnostic lands, on nonzero exit) is ticketed and fixed alongside.
+# A fresh canary under this configuration gates the launch exactly as the
+# original canary clause specifies.
 schema_version: "1"
 bus:
   kind: in_process

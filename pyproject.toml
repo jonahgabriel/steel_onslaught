@@ -33,6 +33,11 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.5",
     "playwright>=1.45",      # used only by Task 34's Proof of Life web assertion
+    # OMN-15522: transitive via omnibase-core already, but declared
+    # explicitly (same convention as httpx above) for the
+    # _PROGRAMMING_RESPONSE_CONTRACT fixture-bridge test, which validates
+    # the wire JSON Schema against the real programming-response parser.
+    "jsonschema>=4.17",
 ]
 # OMN-15170: an explicit opt-in extra, deliberately NOT part of `dev` and NOT
 # installed by CI (ci.yml runs `uv sync --extra dev` only) -- a raw-Kafka
