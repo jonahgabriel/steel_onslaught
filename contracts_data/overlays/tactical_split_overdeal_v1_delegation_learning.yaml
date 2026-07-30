@@ -167,8 +167,22 @@
 # the wrong condition"):
 #   baseline: seeds 4001-4030 (n=30), max_value = 0.5 (genesis; promotion
 #             impossible), every match flies gen-0 WITH its guidance block.
-#   promote:  seeds 4101-4115 (budget 15), max_value = 3.0, runs until the
-#             first POLICY_PROMOTED lands.
+#   promote:  seeds 4101-4115 (budget 15), max_value = 2.5 (genesis + step,
+#             same cap as post -- REMEDIATION NOTE, 2026-07-30, round 2:
+#             this line originally read "max_value = 3.0", which was
+#             correct only against the FIRST commit's pre-genesis-
+#             parameterized promote-phase literal. Remediation round 1
+#             (scripts/run_lgate2_adaptation_battery.py's _phase_caps)
+#             made the driver's actual promote-phase cap genesis + step for
+#             every --genesis/--step pair, which left this header stating a
+#             value (3.0) the driver no longer computes for this battery's
+#             own config -- arithmetically inert here (2.5 <= both 3.0 and
+#             2.5, so promotion behavior is unaffected) but a mismatch
+#             between the pre-registration of record and the executing
+#             configuration, exactly what AC1 exists to catch. Corrected
+#             here, before any scored match, to the value the driver
+#             actually computes), runs until the first POLICY_PROMOTED
+#             lands.
 #   post:     seeds 4201-4230 (n=30), max_value = 2.5 (genesis + step;
 #             chain frozen at generation 1), every match flies gen-1.
 #

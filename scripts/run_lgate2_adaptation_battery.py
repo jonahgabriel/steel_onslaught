@@ -640,11 +640,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_GENESIS["aggression"],
         help=(
             "starting aggression value (OMN-15488): the baseline phase caps the "
-            "evaluator at this value (promotion impossible) and the post phase caps "
-            "it at genesis + step (chain frozen at generation 1). Default 1.0 "
-            "preserves the #126/#128 configuration; a decisive endpoint-regime "
-            "contrast (e.g. --genesis 0.5 --step 2.0) spans both named regimes of "
-            "the aggression semantics sentence without any other driver change."
+            "evaluator at this value (promotion impossible) and the promote AND "
+            "post phases cap it at genesis + step (chain frozen at generation 1 "
+            "once promoted). Default 1.0 reproduces the #126/#128 baseline/post "
+            "cap arithmetic on a FRESH (--fresh) state-root. It does NOT guarantee "
+            "identical promote-phase behavior on a WARM re-run: remediation round "
+            "1 replaced the pre-OMN-15488 hardcoded promote-phase max_value=3.0 "
+            "with genesis + step, so a state-root already promoted past that new, "
+            "lower cap by an earlier run can no longer promote further under the "
+            "default step 0.25 (candidate current + step may exceed the new cap "
+            "where the old fixed 3.0 admitted it) -- use --fresh for a clean "
+            "before/after comparison. A decisive endpoint-regime contrast (e.g. "
+            "--genesis 0.5 --step 2.0) spans both named regimes of the aggression "
+            "semantics sentence without any other driver change."
         ),
     )
     parser.add_argument(

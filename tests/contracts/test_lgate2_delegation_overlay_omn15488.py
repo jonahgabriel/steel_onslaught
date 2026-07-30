@@ -5,7 +5,7 @@ authored directly on the ``onex_delegation`` provider shape -- it is NOT a
 migration of ``tactical_split_overdeal_v1_qwen.yaml`` (never had an
 ``openai_compatible`` ancestor; see
 ``tests/contracts/test_overlay_delegation_migration_omn15174.py``'s census
-for the corpus-level accounting). Four claims are load-bearing here:
+for the corpus-level accounting). Five claims are load-bearing here:
 
   1. the new overlay loads cleanly via ``load_application_overlay`` and holds
      the sections the deliverable named byte-constant (arena, card content
@@ -24,7 +24,16 @@ for the corpus-level accounting). Four claims are load-bearing here:
      overlay -- the reason a distinct mirror pilot spec + loadout exist);
   4. the driver's new ``--genesis`` knob flows to the baseline/post evaluator
      caps exactly as pre-registered (0.5 -> 2.5 for ``--step 2.0``), proven
-     by ``TestGenesisPhaseCaps``.
+     by ``TestGenesisPhaseCaps`` (with ``TestPromotePhaseCapTracksGenesisAndStep``
+     proving the promote-phase cap specifically, against the real,
+     pre-existing ``WinDamageDifferentialEvaluator``);
+  5. ``_run_battery`` itself -- not just ``_phase_caps``/``_lane_overlay`` in
+     isolation -- threads that same cap sequence into the overlay at each of
+     its three phase call sites and reaches the post phase on a stubbed
+     decisive promotion, proven by
+     ``TestRunBatteryWiresPhaseCapsAtEveryCallSite`` (remediation round 2 --
+     closes a surrogate-test gap: the round-1 tests above never actually
+     called ``_run_battery``).
 """
 
 from __future__ import annotations
@@ -85,15 +94,21 @@ _BLUE_MIRROR_LOADOUT = (
 # the committed header changes this hash and fails loudly), not fidelity to
 # an upstream source this test has no way to check.
 #
-# The header text as handed also contained a real defect, independently
-# discovered and corrected during this remediation round: its "PHASES AND
-# SEEDS" launch command omitted `--overlay`/`--blue-loadout`, which -- run
-# as originally written -- would have silently executed the OLD
-# openai_compatible overlay's red-berserker-vs-sniper pairing (guaranteed
-# NO-PROMOTION) instead of this battery's onex_delegation/mirror-pairing
-# design. Fixed in the committed header before this pin was taken; see the
-# overlay's own inline remediation note at that line.
-_PREREG_HEADER_SHA256 = "0fac410d9916bd04b4f3c78e4c931a3cb39dff32b093e69069768d6dd0eb7c0c"
+# The header text as handed also contained real defects, independently
+# discovered and corrected across two remediation rounds; each is disclosed
+# inline in the overlay's own header at its exact location, and this pin is
+# re-taken after every correction:
+#   round 1 -- the "PHASES AND SEEDS" launch command omitted
+#     `--overlay`/`--blue-loadout`, which -- run as originally written --
+#     would have silently executed the OLD openai_compatible overlay's
+#     red-berserker-vs-sniper pairing (guaranteed NO-PROMOTION) instead of
+#     this battery's onex_delegation/mirror-pairing design.
+#   round 2 -- the promote-phase line still read "max_value = 3.0" after
+#     round 1 made the driver's actual promote-phase cap genesis + step
+#     (`_phase_caps`); arithmetically inert for this battery's own config
+#     (2.5 <= both 3.0 and 2.5) but a mismatch between the pre-registration
+#     of record and the executing configuration -- corrected to 2.5.
+_PREREG_HEADER_SHA256 = "85ae4f01c5bf866fd91e63b046acb74da2af1b5c2ea2e4b189e4e1bb730f3bba"
 
 _PREREG_MARKERS = (
     "PRE-REGISTERED HYPOTHESES",
@@ -573,3 +588,181 @@ class TestPromotePhaseCapTracksGenesisAndStep:
             record = evaluator.evaluate(evidence=_decisive_win_evidence(), policy=policy)
             assert record is not None
             assert record.parameters["aggression"] == 2.5
+
+
+# ---------------------------------------------------------------------------
+# 6. `_run_battery` itself wires `_phase_caps`' output into every call site
+#    (remediation round 2: the round-1 tests above exercise `_phase_caps` and
+#    `_lane_overlay` directly with hand-supplied arguments -- they never
+#    drive `_run_battery`, so the four literal call sites that actually
+#    thread that output through the battery (baseline_cap/promote_cap/
+#    post_cap at scripts/run_lgate2_adaptation_battery.py:437/448/463 and the
+#    `genesis=args.genesis` kwarg at :405) had ZERO test coverage.
+#    MUTATION-PROVED (manually, this remediation round): reverting all four
+#    sites to their pre-OMN-15488 form (`max_value=_GENESIS["aggression"]`,
+#    `max_value=3.0`, `max_value=_GENESIS["aggression"]+args.step`, and
+#    dropping the `genesis=` kwarg entirely) leaves the test below FAILING
+#    (RED) -- see the PR body's "RED-before" section for the exact revert/
+#    restore transcript.
+# ---------------------------------------------------------------------------
+
+
+class TestRunBatteryWiresPhaseCapsAtEveryCallSite:
+    """Drives the REAL ``_run_battery`` end to end (baseline -> promote ->
+    post) with ONLY the LLM-calling boundary (``_measure_match``) stubbed --
+    ``_phase_caps``, ``_run_phase``, and ``_lane_overlay`` all run unmodified.
+    A spy wraps (never replaces) ``_lane_overlay`` so the ``max_value``/
+    ``genesis`` it is actually invoked with, per phase, is captured from the
+    real call sites rather than asserted against a hand-rolled substitute --
+    the surrogate-test defect this class exists to close."""
+
+    def test_wires_phase_caps_into_the_overlay_at_every_call_site(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import scripts.run_lgate2_adaptation_battery as driver
+
+        real_lane_overlay = driver._lane_overlay
+        seen: list[dict[str, Any]] = []
+
+        def _spy_lane_overlay(*args: Any, **kwargs: Any) -> ModelSOApplicationOverlay:
+            overlay = real_lane_overlay(*args, **kwargs)
+            assert overlay.live_learning is not None
+            seen.append(
+                {
+                    "max_value": kwargs["max_value"],
+                    "genesis": kwargs["genesis"],
+                    "overlay_max_value": overlay.live_learning.max_value,
+                    "overlay_genesis": overlay.live_learning.genesis_parameters,
+                }
+            )
+            return overlay
+
+        monkeypatch.setattr(driver, "_lane_overlay", _spy_lane_overlay)
+
+        promoted_payload = {
+            "kind": "steel_onslaught.policy_promoted",
+            "match_id": "match.stub.promote.4101",
+            "policy_id": "policy.aggressive.gen1-stub",
+            "archetype": "aggressive",
+            "generation": 1,
+            "spec_hash": "a" * 64,
+            "parent_spec_hash": "b" * 64,
+            "source_lineage_digest": "c" * 64,
+            "evidence_scored_event_id": "01HZY3E9ZTAV5J6BQF8KM2WXSC",
+        }
+
+        def _stub_row(
+            *,
+            phase: str,
+            seed: int,
+            generation: int,
+            policy_id: str,
+            promoted: dict[str, Any] | None,
+        ) -> dict[str, Any]:
+            return {
+                "phase": phase,
+                "seed": seed,
+                "match_id": f"match.stub.{phase}.{seed}",
+                "policy_provenance": {
+                    "player_id": "player.red",
+                    "generation": generation,
+                    "policy_id": policy_id,
+                    "spec_hash": promoted_payload["spec_hash"] if generation else "genesis-hash",
+                    "source_lineage_digest": (
+                        promoted_payload["source_lineage_digest"] if generation else "genesis-lin"
+                    ),
+                },
+                "winner_player_id": "player.red",
+                "is_draw": False,
+                "end_reason": "victory",
+                "duration_ticks": 10,
+                "replay_validity": {"player.red": 1, "player.blue": 1},
+                "learning_seat": {
+                    "seat": "red",
+                    "dealt": {},
+                    "planned": {},
+                    "keep_rates": {},
+                    "planned_share": {},
+                },
+                "failed_completions": 0,
+                "empty_content_completions": {},
+                "policy_promoted": promoted,
+            }
+
+        def _stub_measure_match(
+            overlay: Any,
+            *,
+            red_loadout_path: Path,
+            blue_loadout_path: Path,
+            seed: int,
+            phase: str,
+            learning_player: str,
+            learning_seat: str,
+            learning_mech: str,
+        ) -> dict[str, Any]:
+            del overlay, red_loadout_path, blue_loadout_path, learning_player, learning_seat
+            del learning_mech
+            if phase == "baseline":
+                return _stub_row(
+                    phase=phase,
+                    seed=seed,
+                    generation=0,
+                    policy_id="policy.aggressive.genesis",
+                    promoted=None,
+                )
+            if phase == "promote":
+                return _stub_row(
+                    phase=phase,
+                    seed=seed,
+                    generation=0,
+                    policy_id="policy.aggressive.genesis",
+                    promoted=dict(promoted_payload),
+                )
+            assert phase == "post"
+            return _stub_row(
+                phase=phase,
+                seed=seed,
+                generation=1,
+                policy_id=str(promoted_payload["policy_id"]),
+                promoted=None,
+            )
+
+        monkeypatch.setattr(driver, "_measure_match", _stub_measure_match)
+
+        args = driver._build_parser().parse_args(
+            [
+                "--genesis",
+                "0.5",
+                "--step",
+                "2.0",
+                "--n",
+                "2",
+                "--promote-attempts",
+                "1",
+                "--overlay",
+                str(_NEW_OVERLAY),
+                "--red-loadout",
+                str(_RED_LOADOUT),
+                "--blue-loadout",
+                str(_BLUE_MIRROR_LOADOUT),
+            ]
+        )
+        state_root = tmp_path / "state"
+        state_root.mkdir()
+        raw_path = state_root / "battery_raw.jsonl"
+
+        exit_code = driver._run_battery(args, state_root, raw_path)
+        assert exit_code == 0, "the stubbed decisive promotion must let the battery reach post"
+
+        assert [entry["max_value"] for entry in seen] == [0.5, 2.5, 2.5], (
+            "baseline/promote/post must each receive _phase_caps()'s exact output -- a "
+            "hardcoded literal at any of scripts/run_lgate2_adaptation_battery.py:437/448/463 "
+            "would diverge from this sequence"
+        )
+        assert [entry["genesis"] for entry in seen] == [0.5, 0.5, 0.5], (
+            "every phase must thread args.genesis (line 405) into _lane_overlay, not the "
+            "module-level _GENESIS default"
+        )
+        for entry in seen:
+            assert entry["overlay_max_value"] == entry["max_value"]
+            assert entry["overlay_genesis"] == {"aggression": 0.5}
