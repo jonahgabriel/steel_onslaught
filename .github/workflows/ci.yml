@@ -41,8 +41,22 @@ jobs:
           uv run ruff format --check src/ tests/
       - name: Type check
         run: uv run mypy src/ tests/
+      # OMN-15493: a DENYLIST, deliberately -- never an allowlist. The previous
+      # `-m "unit or integration"` selected only marked tests, so forgetting a
+      # marker silently deleted a test from CI: 13 tests were in that state,
+      # passing locally and never once executed here. `not live` inverts the
+      # default so an unmarked test runs, and the only thing skipped is the
+      # real-infra opt-in category. Both halves of that contract are enforced
+      # by tests/test_ci_marker_selection.py, which reads this very line.
+      #
+      # --strict-markers is the other half of the inversion: under a denylist a
+      # misspelled `@pytest.mark.liv` no longer matches `live`, so it would be
+      # SELECTED and point this runner at real Kafka + a real LLM endpoint.
+      # Strict marking turns that typo into a collection error. It must stay on
+      # this command line -- putting it in pyproject's addopts does NOT work on
+      # the pinned pytest 9.0.3 (see the note in pyproject.toml).
       - name: Tests
-        run: uv run pytest -m "unit or integration" -v
+        run: uv run pytest -m "not live" --strict-markers -v
 
   # Frontend (Vite + React) lint + test + build.
   frontend-test:

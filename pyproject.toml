@@ -40,7 +40,7 @@ dev = [
 # dependency this repo's own module docstrings (client_delegation.py,
 # kafka_forwarder.py) document as out of scope for steel's runtime. This
 # extra exists ONLY so tests/live/ (never imported/collected by CI's default
-# `-m "unit or integration"` selection) can drive a real producer/consumer
+# `-m "not live"` selection) can drive a real producer/consumer
 # against the stability-test lane when a human explicitly opts in locally
 # (`uv sync --extra live`).
 live = [
@@ -71,15 +71,33 @@ omnibase-core = { git = "https://github.com/OmniNode-ai/omnibase_core", rev = "3
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# OMN-15493 -- DO NOT "tidy" --strict-markers into an `addopts` entry here.
+# CI passes it on the command line (.github/workflows/ci.yml) because on the
+# pinned pytest 9.0.3 the addopts form silently does not take effect:
+#
+#   addopts = ["--strict-markers"] -> `@pytest.mark.liv` merely warns
+#                                     (PytestUnknownMarkWarning), test collected
+#   pytest --strict-markers        -> collection ERROR, "'liv' not found in
+#                                     `markers` configuration option"
+#
+# Measured 2026-07-30 on pytest 9.0.3 (the version uv.lock pins, so CI behaves
+# the same). Both forms report `config.option.strict_markers is True` at
+# pytest_configure time, so the option really is parsed out of addopts and the
+# divergence is somewhere later; the command-line form is the one demonstrated
+# to fail collection, and that is why it is the one CI uses. The behavioural
+# difference -- not the config text -- is what
+# tests/test_ci_marker_selection.py asserts.
 markers = [
     "unit: fast in-memory tests",
     "integration: cross-module tests with real SQLite",
     "slow: tests over 1s",
     # OMN-15170: real external infra (stability-test Kafka + the .200 MLX
-    # server) -- never selected by CI's `-m "unit or integration"`, and
+    # server) -- the ONE category CI excludes, via `-m "not live"`, and
     # additionally gated by a `confluent_kafka` import guard + an explicit
     # opt-in env var so it cannot run accidentally even if CI's `-m` filter
-    # ever changes. See tests/live/test_omn15170_live_driver.py.
+    # ever changes. See tests/live/test_omn15170_live_driver.py. OMN-15493:
+    # this marker is now load-bearing in both directions -- omitting it no
+    # longer skips a test, and misspelling it is caught by --strict-markers.
     "live: real external infra (Kafka + live LLM), explicit opt-in only",
 ]
 
