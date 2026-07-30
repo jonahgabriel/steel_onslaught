@@ -258,9 +258,18 @@ def test_payload_declares_the_tactical_response_contract_schema_omn15193(
     }
 
 
-def test_payload_composes_system_and_user_prompt_with_json_mode_instruction(
+def test_payload_sends_system_and_user_prompt_as_separate_wire_fields(
     tmp_path: Path,
 ) -> None:
+    """OMN-15482 REPLACES the former composed-prompt assertion.
+
+    This test previously asserted the opposite -- that ``prompt`` contained the
+    system text, the user text AND an appended "JSON object only" sentence.
+    That concatenation was the measured fidelity gap that blocked the OMN-15174
+    overlay migration, so the behaviour it pinned is now gone by design rather
+    than by accident. Equivalence against ``OpenAICompatibleClient`` is proven
+    in ``tests/llm/test_client_delegation_fidelity_omn15482.py``.
+    """
     captured: dict[str, object] = {}
 
     def _stdout(argv: tuple[str, ...]) -> str:
@@ -271,13 +280,18 @@ def test_payload_composes_system_and_user_prompt_with_json_mode_instruction(
     client = _client(runner=_RecordingRunner(_stdout), tmp_path=tmp_path)
     client.complete(_request(json_mode=True))
 
-    prompt = str(captured["prompt"])
-    assert "you are a mech pilot" in prompt
-    assert "what do you do" in prompt
-    assert "JSON object only" in prompt
+    assert captured["prompt"] == "what do you do"
+    assert captured["system_prompt"] == "you are a mech pilot"
+    assert captured["temperature"] == 0.4
+    assert captured["response_format"] == {"type": "json_object"}
+    # The appended-sentence fallback is deleted, not merely bypassed.
+    assert "JSON object only" not in str(captured["prompt"])
+    assert "JSON object only" not in str(captured["system_prompt"])
 
 
-def test_json_mode_false_omits_the_json_instruction(tmp_path: Path) -> None:
+def test_json_mode_false_omits_the_response_format_wire_parameter(
+    tmp_path: Path,
+) -> None:
     captured: dict[str, object] = {}
 
     def _stdout(argv: tuple[str, ...]) -> str:
@@ -288,6 +302,7 @@ def test_json_mode_false_omits_the_json_instruction(tmp_path: Path) -> None:
     client = _client(runner=_RecordingRunner(_stdout), tmp_path=tmp_path)
     client.complete(_request(json_mode=False))
 
+    assert "response_format" not in captured
     assert "JSON object only" not in str(captured["prompt"])
 
 

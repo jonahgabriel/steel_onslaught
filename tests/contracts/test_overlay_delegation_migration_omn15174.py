@@ -8,20 +8,42 @@ Task 20 of the steel-ONEX dispatch integration plan
 ``LlmBusDelegationClient``).
 
 **This module exists because the migration is not mechanical.** Swapping the
-binding kind changes observable model behaviour:
+binding kind changed observable model behaviour in five ways when batch 1 was
+built. Three of the five are now CLOSED by OMN-15482 and are no longer
+blockers:
 
-* ``temperature`` is dropped. ``OpenAICompatibleClient`` forwards it on the
-  wire; ``LlmBusDelegationClient.complete()`` builds a payload of
-  ``prompt``/``max_tokens``/``backend_id``/``task_type``/``source``/
-  ``response_contract`` and nothing else.
-* the system/user message split is collapsed -- ``_composed_prompt()``
-  concatenates both into one flat ``prompt`` string.
-* ``json_mode`` becomes an appended prompt sentence instead of a wire
-  parameter.
-* ``image_attachment`` is rejected outright.
+* ``temperature`` was dropped. **CLOSED (OMN-15482):** the wire model gained a
+  ``temperature`` field and ``LlmBusDelegationClient`` forwards it verbatim.
+* the system/user message split was collapsed into one flat ``prompt`` string.
+  **CLOSED (OMN-15482):** ``system_prompt`` is now its own wire field and the
+  backend receives two distinct chat roles.
+* ``json_mode`` became an appended prompt sentence instead of a wire
+  parameter. **CLOSED (OMN-15482):** it maps to
+  ``response_format={"type": "json_object"}``; the appended sentence is
+  deleted, not retained as a fallback.
+
+Equivalence for all three is proven differentially against
+``OpenAICompatibleClient`` in
+``tests/llm/test_client_delegation_fidelity_omn15482.py``, and applied-by-the-
+backend against the live ``local-coder-mlx`` endpoint by omnimarket's opt-in
+``test_live_completion_fidelity_omn15482.py`` (temperature 0.0 -> 3/3 identical
+completions vs temperature 1.0 -> 3/3 distinct, same prompt).
+
+Two deltas REMAIN open and are still real blockers:
+
+* ``image_attachment`` is rejected outright (explicitly out of OMN-15482's
+  scope; the fail-loud raise is correct behaviour, not a defect).
 * ``retry`` has no counterpart -- ``ModelSODelegationProviderBinding`` has no
   such field, while every ``openai_compatible`` binding in this corpus
-  declares one.
+  declares one. Whether per-overlay retry config needs an equivalent is an
+  open design question, deliberately not settled by OMN-15482.
+
+Closing the three did NOT change this census's machine-readable blocking
+reasons or any pinned count: those three deltas were never encoded as typed
+reasons in ``_classify`` (the typed reasons are image-attachment and
+backend-coverage), so the pins below are unchanged and were re-verified green
+against this edit. The operative gate on batch 2 is now
+``_PROVEN_DELEGATION_MODELS`` -- backend coverage -- not completion fidelity.
 
 For an overlay whose battery numbers are published under ``docs/evidence/``,
 migrating under those deltas silently changes the measured system and
@@ -243,8 +265,13 @@ def test_batch_1_task_type_is_a_member_of_the_closed_literal() -> None:
 def test_batch_1_overlays_carry_no_published_battery_evidence(overlay_name: str) -> None:
     """A migrated overlay must have no published result to invalidate.
 
-    The deltas this migration introduces (temperature dropped, prompt shape
-    collapsed) are only safe on a lane whose numbers were never published.
+    Batch 1 landed BEFORE OMN-15482, under the temperature-dropped /
+    prompt-shape-collapsed deltas, so it was only safe on a lane whose numbers
+    were never published. That constraint is retained deliberately even though
+    those two deltas are now closed: a migrated overlay still changes the
+    serving path (delegation node, escalation ladder, quality gate) relative to
+    the direct HTTP binding its published numbers were measured under, and
+    equivalence of three request fields is not equivalence of the whole system.
     """
     referencing = [
         doc.relative_to(_ROOT).as_posix()
