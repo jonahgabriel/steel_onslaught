@@ -73,19 +73,70 @@ shape and no request variant should fall back to the keyword heuristics
 (which previously false-positived on a legitimate ``rationale`` containing
 "i cannot" as coherent prose).
 
-**Known, deliberate fidelity gaps** (the consumer-facing delegation wire
-model has no equivalent field):
+**Completion-shaping fidelity, closed by OMN-15482.** Three of the gaps
+previously listed here were the reason an overlay could not be migrated from
+``kind: openai_compatible`` to ``kind: onex_delegation`` without silently
+changing behaviour, and they are now closed end to end. The consumer-facing
+wire model gained ``system_prompt``, ``temperature`` and ``response_format``
+(OMN-15482, omnimarket side), threaded through ``HandlerDelegateSkill`` ->
+``LocalDelegationDispatchPort`` -> ``ModelLlmDelegationCallRequest`` onto the
+outbound chat-completions payload. ``complete()`` below therefore forwards:
 
-- ``ModelSOLlmCompletionRequest.json_mode`` has no wire counterpart (no
-  ``response_format`` on ``ModelDelegateSkillRequest``). When ``True``, an
-  explicit "respond with a single JSON object only" instruction is appended
-  to the composed prompt instead.
-- ``persona``, ``temperature``, and ``evidence_context`` have no wire
-  counterpart at all and are not forwarded. Reconciling them (if ever
-  needed) is display-salience-arm-specific design work, out of this
-  client's scope (ticket 8R, P3).
+- ``system_prompt`` as its own wire field, NOT concatenated onto the user
+  prompt, so the backend receives two distinct chat roles exactly as
+  :class:`~steel_onslaught.llm.client_http.OpenAICompatibleClient` sends them.
+- ``temperature`` verbatim. Six pilot specs configure a real value (5 x 0.7,
+  1 x 0.2); those were previously discarded, so a migrated overlay silently
+  sampled at the delegation default instead.
+- ``json_mode`` as the wire parameter ``response_format={"type":
+  "json_object"}``. The former appended "respond with a single JSON object
+  only" prompt sentence is DELETED, not kept as a fallback -- an alternate
+  path that silently changes the prompt text is exactly what made the two
+  clients non-equivalent, and leaving it in place would keep the migration
+  unprovable.
+
+The differential test ``tests/llm/test_client_delegation_fidelity_omn15482.py``
+pins the equivalence for all three fields by driving BOTH clients with one
+identical :class:`ModelSOLlmCompletionRequest` and comparing the two wire
+requests field by field, so "behaviour-preserving" is a tested claim.
+
+**Cross-repo version requirement (read before deploying this client).**
+``ModelDelegateSkillRequest`` is ``extra="forbid"``, so the three fields above
+require the OMN-15482 omnimarket change to be present in whichever
+``omnibase_infra`` venv :class:`SubprocessDelegationCliRunner` invokes. Against
+an OLDER omnimarket the CLI rejects the payload at request validation and this
+client raises :class:`LlmTransportError` -- loud and immediate, never a silent
+drop, which is the intended failure mode. The two halves must nonetheless land
+together; the seam is pinned from both sides (``tests/llm/
+test_client_delegation_fidelity_omn15482.py::
+test_payload_key_set_is_pinned_for_the_cross_repo_seam`` here, and
+``test_steel_payload_validates_against_the_wire_model`` in omnimarket).
+
+**Known, deliberate fidelity gaps that REMAIN open** (the consumer-facing
+delegation wire model still has no equivalent field):
+
+- ``persona`` and ``evidence_context`` have no wire counterpart and are not
+  forwarded -- but note that ``OpenAICompatibleClient`` does not forward them
+  either (verified: neither name appears in ``client_http.py``), so this is
+  NOT a differential gap between the two clients and does not affect
+  migration equivalence. ``persona`` carries only the persona ID; the
+  persona's actual text is ``system_prompt``, which IS forwarded now.
+  ``evidence_context`` is match/tick correlation telemetry, not prompt
+  content. Carrying either as a first-class wire field would be
+  display-salience-arm-specific design work, out of this client's scope
+  (ticket 8R, P3).
 - ``image_attachment`` is unsupported; a request that sets one raises
   ``ValueError`` immediately rather than silently dropping the image.
+  Supporting images end to end is separate, larger work (OMN-15482 explicitly
+  scopes it out); the four vision overlays stay on ``openai_compatible``.
+- ``ModelSOOpenAIRetryPolicy`` (the per-overlay ``retry`` block every
+  ``openai_compatible`` binding declares) has no counterpart on
+  ``ModelSODelegationProviderBinding`` -- retries belong to the delegation
+  node's own escalation ladder. Whether per-overlay retry config needs an
+  equivalent is an open design question, not a fidelity bug.
+- The delegation wire response carries no provider-level ``finish_reason``;
+  :func:`_parse_skill_result` reports ``"stop"``, the only value implied by a
+  domain status of ``completed`` on this surface today.
 """
 
 from __future__ import annotations
@@ -112,11 +163,13 @@ from steel_onslaught.llm.schemas import (
 # boundary racing it.
 _SUBPROCESS_TIMEOUT_GRACE_SECONDS = 30.0
 
-# Appended to the composed prompt when the caller requests JSON-mode output
-# (``ModelSOLlmCompletionRequest.json_mode``) -- the delegation wire request
-# has no ``response_format`` field, so json_mode is expressed as a prompt
-# instruction instead of a wire parameter.
-_JSON_MODE_INSTRUCTION = "\n\nRespond with a single JSON object only. No prose outside the JSON."
+# OMN-15482: the wire parameter ``json_mode`` maps to, byte-identical to what
+# ``OpenAICompatibleClient`` puts on its own wire body via
+# ``ModelSOOpenAIResponseFormat(type="json_object")``. This REPLACES the former
+# ``_JSON_MODE_INSTRUCTION`` prompt sentence, which is deleted rather than kept
+# as a fallback: an alternate path that silently rewrites the prompt is exactly
+# what made the two clients non-equivalent.
+_JSON_OBJECT_RESPONSE_FORMAT: dict[str, object] = {"type": "json_object"}
 
 # OMN-15170/OMN-15193: the closed tactical-decision response shape this client
 # always expects back, declared as a JSON Schema and forwarded verbatim on
@@ -209,16 +262,20 @@ class SubprocessDelegationCliRunner:
         return completed.stdout
 
 
-def _composed_prompt(request: ModelSOLlmCompletionRequest) -> str:
+def _reject_unsupported(request: ModelSOLlmCompletionRequest) -> None:
+    """Fail loud on the one request shape this client genuinely cannot carry.
+
+    ``image_attachment`` remains out of scope (OMN-15482 scopes it out
+    explicitly); raising is correct behaviour, and is deliberately NOT softened
+    into a silent drop. Everything else on ``ModelSOLlmCompletionRequest`` that
+    ``OpenAICompatibleClient`` puts on the wire is now forwarded -- see the
+    module docstring.
+    """
     if request.image_attachment is not None:
         raise ValueError(
             "LlmBusDelegationClient does not support image_attachment requests "
             "-- the consumer-facing delegation wire model has no image field"
         )
-    prompt = f"{request.system_prompt}\n\n{request.user_prompt}"
-    if request.json_mode:
-        prompt += _JSON_MODE_INSTRUCTION
-    return prompt
 
 
 def _require_str(payload: dict[str, object], key: str, *, where: str) -> str:
@@ -398,10 +455,20 @@ class LlmBusDelegationClient:
         self._event_bus = event_bus
 
     def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
-        prompt = _composed_prompt(request)
+        _reject_unsupported(request)
         correlation_id = self._new_correlation_id()
         payload: dict[str, object] = {
-            "prompt": prompt,
+            # OMN-15482: the USER prompt only. The system prompt travels in its
+            # own wire field below, so the backend receives two distinct chat
+            # roles -- previously these were concatenated into one flat string,
+            # which is the fidelity gap that made an overlay migration off
+            # OpenAICompatibleClient non-behaviour-preserving.
+            "prompt": request.user_prompt,
+            "system_prompt": request.system_prompt,
+            # OMN-15482: forwarded verbatim. Six pilot specs configure a real
+            # temperature (5 x 0.7, 1 x 0.2) that this client previously
+            # discarded entirely.
+            "temperature": request.temperature,
             "task_type": self._config.task_type,
             "source": self._config.source,
             "correlation_id": str(correlation_id),
@@ -425,6 +492,13 @@ class LlmBusDelegationClient:
             # request variant that should omit it.
             "response_contract": _TACTICAL_RESPONSE_CONTRACT,
         }
+        # OMN-15482: json_mode as a WIRE PARAMETER, matching
+        # ``OpenAICompatibleClient``'s ``response_format`` field exactly. The
+        # key is omitted entirely when json_mode is False, mirroring that
+        # client's ``exclude_none`` wire body -- so the two are equivalent in
+        # both polarities, not just the True case.
+        if request.json_mode:
+            payload["response_format"] = dict(_JSON_OBJECT_RESPONSE_FORMAT)
         if self._config.max_tokens is not None:
             payload["max_tokens"] = self._config.max_tokens
 
