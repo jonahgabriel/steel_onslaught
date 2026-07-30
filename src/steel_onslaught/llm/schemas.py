@@ -76,6 +76,22 @@ class ModelSOLlmCompletionRequest(_ClosedStrictModel):
     # ``OpenAICompatibleClient.complete`` emitting a byte-identical string
     # ``content`` field for every pre-existing (text-only) arm.
     image_attachment: ModelSOLlmImageAttachment | None = None
+    # OMN-15522: caller-selected signal for whether the response this
+    # request expects is the closed per-tick tactical-decision shape
+    # (``{action, action_params, confidence, rationale}``). Defaults
+    # ``True`` so every pre-existing call site (``LLMPilot``'s plain
+    # ``decide()`` path, ``llm/tuner.py``) keeps its byte-identical
+    # behavior without modification. ``LLMProgrammingPilot`` (card-mode
+    # whole-round programming) sets this ``False``: its response is a
+    # register/card plan, not a tactical decision, and forwarding the
+    # tactical contract on that path made the platform's delegation
+    # quality gate reject a correct programming response as
+    # ``SCHEMA_VIOLATION`` (see ``client_delegation.py``'s ``complete()``,
+    # which is the only consumer of this field -- every client without a
+    # wire-level response-contract concept, e.g. ``OpenAICompatibleClient``,
+    # ignores it, since response-shape validation there is owned entirely
+    # by steel's own parsers regardless of this flag).
+    wants_tactical_response_contract: StrictBool = True
 
 
 class ModelSOLlmPilotSelection(_ClosedStrictModel):

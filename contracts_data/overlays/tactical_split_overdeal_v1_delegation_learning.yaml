@@ -267,6 +267,63 @@
 # orphans are left in the ledger (append-only) and discharged via the
 # contamination gate's ended-but-withheld class (OMN-15377). A seed that
 # fails DURING a match is not re-run; it is a reported casualty.
+#
+# AMENDMENT (2026-07-30, BEFORE any scored match of this battery; every
+# hypothesis, endpoint, band, escape, and interpretation clause above is
+# UNCHANGED -- this is execution-infrastructure only, same class as the
+# display-salience pair's 2026-07-27/28 amendments).
+#
+# 1. CANARY RESULT AND ITS CORRECTED ROOT CAUSE. The pre-declared n=1
+#    quarantined canary was run before this amendment and FAILED closed:
+#    SCHEMA_VIOLATION on the first LLM completion, reproduced 2/2 seeds
+#    (9001, 9002), 4/4 attempts (delegation-node internal retries included),
+#    recorded on OMN-15482 (comment 14468f08). Per the pre-declared escape,
+#    no battery was launched on the failing configuration. The initial
+#    root-cause hypothesis recorded there (persona-vocabulary echo under the
+#    collapsed prompt) is SUPERSEDED: the model returned a registers-shaped
+#    whole-round program -- the correct response to the card-mode programming
+#    prompt -- while the wire request demanded the per-tick tactical shape,
+#    because LlmBusDelegationClient hardcoded _TACTICAL_RESPONSE_CONTRACT on
+#    EVERY request (client_delegation.py, previously :426). That is a
+#    contract mis-selection defect in the client, ticketed separately and
+#    fixed in this same PR: the response contract is now caller-selected --
+#    the plain decide() path keeps the tactical contract byte-identical
+#    (the display-salience arm's proven configuration is unchanged), and
+#    card-mode programming completions carry no wire-level response
+#    contract, matching the HTTP path's semantics where response-shape
+#    validation is owned by steel's own programming parser and its bounded
+#    reprompt loop. A fresh canary under the fixed client gates the launch
+#    exactly as the original canary clause specifies.
+#
+# 2. EXECUTING COMMAND COMPLETED (state-root discipline). The pre-registered
+#    driver invocation above omitted the lane location; run verbatim it
+#    would resolve to the shared default state-root that battery #126
+#    already used (appending into that battery's raw file and rehydrating
+#    its lineage chain). The executing command is therefore pinned in full:
+#
+#      uv run python scripts/run_lgate2_adaptation_battery.py \
+#        --mode battery --seat red --genesis 0.5 --step 2.0 --n 30 \
+#        --promote-attempts 15 \
+#        --overlay contracts_data/overlays/tactical_split_overdeal_v1_delegation_learning.yaml \
+#        --red-loadout contracts_data/loadouts/llm_qwen35_berserker.yaml \
+#        --blue-loadout contracts_data/loadouts/llm_qwen35_berserker_mirror_blue.yaml \
+#        --state-root <hermetic-snapshot>/battery_state/omn15488_learning_battery \
+#        --fresh
+#
+#    run from the steel_onslaught repo root inside the OMN-15265 hermetic
+#    snapshot. --fresh applies to the initial invocation ONLY; a makeup
+#    invocation (MAKEUP PROTOCOL above) re-runs against the SAME state-root
+#    WITHOUT --fresh, exactly as written there.
+#
+# 3. LEDGER PROVIDER LITERAL (AC6 correction, mirrored on the ticket). The
+#    lane ledger's llm_completion_* payloads carry the PILOT SPECS'
+#    provider_id strings -- qwen35 and qwen35_mirror_blue -- because this
+#    overlay holds the pilot registry byte-constant with the #126 overlay.
+#    The delegation-rails invariant that actually matters is carried by the
+#    provider BINDING (kind onex_delegation, backend_id local-coder-mlx)
+#    and the delegation node's own receipts, not by the ledger provider_id
+#    literal. The salience arm's ledger literal (onex-local-coder-mlx) was
+#    an overlay-local choice, not a program convention.
 schema_version: "1"
 bus:
   kind: in_process

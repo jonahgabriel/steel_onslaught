@@ -108,7 +108,16 @@ _BLUE_MIRROR_LOADOUT = (
 #     (`_phase_caps`); arithmetically inert for this battery's own config
 #     (2.5 <= both 3.0 and 2.5) but a mismatch between the pre-registration
 #     of record and the executing configuration -- corrected to 2.5.
-_PREREG_HEADER_SHA256 = "85ae4f01c5bf866fd91e63b046acb74da2af1b5c2ea2e4b189e4e1bb730f3bba"
+#   round 3 -- pre-launch AMENDMENT block appended verbatim (per the
+#     display-salience precedent for post-filing, pre-first-scored-match
+#     amendments): the canary's SCHEMA_VIOLATION root cause superseded
+#     (contract mis-selection, not persona-vocabulary echo -- OMN-15522),
+#     the executing driver command pinned in full (state-root discipline),
+#     and the AC6 ledger-provider-literal correction. This is a genuine
+#     content change to the pre-registration of record -- not an inline
+#     defect correction -- so the pin is re-taken to cover the amended
+#     header rather than left stale against pre-amendment text.
+_PREREG_HEADER_SHA256 = "36c8a569c87ca599ecd48a847da31bf00002d82982ce23dc4acfcf954174589c"
 
 _PREREG_MARKERS = (
     "PRE-REGISTERED HYPOTHESES",

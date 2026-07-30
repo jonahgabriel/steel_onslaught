@@ -61,17 +61,30 @@ actually sent. Live routing determinism to ``local-coder-mlx`` is proven by
 OMN-15170's driver test (``tests/live/``), not by this module's own
 (hermetic, fake-runner) unit tests.
 
-**Contract-declared response validation (OMN-15193):** ``ModelDelegateSkillRequest``
-gained an optional ``response_contract`` field (a JSON Schema) that, when
-set, makes the platform's delegation quality gate validate the response
-structurally against it instead of running the generic task-class keyword
-heuristics. ``complete()`` below always forwards
-``_TACTICAL_RESPONSE_CONTRACT`` -- the closed tactical-decision shape derived
-from this repo's own ``_ModelSOLlmPilotResponse`` decision-parsing contract
-(``steel_onslaught.llm.pilot``) -- since this client has exactly one response
-shape and no request variant should fall back to the keyword heuristics
-(which previously false-positived on a legitimate ``rationale`` containing
-"i cannot" as coherent prose).
+**Contract-declared response validation (OMN-15193, caller-selected per
+OMN-15522):** ``ModelDelegateSkillRequest`` gained an optional
+``response_contract`` field (a JSON Schema) that, when set, makes the
+platform's delegation quality gate validate the response structurally
+against it instead of running the generic task-class keyword heuristics.
+``complete()`` below forwards ``_TACTICAL_RESPONSE_CONTRACT`` -- the closed
+tactical-decision shape derived from this repo's own
+``_ModelSOLlmPilotResponse`` decision-parsing contract
+(``steel_onslaught.llm.pilot``) -- only when the request's
+``wants_tactical_response_contract`` is ``True`` (the default). This client
+is shared, one instance per ``provider_id``, across both the plain
+per-tick ``decide()`` path (``LLMPilot``, whose response really is the
+tactical-decision shape -- the default preserves its wire payload
+byte-identically) and card-mode whole-round programming (``llm/programming.py``
+``LLMProgrammingPilot``, whose response is a register/card plan, an entirely
+different envelope). OMN-15522: forwarding the tactical contract
+unconditionally on the programming path made the quality gate reject a
+correct programming response as ``SCHEMA_VIOLATION`` (OMN-15482 comment
+14468f08, OMN-15488 canary) -- the model's response was schema-correct for
+what it was asked to produce, just validated against the wrong schema.
+``LLMProgrammingPilot`` now opts out (``wants_tactical_response_contract=
+False``), matching the HTTP path's semantics, where response-shape
+validation has never involved a wire-declared contract at all and is owned
+entirely by steel's own parsers.
 
 **Known, deliberate fidelity gaps** (the consumer-facing delegation wire
 model has no equivalent field):
@@ -118,10 +131,13 @@ _SUBPROCESS_TIMEOUT_GRACE_SECONDS = 30.0
 # instruction instead of a wire parameter.
 _JSON_MODE_INSTRUCTION = "\n\nRespond with a single JSON object only. No prose outside the JSON."
 
-# OMN-15170/OMN-15193: the closed tactical-decision response shape this client
-# always expects back, declared as a JSON Schema and forwarded verbatim on
-# every request via ``ModelDelegateSkillRequest.response_contract`` (landed on
-# the omnimarket side by OMN-15193, PR #1908). Derived field-for-field from
+# OMN-15170/OMN-15193: the closed tactical-decision response shape the plain
+# decide() path expects back, declared as a JSON Schema and forwarded
+# verbatim via ``ModelDelegateSkillRequest.response_contract`` (landed on the
+# omnimarket side by OMN-15193, PR #1908) whenever the request's
+# ``wants_tactical_response_contract`` is ``True`` (the default -- see
+# ``complete()`` below and OMN-15522, which made this caller-selected instead
+# of unconditional). Derived field-for-field from
 # this repo's own decision-parsing contract --
 # ``steel_onslaught.llm.pilot._ModelSOLlmPilotResponse`` (the closed,
 # ``extra="forbid"``, ``strict=True`` Pydantic boundary the pilot validates
@@ -416,15 +432,25 @@ class LlmBusDelegationClient:
             # docstring documented ("declaring the intended backend_id here
             # ... leaves the field ready the moment the wire path opens").
             "backend_id": self._config.backend_id,
-            # OMN-15193: always declare the closed tactical-decision response
-            # schema (see ``_TACTICAL_RESPONSE_CONTRACT`` above) so the
-            # platform's delegation quality gate validates structurally
-            # against it instead of the generic task-class keyword
-            # heuristics. Unconditional -- this client has exactly one
-            # response shape (the pilot's tactical decision), so there is no
-            # request variant that should omit it.
-            "response_contract": _TACTICAL_RESPONSE_CONTRACT,
         }
+        if request.wants_tactical_response_contract:
+            # OMN-15193/OMN-15522: declare the closed tactical-decision
+            # response schema (see ``_TACTICAL_RESPONSE_CONTRACT`` above) so
+            # the platform's delegation quality gate validates structurally
+            # against it instead of the generic task-class keyword
+            # heuristics. Caller-selected via the request, not
+            # unconditional: this client is shared (one instance per
+            # provider_id, see match/composition.py) by both the plain
+            # decide() path -- whose response really is the tactical
+            # shape -- and card-mode programming completions, whose
+            # response is a whole-round register plan. Forwarding the
+            # tactical contract on the programming path made the quality
+            # gate reject a correct programming response as
+            # SCHEMA_VIOLATION (OMN-15482 comment 14468f08, OMN-15488
+            # canary) -- the model's response was schema-correct for what
+            # it was asked to produce, just validated against the wrong
+            # schema.
+            payload["response_contract"] = _TACTICAL_RESPONSE_CONTRACT
         if self._config.max_tokens is not None:
             payload["max_tokens"] = self._config.max_tokens
 

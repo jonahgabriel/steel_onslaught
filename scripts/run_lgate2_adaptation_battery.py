@@ -12,7 +12,8 @@ phases exactly as it does across production processes), using the
 
 1. ``baseline``  — live-learning ON, evaluator capped at ``max_value == genesis``
    so promotion is impossible; every match flies the generation-0 policy
-   (aggression 1.0) WITH its guidance block.  N matches.
+   (aggression == ``--genesis``, default ``1.0``) WITH its guidance block.
+   N matches.
 2. ``promote``   — cap lifted to ``max_value == genesis + step`` (the SAME
    value the ``post`` phase re-pins, OMN-15488: previously a hardcoded
    ``3.0`` independent of ``--genesis``/``--step``, which silently made
