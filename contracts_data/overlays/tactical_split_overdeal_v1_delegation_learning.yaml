@@ -147,7 +147,24 @@
 # machine-asserted per row from MATCH_STARTED policy provenance.
 #
 # PHASES AND SEEDS (driver: scripts/run_lgate2_adaptation_battery.py, with
-# --seat red --genesis 0.5 --step 2.0 --n 30 --promote-attempts 15):
+# --overlay contracts_data/overlays/tactical_split_overdeal_v1_delegation_learning.yaml
+# --blue-loadout contracts_data/loadouts/qwen35/llm_qwen35_berserker_mirror_blue.yaml
+# --seat red --genesis 0.5 --step 2.0 --n 30 --promote-attempts 15
+# [--red-loadout defaults to contracts_data/loadouts/llm_qwen35_berserker.yaml,
+# already correct for this pairing]. REMEDIATION NOTE (2026-07-30, this
+# build lane): the text as originally handed omitted --overlay and
+# --blue-loadout, which resolves the driver's own argparse defaults to
+# tactical_split_overdeal_v1_qwen.yaml / qwen35/sniper_ironclad.yaml -- the
+# OLD openai_compatible overlay and the red-berserker-vs-sniper pairing
+# this battery exists specifically to avoid (21/21 in #126, 0/35 in #128;
+# see "THE MIRROR PAIRING" above). Left uncorrected, the pre-registered
+# command would have silently run neither the onex_delegation binding nor
+# the mirror pairing, guaranteeing a spurious NO-PROMOTION exit that would
+# be indistinguishable from a real H_POLICY_INERT result. Corrected here,
+# before this file's pre-registration commit, per OMN-15166's own
+# precedent and warning against exactly this failure mode
+# (foundry_60_asym_v1_salience_prominent_delegation.yaml, "silently runs
+# the wrong condition"):
 #   baseline: seeds 4001-4030 (n=30), max_value = 0.5 (genesis; promotion
 #             impossible), every match flies gen-0 WITH its guidance block.
 #   promote:  seeds 4101-4115 (budget 15), max_value = 3.0, runs until the
@@ -383,7 +400,20 @@ llm:
       provider_binding_id: qwen35_mirror_blue
   personas_dir: ../pilots/personas
   secret_resolver:
-    kind: none
+    # kind: injected, matching tactical_split_overdeal_v1_qwen.yaml -- NOT
+    # the display-salience delegation overlays' `kind: none`. Empirical
+    # finding from this ticket's own n=1 canary (Deliverable 2): the driver
+    # this overlay runs under, scripts/run_lgate2_adaptation_battery.py's
+    # `_measure_match`, unconditionally passes `secret_resolver=
+    # NoSecretResolver()` into `assemble_match_live` -- `kind: none`
+    # unconditionally REJECTS an injected resolver
+    # (src/steel_onslaught/match/composition.py:1463-1464), so the first
+    # canary attempt failed at composition with `ValueError:
+    # llm.secret_resolver kind 'none' rejects an injected resolver` before
+    # any LLM call was made. `kind: injected` is the value this driver's
+    # calling convention requires; corrected here, before this file's
+    # pre-registration commit.
+    kind: injected
 clock:
   kind: system_utc
 identity:

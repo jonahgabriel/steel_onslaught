@@ -34,16 +34,32 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 import yaml  # type: ignore[import-untyped]
 
-from scripts.run_lgate2_adaptation_battery import _build_parser, _lane_overlay, _phase_caps
+from scripts.run_lgate2_adaptation_battery import _build_parser, _lane_overlay
 from steel_onslaught.contracts.application import (
     ModelSOApplicationOverlay,
     ModelSODelegationProviderBinding,
 )
+from steel_onslaught.contracts.lineage import ParamDict, spec_hash
+from steel_onslaught.contracts.live_learning import ModelSOLiveLearningPolicy
+from steel_onslaught.events.payloads import ModelSOPlayerScore
+from steel_onslaught.learning.evidence import ModelSOAfterMatchLearningEvidence
+from steel_onslaught.learning.live_evaluator import WinDamageDifferentialEvaluator
+from steel_onslaught.llm.client_http import NoSecretResolver
 from steel_onslaught.match.composition import assemble_match_live, load_application_overlay
+
+# ``_phase_caps`` is intentionally NOT imported at module scope. It is a
+# wholly new symbol (OMN-15488); importing it here would make an
+# ImportError against the pre-patch driver block collection of every other
+# test in this module (a real defect flagged in this ticket's remediation
+# round -- RED for the genesis-cap tests must not swallow the RED/GREEN
+# signal of every unrelated test in the file). Each test that needs it
+# imports it locally instead, so its own ImportError/AttributeError is
+# scoped to exactly the tests exercising that new surface.
 
 pytestmark = pytest.mark.unit
 
@@ -56,12 +72,28 @@ _BLUE_MIRROR_LOADOUT = (
     _REPO_ROOT / "contracts_data/loadouts/qwen35/llm_qwen35_berserker_mirror_blue.yaml"
 )
 
-# Prepended verbatim from the amendment-authored pre-registration text
-# (OMN-15488 ticket amendment, 2026-07-30 ~15:0xZ). Pinned hash proves the
-# header stays byte-stable going forward -- any edit to the pre-registration
-# of record changes this hash and fails the test loudly, rather than
-# silently drifting.
-_PREREG_HEADER_SHA256 = "ef942396e642432fd334fb668d7b65e56bfd443e285aa25f135ab841ae5b3613"
+# Prepended from the pre-registration text handed to this build lane
+# (OMN-15488 ticket amendment comment, 2026-07-30 ~15:0xZ), via the
+# dispatch prompt's scratchpad reference -- NOT embedded verbatim in the
+# Linear amendment comment itself (the comment states the text "is authored
+# and handed to the build lane" but does not carry it; there is no durable,
+# citable surface for "the handed source" beyond this build lane's own
+# session artifacts). The "verbatim/byte-identical" claim in a prior PR
+# revision was therefore unfalsifiable against any durable surface and has
+# been withdrawn (remediation round, 2026-07-30) -- what this pin actually
+# proves is narrower and honest: SELF-CONSISTENCY going forward (an edit to
+# the committed header changes this hash and fails loudly), not fidelity to
+# an upstream source this test has no way to check.
+#
+# The header text as handed also contained a real defect, independently
+# discovered and corrected during this remediation round: its "PHASES AND
+# SEEDS" launch command omitted `--overlay`/`--blue-loadout`, which -- run
+# as originally written -- would have silently executed the OLD
+# openai_compatible overlay's red-berserker-vs-sniper pairing (guaranteed
+# NO-PROMOTION) instead of this battery's onex_delegation/mirror-pairing
+# design. Fixed in the committed header before this pin was taken; see the
+# overlay's own inline remediation note at that line.
+_PREREG_HEADER_SHA256 = "0fac410d9916bd04b4f3c78e4c931a3cb39dff32b093e69069768d6dd0eb7c0c"
 
 _PREREG_MARKERS = (
     "PRE-REGISTERED HYPOTHESES",
@@ -306,6 +338,7 @@ class TestMirrorPairingComposition:
                 blue_loadout_path=_BLUE_MIRROR_LOADOUT,
                 seed=1,
                 max_ticks=None,
+                secret_resolver=NoSecretResolver(),  # overlay declares kind: injected
             )
             stack.close()
         finally:
@@ -350,6 +383,7 @@ class TestMirrorPairingComposition:
                     blue_loadout_path=_RED_LOADOUT,  # literal same file, both seats
                     seed=1,
                     max_ticks=None,
+                    secret_resolver=NoSecretResolver(),
                 )
         finally:
             shutil.rmtree(self._tmp, ignore_errors=True)
@@ -361,24 +395,39 @@ class TestMirrorPairingComposition:
 
 
 class TestGenesisPhaseCaps:
+    """RED-before note: ``_phase_caps`` is a wholly new symbol (no prior
+    "wrong-but-present" implementation existed to contrast against), so
+    these tests are legitimately absence-based RED against base -- an
+    ``ImportError``/``ModuleNotFoundError`` on the local import below, not
+    an assertion failure. See ``TestPromotePhaseCapTracksGenesisAndStep``
+    below for the exists-but-wrong regression proof against the
+    PRE-EXISTING ``WinDamageDifferentialEvaluator`` this knob's promote-cap
+    defect actually lived in."""
+
     def test_default_genesis_preserves_prior_behavior(self) -> None:
         """--genesis default 1.0 leaves every existing invocation's baseline/
         post cap arithmetic unchanged (the #126/#128 configuration)."""
+        from scripts.run_lgate2_adaptation_battery import _phase_caps
+
         args = _build_parser().parse_args([])
         assert args.genesis == 1.0
-        baseline_cap, post_cap = _phase_caps(args)
+        baseline_cap, promote_cap, post_cap = _phase_caps(args)
         assert baseline_cap == 1.0
         assert post_cap == 1.0 + args.step
+        assert promote_cap == post_cap
 
     def test_genesis_flag_sets_the_decisive_endpoint_regime_caps(self) -> None:
         """The decisive battery's own configuration: --genesis 0.5 --step 2.0
-        must cap baseline at 0.5 and post at 2.5 (the two named regimes of
-        the aggression semantics sentence)."""
+        must cap baseline at 0.5 and post (and promote) at 2.5 (the two
+        named regimes of the aggression semantics sentence)."""
+        from scripts.run_lgate2_adaptation_battery import _phase_caps
+
         args = _build_parser().parse_args(["--genesis", "0.5", "--step", "2.0"])
         assert args.genesis == 0.5
-        baseline_cap, post_cap = _phase_caps(args)
+        baseline_cap, promote_cap, post_cap = _phase_caps(args)
         assert baseline_cap == 0.5
         assert post_cap == 2.5
+        assert promote_cap == 2.5
 
     def test_genesis_flows_into_the_lane_overlays_live_learning_binding(
         self, tmp_path: Path
@@ -394,3 +443,133 @@ class TestGenesisPhaseCaps:
         assert overlay.live_learning is not None
         assert overlay.live_learning.genesis_parameters == {"aggression": 0.5}
         assert overlay.live_learning.max_value == 0.5
+
+
+# ---------------------------------------------------------------------------
+# 5. Promote-phase cap tracks genesis+step (remediation-round regression)
+# ---------------------------------------------------------------------------
+
+_EVAL_LEARNER = "player.red"
+_EVAL_OPPONENT = "player.blue"
+
+
+def _decisive_win_evidence() -> ModelSOAfterMatchLearningEvidence:
+    """Learner wins decisively with a positive damage differential -- the
+    only evidence shape ``WinDamageDifferentialEvaluator.evaluate`` ever
+    proposes a candidate for. Mirrors the pattern in
+    ``tests/learning/test_live_evaluator.py``."""
+
+    def _score(damage_dealt: int, *, victory: int) -> ModelSOPlayerScore:
+        return ModelSOPlayerScore(
+            victory=victory,
+            damage_dealt=damage_dealt,
+            damage_efficiency=1.0,
+            pressure_efficiency=1.0,
+            overload_penalty=0,
+            replay_validity=1,
+            final_score=damage_dealt,
+        )
+
+    return ModelSOAfterMatchLearningEvidence(
+        match_id="match.omn15488.canary-unit.001",
+        scored_event_id="01HZY3E9ZTAV5J6BQF8KM2WXSC",
+        correlation_id=UUID("00000000-0000-0000-0000-000000015488"),
+        duration_ticks=12,
+        winner_player_id=_EVAL_LEARNER,
+        is_draw=False,
+        scores={
+            _EVAL_LEARNER: _score(100, victory=1),
+            _EVAL_OPPONENT: _score(40, victory=0),
+        },
+        event_counts={"match_scored": 1},
+        decision_action_counts={},
+        decision_reason_counts={},
+    )
+
+
+def _generation0_policy(parameters: ParamDict) -> ModelSOLiveLearningPolicy:
+    return ModelSOLiveLearningPolicy(
+        policy_id="policy.aggressive.genesis",
+        archetype="aggressive",
+        parameters=parameters,
+        spec_hash=spec_hash("aggressive", parameters),
+        generation=0,
+    )
+
+
+class TestPromotePhaseCapTracksGenesisAndStep:
+    """Exists-but-wrong regression proof for the remediation-round defect:
+    an earlier version of ``--genesis`` threaded ``genesis``/``step`` into
+    the baseline/post evaluator caps only and left the promote phase's cap
+    hardcoded at the driver's ORIGINAL literal (``max_value=3.0``,
+    independent of ``--genesis``/``--step``). ``WinDamageDifferentialEvaluator``
+    is PRE-EXISTING code (unmodified by OMN-15488, present before this
+    ticket) -- the defect was entirely in which ``max_value`` the driver
+    passed it, so exercising the real evaluator with each literal is a
+    genuine exists-but-wrong contrast, not an absence-based one."""
+
+    def test_old_hardcoded_3_0_literal_silently_blocks_a_valid_genesis_step_pair(
+        self,
+    ) -> None:
+        """Characterizes the DEFECT this remediation round fixed, against
+        the real (unmodified) evaluator: with the driver's ORIGINAL
+        promote-phase literal (max_value=3.0) and a genesis/step pair whose
+        target exceeds it (genesis=1.5, step=2.0 -> candidate 3.5), a
+        decisive learner win proposes NO candidate at all -- the evaluator
+        silently returns ``None``, which the driver reports as the
+        pre-declared NO-PROMOTION escape even though nothing about the
+        hypothesis failed."""
+        evaluator = WinDamageDifferentialEvaluator(
+            learning_player_id=_EVAL_LEARNER,
+            parameter="aggression",
+            step=2.0,
+            max_value=3.0,  # the driver's pre-remediation hardcoded promote-phase literal
+        )
+        policy = _generation0_policy({"aggression": 1.5})  # genesis == 1.5
+        record = evaluator.evaluate(evidence=_decisive_win_evidence(), policy=policy)
+        assert record is None, "candidate 3.5 > hardcoded cap 3.0 -- reproduces the unfixed defect"
+
+    def test_phase_caps_promote_cap_fixes_the_same_scenario(self) -> None:
+        """The FIX: ``_phase_caps``'s ``promote_cap`` (== genesis + step,
+        not a fixed literal) passed as ``max_value`` lets the IDENTICAL
+        decisive win actually promote for the same genesis/step pair."""
+        from scripts.run_lgate2_adaptation_battery import _phase_caps
+
+        args = _build_parser().parse_args(["--genesis", "1.5", "--step", "2.0"])
+        _baseline_cap, promote_cap, post_cap = _phase_caps(args)
+        assert promote_cap == post_cap == 3.5
+
+        evaluator = WinDamageDifferentialEvaluator(
+            learning_player_id=_EVAL_LEARNER,
+            parameter="aggression",
+            step=2.0,
+            max_value=promote_cap,
+        )
+        policy = _generation0_policy({"aggression": 1.5})
+        record = evaluator.evaluate(evidence=_decisive_win_evidence(), policy=policy)
+        assert record is not None, "promote_cap (3.5) must admit the exact candidate 3.5"
+        assert record.parameters["aggression"] == 3.5
+
+    def test_this_battery_own_config_was_never_affected_by_the_defect(self) -> None:
+        """Disclosure test: the decisive battery's OWN configuration
+        (genesis=0.5, step=2.0 -> candidate 2.5) never tripped the defect
+        (2.5 <= the old hardcoded 3.0) -- the bug was latent for this
+        battery, not active. Both the old literal and the fixed promote_cap
+        admit this battery's actual candidate."""
+        from scripts.run_lgate2_adaptation_battery import _phase_caps
+
+        args = _build_parser().parse_args(["--genesis", "0.5", "--step", "2.0"])
+        _baseline_cap, promote_cap, _post_cap = _phase_caps(args)
+        assert promote_cap == 2.5
+
+        policy = _generation0_policy({"aggression": 0.5})
+        for max_value in (3.0, promote_cap):
+            evaluator = WinDamageDifferentialEvaluator(
+                learning_player_id=_EVAL_LEARNER,
+                parameter="aggression",
+                step=2.0,
+                max_value=max_value,
+            )
+            record = evaluator.evaluate(evidence=_decisive_win_evidence(), policy=policy)
+            assert record is not None
+            assert record.parameters["aggression"] == 2.5

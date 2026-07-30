@@ -13,8 +13,12 @@ phases exactly as it does across production processes), using the
 1. ``baseline``  — live-learning ON, evaluator capped at ``max_value == genesis``
    so promotion is impossible; every match flies the generation-0 policy
    (aggression 1.0) WITH its guidance block.  N matches.
-2. ``promote``   — cap lifted (``max_value=3.0``); matches run until the first
-   ``POLICY_PROMOTED`` lands on the ledger (bounded attempts).
+2. ``promote``   — cap lifted to ``max_value == genesis + step`` (the SAME
+   value the ``post`` phase re-pins, OMN-15488: previously a hardcoded
+   ``3.0`` independent of ``--genesis``/``--step``, which silently made
+   promotion impossible whenever ``genesis + step > 3.0`` — see
+   ``_phase_caps``); matches run until the first ``POLICY_PROMOTED`` lands
+   on the ledger (bounded attempts).
 3. ``post``      — cap re-pinned at the promoted value (genesis + step) so
    the chain freezes at generation 1; every match flies the promoted policy.
    N matches.
@@ -353,23 +357,41 @@ def _summarize(rows: list[dict[str, Any]], *, learning_player: str) -> dict[str,
     }
 
 
-def _phase_caps(args: argparse.Namespace) -> tuple[float, float]:
-    """Baseline/post evaluator ``max_value`` caps derived from ``--genesis``/``--step``.
+def _phase_caps(args: argparse.Namespace) -> tuple[float, float, float]:
+    """Baseline/promote/post evaluator ``max_value`` caps derived from
+    ``--genesis``/``--step``.
 
     Baseline flies generation 0 capped at ``genesis`` (a candidate would have
-    to exceed the cap to promote, so promotion is impossible); post is capped
-    at ``genesis + step`` so the chain freezes at generation 1 (OMN-15488:
-    the ``--genesis`` knob generalizes the prior hardcoded ``_GENESIS["aggression"]
-    == 1.0`` so a decisive endpoint-regime contrast, e.g. 0.5 -> 2.5, can be
-    run without touching the driver).
+    to exceed the cap to promote, so promotion is impossible); promote and
+    post are BOTH capped at ``genesis + step`` -- promote so the exact
+    candidate the evaluator proposes on a decisive win (``current + step``,
+    where ``current == genesis`` during the promote phase) can actually
+    clear the cap, post so the chain freezes at generation 1 once promoted
+    (OMN-15488: the ``--genesis`` knob generalizes the prior hardcoded
+    ``_GENESIS["aggression"] == 1.0`` / promote-phase ``max_value=3.0``
+    constants so a decisive endpoint-regime contrast, e.g. 0.5 -> 2.5, can be
+    run without touching the driver. Latent bug fixed here: an EARLIER
+    version of this knob threaded ``--genesis``/``--step`` into baseline/post
+    only and left the promote phase's cap hardcoded at ``3.0`` -- correct for
+    every genesis/step pair whose target stays under 3.0 (this battery's own
+    0.5/2.0 included, candidate 2.5), but silently unreachable for any pair
+    where ``genesis + step > 3.0`` [e.g. ``--genesis 1.5 --step 2.0``,
+    candidate 3.5], which would fire the pre-declared NO-PROMOTION escape
+    for a reason unrelated to the hypothesis under test.  See
+    ``tests/contracts/test_lgate2_delegation_overlay_omn15488.py::
+    TestPromotePhaseCapTracksGenesisAndStep`` for the regression proof
+    against the underlying ``WinDamageDifferentialEvaluator``.).
     """
-    return args.genesis, args.genesis + args.step
+    baseline_cap = args.genesis
+    post_cap = args.genesis + args.step
+    promote_cap = post_cap
+    return baseline_cap, promote_cap, post_cap
 
 
 def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> int:
     learning_player, learning_mech = _SEATS[args.seat]
     rows: list[dict[str, Any]] = []
-    baseline_cap, post_cap = _phase_caps(args)
+    baseline_cap, promote_cap, post_cap = _phase_caps(args)
 
     def _run_phase(
         phase: str, *, max_value: float, seeds: list[int], stop_on_promotion: bool
@@ -423,7 +445,7 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
 
     promote = _run_phase(
         "promote",
-        max_value=3.0,
+        max_value=promote_cap,  # == genesis + step: the exact candidate a decisive win proposes
         seeds=[4100 + index for index in range(1, args.promote_attempts + 1)],
         stop_on_promotion=True,
     )

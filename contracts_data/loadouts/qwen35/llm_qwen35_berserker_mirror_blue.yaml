@@ -4,15 +4,19 @@
 # field EXCEPT ``id`` and ``pilot_id`` (chassis_id/boiler_id/modules/budgets
 # unchanged) -- the L-GATE-2 decisive battery's mirror opponent (player.blue)
 # flies the SAME berserker chassis as the learning seat (player.red). See
-# contracts_data/pilots/fire_dense_qwen/llm_qwen35_berserker_mirror_blue.yaml
+# contracts_data/pilots/tactical_split_overdeal_v1_delegation_learning/llm_qwen35_berserker_mirror_blue.yaml
 # for why ``pilot_id`` must point at a distinct (but functionally identical)
 # pilot spec rather than reusing ``pilot.llm.qwen35`` verbatim.
 #
 # Lives in this ``qwen35/`` subdirectory (alongside ``sniper_ironclad.yaml``),
 # NOT the top-level ``contracts_data/loadouts/`` dir: its ``pilot_id`` is
-# registered only in ``contracts_data/pilots/fire_dense_qwen/`` (this
-# overlay's own ``pilot_registry_dir``), not in the top-level
-# ``contracts_data/pilots/`` registry that
+# registered only in
+# ``contracts_data/pilots/tactical_split_overdeal_v1_delegation_learning/``
+# (this overlay's OWN dedicated ``pilot_registry_dir`` -- deliberately NOT
+# the shared ``contracts_data/pilots/fire_dense_qwen/`` that
+# ``tactical_split_overdeal_v1_qwen.yaml`` and several sibling overlays
+# reference; see that pilot spec's own header for the empirical reason), not
+# in the top-level ``contracts_data/pilots/`` registry that
 # ``tests/contracts/test_pilot_registry.py``'s pinned census walks -- the
 # same reason ``sniper_ironclad.yaml`` (``pilot.llm.qwen35_sniper``) lives
 # here rather than at the top level.
