@@ -699,6 +699,16 @@ class LLMProgrammingPilot:
                 tick=observation.pilot_observation.tick,
                 correlation_id=self._correlation_id,
             ),
+            # OMN-15522: a whole-round register plan is not a tactical
+            # decision -- forwarding the delegation client's closed
+            # per-tick tactical-decision response contract on this path
+            # made the platform's delegation quality gate reject a correct
+            # programming response as SCHEMA_VIOLATION (OMN-15482 comment
+            # 14468f08, OMN-15488 canary). Response-shape validation for
+            # this path is owned by ``_parse_response`` below plus the
+            # bounded reprompt loop, matching the HTTP client's semantics
+            # (which never had an equivalent wire-level contract concept).
+            wants_tactical_response_contract=False,
         )
 
     def _reprompt_or_terminate(

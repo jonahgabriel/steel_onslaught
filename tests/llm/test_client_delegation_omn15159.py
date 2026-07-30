@@ -52,7 +52,12 @@ def _config(tmp_path: Path, **overrides: object) -> ModelSODelegationProviderBin
     return ModelSODelegationProviderBinding.model_validate(raw)
 
 
-def _request(*, json_mode: bool = True, image: bool = False) -> ModelSOLlmCompletionRequest:
+def _request(
+    *,
+    json_mode: bool = True,
+    image: bool = False,
+    wants_tactical_response_contract: bool = True,
+) -> ModelSOLlmCompletionRequest:
     return ModelSOLlmCompletionRequest(
         system_prompt="you are a mech pilot",
         user_prompt="what do you do",
@@ -63,6 +68,7 @@ def _request(*, json_mode: bool = True, image: bool = False) -> ModelSOLlmComple
         image_attachment=(
             ModelSOLlmImageAttachment(png_bytes=b"\x89PNG", sha256_hex="0" * 64) if image else None
         ),
+        wants_tactical_response_contract=wants_tactical_response_contract,
     )
 
 
@@ -256,6 +262,62 @@ def test_payload_declares_the_tactical_response_contract_schema_omn15193(
         "required": ["action", "action_params", "confidence", "rationale"],
         "additionalProperties": False,
     }
+
+
+def test_decide_path_default_still_carries_the_tactical_response_contract_byte_identical(
+    tmp_path: Path,
+) -> None:
+    """OMN-15522 companion: the plain decide() path (default request, no
+    caller opt-out) forwards the exact same ``response_contract`` value as
+    before this fix -- the display-salience arm's proven delegation
+    configuration must be provably unchanged.
+    """
+    captured: dict[str, object] = {}
+
+    def _stdout(argv: tuple[str, ...]) -> str:
+        input_path = Path(argv[argv.index("--input") + 1])
+        captured.update(json.loads(input_path.read_text(encoding="utf-8")))
+        return _skill_result_json(correlation_id=str(captured["correlation_id"]))
+
+    client = _client(runner=_RecordingRunner(_stdout), tmp_path=tmp_path)
+    # No wants_tactical_response_contract override -- exercises the default,
+    # exactly as LLMPilot._build_request constructs its request.
+    client.complete(_request(wants_tactical_response_contract=True))
+
+    assert captured["response_contract"] == _TACTICAL_RESPONSE_CONTRACT
+
+
+def test_programming_path_completion_omits_the_tactical_response_contract_omn15522(
+    tmp_path: Path,
+) -> None:
+    """OMN-15522 RED-FIRST regression.
+
+    Card-mode programming completions (``LLMProgrammingPilot``) opt out of
+    the tactical-decision contract via
+    ``wants_tactical_response_contract=False`` -- their response is a
+    whole-round register plan, not a single tactical decision, and
+    forwarding the tactical schema made the platform's delegation quality
+    gate reject a correct programming response as ``SCHEMA_VIOLATION``
+    (OMN-15482 comment 14468f08, OMN-15488 canary). Must FAIL against the
+    unfixed client, which forwarded ``_TACTICAL_RESPONSE_CONTRACT``
+    unconditionally regardless of what the request asked for.
+    """
+    captured: dict[str, object] = {}
+
+    def _stdout(argv: tuple[str, ...]) -> str:
+        input_path = Path(argv[argv.index("--input") + 1])
+        captured.update(json.loads(input_path.read_text(encoding="utf-8")))
+        return _skill_result_json(correlation_id=str(captured["correlation_id"]))
+
+    client = _client(runner=_RecordingRunner(_stdout), tmp_path=tmp_path)
+    client.complete(_request(wants_tactical_response_contract=False))
+
+    assert "response_contract" not in captured, (
+        "programming-path completion must not carry a wire-level response "
+        "contract -- response-shape validation for a register plan is owned "
+        "by steel's own programming parser + bounded reprompt loop, not the "
+        "per-tick tactical-decision schema"
+    )
 
 
 def test_payload_composes_system_and_user_prompt_with_json_mode_instruction(

@@ -86,6 +86,18 @@ _PREREGISTERED_DELEGATION = frozenset(
 # battery evidence, binding-proof lane rather than a measured battery lane).
 _MIGRATED_BATCH_1 = frozenset({"local_200_v1.yaml"})
 
+# OMN-15488's L-GATE-2 decisive battery overlay. NET-NEW on the delegation
+# shape -- authored directly with ``kind: onex_delegation`` providers, never
+# had an ``openai_compatible`` ancestor, so it is not a "migration" in this
+# census's sense at all (there is nothing to migrate FROM). Its own
+# pre-registration is committed on its own header, following the
+# _PREREGISTERED_DELEGATION convention above; it is kept in a separate,
+# differently-named set (rather than folded into that frozenset) because it
+# is a single-arm decisive battery, not a paired display-salience arm, and
+# does NOT preempt the still-pending OMN-15174 batch-2 / OMN-15482 operator
+# decision about migrating the REMAINING openai_compatible corpus.
+_NET_NEW_DELEGATION_OMN15488 = frozenset({"tactical_split_overdeal_v1_delegation_learning.yaml"})
+
 # Model strings served by a delegation backend that has been proven live
 # through steel's own delegation path. ONE member: local-coder-mlx. Widening
 # this set is what unblocks a batch 2, and it may only be widened by a live
@@ -105,8 +117,8 @@ _IMAGE_BLOCKED = frozenset(
     }
 )
 
-_EXPECTED_TOTAL_OVERLAYS = 59
-_EXPECTED_MIGRATED_COUNT = 3  # 2 preregistered + 1 batch-1
+_EXPECTED_TOTAL_OVERLAYS = 60
+_EXPECTED_MIGRATED_COUNT = 4  # 2 preregistered + 1 batch-1 + 1 OMN-15488 net-new
 _EXPECTED_UNMIGRATED_COUNT = 56
 
 # Typed blocking reasons.
@@ -194,9 +206,9 @@ def test_every_overlay_is_classified_and_the_unmigrated_count_is_pinned() -> Non
 
 
 @pytest.mark.unit
-def test_migrated_set_is_exactly_the_preregistered_pair_plus_batch_1() -> None:
+def test_migrated_set_is_exactly_the_preregistered_pair_plus_batch_1_plus_omn15488() -> None:
     migrated = {p.name for p in _overlay_paths() if _classify(p)[0] == "migrated"}
-    assert migrated == _PREREGISTERED_DELEGATION | _MIGRATED_BATCH_1
+    assert migrated == _PREREGISTERED_DELEGATION | _MIGRATED_BATCH_1 | _NET_NEW_DELEGATION_OMN15488
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +230,27 @@ def test_batch_1_binding_shape(overlay_name: str) -> None:
         # Identity preservation: the pinned backend must serve the very model
         # string this overlay names. This is the assertion that distinguishes
         # a real migration from a silent model swap.
+        assert provider.model in _PROVEN_DELEGATION_MODELS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("overlay_name", sorted(_NET_NEW_DELEGATION_OMN15488))
+def test_omn15488_net_new_overlay_binding_shape(overlay_name: str) -> None:
+    """Same delegation-binding-shape guard as batch 1, over the net-new set.
+
+    Unlike batch 1, OMN-15488's overlay declares TWO delegation providers
+    (the learning seat's ``qwen35`` and the mirror seat's ``qwen35_mirror_blue``,
+    both serving the identical proven backend/model) -- both must satisfy the
+    same identity-preservation guard.
+    """
+    overlay = load_application_overlay(_OVERLAY_DIR / overlay_name)
+
+    for provider in overlay.llm.providers:
+        assert isinstance(provider, ModelSODelegationProviderBinding), (
+            f"{overlay_name} provider {provider.provider_id} is not a delegation binding"
+        )
+        assert provider.backend_id == "local-coder-mlx"
+        assert provider.source == "external-client"
         assert provider.model in _PROVEN_DELEGATION_MODELS
 
 
@@ -260,6 +293,8 @@ def test_batch_1_overlays_carry_no_published_battery_evidence(overlay_name: str)
 @pytest.mark.unit
 def test_preregistered_overlays_are_not_in_any_migration_batch() -> None:
     assert _PREREGISTERED_DELEGATION.isdisjoint(_MIGRATED_BATCH_1)
+    assert _PREREGISTERED_DELEGATION.isdisjoint(_NET_NEW_DELEGATION_OMN15488)
+    assert _MIGRATED_BATCH_1.isdisjoint(_NET_NEW_DELEGATION_OMN15488)
 
 
 # ---------------------------------------------------------------------------

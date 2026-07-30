@@ -1,0 +1,497 @@
+# OMN-15488 -- L-GATE-2 decisive learning-effect battery: endpoint-regime
+# aggression contrast (genesis 0.5 vs promoted 2.5), mirror pairing so the
+# learner can promote, n=30 per phase, delegation rails.
+#
+# LINEAGE -- TWO prior batteries, not one, and the second one failed.
+# (1) docs/evidence/2026-07-22-lgate2-adaptation-battery.md (#126): audit
+# half VERIFIED (provenance -> POLICY_PROMOTED -> lineage -> replay, 21/21,
+# byte-equal); behavioral half directionally mixed and weak at n=10, step
+# 0.25, blue sniper seat (attack keep ceilinged 0.997; vent keep +8.3pp
+# AGAINST the aggression direction, t~3.15).
+# (2) docs/evidence/2026-07-22-lgate2-significance-battery.md (#128): the
+# behavioral half FAILED at the tested operating points. Red-berserker
+# attempt: 0/35 wins vs the blue sniper -- the win-gated evaluator can
+# NEVER fire on that pairing -- AND red attack keep was ceilinged at 1.0
+# with vent keep at the 0.0 floor, so the hoped-for red-seat keep-rate
+# headroom does not exist. Blue rerun (step 0.5, n=30+30): neither primary
+# endpoint moved in the predicted direction; the one near-significant mover
+# was vent keep UP (+4.5pp, d=+0.51, p=0.053), REPLICATING #126's
+# anti-directional vent signal (post-hoc Fisher combined p ~ 0.003 across
+# the two independent batteries). Verdict recorded there: "Promotion
+# demonstrably changes the prompt (audit half) but does not steer qwen35's
+# card selection the way the parameter semantics claim."
+#
+# WHY A THIRD BATTERY IS JUSTIFIED RATHER THAN DUPLICATIVE. #128's own
+# what-it-would-take list names (a) different guidance semantics/wording,
+# (b) a parameter/operating point whose semantics the model can actually
+# express under the over-deal decision space, and (c) a non-prompt
+# consumer. This battery implements the strongest available form of (b)
+# WITHOUT changing the guidance mechanism: both prior batteries perturbed
+# mid-scale numbers (1.0 -> 1.25, 1.0 -> 1.5) inside one bias sentence,
+# while the semantics text itself names ENDPOINT regimes ("At high
+# aggression, fill nearly every free register with legal attack cards; at
+# low aggression, prefer repositioning and heat management"). Genesis 0.5
+# vs promoted 2.5 places baseline and post in DIFFERENT NAMED REGIMES of
+# that sentence -- the maximally favorable operating point the existing
+# mechanism can offer. This is deliberately the prompt-guidance mechanism's
+# last stand: a third null here is pre-declared TERMINAL for the mechanism
+# (the program moves to revisit item (c), a non-prompt consumer), not
+# grounds for a fourth step-size battery.
+#
+# CARD MODE, deliberately (contracts.card_catalog present -- unlike the
+# display-salience delegation pair, which is scoped to the plain per-tick
+# path). The measured observable is the learning seat's card-selection
+# distribution read from HAND_DEALT / PLAN_COMMITTED events (the #117
+# instruments); the aggression parameter's own semantics
+# (steel_onslaught.llm.policy_guidance._KNOWN_PARAMETER_SEMANTICS) are
+# stated in terms of card selection, so card mode is the native measurement
+# path for this parameter, exactly as in #126/#128.
+#
+# DELEGATION BINDING, and what is NEW about it here. This overlay binds
+# `kind: onex_delegation`, backend_id local-coder-mlx (served model
+# mlx-community/Qwen3.6-35B-A3B-8bit at stickybeatz-studio:8401 -- the only
+# live-proven delegation backend, per OMN-15482's backend-coverage note),
+# the same binding as the accepted display-salience arm. This is a NEW
+# overlay authored directly on the delegation shape, NOT a migration of
+# tactical_split_overdeal_v1_qwen.yaml: that overlay, its published
+# evidence, and the OMN-15174 batch-2 / OMN-15482 migration decision are
+# untouched. CONSEQUENCE, disclosed rather than discovered later: card mode
+# has never run over LlmBusDelegationClient before this battery. The
+# client's known fidelity gaps (OMN-15482: `temperature` not forwarded --
+# pilot-spec temperatures are discarded; the system/user message split is
+# collapsed into one flat prompt; `json_mode` is an appended prompt
+# sentence, not a wire parameter) apply IDENTICALLY to every phase and both
+# seats, so they are held-constant execution infrastructure for the
+# within-battery comparison, not a confound of it. They DO mean this
+# battery's absolute numbers are not comparable to #126/#128's HTTP-binding
+# numbers -- only its own baseline-vs-post contrast is scored, and the
+# cross-battery vent replication claim below is a direction claim, not a
+# magnitude claim. A single QUARANTINED canary match (n=1, throwaway
+# state-root, never battery evidence) is permitted only AFTER this file's
+# pre-registration commit, to prove card mode functions over this client
+# before 75+ matches are spent; a canary failure aborts the battery and is
+# reported as an execution-infrastructure finding, not a hypothesis result.
+#
+# THE MIRROR PAIRING, pre-registered with its rationale. Learning seat is
+# player.red flying the berserker loadout; the OPPONENT (player.blue)
+# flies the SAME berserker chassis/pilot (mirror). Reason, now doubly
+# evidenced: win_damage_differential_v1 promotes ONLY on a decisive
+# learning-seat win with positive damage differential, and the berserker
+# lost 21/21 (#126) and 0/35 (#128) against the sniper -- a red learner in
+# the standard pairing can never reach the promote phase. The mirror
+# removes the dominance obstacle (~symmetric win odds). The pairing is
+# identical in all three phases; it is not a manipulated variable.
+#
+# WHERE THE HEADROOM ACTUALLY COMES FROM (correcting the stale premise).
+# #128 proved the berserker seat has NO keep-rate headroom at genesis 1.0
+# (attack keep 1.0, vent keep 0.0). This battery does NOT claim seat
+# headroom; it claims REGIME headroom: if the low-aggression endpoint
+# guidance ("prefer repositioning and heat management") steers selection at
+# all, the genesis-0.5 baseline is where depressed weapon commitment must
+# appear. If it does not appear -- baseline reproduces the ceilinged
+# selection profile -- that is itself scored evidence for H_POLICY_INERT,
+# not a design failure, and the CEILING escape below governs the arithmetic
+# edge case.
+#
+# omnibase_infra_path/state_root are explicit overlay config (never
+# environment-derived; the DI-confinement gate permits zero os.environ
+# reads). Neither is overlay-relative-resolved by load_application_overlay,
+# so both are interpreted relative to the process CWD at launch; every
+# documented launch runs from the steel_onslaught repo root, from which
+# `../omnibase_infra` reaches the sibling clone -- inside the hermetic
+# snapshot root, per the OMN-15265 runbook
+# (docs/runbooks/2026-07-28-hermetic-battery-snapshot-recipe.md), which is
+# the mandated execution environment for this battery.
+#
+# ----------------------------------------------------------------------------
+# PRE-REGISTERED HYPOTHESES AND DECISION CRITERIA
+# Committed BEFORE the first match_started event of this battery.
+# ----------------------------------------------------------------------------
+#
+# QUESTION. When the in-game learning chain promotes a policy across the
+# full expressible range of its one parameter (aggression 0.5 -> 2.5,
+# spanning the semantics sentence's two named endpoint regimes), does the
+# learning seat's card selection change -- and if so, in the DECLARED
+# direction or in the REPLICATED PARADOXICAL direction? (The audit half of
+# L-GATE-2 is re-asserted mechanically per row by the driver but is
+# settled prior evidence, not this battery's question.)
+#
+# THREE rival readings, exhaustive over the observed history:
+#   H_POLICY_INERT -- the guidance block is consumed (byte-proven) but does
+#     not govern selection. PRIOR-FAVORED: two independent batteries found
+#     no declared-direction movement. Predicts: primary null AND vent
+#     endpoint null at this contrast.
+#   H_POLICY_DOSE_RESPONSIVE -- selection follows the declared semantics,
+#     but only at regime-scale contrasts the prior mid-scale steps never
+#     reached. Predicts: primary positive.
+#   H_POLICY_PARADOXICAL -- guidance causally moves selection but AGAINST
+#     the declared semantics (the twice-replicated vent-up signal; a
+#     plausible mechanism is instrumental heat management -- an "aggressive"
+#     pilot vents to keep firing -- but no mechanism claim is scored).
+#     Predicts: primary null or negative, vent endpoint positive.
+#
+# MECHANICAL PRIOR, STATED HONESTLY BEFORE THE RUN. The prior leans
+# H_POLICY_INERT on the primary (two nulls at smaller contrasts) and leans
+# H_POLICY_PARADOXICAL on the vent endpoint (same direction twice,
+# post-hoc Fisher p ~ 0.003 -- but post-hoc; this battery is that signal's
+# FIRST pre-registered test). Both criteria are scored exactly as
+# measured, in any direction.
+#
+# THE ISOLATING MANIPULATION. All three phases run the identical overlay,
+# loadouts, arena, binding, and frozen environment, with disjoint seed
+# blocks. The ONLY difference between a baseline row and a post row is the
+# policy generation the learning seat flies -- generation 0 (aggression
+# 0.5) vs generation 1 (aggression 2.5) -- enforced by the evaluator's
+# max_value caps (baseline capped at genesis so promotion is impossible;
+# post capped at genesis + step so the chain freezes at generation 1) and
+# machine-asserted per row from MATCH_STARTED policy provenance.
+#
+# PHASES AND SEEDS (driver: scripts/run_lgate2_adaptation_battery.py, with
+# --overlay contracts_data/overlays/tactical_split_overdeal_v1_delegation_learning.yaml
+# --blue-loadout contracts_data/loadouts/qwen35/llm_qwen35_berserker_mirror_blue.yaml
+# --seat red --genesis 0.5 --step 2.0 --n 30 --promote-attempts 15
+# [--red-loadout defaults to contracts_data/loadouts/llm_qwen35_berserker.yaml,
+# already correct for this pairing]. REMEDIATION NOTE (2026-07-30, this
+# build lane): the text as originally handed omitted --overlay and
+# --blue-loadout, which resolves the driver's own argparse defaults to
+# tactical_split_overdeal_v1_qwen.yaml / qwen35/sniper_ironclad.yaml -- the
+# OLD openai_compatible overlay and the red-berserker-vs-sniper pairing
+# this battery exists specifically to avoid (21/21 in #126, 0/35 in #128;
+# see "THE MIRROR PAIRING" above). Left uncorrected, the pre-registered
+# command would have silently run neither the onex_delegation binding nor
+# the mirror pairing, guaranteeing a spurious NO-PROMOTION exit that would
+# be indistinguishable from a real H_POLICY_INERT result. Corrected here,
+# before this file's pre-registration commit, per OMN-15166's own
+# precedent and warning against exactly this failure mode
+# (foundry_60_asym_v1_salience_prominent_delegation.yaml, "silently runs
+# the wrong condition"):
+#   baseline: seeds 4001-4030 (n=30), max_value = 0.5 (genesis; promotion
+#             impossible), every match flies gen-0 WITH its guidance block.
+#   promote:  seeds 4101-4115 (budget 15), max_value = 2.5 (genesis + step,
+#             same cap as post -- REMEDIATION NOTE, 2026-07-30, round 2:
+#             this line originally read "max_value = 3.0", which was
+#             correct only against the FIRST commit's pre-genesis-
+#             parameterized promote-phase literal. Remediation round 1
+#             (scripts/run_lgate2_adaptation_battery.py's _phase_caps)
+#             made the driver's actual promote-phase cap genesis + step for
+#             every --genesis/--step pair, which left this header stating a
+#             value (3.0) the driver no longer computes for this battery's
+#             own config -- arithmetically inert here (2.5 <= both 3.0 and
+#             2.5, so promotion behavior is unaffected) but a mismatch
+#             between the pre-registration of record and the executing
+#             configuration, exactly what AC1 exists to catch. Corrected
+#             here, before any scored match, to the value the driver
+#             actually computes), runs until the first POLICY_PROMOTED
+#             lands.
+#   post:     seeds 4201-4230 (n=30), max_value = 2.5 (genesis + step;
+#             chain frozen at generation 1), every match flies gen-1.
+#
+# PRIMARY ENDPOINT (the L-GATE-2 declared-direction question). For the
+# learning seat (player.red) only, per match:
+#   ws = (planned attack + planned special) / (total planned cards),
+# defined when total planned > 0 (a match with zero planned cards is
+# excluded from the primary and COUNTED in the scoring doc; expected
+# occurrences: zero). Then
+#   D_ws = mean(ws | post, n=30) - mean(ws | baseline, n=30),
+# tested with a one-sided Welch t (direction: UP), alpha = 0.05.
+# DECISION BANDS (exhaustive, no discretionary region):
+#   SUPPORTED        -- D_ws > 0 AND p < 0.05  -> H_POLICY_DOSE_RESPONSIVE.
+#   DIRECTIONAL-ONLY -- D_ws > 0 AND p >= 0.05 -> unresolved at this n;
+#                       reported as such, NOT as support.
+#   NOT-SUPPORTED    -- D_ws <= 0.
+#
+# CONFIRMATORY-SECONDARY ENDPOINT (the paradoxical channel's first
+# pre-registered test). Per match, learning seat vent keep-rate
+# (planned vent / dealt vent, defined when dealt vent > 0):
+#   D_vent = mean(vent keep | post) - mean(vent keep | baseline),
+# one-sided Welch t (direction: UP -- the twice-replicated direction),
+# alpha = 0.05. Bands: CONFIRMED (D_vent > 0, p < 0.05) /
+# DIRECTIONAL-ONLY / NOT-CONFIRMED (D_vent <= 0). The baseline vent floor
+# (0.0 in #128) does not block this endpoint -- UP from the floor is the
+# most sensitive configuration for it.
+# MULTIPLICITY, stated plainly: two pre-registered endpoints, each at
+# alpha 0.05, testing DIFFERENT hypotheses (declared-direction vs
+# paradoxical channel); no family-wise correction is applied and the
+# scoring document must present both p-values uncorrected and say so.
+#
+# PRE-DECLARED INTERPRETATION MAP (scored bands -> program consequence):
+#   primary SUPPORTED (any vent outcome)      -> dose-responsiveness at
+#     regime contrast; L-GATE-2 behavioral half PASSES at this operating
+#     point; step-size sensitivity becomes the follow-up.
+#   primary NOT-SUPPORTED + vent CONFIRMED    -> the guidance block IS
+#     causally consumed but the declared semantics are the defect (#128
+#     revisit item (a): wording), NOT the learning chain; behavioral half
+#     remains FAILED as declared, with a proven paradoxical channel.
+#   primary NOT-SUPPORTED + vent NOT-CONFIRMED -> H_POLICY_INERT stands at
+#     the mechanism's most favorable operating point; TERMINAL for the
+#     prompt-guidance mechanism; the program moves to a non-prompt
+#     consumer (#128 revisit item (c)). No fourth step-size battery.
+#   DIRECTIONAL-ONLY outcomes -> reported as unresolved; the terminal/
+#     non-terminal call is NOT made from an unresolved band.
+#
+# PRE-DECLARED ESCAPES (unclamped, reported rather than folded in):
+#   NO-PROMOTION -- the promote phase exhausts its 15-match budget without
+#     a POLICY_PROMOTED event. The driver exits 1 and the finding is
+#     reported as "L-GATE-2 not exercised at this pairing/binding"; the
+#     budget is NOT extended after seeing results, and no baseline/post
+#     comparison is scored.
+#   CEILING -- baseline mean ws >= 0.95: the primary contrast has no
+#     arithmetic headroom; raw distributions are reported, the primary is
+#     not scored, and the vent endpoint is still scored (its direction is
+#     UP from a floor, not into a ceiling).
+#
+# TERTIARY DESCRIPTIVES (reported, never gating): remaining per-category
+# keep-rates and planned shares (movement predicted DOWN under
+# dose-responsiveness); llm_completion_failed rate parity across phases
+# (execution-infrastructure check on the retry belt, not a hypothesis
+# metric); per-phase win counts (the mirror pairing makes win-rate itself
+# uninformative about the hypothesis -- both seats' boards evolve under one
+# seat's policy shift).
+#
+# STATISTICAL HONESTY. n=30 per phase with a one-sided Welch t at alpha
+# 0.05 has ~80% power for a standardized effect of d ~= 0.65 per endpoint.
+# A true effect smaller than that will likely land DIRECTIONAL-ONLY; that
+# outcome is a power statement, not evidence of absence, and the scoring
+# document must say so rather than upgrade or downgrade a band. For
+# calibration: the replicated vent signal's observed sizes were d ~= +0.5
+# (#128) and larger (#126, n=10) -- near this battery's detection floor,
+# which is exactly why the vent endpoint gets a pre-registered one-sided
+# test rather than another post-hoc read.
+#
+# MAKEUP PROTOCOL (pre-declared; display-salience acceptance report
+# section 3 is the precedent). A seed skipped by a strictly post-match
+# transport/forward failure -- where the match itself completed and its
+# events are durably in the lane ledger -- is re-run ONCE in a makeup
+# invocation against the same state-root without --fresh, appended to the
+# same raw file; skip records are preserved verbatim; withheld-match
+# orphans are left in the ledger (append-only) and discharged via the
+# contamination gate's ended-but-withheld class (OMN-15377). A seed that
+# fails DURING a match is not re-run; it is a reported casualty.
+#
+# AMENDMENT (2026-07-30, BEFORE any scored match of this battery; every
+# hypothesis, endpoint, band, escape, and interpretation clause above is
+# UNCHANGED -- this is execution-infrastructure only, same class as the
+# display-salience pair's 2026-07-27/28 amendments).
+#
+# 1. CANARY RESULT AND ITS CORRECTED ROOT CAUSE. The pre-declared n=1
+#    quarantined canary was run before this amendment and FAILED closed:
+#    SCHEMA_VIOLATION on the first LLM completion, reproduced 2/2 seeds
+#    (9001, 9002), 4/4 attempts (delegation-node internal retries included),
+#    recorded on OMN-15482 (comment 14468f08). Per the pre-declared escape,
+#    no battery was launched on the failing configuration. The initial
+#    root-cause hypothesis recorded there (persona-vocabulary echo under the
+#    collapsed prompt) is SUPERSEDED: the model returned a registers-shaped
+#    whole-round program -- the correct response to the card-mode programming
+#    prompt -- while the wire request demanded the per-tick tactical shape,
+#    because LlmBusDelegationClient hardcoded _TACTICAL_RESPONSE_CONTRACT on
+#    EVERY request (client_delegation.py, previously :426). That is a
+#    contract mis-selection defect in the client, ticketed separately and
+#    fixed in this same PR: the response contract is now caller-selected --
+#    the plain decide() path keeps the tactical contract byte-identical
+#    (the display-salience arm's proven configuration is unchanged), and
+#    card-mode programming completions carry no wire-level response
+#    contract, matching the HTTP path's semantics where response-shape
+#    validation is owned by steel's own programming parser and its bounded
+#    reprompt loop. A fresh canary under the fixed client gates the launch
+#    exactly as the original canary clause specifies.
+#
+# 2. EXECUTING COMMAND COMPLETED (state-root discipline). The pre-registered
+#    driver invocation above omitted the lane location; run verbatim it
+#    would resolve to the shared default state-root that battery #126
+#    already used (appending into that battery's raw file and rehydrating
+#    its lineage chain). The executing command is therefore pinned in full:
+#
+#      uv run python scripts/run_lgate2_adaptation_battery.py \
+#        --mode battery --seat red --genesis 0.5 --step 2.0 --n 30 \
+#        --promote-attempts 15 \
+#        --overlay contracts_data/overlays/tactical_split_overdeal_v1_delegation_learning.yaml \
+#        --red-loadout contracts_data/loadouts/llm_qwen35_berserker.yaml \
+#        --blue-loadout contracts_data/loadouts/llm_qwen35_berserker_mirror_blue.yaml \
+#        --state-root <hermetic-snapshot>/battery_state/omn15488_learning_battery \
+#        --fresh
+#
+#    run from the steel_onslaught repo root inside the OMN-15265 hermetic
+#    snapshot. --fresh applies to the initial invocation ONLY; a makeup
+#    invocation (MAKEUP PROTOCOL above) re-runs against the SAME state-root
+#    WITHOUT --fresh, exactly as written there.
+#
+# 3. LEDGER PROVIDER LITERAL (AC6 correction, mirrored on the ticket). The
+#    lane ledger's llm_completion_* payloads carry the PILOT SPECS'
+#    provider_id strings -- qwen35 and qwen35_mirror_blue -- because this
+#    overlay holds the pilot registry byte-constant with the #126 overlay.
+#    The delegation-rails invariant that actually matters is carried by the
+#    provider BINDING (kind onex_delegation, backend_id local-coder-mlx)
+#    and the delegation node's own receipts, not by the ledger provider_id
+#    literal. The salience arm's ledger literal (onex-local-coder-mlx) was
+#    an overlay-local choice, not a program convention.
+schema_version: "1"
+bus:
+  kind: in_process
+event_ledger:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_v1_delegation_learning/events.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+leaderboard:
+  kind: sqlite
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_v1_delegation_learning/leaderboard.sqlite3
+  journal_mode: WAL
+  check_same_thread: false
+  transaction_mode: autocommit
+  storage_schema: leaderboard_v1
+learning_artifacts:
+  kind: filesystem_yaml
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_v1_delegation_learning/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_v1_delegation_learning/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_v1_delegation_learning/experiments
+evaluation_storage:
+  kind: sqlite
+  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_v1_delegation_learning/evaluation_storage
+  journal_mode: WAL
+  check_same_thread: true
+  transaction_mode: autocommit
+  event_schema: canonical_event_v1
+  leaderboard_schema: leaderboard_v1
+contracts:
+  catalog_dir: ..
+  # NOT ../pilots/fire_dense_qwen (the value tactical_split_overdeal_v1_qwen.yaml
+  # and several sibling overlays share) -- this overlay uses a DEDICATED
+  # registry directory instead. Empirical finding while building this
+  # overlay: _validate_llm_pilot_bindings validates EVERY spec in a registry
+  # directory unconditionally, so adding the mirror pilot spec (below) into
+  # the shared fire_dense_qwen/ directory broke every sibling overlay
+  # referencing it whose own llm.providers list does not declare
+  # qwen35_mirror_blue (proven by
+  # tests/match/test_objective_scoring_decoy.py's decoy-overlay composition
+  # test). This directory holds a byte-identical copy of
+  # fire_dense_qwen/llm_qwen35.yaml (so pilot.llm.qwen35 -- the RED seat's
+  # programmer, held constant vs the qwen overlay -- resolves identically)
+  # plus the new pilot.llm.qwen35_berserker_mirror_blue spec; see that spec's
+  # own header for the full rationale.
+  pilot_registry_dir: ../pilots/tactical_split_overdeal_v1_delegation_learning
+  arena_id: foundry_60
+  card_catalog:
+    kind: filesystem_yaml
+    cards_dir: ../cards
+    decks_dir: ../decks
+    card_mode_enabled: true
+    deck_policy:
+      schema_version: "0.1.0"
+      kind: "steel_onslaught.card_deck_policy"
+      seats:
+        - side: red
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          # Over-deal: deal 8 (4 movement + 4 weapon), program 5. Held
+          # byte-constant vs tactical_split_overdeal_v1_qwen.yaml.
+          hand_quota:
+            movement: 4
+            weapon: 4
+          register_count: 5
+        - side: blue
+          # MIRROR PAIRING (deliberate delta vs tactical_split_overdeal_v1_qwen.yaml,
+          # whose blue seat is archetype: sniper): the blue seat's declared
+          # archetype label must equal its resolved card-programmer persona
+          # (validate_seat_programmer_identity's deck_policy check), so this
+          # flips to berserker alongside the programmers[] change below.
+          # hand_quota/register_count/deck ids are already identical to red's
+          # in the source overlay (a balanced 4/4 over-deal) and are
+          # unchanged here.
+          archetype: berserker
+          movement_deck_id: deck.movement.v1
+          weapon_deck_id: deck.weapon.v1
+          hand_quota:
+            movement: 4
+            weapon: 4
+          register_count: 5
+    card_cadence: paced
+    programmers:
+      - side: red
+        pilot_spec_id: pilot.llm.qwen35
+        failure_policy: raise
+      - side: blue
+        # MIRROR PAIRING (deliberate delta vs tactical_split_overdeal_v1_qwen.yaml,
+        # whose blue programmer is pilot.llm.qwen35_sniper): the mirror
+        # opponent flies the SAME berserker persona as the learning seat.
+        # pilot.llm.qwen35_berserker_mirror_blue is a distinct-provider-id
+        # (not distinct-persona) sibling of pilot.llm.qwen35 -- see that
+        # spec's own header for why a literal reuse of pilot.llm.qwen35 on
+        # both sides raises SeatIdentityError (validate_seat_programmer_identity
+        # unconditionally rejects two seats resolving to the same
+        # (provider, persona) identity; proven empirically while building
+        # this overlay).
+        pilot_spec_id: pilot.llm.qwen35_berserker_mirror_blue
+        failure_policy: raise
+  balance_rule_pack:
+    kind: card_programming_rules
+    pack_id: rules.card_programming_v1
+    handler_ids: []
+llm:
+  providers:
+    - kind: onex_delegation
+      provider_id: qwen35
+      backend_id: local-coder-mlx
+      task_type: agent_delegation
+      source: external-client
+      model: mlx-community/Qwen3.6-35B-A3B-8bit
+      max_tokens: 2048
+      timeout_seconds: 180.0
+      omnibase_infra_path: ../omnibase_infra
+      state_root: .onex_state/steel_onslaught/tactical_split_overdeal_v1_delegation_learning/delegation_state/qwen35
+    - kind: onex_delegation
+      # Announced mirror of the ``qwen35`` provider above: identical
+      # backend_id/model/task_type/timeout_seconds (the SAME served model,
+      # mlx-community/Qwen3.6-35B-A3B-8bit on stickybeatz-studio:8401), a
+      # DIFFERENT provider_id label only -- required so the blue mirror seat
+      # resolves a distinct (provider, persona) card-programmer identity from
+      # red's, per validate_seat_programmer_identity (see the
+      # pilot.llm.qwen35_berserker_mirror_blue pilot spec header).
+      provider_id: qwen35_mirror_blue
+      backend_id: local-coder-mlx
+      task_type: agent_delegation
+      source: external-client
+      model: mlx-community/Qwen3.6-35B-A3B-8bit
+      max_tokens: 2048
+      timeout_seconds: 180.0
+      omnibase_infra_path: ../omnibase_infra
+      state_root: .onex_state/steel_onslaught/tactical_split_overdeal_v1_delegation_learning/delegation_state/qwen35_mirror_blue
+  model_identities:
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35_delegation_learning
+      display_name: "Qwen3.6-35B-A3B-8bit (stickybeatz-studio MLX, red/learning seat)"
+      provider_binding_id: qwen35
+    - schema_version: "1"
+      kind: steel_onslaught.model_identity
+      model_identity_id: model_identity.qwen35_mirror_blue
+      display_name: "Qwen3.6-35B-A3B-8bit (stickybeatz-studio MLX, blue mirror seat)"
+      provider_binding_id: qwen35_mirror_blue
+  personas_dir: ../pilots/personas
+  secret_resolver:
+    # kind: injected, matching tactical_split_overdeal_v1_qwen.yaml -- NOT
+    # the display-salience delegation overlays' `kind: none`. Empirical
+    # finding from this ticket's own n=1 canary (Deliverable 2): the driver
+    # this overlay runs under, scripts/run_lgate2_adaptation_battery.py's
+    # `_measure_match`, unconditionally passes `secret_resolver=
+    # NoSecretResolver()` into `assemble_match_live` -- `kind: none`
+    # unconditionally REJECTS an injected resolver
+    # (src/steel_onslaught/match/composition.py:1463-1464), so the first
+    # canary attempt failed at composition with `ValueError:
+    # llm.secret_resolver kind 'none' rejects an injected resolver` before
+    # any LLM call was made. `kind: injected` is the value this driver's
+    # calling convention requires; corrected here, before this file's
+    # pre-registration commit.
+    kind: injected
+clock:
+  kind: system_utc
+identity:
+  kind: system
+frontend_transport:
+  kind: websocket
+  contract: steel_onslaught.frontend_transport.v1
+  websocket_url: ws://127.0.0.1:8765/events
+  event_schema: canonical_event_v1
+  milliseconds_per_tick: 500

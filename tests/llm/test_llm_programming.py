@@ -514,6 +514,45 @@ def test_default_policy_retry_recovers_when_the_model_self_corrects() -> None:
     assert client.requests[1].persona == "opportunist.repair.1"
 
 
+def test_programming_request_sets_wants_tactical_response_contract_false_omn15522() -> None:
+    """OMN-15522 AC3: the whole-round programming request must never forward
+    the delegation client's per-tick tactical-decision response contract --
+    forwarding it made the platform's quality gate reject a correct
+    whole-round plan as SCHEMA_VIOLATION (OMN-15482 comment 14468f08). Both
+    the initial completion request AND any same-model repair request (built
+    via ``base_request.model_copy`` in ``_build_repair_request``) must carry
+    the flag False -- a repair request that silently regained the tactical
+    contract would reproduce the exact live defect on the second attempt."""
+
+    client = _SequenceClient(
+        [
+            _response(
+                registers=[
+                    {"register_index": 0, "card_id": "card.test.unknown"},
+                    {"register_index": 2, "card_id": "card.test.vent"},
+                ]
+            ),
+            _response(),
+        ]
+    )
+    pilot = LLMProgrammingPilot(
+        client=client,
+        persona=_persona(),
+        provider_id="provider.card.test",
+        semantic_retry_limit=2,
+    )
+
+    plan = program_for_seat(pilot, _observation())
+
+    assert plan.plan_source is SOPlanSource.LLM
+    assert len(client.requests) == 2
+    assert client.requests[0].wants_tactical_response_contract is False
+    # Repair request inherits the flag via ``base_request.model_copy`` --
+    # never re-derives it, so a future repair-path refactor cannot silently
+    # regain the tactical contract.
+    assert client.requests[1].wants_tactical_response_contract is False
+
+
 def test_default_failure_policy_raises_transport_errors() -> None:
     pilot = LLMProgrammingPilot(client=_FailingClient(), persona=_persona())
 
