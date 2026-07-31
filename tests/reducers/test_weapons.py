@@ -189,6 +189,63 @@ def test_resolve_hit_probability_reduced_by_evasion() -> None:
 
 
 @pytest.mark.unit
+def test_resolve_hit_probability_raised_by_transition_vulnerability() -> None:
+    """The transition vulnerability window RAISES incoming hit probability (OMN-15592).
+
+    It is a penalty paid by the target, so it applies against the target: the exact
+    mirror of a defensive bonus of the same size.
+    """
+    from steel_onslaught.reducers.weapons import resolve_hit_probability
+
+    p_no_window = resolve_hit_probability(
+        base_accuracy=0.6, lock_confidence=1.0, target_evasion=0.0, accuracy_penalty=0.0
+    )
+    p_in_window = resolve_hit_probability(
+        base_accuracy=0.6,
+        lock_confidence=1.0,
+        target_evasion=0.0,
+        accuracy_penalty=0.0,
+        target_transition_vulnerability=0.5,
+    )
+    assert p_in_window > p_no_window
+    assert p_in_window == pytest.approx(p_no_window * 1.5)
+
+
+@pytest.mark.unit
+def test_transition_vulnerability_offsets_defensive_evasion() -> None:
+    """Vulnerability decrements the target's effective evasion; equal values cancel."""
+    from steel_onslaught.reducers.weapons import resolve_hit_probability
+
+    neutral = resolve_hit_probability(
+        base_accuracy=0.8, lock_confidence=1.0, target_evasion=0.0, accuracy_penalty=0.0
+    )
+    cancelled = resolve_hit_probability(
+        base_accuracy=0.8,
+        lock_confidence=1.0,
+        target_evasion=0.3,
+        accuracy_penalty=0.0,
+        target_transition_vulnerability=0.3,
+    )
+    assert cancelled == pytest.approx(neutral)
+
+
+@pytest.mark.unit
+def test_resolve_hit_probability_clamped_with_transition_vulnerability() -> None:
+    """A vulnerability window can never push hit probability above 1.0."""
+    from steel_onslaught.reducers.weapons import resolve_hit_probability
+
+    result = resolve_hit_probability(
+        base_accuracy=0.95,
+        lock_confidence=1.0,
+        target_evasion=0.0,
+        accuracy_penalty=0.0,
+        target_targeting_debuff=0.0,
+        target_transition_vulnerability=0.5,
+    )
+    assert result == 1.0
+
+
+@pytest.mark.unit
 def test_resolve_hit_probability_reduced_by_accuracy_penalty() -> None:
     """Accuracy penalty (overload) reduces hit probability."""
     from steel_onslaught.reducers.weapons import resolve_hit_probability

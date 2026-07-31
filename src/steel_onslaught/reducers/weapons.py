@@ -6,8 +6,9 @@ Flow:
        pressure >= cost, target in range, target alive.
     3. ``interpolate_accuracy`` samples the weapon's accuracy curve at the
        current distance (linear interpolation between breakpoints).
-    4. ``resolve_hit_probability`` combines base accuracy with lock confidence
-       and target evasion, then clamps to [0, 1].
+    4. ``resolve_hit_probability`` combines base accuracy with lock confidence,
+       target evasion and the target's transition vulnerability window, then
+       clamps to [0, 1].
     5. ``roll_hit`` consumes a sub-seed from ``MatchRng`` and returns True/False.
     6. ``WEAPON_FIRED`` is always emitted (hit or miss).
     7. If hit: ``HIT_RESOLVED`` is emitted with raw damage.
@@ -70,6 +71,7 @@ def resolve_hit_probability(
     target_evasion: float,
     accuracy_penalty: float,
     target_targeting_debuff: float = 0.0,
+    target_transition_vulnerability: float = 0.0,
 ) -> float:
     """Combine accuracy modifiers and clamp the result to [0, 1].
 
@@ -84,15 +86,27 @@ def resolve_hit_probability(
                           as a ``1 - target_targeting_debuff`` multiplier — it
                           composes multiplicatively exactly like ``target_evasion``.
                           Default ``0.0`` leaves the existing curve unchanged.
+        target_transition_vulnerability:
+                          The target's mode-transition vulnerability window in
+                          [0, 1] (``evasion_penalty_during_transition``).  It is a
+                          PENALTY paid by the target, so it is applied AGAINST the
+                          target: it decrements the target's effective evasion,
+                          making the mech easier to hit by exactly that amount.
+                          Default ``0.0`` (no transition in flight) leaves the
+                          existing curve unchanged.
 
     Returns:
         Final hit probability clamped to [0, 1].
     """
+    # A vulnerability window is negative evasion: at the shipped baseline of
+    # ``target_evasion == 0.0`` this yields a ``(1.0 + p)`` multiplier — the exact
+    # mirror of the ``(1.0 - p)`` a defensive bonus of the same size would give.
+    effective_evasion = target_evasion - target_transition_vulnerability
     raw = (
         base_accuracy
         * lock_confidence
         * (1.0 - accuracy_penalty)
-        * (1.0 - target_evasion)
+        * (1.0 - effective_evasion)
         * (1.0 - target_targeting_debuff)
     )
     return max(0.0, min(1.0, raw))
