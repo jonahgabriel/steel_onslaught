@@ -9,6 +9,7 @@ reasoning-channel providers that return empty ``content`` on an otherwise
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -269,3 +270,127 @@ def test_summary_aggregates_empty_content_counter() -> None:
     )
     assert summary["empty_content_completions"] == {"qwen27": {"stop": 1, "length": 2}}
     assert summary["matches"] == 3
+
+
+# ---------------------------------------------------------------------------
+# OMN-15587 -- share denominator (a share of a non-empty plan is 0.0, never
+# "absent").  The pre-fix driver averaged `mean_planned_share[c]` over ONLY the
+# rows whose `planned_share` dict happened to carry key `c`, so a rare category
+# reported its mean over the handful of matches it appeared in at all.  On the
+# merged OMN-15488 battery that inflated `vent` 15.4x (baseline: 0.0154 over 2
+# present rows vs 0.0010 over the 30 rows actually flown) and 6.0x (post:
+# 0.0223 over 5 vs 0.0037 over 30).
+# ---------------------------------------------------------------------------
+
+
+def _share_row(planned: dict[str, int], dealt: dict[str, int]) -> dict[str, Any]:
+    """A summary-shaped row carrying the same `planned_share` the driver emits."""
+    from scripts.run_lgate2_adaptation_battery import _planned_share
+
+    return {
+        "policy_provenance": {"policy_id": "policy.x", "generation": 0},
+        "winner_player_id": "player.blue",
+        "is_draw": False,
+        "failed_completions": 0,
+        "empty_content_completions": {},
+        "learning_seat": {
+            "keep_rates": {
+                category: (planned.get(category, 0) / dealt[category]) if dealt[category] else None
+                for category in sorted(dealt)
+            },
+            "planned_share": _planned_share(planned=Counter(planned), dealt=Counter(dealt)),
+        },
+    }
+
+
+@pytest.mark.unit
+def test_planned_share_is_zero_for_a_dealt_but_never_planned_category() -> None:
+    """AC4 -- a raw row self-describes: dealt-but-unplanned reads 0.0, not absent."""
+    from scripts.run_lgate2_adaptation_battery import _planned_share
+
+    share = _planned_share(
+        planned=Counter({"attack": 3, "movement": 1}),
+        dealt=Counter({"attack": 4, "movement": 2, "vent": 2}),
+    )
+    assert share == {"attack": 0.75, "movement": 0.25, "vent": 0.0}
+
+
+@pytest.mark.unit
+def test_planned_share_is_undefined_when_nothing_was_planned() -> None:
+    """AC3 -- 0/0 is undefined; the row must not report 0.0 shares it did not earn."""
+    from scripts.run_lgate2_adaptation_battery import _planned_share
+
+    share = _planned_share(planned=Counter(), dealt=Counter({"attack": 4, "vent": 1}))
+    assert share == {"attack": None, "vent": None}
+
+
+@pytest.mark.unit
+def test_mean_planned_share_denominator_is_every_row_not_the_present_keys() -> None:
+    """AC1/AC2 -- the regression the merged OMN-15488 battery exhibited.
+
+    30 rows, every one of them with a non-empty plan; `vent` is planned in
+    exactly 2 of them.  The present-key-only denominator reports the mean over
+    those 2 rows (0.25); the correct mean is over all 30 (2 * 0.25 / 30).
+    """
+    from scripts.run_lgate2_adaptation_battery import _summarize
+
+    vent_rows = [
+        _share_row(
+            planned={"attack": 2, "movement": 1, "vent": 1},
+            dealt={"attack": 3, "movement": 2, "vent": 2},
+        )
+        for _ in range(2)
+    ]
+    ventless_rows = [
+        _share_row(
+            planned={"attack": 3, "movement": 1},
+            dealt={"attack": 3, "movement": 2, "vent": 2},
+        )
+        for _ in range(28)
+    ]
+
+    summary = _summarize(vent_rows + ventless_rows, learning_player="player.blue")
+
+    present_key_only_mean = 0.25
+    assert summary["mean_planned_share"]["vent"] != present_key_only_mean
+    assert summary["mean_planned_share"]["vent"] == round(2 * 0.25 / 30, 4)
+    # AC5 -- the denominator is legible in the artifact itself.
+    assert summary["planned_share_matches"] == 30
+    # Categories present in every row are unaffected by the repair.
+    assert summary["mean_planned_share"]["attack"] == round((2 * 0.5 + 28 * 0.75) / 30, 4)
+
+
+@pytest.mark.unit
+def test_mean_planned_share_excludes_rows_that_planned_nothing() -> None:
+    """AC3 -- an unplanned match is undefined, not a 0.0 pulling the mean down."""
+    from scripts.run_lgate2_adaptation_battery import _summarize
+
+    rows = [
+        _share_row(planned={"attack": 2}, dealt={"attack": 4, "vent": 1}),
+        _share_row(planned={}, dealt={"attack": 4, "vent": 1}),
+    ]
+
+    summary = _summarize(rows, learning_player="player.blue")
+
+    assert summary["matches"] == 2
+    assert summary["planned_share_matches"] == 1
+    assert summary["mean_planned_share"] == {"attack": 1.0, "vent": 0.0}
+
+
+@pytest.mark.unit
+def test_mean_keep_rate_still_excludes_never_dealt_categories() -> None:
+    """AC6 -- keep-rate is genuinely undefined at 0 dealt; that exclusion stays."""
+    from scripts.run_lgate2_adaptation_battery import _summarize
+
+    rows = [
+        _share_row(planned={"attack": 2, "vent": 1}, dealt={"attack": 4, "vent": 2}),
+        _share_row(planned={"attack": 3}, dealt={"attack": 3}),
+    ]
+
+    summary = _summarize(rows, learning_player="player.blue")
+
+    # `vent` was dealt in one row only -> its keep-rate mean stays over that row.
+    assert summary["mean_keep_rate"]["vent"] == 0.5
+    assert summary["mean_keep_rate"]["attack"] == round((0.5 + 1.0) / 2, 4)
+    # ... while its SHARE mean spans both rows, 0.0 for the row that planned none.
+    assert summary["mean_planned_share"]["vent"] == round((1 / 3 + 0.0) / 2, 4)
