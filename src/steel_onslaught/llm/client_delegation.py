@@ -209,10 +209,15 @@ _TACTICAL_RESPONSE_CONTRACT: dict[str, object] = {
 # LLM response against; see ``tests/llm/
 # test_programming_response_contract_omn15522.py`` for the fixture-bridge
 # proof that this schema is neither looser nor tighter than that parser on
-# its own structural fixtures) -- so the schema never declares anything
-# looser than what the parser already requires:
+# its own structural fixtures, PLUS the edge-matrix sweep that holds the
+# two seams to field-by-field agreement on null / wrong-type / boundary /
+# non-integral-number inputs) -- so the schema declares nothing TIGHTER
+# than the parser at all, and nothing looser except the one JSON-Schema-
+# inexpressible case declared in
+# ``_PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES`` below:
 #   - ``registers``: a JSON array of ``{register_index, card_id}`` objects
-#     (``register_index``: non-negative integer; ``card_id``: non-empty
+#     (``register_index``: non-negative integer -- see the declared
+#     integral-float divergence below; ``card_id``: non-empty
 #     string), mirroring ``_ModelSOLlmProgrammingRegister``. No minimum
 #     item count is declared -- the parser itself has none; the
 #     register-count/legal-hand semantic checks belong to
@@ -221,13 +226,27 @@ _TACTICAL_RESPONSE_CONTRACT: dict[str, object] = {
 #     own docstring notes for ``action_params``'s inner shape.
 #   - ``confidence``: ``{"type": "number", "minimum": 0.0, "maximum": 1.0}``.
 #   - ``rationale``: ``{"type": "string", "minLength": 1}``.
-#   - ``spatial_read``: OPTIONAL non-empty string -- mirrors the R2
-#     show-dont-tell scaffold field (``_ModelSOLlmProgrammingResponse.
-#     spatial_read``, ``StrictStr | None`` with ``min_length=1``, default
-#     ``None``). Declared as an allowed-but-not-required property (not
-#     folded into ``required``) so an R1/no-scaffold seat's response
-#     (which never carries this key) and an R2 seat's response (which
-#     does) are BOTH accepted, matching the parser's own tolerance.
+#   - ``spatial_read``: OPTIONAL non-empty string OR explicit ``null`` --
+#     mirrors the R2 show-dont-tell scaffold field
+#     (``_ModelSOLlmProgrammingResponse.spatial_read``, ``StrictStr |
+#     None`` with ``min_length=1``, default ``None``). Declared as an
+#     allowed-but-not-required property (not folded into ``required``) so
+#     an R1/no-scaffold seat's response (which never carries this key) and
+#     an R2 seat's response (which does) are BOTH accepted. The ``anyOf``
+#     null branch is OMN-15522 residual 1 (post-merge verifier review of
+#     PR #239, comment ``43af2956``): this property previously declared a
+#     bare ``{"type": "string", "minLength": 1}``, which rejects an
+#     explicit ``"spatial_read": null`` the parser ACCEPTS -- the schema
+#     being TIGHTER than the parser is precisely the SCHEMA_VIOLATION
+#     abort class this whole contract exists to close, and it directly
+#     contradicts ``programming.py``'s deliberate design rule that "a
+#     scaffold field must never become a new abort source" (it logs, never
+#     raises, when a ``grid_scaffold`` seat omits the field). Latent, not
+#     live, when found: all four shipped ``onex_delegation`` overlays
+#     leave ``spatial_representation`` unset, so ``spatial_read_required``
+#     is always False today -- an R2/``grid_scaffold`` seat migrating to
+#     the delegation transport is what makes it live, which is why it is
+#     fixed BEFORE that migration rather than after.
 # ``additionalProperties: false`` mirrors the Pydantic model's
 # ``extra="forbid"``: this is a closed shape, not an open one.
 _PROGRAMMING_RESPONSE_CONTRACT: dict[str, object] = {
@@ -247,11 +266,41 @@ _PROGRAMMING_RESPONSE_CONTRACT: dict[str, object] = {
         },
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "rationale": {"type": "string", "minLength": 1},
-        "spatial_read": {"type": "string", "minLength": 1},
+        "spatial_read": {
+            "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}],
+        },
     },
     "required": ["registers", "confidence", "rationale"],
     "additionalProperties": False,
 }
+
+# OMN-15522 residual 2 (post-merge verifier review of PR #239, comment
+# ``43af2956``): the complete, deliberately-accepted set of places
+# ``_PROGRAMMING_RESPONSE_CONTRACT`` is LOOSER than
+# ``_ModelSOLlmProgrammingResponse``. Declared in source rather than
+# silently tolerated, because the constant's own comment block above
+# claims the schema is never looser -- an undeclared exception makes that
+# claim false, which is how residual 1 (the dangerous, schema-TIGHTER
+# direction) stayed invisible in the first place.
+#
+# Each name is an ``_EDGE_FIXTURES`` case in
+# ``tests/llm/test_programming_response_contract_omn15522.py``; that
+# module's edge-matrix sweep asserts the observed divergence set equals
+# this tuple EXACTLY, so (a) a newly introduced divergence fails CI until
+# someone names it here, and (b) a name that stops diverging fails until
+# it is removed. There is no wildcard and no suppression.
+#
+# ``register_index_integral_float``: JSON Schema's ``"type": "integer"``
+# matches any number with a zero fractional part, so ``1.0`` validates on
+# the wire while the parser's ``StrictInt`` rejects it. This is NOT
+# fixable in JSON Schema -- ``multipleOf: 1`` also passes ``1.0``, and no
+# keyword distinguishes an integer token from an integral float. Accepted
+# because the direction is benign: the platform gate passes the response
+# through and steel's own parser rejects it into the existing bounded
+# reprompt loop, which is exactly the pre-OMN-15522 behavior for a
+# malformed completion. The inverse (schema tighter) would be an
+# unrecoverable SCHEMA_VIOLATION and is never acceptable here.
+_PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES: tuple[str, ...] = ("register_index_integral_float",)
 
 
 @runtime_checkable
