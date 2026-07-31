@@ -69,7 +69,27 @@ venvs. This is what makes the venv itself immune to a concurrent
 `pull-all.sh --repair` or `install-node-skill-package.sh` re-run against
 the LIVE canonical clones.
 
-## 3. `OMNIMARKET_REF`-pinned co-install
+**Step 2 alone does NOT produce a usable `omnibase_infra` venv. Step 3 is
+mandatory, not optional polish.** `omnimarket` is deliberately not a declared
+`omnibase_infra` dependency (repo layering is compat -> core -> spi -> infra and
+`omnimarket` sits ABOVE infra, so declaring it would invert the layer graph --
+see the header of `scripts/install-node-skill-package.sh`, OMN-13829). It is a
+runtime-composed provider discovered through `onex.nodes` entry-points, so
+`uv sync` leaves it **absent from the infra venv entirely** -- verified live in
+`venv.log`, where the first `uv sync` installs 195 packages and `omnimarket` is
+not among them. The delegation CLI's drift guard then hard-fails at the first
+LLM call with:
+
+```
+omnimarket is NOT INSTALLED from git in this interpreter
+```
+
+which surfaces to the battery driver as an `LlmTransportError` and aborts the
+run. This is a snapshot-procedure failure, not a code defect -- it killed the
+OMN-15488 canary at 2026-07-30T18:59:12Z, after a runner that had built venvs
+per §2 and skipped §3.
+
+## 3. Mandatory: pinned VCS co-install of `omnimarket` (`--no-deps`)
 
 Inside the frozen `omnibase_infra` clone, co-install the SAME pinned
 `omnimarket` commit -- never the dynamically-resolved default (which would
@@ -81,12 +101,85 @@ cd "$SNAP/omnibase_infra"
 OMNIMARKET_REF=<omnimarket_sha> scripts/install-node-skill-package.sh --execute
 ```
 
-Verify the pin landed (never trust the script's own exit code alone):
+That script is the canonical mechanism and it already does the right thing
+internally: `uv pip install --no-deps "omnimarket @ git+...@$OMNIMARKET_REF"`
+plus its pinned omni-internal leaf deps. If you are scripting the snapshot
+build yourself rather than shelling out to it, the minimal equivalent -- proven
+live on OMN-15488 attempts 3 and 4 and the full 61-match battery -- is:
 
 ```bash
-cat "$SNAP/omnibase_infra/.venv/lib/python3.12/site-packages/omnimarket-"*".dist-info/direct_url.json"
-# {"url": "...", "vcs_info": {"commit_id": "<omnimarket_sha>", ...}}
+cd "$SNAP/omnibase_infra"
+env -u PYTHONPATH uv pip install --python .venv/bin/python --no-deps \
+  "omnimarket @ git+https://github.com/OmniNode-ai/omnimarket.git@<omnimarket_sha>"
 ```
+
+`--no-deps` is load-bearing, not an optimization. The dependency closure is
+already supplied by step 2's `uv sync`; what `--no-deps` buys is skipping a
+transitive resolve that **cannot succeed**. A plain resolving
+`uv pip install "omnimarket @ git+...@<sha>"` fails deterministically, before
+any verification step can even run, because `omninode-memory` (pulled in
+transitively by `omnimarket`) declares two different `omnibase_infra`
+git-commit URLs:
+
+```
+× Failed to resolve dependencies for `omninode-memory` (v0.17.0)
+╰─▶ Requirements contain conflicting URLs for package `omnibase-infra`:
+    - git+https://github.com/OmniNode-ai/omnibase_infra.git@00e5a02a...
+    - git+https://github.com/OmniNode-ai/omnibase_infra.git@77144f83...
+  help: `omninode-memory` (v0.17.0) was included because `omnimarket` (v0.4.3)
+        depends on `omninode-memory`
+```
+
+uv exits 1, and a `set -euo pipefail` snapshot script aborts mid-build. This is
+the second of the two runner failure classes (OMN-15488 attempt 2, reproduced
+twice at 2026-07-30T19:01:50Z and 19:03:24Z). Do not "fix" the first failure
+class by reaching for a full-resolve install -- that is exactly the trap.
+
+### Ordering and idempotence
+
+The VCS install must come AFTER `uv sync`, and any LATER `uv sync` against the
+infra venv **uninstalls it again**. `omnimarket` is not in that project's
+lockfile, so `uv sync` prunes it -- visible verbatim in `venv.log` as
+`- omnimarket==0.4.3 (from git+...)` immediately after a re-sync. A snapshot
+script that re-runs its phase-1 checkout+resync (the idempotent
+re-pin path used for OMN-15488 attempt 4) MUST re-run this install every time,
+and re-verify, not assume the earlier install survived.
+
+### Verification is the real gate
+
+Never trust the installer's exit code alone -- assert on `direct_url.json`:
+
+```bash
+python3 - <<'PY'
+import glob, json, os, sys
+pin = os.environ["OMNIMARKET_SHA"]
+snap = os.environ["SNAP"]
+hits = glob.glob(f"{snap}/omnibase_infra/.venv/lib/python3.*/site-packages/omnimarket-*.dist-info/direct_url.json")
+if not hits:
+    sys.exit("FAIL: omnimarket not installed in the snapshot infra venv")
+info = json.load(open(hits[0]))
+vcs = info.get("vcs_info", {})
+if vcs.get("vcs") != "git" or vcs.get("commit_id") != pin:
+    sys.exit(f"FAIL: expected vcs=git commit_id={pin}, got {info}")
+print(f"OK: omnimarket VCS-pinned @ {pin} verified")
+PY
+```
+
+A passing read looks like:
+
+```json
+{"url": "https://github.com/OmniNode-ai/omnimarket.git",
+ "vcs_info": {"vcs": "git", "commit_id": "<omnimarket_sha>",
+              "requested_revision": "<omnimarket_sha>"}}
+```
+
+Both halves matter: `vcs == "git"` is what the drift guard checks (a plain
+non-VCS install passes an "is it installed" test and still fails the guard), and
+`commit_id == <omnimarket_sha>` is what makes the snapshot hermetic. Log the
+verified line into the runner log so a later reader can tell a good snapshot
+build from a bare `uv sync` one at a glance -- the OMN-15488 runner emits
+`snapshot: done (omnimarket VCS-pinned @ <sha> verified)`, and its plain
+`snapshot: done` predecessor is precisely the build that failed.
 
 ## 4. `OMNI_HOME` redirect at launch
 
@@ -223,3 +316,23 @@ pulled is exactly the point.
   snapshot this recipe was extracted from (pins, `chain_prominent.sh`,
   `chain.log`, `smoke_run.log`). Read-only reference; do not mutate a
   running battery's snapshot.
+- [`OMN-15582`](https://linear.app/omninode/issue/OMN-15582) -- the ticket
+  the §2/§3 VCS-install amendment closes. Both runner failure classes were
+  found live during the OMN-15488 battery launch on 2026-07-30 and each cost
+  a launch attempt:
+  - attempt 1, `ROLLING_WORK_LEDGER.md` 2026-07-30T18:59:12Z -- venvs built
+    per §2 only, §3 skipped; canary aborted at the first LLM call with
+    `omnimarket is NOT INSTALLED from git in this interpreter`.
+  - attempt 2, ledger 2026-07-30T19:03:48Z -- the runner's own improvised fix
+    used a full-resolve `uv pip install`; uv exited 1 on the
+    `omninode-memory` conflicting-URL error (reproduced twice) and the
+    snapshot script aborted before verification.
+  - attempt 3 onward, `runner.log` 2026-07-30T19:06:03Z --
+    `snapshot: done (omnimarket VCS-pinned @ f6979df8a5... verified)` after
+    switching to the `--no-deps` VCS install; attempt 4 (ledger
+    2026-07-30T20:32:05Z) carried the same snapshot to canary PASS and the
+    full 61-match battery.
+  - `~/.omnibase/battery_envs/omn15488-hermetic-20260730/battery_state/logs/`
+    (`runner.log`, `venv.log`) -- the raw uv output quoted in §3, including
+    the `- omnimarket==0.4.3 (from git+...)` prune line that proves a later
+    `uv sync` undoes the install.
