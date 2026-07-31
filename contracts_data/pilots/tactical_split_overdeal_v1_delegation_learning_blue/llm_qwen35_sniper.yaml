@@ -1,0 +1,32 @@
+# OMN-15488 leg (a) -- LEARNING-SEAT pilot spec (player.blue).
+#
+# Byte-identical in every field to contracts_data/pilots/fire_dense_qwen/
+# llm_qwen35_sniper.yaml -- the sniper spec every prior blue-seat battery in
+# this program (#126, #128) flew -- copied into leg (a)'s OWN dedicated
+# registry directory rather than referenced in place.
+#
+# WHY A COPY RATHER THAN A REFERENCE. ``_validate_llm_pilot_bindings``
+# (src/steel_onslaught/match/composition.py) validates EVERY spec in a
+# registry directory unconditionally whenever a caller does not pass
+# ``selected_pilot_spec_ids``. Adding leg (a)'s mirror spec (which declares
+# ``provider: qwen35_sniper_mirror_red``) into the shared ``fire_dense_qwen/``
+# directory would therefore break every OTHER overlay sharing that registry
+# whose own ``llm.providers`` list does not declare that provider -- the exact
+# failure the red battery hit and recorded in its own mirror spec's header
+# (``ProviderRegistryError: unknown_provider`` from
+# tests/match/test_objective_scoring_decoy.py). A dedicated directory keeps
+# the blast radius inside leg (a).
+#
+# Holding this spec byte-constant with the one #126/#128 flew is what makes
+# leg (a)'s cross-battery comparison a persona/seat comparison rather than a
+# pilot-spec comparison.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen35_sniper
+display_name: "Qwen3.6-35B Sniper (AI PC 5090)"
+archetype: llm
+lineage:
+  parent: pilot.template.llm
+parameters:
+  persona: sniper
+  provider: qwen35

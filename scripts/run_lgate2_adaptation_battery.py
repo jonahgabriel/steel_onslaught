@@ -96,6 +96,62 @@ _ARCHETYPE = "aggressive"
 _GENESIS = {"aggression": 1.0}
 _MAX_PROMOTE_ATTEMPTS = 5
 
+# Per-phase offset from ``--seed-base``. The three battery phases have always
+# occupied three disjoint hundred-blocks; before OMN-15488 leg (a) the base was
+# the bare literal 4000 written three times inline (``4000 + index`` /
+# ``4100 + index`` / ``4200 + index``), which made every battery this driver
+# has ever run share ONE seed lane. That is fine for a single battery and
+# wrong for a program: a second battery on the same driver silently reuses the
+# first one's seeds, so a cross-lane seed collision is indistinguishable from
+# a legitimate replication and the contamination/bijection gate
+# (``scripts/check_contamination_gate.py``, itself already ``--seed-base``
+# parameterised) cannot express "these two lanes are disjoint".
+#
+# OMN-15488 leg (a) pre-registers seeds 6001-6030 / 6101-6115 / 6201-6230
+# (its §2.1 FD3 and §3), which were literally unreachable from this driver.
+# ``--seed-base`` makes them reachable and keeps the block structure byte-
+# identical; the default 4000 reproduces every prior invocation exactly.
+_PHASE_SEED_OFFSETS = {"baseline": 0, "promote": 100, "post": 200}
+_DEFAULT_SEED_BASE = 4000
+
+
+def phase_seeds(seed_base: int, phase: str, count: int) -> list[int]:
+    """The seed block a phase flies: ``base + offset + 1 .. base + offset + count``.
+
+    Public (no leading underscore) because the launch runbook, the acceptance
+    gates, and ``tests/contracts/test_lgate2_lega_blue_overlay_omn15488.py``
+    all need to derive the SAME block the driver will actually fly, rather
+    than restate it as a literal that can drift away from the driver.
+    """
+    offset = _PHASE_SEED_OFFSETS[phase]
+    return [seed_base + offset + index for index in range(1, count + 1)]
+
+
+def expected_row_bounds(*, n: int, promote_attempts: int) -> tuple[int, int]:
+    """Inclusive ``(minimum, maximum)`` row count of a CLEAN battery run.
+
+    One ``battery_raw.jsonl`` row is appended per flown match, and the promote
+    phase stops at the FIRST ``POLICY_PROMOTED`` (``stop_on_promotion=True``),
+    so a clean run writes ``n + k + n`` rows for an unknown ``k`` in
+    ``1..promote_attempts`` — the promote budget is a bound, not a count.
+
+    This exists because ``so battery-watch --expected-rows`` compares with a
+    strict ``!=`` (``src/steel_onslaught/battery/watchdog.py``): a single
+    literal copied from a run that happened to promote on its first attempt
+    (the OMN-15488 red battery's 61 = 30 + 1 + 30) mis-reports every ``k > 1``
+    run as ``INCOMPLETE`` and, worse, withholds the ``--on-complete-exec``
+    chain on a perfectly clean battery. The launch path therefore passes BOTH
+    ``--expected-rows`` and ``--expected-rows-max`` from this derivation.
+
+    A NO-PROMOTION run (the pre-registered §6.1 escape) writes ``n +
+    promote_attempts`` rows and exits nonzero, so it surfaces as ``CRASHED``,
+    not as a short ``COMPLETED`` — the escape stays loud either way.
+    """
+    if n < 1 or promote_attempts < 1:
+        raise ValueError("n and promote_attempts must both be >= 1")
+    return (2 * n + 1, 2 * n + promote_attempts)
+
+
 # selection_outcome_v1 (live-fire) genesis: the complete aggressive
 # spec-parameter set, values from contracts_data/pilots/template_aggressive.yaml
 # (the archetype's canonical template) — the duel gate materializes real pilot
@@ -560,7 +616,7 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
     baseline = _run_phase(
         "baseline",
         max_value=baseline_cap,  # == genesis: candidate would exceed the cap, never promotes
-        seeds=[4000 + index for index in range(1, args.n + 1)],
+        seeds=phase_seeds(args.seed_base, "baseline", args.n),
         stop_on_promotion=False,
     )
     assert all(row["policy_promoted"] is None for row in baseline), (
@@ -571,7 +627,7 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
     promote = _run_phase(
         "promote",
         max_value=promote_cap,  # == genesis + step: the exact candidate a decisive win proposes
-        seeds=[4100 + index for index in range(1, args.promote_attempts + 1)],
+        seeds=phase_seeds(args.seed_base, "promote", args.promote_attempts),
         stop_on_promotion=True,
     )
     promotion = next((row["policy_promoted"] for row in promote if row["policy_promoted"]), None)
@@ -590,7 +646,7 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
     post = _run_phase(
         "post",
         max_value=post_cap,  # == genesis + step: freeze the chain at generation 1
-        seeds=[4200 + index for index in range(1, args.n + 1)],
+        seeds=phase_seeds(args.seed_base, "post", args.n),
         stop_on_promotion=False,
     )
     for row in post:
@@ -614,6 +670,14 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
         "seat": args.seat,
         "genesis": args.genesis,
         "step": args.step,
+        # Published so the executed seed lane is falsifiable from the artifact
+        # alone, the same reason OMN-15587 published `planned_share_matches`:
+        # an acceptance gate should not have to infer which block was flown
+        # from the seeds it happens to find.
+        "seed_base": args.seed_base,
+        "expected_row_bounds": list(
+            expected_row_bounds(n=args.n, promote_attempts=args.promote_attempts)
+        ),
         "baseline": _summarize(baseline, learning_player=learning_player, skipped=baseline_skipped),
         "promote": _summarize(promote, learning_player=learning_player, skipped=promote_skipped),
         "post": _summarize(post, learning_player=learning_player, skipped=post_skipped),
@@ -845,6 +909,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--state-root",
         type=Path,
         default=_REPO_ROOT / ".onex_state/steel_onslaught/lgate2_adaptation_battery",
+    )
+    parser.add_argument(
+        "--seed-base",
+        type=int,
+        default=_DEFAULT_SEED_BASE,
+        help=(
+            "base of the three disjoint per-phase seed blocks: baseline flies "
+            "base+1..base+n, promote base+101..base+100+promote_attempts, post "
+            "base+201..base+200+n. Default 4000 reproduces every pre-OMN-15488 "
+            "invocation byte-identically; OMN-15488 leg (a) pre-registers 6000 "
+            "(6001-6030 / 6101-6115 / 6201-6230), and 9xxx is the canary lane. "
+            "Disjoint bases are what make the contamination gate's cross-lane "
+            "collision check meaningful rather than vacuous."
+        ),
     )
     parser.add_argument("--fresh", action="store_true", help="wipe the battery lane first")
     # live-fire (selection_outcome_v1) knobs

@@ -96,7 +96,19 @@ _MIGRATED_BATCH_1 = frozenset({"local_200_v1.yaml"})
 # is a single-arm decisive battery, not a paired display-salience arm, and
 # does NOT preempt the still-pending OMN-15174 batch-2 / OMN-15482 operator
 # decision about migrating the REMAINING openai_compatible corpus.
-_NET_NEW_DELEGATION_OMN15488 = frozenset({"tactical_split_overdeal_v1_delegation_learning.yaml"})
+#
+# The leg-(a) sibling (``..._blue.yaml``) is classified here for the SAME
+# reason and by the same rule: it is authored directly on the delegation shape
+# with the same backend and the same live-proven served model, has no
+# ``openai_compatible`` ancestor, and carries its own pre-registration on its
+# own header. Deliberately classified rather than silently absorbed, which is
+# exactly what this census's size pin exists to force.
+_NET_NEW_DELEGATION_OMN15488 = frozenset(
+    {
+        "tactical_split_overdeal_v1_delegation_learning.yaml",
+        "tactical_split_overdeal_v1_delegation_learning_blue.yaml",
+    }
+)
 
 # Model strings served by a delegation backend that has been proven live
 # through steel's own delegation path. ONE member: local-coder-mlx. Widening
@@ -117,8 +129,8 @@ _IMAGE_BLOCKED = frozenset(
     }
 )
 
-_EXPECTED_TOTAL_OVERLAYS = 60
-_EXPECTED_MIGRATED_COUNT = 4  # 2 preregistered + 1 batch-1 + 1 OMN-15488 net-new
+_EXPECTED_TOTAL_OVERLAYS = 61
+_EXPECTED_MIGRATED_COUNT = 5  # 2 preregistered + 1 batch-1 + 2 OMN-15488 net-new (red + leg (a))
 _EXPECTED_UNMIGRATED_COUNT = 56
 
 # Typed blocking reasons.

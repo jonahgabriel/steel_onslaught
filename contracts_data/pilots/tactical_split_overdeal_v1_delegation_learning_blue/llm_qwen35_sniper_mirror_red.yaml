@@ -1,0 +1,36 @@
+# OMN-15488 leg (a) -- MIRROR-PAIRING pilot spec, red seat.
+#
+# Same persona (sniper) as pilot.llm.qwen35_sniper -- that identity is the
+# whole point of the mirror pairing, and prereg §2.2 FD2 keeps the mirror
+# intact by flipping the persona on BOTH seats -- but a DISTINCT ``provider``
+# id (``qwen35_sniper_mirror_red`` vs ``qwen35``).
+#
+# WHY A DIFFERENT PROVIDER ID FOR AN OTHERWISE-IDENTICAL PILOT.
+# ``validate_seat_programmer_identity``
+# (src/steel_onslaught/match/composition.py) unconditionally rejects two live
+# card seats that resolve to the SAME (provider, persona) identity -- "the
+# check that stops a live match from running an UNANNOUNCED mirror" (its own
+# docstring). Reusing pilot.llm.qwen35_sniper verbatim on both sides raises
+# ``SeatIdentityError`` at match composition. The red battery hit exactly this
+# and solved it with a distinct-provider-id / identical-persona sibling spec;
+# prereg §2.3 item 2 pre-records the trap and pre-registers that solution for
+# leg (a), and this file is it.
+#
+# ``qwen35_sniper_mirror_red`` resolves to a SECOND ``onex_delegation``
+# provider entry on
+# contracts_data/overlays/tactical_split_overdeal_v1_delegation_learning_blue.yaml
+# that is identical to ``qwen35`` in every dispatched field (backend_id,
+# model, task_type, max_tokens, timeout_seconds) -- an ANNOUNCED mirror, not
+# an unannounced one: the seat-identity check passes because the provider
+# LABEL differs, while the served model and backend are byte-identical to the
+# learning seat's.
+schema_version: "0.1.0"
+kind: steel_onslaught.pilot
+id: pilot.llm.qwen35_sniper_mirror_red
+display_name: "Qwen3.6-35B Sniper Mirror (red seat, stickybeatz-studio MLX)"
+archetype: llm
+lineage:
+  parent: pilot.llm.qwen35_sniper
+parameters:
+  persona: sniper
+  provider: qwen35_sniper_mirror_red
