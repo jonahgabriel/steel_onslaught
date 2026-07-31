@@ -769,3 +769,51 @@ the procedure it pins is `docs/runbooks/2026-07-31-lgate2-legA-blue-seat-launch.
    matches, creating no policy lineage.
 
 **Landing these amendments authorizes no run.** Leg (a) starts only when an operator says so.
+
+### Amendment 3 (2026-07-31, before any match exists) — FD5 LAUNCH-TIME PIN RE-ASSESSMENT
+
+Execution-infrastructure and comparability bookkeeping only; no criterion region is touched. Full
+text in the overlay header (the pre-registration of record).
+
+**Why it is owed.** §2.2 FD5 assessed every commit between `a3b0d8a` and `d78094a` and then requires,
+"not optional," that a launch session whose executing pin is later than `d78094a` re-run that
+assessment over the intervening commits and record it in the overlay header **before launch**. The
+executing overlay file did not exist at `d78094a` — `b6812e7` created it — so the executing pin is
+necessarily later and the re-assessment is unconditionally owed.
+
+**The three intervening commits, assessed against "does this change what a leg-(a) match does?"**
+
+| commit | PR | scope | verdict |
+|---|---|---|---|
+| `ea20e676` | #249 | this document; 1 file, +697, `docs/evidence/` only | behavioral no-op |
+| `fb6664cb` | #250 | SO-REDMID pre-registration (OMN-15586); 1 file, +813, `docs/evidence/` only | behavioral no-op; its launch is serialized after leg (a) and is not run here |
+| `b6812e7b` | #251 | this overlay + loadouts/pilot specs + launch runbook + the three Amendment-2 capabilities | no card-path change — see below |
+
+For `b6812e7b` the executable surface is exactly three things: `--seed-base` plumbing in the driver
+(the inline `4000`/`4100`/`4200` literals become `phase_seeds(...)` with `_DEFAULT_SEED_BASE = 4000`,
+so the default invocation is byte-identical to OMN-15488's, plus `seed_base` / `expected_row_bounds`
+published into `battery_summary.json`, which §4.4 excludes from every scored figure);
+`--expected-rows-max` in the watchdog/CLI (supervision only — the watchdog observes the driver and
+cannot alter a match); and the new read-only `scripts/check_canary_decisiveness.py`, never invoked by
+the driver.
+
+Verified from the tree rather than the commit message, the same standard §2.2 FD5 applied to the
+OMN-15489 entry: `git diff --stat d78094a..b6812e7 -- src/steel_onslaught/match/
+src/steel_onslaught/cards/` returns **empty**. No card-selection, match-runner, evaluator, provider,
+or duel-gate file changed between the assessed pin and the executing pin.
+
+This amendment's own commit appends header/document prose only and carries no executable file; it is
+the commit AC1 reads as the executing overlay's latest author timestamp, landing before the first
+`match_started`.
+
+**§9 cadence re-verification, run from the executing tree** (the runbook's other precondition — the
+OMN-15591 disposition is cadence-conditional and void on atomic cadence): the overlay declares
+`card_cadence: paced`; every terminal `CARDS_DISCARDED` close path in
+`src/steel_onslaught/match/runner.py` routes through `_cancel_active_card_round`, and every caller is
+gated on `self._card_cadence == "paced"` (the max-ticks bound, `_terminate_for_runaway`,
+`_terminate_for_llm_boundary`, and the `_before_fold_emit` boundary for `VICTORY_DECLARED` /
+`MATCH_ENDED`). The atomic branch — the one the defect lives on — clears `_card_active_round` without
+emitting and is not the path leg (a) takes. Corroborated structurally by the empty `match/` diff.
+
+**Conclusion.** Comparability with the OMN-15488 red battery is preserved; FD5's launch-time
+obligation is discharged. Landing this amendment authorizes no run.
