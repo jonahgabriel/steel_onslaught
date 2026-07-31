@@ -27,6 +27,7 @@ from steel_onslaught.llm.client_delegation import (
     ProtocolDelegationCliRunner,
     SubprocessDelegationCliRunner,
 )
+from steel_onslaught.llm.effect import LlmSemanticError
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
     LlmTransportError,
@@ -698,3 +699,172 @@ def test_nonzero_exit_with_empty_stdout_omits_the_stdout_message_suffix_omn15535
     assert exc.stdout == ""
     assert "| stdout:" not in str(exc)
     assert "plain stderr failure" in str(exc)
+
+
+# --- OMN-15566: quality-gate rejections are semantic, not transport ---
+#
+# The 2026-07-30 OMN-15488 battery crashed at baseline seed 4028: the
+# delegation node's platform-side quality gate rejected a completion as
+# syntactically malformed JSON after exhausting its own 3 internal retries,
+# `SubprocessDelegationCliRunner.run()` saw only "onex CLI exited 1" and
+# raised `LlmTransportError`, and that transport-classified exception is
+# INVISIBLE to card mode's bounded reprompt loop (`llm/programming.py`,
+# `except LlmSemanticError`) and the plain decide() path's equivalent
+# (`llm/pilot.py`, same catch, OMN-15239) -- so it propagated straight out
+# of the match and killed the whole battery process. `LlmBusDelegationClient
+# .complete()` must reclassify a quality-gate REJECTION (MALFORMED /
+# SCHEMA_VIOLATION response classes) as `LlmSemanticError` so the existing,
+# already-proven bounded reprompt recovers it -- exactly as the HTTP binding
+# already does for the same failure class (steel #128, 2026-07-22 battery:
+# 2 recovered via reprompt, 0 aborts).
+
+
+def _receipt_stdout_with_quality_gate_failure(*, reasons: list[str]) -> str:
+    """A CLI stdout receipt shaped like ``ModelSkillResult[ModelReceiptRuntimeSummary]``
+    on a non-zero, quality-gate-rejected exit (``receipt_mode.py``'s failure
+    branch: ``result.terminal_payload`` mirrors the runtime's persisted
+    ``workflow_result.json`` verbatim, including ``quality_gates_failed`` --
+    this is the exact shape recovered from the real OMN-15488 crash's own
+    persisted receipt, correlation ``738867fd-3db1-40b1-9854-4f269ae50fcd``).
+    """
+    return json.dumps(
+        {
+            "skill_name": "delegate",
+            "node_name": "node_delegate_skill_orchestrator",
+            "status": "error",
+            "correlation_id": "738867fd-3db1-40b1-9854-4f269ae50fcd",
+            "run_id": "738867fd-3db1-40b1-9854-4f269ae50fcd",
+            "exit_code": 1,
+            "duration_ms": 133380,
+            "result": {
+                "workflow_result": "failed",
+                "exit_code": 1,
+                "workflow": "/omnibase_infra/.venv/.../node_delegate_skill_orchestrator/"
+                "contract.yaml",
+                "terminal_payload": {
+                    "status": "failed",
+                    "correlation_id": "738867fd-3db1-40b1-9854-4f269ae50fcd",
+                    "quality_gate_passed": False,
+                    "quality_gates_failed": reasons,
+                    "error_message": "",
+                },
+                "handler_result": None,
+                "error": "",
+                "capture_log": "17:36:43 INFO omnibase_core.runtime.runtime_local — result=failed",
+            },
+            "result_model": "omnibase_infra.cli.model_receipt_runtime_summary."
+            "ModelReceiptRuntimeSummary",
+        }
+    )
+
+
+class _RaisingRunner:
+    """Fake ``ProtocolDelegationCliRunner`` whose ``run()`` raises unconditionally."""
+
+    def __init__(self, error: LlmTransportError) -> None:
+        self._error = error
+
+    def run(self, argv: tuple[str, ...], *, timeout_seconds: float) -> str:
+        raise self._error
+
+
+def test_malformed_quality_gate_rejection_surfaces_as_semantic_malformed_json(
+    tmp_path: Path,
+) -> None:
+    """RED on pre-fix main: a delegation-node MALFORMED rejection must raise
+    ``LlmSemanticError(code="malformed_json")`` -- the type card mode's and
+    the plain decide() path's bounded reprompt loops both catch -- not the
+    ``LlmTransportError`` the runner itself raised. This is the exact class
+    that killed the OMN-15488 battery at seed 4028.
+    """
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["MALFORMED: response is not valid JSON: Expecting ':' delimiter"]
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmSemanticError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    exc = excinfo.value
+    assert exc.code == "malformed_json"
+    assert exc.detail is not None
+    assert "MALFORMED" in exc.detail
+    assert "Expecting ':' delimiter" in exc.detail
+
+
+def test_schema_violation_quality_gate_rejection_surfaces_as_semantic_invalid_action_parameters(
+    tmp_path: Path,
+) -> None:
+    """RED on pre-fix main: a SCHEMA_VIOLATION rejection (valid JSON, wrong
+    shape -- the OMN-15488 attempt-3 canary's failure class) must also
+    reclassify as a semantic error, not a transport error."""
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["SCHEMA_VIOLATION: <root>: {...} is not valid under any of the given schemas"]
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmSemanticError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    exc = excinfo.value
+    assert exc.code == "invalid_action_parameters"
+    assert exc.detail is not None
+    assert "SCHEMA_VIOLATION" in exc.detail
+
+
+def test_genuine_transport_failure_still_raises_llm_transport_error(tmp_path: Path) -> None:
+    """Control case: a non-zero exit that is NOT a quality-gate rejection
+    (no ``quality_gates_failed`` content reachable in stdout -- a real CLI
+    crash/launch failure/environment error) must keep raising
+    ``LlmTransportError`` unchanged. This is the negative half of the fix:
+    reclassification must not swallow genuine transport failures."""
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: connection refused",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="ConnectionRefusedError: [Errno 61] Connection refused",
+        stdout="",
+    )
+    client = _client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request())
+
+    assert excinfo.value is transport_error
+
+
+def test_nonzero_exit_with_unparsable_stdout_still_raises_llm_transport_error(
+    tmp_path: Path,
+) -> None:
+    """A non-zero exit whose stdout is not the expected JSON receipt shape
+    (e.g. a launch failure that never reached receipt-mode output) must not
+    be silently swallowed by the classifier -- it re-raises the original
+    ``LlmTransportError`` unchanged rather than raising nothing or crashing
+    on the malformed stdout itself."""
+    transport_error = LlmTransportError(
+        "failed to launch onex delegation CLI: [Errno 2] No such file or directory",
+        retryable=False,
+    )
+    client = _client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request())
+
+    assert excinfo.value is transport_error

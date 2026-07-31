@@ -124,6 +124,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from steel_onslaught.contracts.application import ModelSODelegationProviderBinding
+from steel_onslaught.llm.effect import LlmSemanticError
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
     LlmResponse,
@@ -378,6 +379,86 @@ def _optional_float(payload: dict[str, object], key: str) -> float | None:
 # omnibase_core purely to compare three literal strings).
 _ENVELOPE_SUCCESS_LIKE = frozenset({"success", "partial", "dry_run"})
 
+# OMN-15566: prefixes of the platform delegation quality gate's
+# ``quality_gates_failed`` reason strings (``handler_quality_gate.py``) that
+# name a REJECTION OF THIS SPECIFIC COMPLETION's response shape, not a
+# transport/process failure. Both are recoverable by a same-model reprompt
+# carrying the rejection text back (card mode's bounded reprompt loop,
+# ``llm/programming.py``, already absorbed exactly this failure class on the
+# HTTP binding in the 2026-07-22 battery with zero aborts -- see
+# ``_classify_quality_gate_rejection`` below).
+_MALFORMED_PREFIX = "MALFORMED"
+_SCHEMA_VIOLATION_PREFIX = "SCHEMA_VIOLATION"
+
+
+def _classify_quality_gate_rejection(stdout: str | None) -> LlmSemanticError | None:
+    """Distinguish a delegation quality-gate REJECTION from a genuine
+    transport failure, using the CLI's own captured stdout.
+
+    Seam choice (documented on the PR, not just here): in ``--output
+    receipt`` mode the ``onex`` CLI prints exactly ONE
+    ``ModelSkillResult[ModelReceiptRuntimeSummary]`` JSON line to stdout on
+    EVERY exit path, success or failure (``omnibase_infra/cli/
+    receipt_mode.py``'s ``click.echo(receipt.model_dump_json())`` -- the
+    module docstring there: "stdout carries exactly one ModelSkillResult
+    JSON"). On a non-zero exit that JSON's ``result.terminal_payload``
+    mirrors the exact same ``terminal_payload`` the runtime persists to
+    ``workflow_result.json`` on disk, including
+    ``quality_gates_failed``. ``SubprocessDelegationCliRunner.run()``
+    (OMN-15535) already attaches this FULL, unsliced stdout onto the raised
+    ``LlmTransportError.stdout`` -- so this reads data already present on
+    the exception object, in-memory, with no additional file I/O, no
+    ``state_root``/overlay-slug/provider-id path reconstruction, and no risk
+    of reading a workflow_result.json a LATER completion has already
+    overwritten. This is the least-fragile of the two seams the ticket named
+    (stdout receipt vs. the on-disk state file) precisely because it never
+    leaves the exception boundary already established by OMN-15535.
+
+    Returns ``None`` (a genuine transport/process failure -- CLI crash,
+    launch failure, timeout, or a non-zero exit unrelated to the quality
+    gate) whenever stdout is empty, unparsable, or names no MALFORMED/
+    SCHEMA_VIOLATION quality-gate rejection, in which case the caller
+    re-raises the original ``LlmTransportError`` unchanged.
+    """
+    if not stdout:
+        return None
+    try:
+        envelope = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    result = envelope.get("result")
+    if not isinstance(result, dict):
+        return None
+    terminal_payload = result.get("terminal_payload")
+    if not isinstance(terminal_payload, dict):
+        return None
+    quality_gates_failed = terminal_payload.get("quality_gates_failed")
+    if not isinstance(quality_gates_failed, list) or not quality_gates_failed:
+        return None
+    reasons = [reason for reason in quality_gates_failed if isinstance(reason, str)]
+    malformed = [reason for reason in reasons if reason.startswith(_MALFORMED_PREFIX)]
+    if malformed:
+        return LlmSemanticError("malformed_json", detail="; ".join(malformed))
+    schema_violations = [
+        reason for reason in reasons if reason.startswith(_SCHEMA_VIOLATION_PREFIX)
+    ]
+    if schema_violations:
+        # No ``LlmSemanticFailureCode`` member names "schema violation"
+        # literally -- the closed set (``malformed_json``,
+        # ``unknown_action``, ``action_unavailable``,
+        # ``invalid_action_parameters``) was defined for the plain
+        # decide()/programming parsers' own semantic checks. A
+        # SCHEMA_VIOLATION rejection means the response was valid JSON that
+        # did not conform to the required shape -- structurally the same
+        # class ``llm/programming.py`` already reports as
+        # ``invalid_action_parameters`` for its own structurally-invalid
+        # (but syntactically valid) plans, so this reuses that code rather
+        # than widening the closed taxonomy for one caller.
+        return LlmSemanticError("invalid_action_parameters", detail="; ".join(schema_violations))
+    return None
+
 
 def _parse_skill_result(
     stdout: str,
@@ -570,10 +651,35 @@ class LlmBusDelegationClient:
             "--backend",
             f"event_bus={self._event_bus}",
         )
-        stdout = self._runner.run(
-            argv,
-            timeout_seconds=self._config.timeout_seconds + _SUBPROCESS_TIMEOUT_GRACE_SECONDS,
-        )
+        try:
+            stdout = self._runner.run(
+                argv,
+                timeout_seconds=self._config.timeout_seconds + _SUBPROCESS_TIMEOUT_GRACE_SECONDS,
+            )
+        except LlmTransportError as exc:
+            # OMN-15566: a delegation-node quality-gate REJECTION of this
+            # specific completion (MALFORMED/SCHEMA_VIOLATION response
+            # classes) is a semantic failure, not a transport failure -- see
+            # ``_classify_quality_gate_rejection``'s docstring for the seam
+            # rationale. Reclassifying it here (rather than inside
+            # ``ProtocolDelegationCliRunner`` implementations) means both the
+            # real subprocess runner AND a test's fake runner get identical
+            # treatment for the same raised ``LlmTransportError``, and this
+            # is where the client already knows it is mid-``complete()`` --
+            # the one place a raised ``LlmSemanticError`` propagates
+            # correctly through ``consume_llm_completion`` into whichever
+            # caller's bounded reprompt loop is active (``llm/pilot.py``'s
+            # plain decide() path or ``llm/programming.py``'s card-mode
+            # path -- both already catch bare ``LlmSemanticError``).
+            # Genuine transport/process failures (CLI crash, launch
+            # failure, timeout, a non-zero exit the quality gate had no
+            # part in) are unaffected: ``_classify_quality_gate_rejection``
+            # returns ``None`` and the original exception is re-raised
+            # unchanged.
+            semantic = _classify_quality_gate_rejection(exc.stdout)
+            if semantic is not None:
+                raise semantic from exc
+            raise
         return _parse_skill_result(
             stdout,
             expected_model=self._config.model,

@@ -126,7 +126,19 @@ _BLUE_MIRROR_LOADOUT = (
 #     _PROGRAMMING_RESPONSE_CONTRACT instead of omitting. Again a genuine
 #     content change to the pre-registration of record, so the pin is
 #     re-taken.
-_PREREG_HEADER_SHA256 = "fbae23aa211281e6464336401c187d8d2ad2b9609c18352ae1791189cece2ce7"
+#   round 5 -- AMENDMENT 3 appended verbatim (OMN-15566 fix lane): the
+#     first launched run (2026-07-30T20:29Z) completed 27 valid baseline
+#     rows then crashed at baseline seed 4028 -- a delegation-node
+#     quality-gate rejection (MALFORMED response JSON) that
+#     LlmBusDelegationClient raised as a transport failure instead of a
+#     semantic one, invisible to card mode's bounded reprompt loop, and
+#     the driver had no per-seed containment to fall back on. That
+#     abandoned attempt is disposed (preserved untouched, contributes
+#     nothing to scoring); the fix (retry-semantics parity + per-seed
+#     driver containment) is recorded, and the re-run supersedes the
+#     Amendment-2 state-root. Genuine content change to the
+#     pre-registration of record, so the pin is re-taken.
+_PREREG_HEADER_SHA256 = "d8eeea5a28ae9766a311b7f817589b9c4951d6de9d96d2926916dac03420b4ae"
 
 _PREREG_MARKERS = (
     "PRE-REGISTERED HYPOTHESES",
