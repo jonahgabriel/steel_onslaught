@@ -215,6 +215,36 @@ def _merge_empty_content(
             bucket[finish_reason] = bucket.get(finish_reason, 0) + count
 
 
+def _planned_share(*, planned: Counter[str], dealt: Counter[str]) -> dict[str, float | None]:
+    """Per-category share of the seat's programmed registers (OMN-15587).
+
+    The key set is the UNION of the dealt and planned categories, NOT just the
+    planned ones: a category the seat held in hand and never programmed has a
+    share of exactly ``0.0``, and saying so explicitly is what keeps a
+    downstream mean honest.  The earlier form iterated ``sorted(planned)``
+    alone, so such a category was simply ABSENT from the row -- and
+    ``_summarize`` then averaged the category over only the rows carrying the
+    key, i.e. over the matches where it appeared at all.  On the merged
+    OMN-15488 battery that inflated ``vent`` 15.4x (baseline: 0.0154 over 2
+    present rows, against 0.0010 over the 30 rows actually flown) and 6.0x
+    (post: 0.0223 over 5, against 0.0037 over 30).
+
+    ``None`` is reserved for the one genuinely undefined case: a match in which
+    the seat programmed nothing at all, where the share is 0/0.  Such a row
+    must be dropped from a share mean entirely rather than counted as a 0.0 --
+    an unflown match is not evidence of a category being avoided.
+
+    Contrast ``keep_rates``, which is deliberately left alone (OMN-15587 AC6):
+    a keep-rate for a category that was never dealt IS 0/0-undefined, so
+    excluding it from that mean is correct.
+    """
+    categories = sorted(set(dealt) | set(planned))
+    total_planned = sum(planned.values())
+    if not total_planned:
+        return dict.fromkeys(categories, None)
+    return {category: planned[category] / total_planned for category in categories}
+
+
 def _measure_match(
     overlay: ModelSOApplicationOverlay,
     *,
@@ -286,7 +316,6 @@ def _measure_match(
         category: (planned[category] / dealt[category]) if dealt[category] else None
         for category in sorted(dealt)
     }
-    total_planned = sum(planned.values())
     return {
         "phase": phase,
         "seed": seed,
@@ -304,10 +333,7 @@ def _measure_match(
             "dealt": dict(sorted(dealt.items())),
             "planned": dict(sorted(planned.items())),
             "keep_rates": keep_rates,
-            "planned_share": {
-                category: (planned[category] / total_planned) if total_planned else None
-                for category in sorted(planned)
-            },
+            "planned_share": _planned_share(planned=planned, dealt=dealt),
         },
         "failed_completions": failed_completions,
         "empty_content_completions": _empty_content_counts(events),
@@ -373,7 +399,24 @@ def _summarize(
 
     categories = sorted(
         {category for row in rows for category in row["learning_seat"]["keep_rates"]}
+        | {category for row in rows for category in row["learning_seat"]["planned_share"]}
     )
+    # OMN-15587: the share denominator is every row that programmed ANYTHING --
+    # not the rows that happen to carry a given category's key.  A row that
+    # planned none of category `c` contributes an explicit 0.0 to `c`'s mean;
+    # only a row that planned nothing at all (share undefined, every entry
+    # None) drops out, and it drops out of EVERY category identically, which is
+    # why one scalar denominator describes the whole map.
+    share_rows = [
+        row["learning_seat"]["planned_share"]
+        for row in rows
+        if any(value is not None for value in row["learning_seat"]["planned_share"].values())
+    ]
+
+    def _share(shares: dict[str, float | None], category: str) -> float:
+        value = shares.get(category)
+        return 0.0 if value is None else value
+
     return {
         "matches": len(rows),
         # OMN-15566: casualties must never count toward the requested n
@@ -393,15 +436,13 @@ def _summarize(
             for category in categories
         },
         "mean_planned_share": {
-            category: _mean(
-                [
-                    row["learning_seat"]["planned_share"][category]
-                    for row in rows
-                    if row["learning_seat"]["planned_share"].get(category) is not None
-                ]
-            )
+            category: _mean([_share(shares, category) for shares in share_rows])
             for category in categories
         },
+        # The denominator behind every `mean_planned_share` entry, published so
+        # a reader can falsify this class of defect from the artifact alone
+        # (OMN-15587 AC5) instead of recomputing from `battery_raw.jsonl`.
+        "planned_share_matches": len(share_rows),
         "learner_wins": sum(
             1 for row in rows if row["winner_player_id"] == learning_player and not row["is_draw"]
         ),
