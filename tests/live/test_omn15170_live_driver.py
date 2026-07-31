@@ -46,8 +46,8 @@ Explicit, deliberate non-goals:
 
 Gating (three independent layers, so this can never run by accident):
 
-1. ``pytest.mark.live`` -- excluded by CI's ``-m "unit or integration"``
-   selection (``.github/workflows/ci.yml``).
+1. ``pytest.mark.live`` -- the one category CI excludes, via its
+   ``-m "not live"`` selection (``.github/workflows/ci.yml``).
 2. ``confluent_kafka`` is an opt-in extra (``uv sync --extra live``), never
    installed by CI's ``uv sync --extra dev``. A missing import skips at
    collection time via ``pytest.importorskip`` -- CI never even attempts to

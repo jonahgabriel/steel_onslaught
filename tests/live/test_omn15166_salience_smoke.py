@@ -33,9 +33,9 @@ platform node path) is OMN-15172's acceptance run.
 
 Gating (two independent layers):
 
-1. ``pytest.mark.live`` -- excluded by CI's ``-m "unit or integration"``
-   selection (``.github/workflows/ci.yml``), same as every other test in
-   this package.
+1. ``pytest.mark.live`` -- the one category CI excludes, via its
+   ``-m "not live"`` selection (``.github/workflows/ci.yml``), same as every
+   other test in this package.
 2. An explicit ``STEEL_LIVE_SALIENCE_SMOKE=1`` environment opt-in, separate
    from OMN-15170's own ``STEEL_LIVE_DRIVER`` (different scope: this test
    needs no Kafka/``confluent_kafka`` extra at all, so it should never be
