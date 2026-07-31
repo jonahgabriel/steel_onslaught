@@ -96,6 +96,27 @@ class _ObservedLlmAttempt:
             self._response = exc.response
             self.fail(exc.reason_code)
             raise
+        except LlmSemanticError as exc:
+            # OMN-15566 r5b (adversarial-verifier finding 2): a semantic
+            # rejection can be raised directly from ``complete()`` -- e.g.
+            # ``LlmBusDelegationClient`` reclassifying a delegation
+            # quality-gate rejection (``client_delegation.py``'s
+            # ``_classify_quality_gate_rejection``) -- not only from the
+            # consumer-side parser ``consume_llm_completion`` below already
+            # handles via its own ``except LlmSemanticError`` arm. Without
+            # this branch it fell through to the generic ``except
+            # BaseException`` arm and recorded a bare ``"provider_error"``
+            # with ``semantic_failure_code``/``semantic_failure_detail`` BOTH
+            # null -- losing exactly the diagnostic detail the consumer-side
+            # path already persists to the ledger. Mirrors that same
+            # ``reason_code="invalid_response"`` classification (~:214-223
+            # below) so both raise sites produce identical evidence shape.
+            self.fail(
+                "invalid_response",
+                semantic_failure_code=exc.code,
+                semantic_failure_detail=exc.detail,
+            )
+            raise
         except BaseException:
             self.fail("provider_error")
             raise

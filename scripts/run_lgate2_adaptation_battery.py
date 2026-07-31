@@ -315,7 +315,55 @@ def _measure_match(
     }
 
 
-def _summarize(rows: list[dict[str, Any]], *, learning_player: str) -> dict[str, Any]:
+def _record_casualty(
+    *, phase: str, seed: int, exc: BaseException, skipped_path: Path
+) -> dict[str, Any]:
+    """Record one seed-level casualty durably and loudly (OMN-15566).
+
+    Mirrors ``run_display_salience_battery.py``'s contamination-safety
+    contract (2026-07-25 SO-COMP-CA/SO-COMP-R1): a dead seed is SKIPPED, not
+    fatal to the whole battery -- but the FULL (never console-truncated)
+    diagnostic is persisted verbatim. It is both appended to a durable
+    ``skipped_seeds.jsonl`` sibling of the raw evidence file (so the record
+    survives even if a LATER, unrelated failure ends the process before the
+    final ``battery_summary.json`` write) and returned so the caller can
+    fold it into the run's accumulated ``skipped`` list for the end-of-run
+    summary and the force-fail exit code. Only the console preview is
+    truncated to 240 chars -- the persisted record never is (same OMN-15240
+    lesson: a benign preamble must never eat a downstream truncation budget
+    and hide the real error).
+    """
+    full_detail = " ".join(f"{type(exc).__name__}: {exc}".split())
+    skip_record: dict[str, Any] = {"phase": phase, "seed": seed, "error": full_detail}
+    # Dedicated structured fields, present only when the raised exception
+    # actually carries them (e.g. LlmSemanticExhaustedError/LlmTransportError
+    # from the delegation client) -- absent for every other exception shape,
+    # so this never invents data the failure didn't actually provide.
+    argv = getattr(exc, "argv", None)
+    exit_code = getattr(exc, "exit_code", None)
+    stderr = getattr(exc, "stderr", None)
+    stdout = getattr(exc, "stdout", None)
+    if argv is not None:
+        skip_record["argv"] = list(argv)
+    if exit_code is not None:
+        skip_record["exit_code"] = exit_code
+    if stderr is not None:
+        skip_record["stderr"] = stderr
+    if stdout is not None:
+        skip_record["stdout"] = stdout
+    with skipped_path.open("a", encoding="utf-8") as sink:
+        sink.write(json.dumps(skip_record, sort_keys=True) + "\n")
+    console_detail = full_detail[:240]
+    print(f"[{phase}] seed={seed} SKIPPED — {console_detail}", file=sys.stderr, flush=True)
+    return skip_record
+
+
+def _summarize(
+    rows: list[dict[str, Any]],
+    *,
+    learning_player: str,
+    skipped: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     def _mean(values: list[float]) -> float | None:
         return round(sum(values) / len(values), 4) if values else None
 
@@ -328,6 +376,10 @@ def _summarize(rows: list[dict[str, Any]], *, learning_player: str) -> dict[str,
     )
     return {
         "matches": len(rows),
+        # OMN-15566: casualties must never count toward the requested n
+        # silently -- this list, scoped to the phase this summary covers,
+        # names exactly which seeds were skipped and why.
+        "skipped_seeds": skipped or [],
         "policy_ids": sorted({row["policy_provenance"]["policy_id"] for row in rows}),
         "generations": sorted({row["policy_provenance"]["generation"] for row in rows}),
         "mean_keep_rate": {
@@ -392,6 +444,14 @@ def _phase_caps(args: argparse.Namespace) -> tuple[float, float, float]:
 def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> int:
     learning_player, learning_mech = _SEATS[args.seat]
     rows: list[dict[str, Any]] = []
+    # OMN-15566: a seed-level exception (e.g. the delegation client's
+    # LlmSemanticExhaustedError after a bounded reprompt exhausts, or any
+    # other unclassified per-match failure) must never kill the whole
+    # battery process -- it is recorded as a loud, durable casualty and the
+    # run continues. `skipped_path` is a sibling of `raw_path`, matching
+    # `run_display_salience_battery.py`'s contamination-safety contract.
+    skipped: list[dict[str, Any]] = []
+    skipped_path = state_root / "skipped_seeds.jsonl"
     baseline_cap, promote_cap, post_cap = _phase_caps(args)
 
     def _run_phase(
@@ -407,16 +467,36 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
         )
         phase_rows: list[dict[str, Any]] = []
         for seed in seeds:
-            row = _measure_match(
-                overlay,
-                red_loadout_path=args.red_loadout,
-                blue_loadout_path=args.blue_loadout,
-                seed=seed,
-                phase=phase,
-                learning_player=learning_player,
-                learning_seat=args.seat,
-                learning_mech=learning_mech,
-            )
+            try:
+                row = _measure_match(
+                    overlay,
+                    red_loadout_path=args.red_loadout,
+                    blue_loadout_path=args.blue_loadout,
+                    seed=seed,
+                    phase=phase,
+                    learning_player=learning_player,
+                    learning_seat=args.seat,
+                    learning_mech=learning_mech,
+                )
+            except KeyboardInterrupt:
+                raise
+            except AssertionError:
+                # OMN-15566 r5b (adversarial-verifier finding 3): the
+                # in-match integrity asserts inside ``_measure_match``
+                # ("learning lane must record provenance", "match did not
+                # score") are invariant violations, not the recoverable
+                # provider/quality-gate failures this containment exists
+                # for -- swallowing them here would silently hide a broken
+                # instrumentation/harness bug behind a routine "casualty"
+                # entry. Excluded from containment BEFORE the generic
+                # ``except Exception`` arm below so they abort the process
+                # hard, exactly as they did before containment existed.
+                raise
+            except Exception as exc:  # one dead seed must not kill the whole battery (OMN-15566)
+                skipped.append(
+                    _record_casualty(phase=phase, seed=seed, exc=exc, skipped_path=skipped_path)
+                )
+                continue
             rows.append(row)
             phase_rows.append(row)
             with raw_path.open("a", encoding="utf-8") as sink:
@@ -433,6 +513,9 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
                 break
         return phase_rows
 
+    # Phase assertions below stay HARD failures -- they operate on the
+    # returned, already-successful rows only (casualties never enter these
+    # lists), so containment above does not weaken them.
     baseline = _run_phase(
         "baseline",
         max_value=baseline_cap,  # == genesis: candidate would exceed the cap, never promotes
@@ -452,9 +535,13 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
     )
     promotion = next((row["policy_promoted"] for row in promote if row["policy_promoted"]), None)
     if promotion is None:
+        casualty_note = (
+            f" ({len(skipped)} seed casualty(ies) recorded, see {skipped_path})" if skipped else ""
+        )
         print(
             "FINDING: no promotion occurred within "
-            f"{args.promote_attempts} promote-phase matches; L-GATE-2 not exercised",
+            f"{args.promote_attempts} promote-phase matches; L-GATE-2 not exercised"
+            f"{casualty_note}",
             flush=True,
         )
         return 1
@@ -479,13 +566,16 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
         / promotion["spec_hash"]
         / f"{promotion['source_lineage_digest']}.yaml"
     )
+    baseline_skipped = [s for s in skipped if s["phase"] == "baseline"]
+    promote_skipped = [s for s in skipped if s["phase"] == "promote"]
+    post_skipped = [s for s in skipped if s["phase"] == "post"]
     summary = {
         "seat": args.seat,
         "genesis": args.genesis,
         "step": args.step,
-        "baseline": _summarize(baseline, learning_player=learning_player),
-        "promote": _summarize(promote, learning_player=learning_player),
-        "post": _summarize(post, learning_player=learning_player),
+        "baseline": _summarize(baseline, learning_player=learning_player, skipped=baseline_skipped),
+        "promote": _summarize(promote, learning_player=learning_player, skipped=promote_skipped),
+        "post": _summarize(post, learning_player=learning_player, skipped=post_skipped),
         "promotion": promotion,
         "chain": {
             "lineage_record_exists": lineage_path.is_file(),
@@ -493,11 +583,23 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
                 validity == 1 for row in rows for validity in row["replay_validity"].values()
             ),
         },
+        # OMN-15566: the full, run-wide casualty list -- never silently
+        # folded into the n=30 row target above.
+        "skipped_seeds": skipped,
     }
     summary_path = state_root / "battery_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     print(f"raw: {raw_path}\nsummary: {summary_path}")
+    if skipped:
+        print(
+            f"BATTERY COMPLETED WITH CASUALTIES: {len(skipped)} seed(s) skipped, no row "
+            f"written (see {skipped_path}) -- force-failing exit code per the "
+            "contamination-safety contract (OMN-15566)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     return 0
 
 
@@ -506,19 +608,37 @@ def _run_live_fire(args: argparse.Namespace, state_root: Path, raw_path: Path) -
     learning_player, learning_mech = _SEATS[args.seat]
     overlay = _live_fire_overlay(state_root, learning_player=learning_player, args=args)
     rows: list[dict[str, Any]] = []
+    # OMN-15566: same contamination-safety contract as the battery mode's
+    # _run_phase -- one dead seed (or the one-off confirm match) must not
+    # kill the process.
+    skipped: list[dict[str, Any]] = []
+    skipped_path = state_root / "skipped_seeds.jsonl"
     promotion: dict[str, Any] | None = None
 
-    def _one(seed: int, phase: str) -> dict[str, Any]:
-        row = _measure_match(
-            overlay,
-            red_loadout_path=args.red_loadout,
-            blue_loadout_path=args.blue_loadout,
-            seed=seed,
-            phase=phase,
-            learning_player=learning_player,
-            learning_seat=args.seat,
-            learning_mech=learning_mech,
-        )
+    def _one(seed: int, phase: str) -> dict[str, Any] | None:
+        try:
+            row = _measure_match(
+                overlay,
+                red_loadout_path=args.red_loadout,
+                blue_loadout_path=args.blue_loadout,
+                seed=seed,
+                phase=phase,
+                learning_player=learning_player,
+                learning_seat=args.seat,
+                learning_mech=learning_mech,
+            )
+        except KeyboardInterrupt:
+            raise
+        except AssertionError:
+            # OMN-15566 r5b: see the matching ``_run_phase`` exclusion above
+            # -- an in-match integrity assert is a hard invariant violation,
+            # never a contained casualty.
+            raise
+        except Exception as exc:  # one dead seed must not kill live-fire either (OMN-15566)
+            skipped.append(
+                _record_casualty(phase=phase, seed=seed, exc=exc, skipped_path=skipped_path)
+            )
+            return None
         rows.append(row)
         with raw_path.open("a", encoding="utf-8") as sink:
             sink.write(json.dumps(row, sort_keys=True) + "\n")
@@ -534,21 +654,27 @@ def _run_live_fire(args: argparse.Namespace, state_root: Path, raw_path: Path) -
 
     for index in range(1, args.lf_matches + 1):
         row = _one(4300 + index, "live_fire")
+        if row is None:  # casualty -- recorded already, this attempt is spent, not retried
+            continue
         if row["policy_promoted"] is not None:
             promotion = row["policy_promoted"]
             break
 
     confirm: dict[str, Any] | None = None
+    confirm_casualty = False
     if promotion is not None:
         # The spine proof: the NEXT admission must fly the promoted policy.
         confirm = _one(4400, "live_fire_confirm")
-        provenance = confirm["policy_provenance"]
-        assert provenance["generation"] == promotion["generation"], (
-            "confirm match did not fly the promoted policy"
-        )
-        assert provenance["policy_id"] == promotion["policy_id"]
-        assert provenance["spec_hash"] == promotion["spec_hash"]
-        assert provenance["source_lineage_digest"] == promotion["source_lineage_digest"]
+        if confirm is None:
+            confirm_casualty = True
+        else:
+            provenance = confirm["policy_provenance"]
+            assert provenance["generation"] == promotion["generation"], (
+                "confirm match did not fly the promoted policy"
+            )
+            assert provenance["policy_id"] == promotion["policy_id"]
+            assert provenance["spec_hash"] == promotion["spec_hash"]
+            assert provenance["source_lineage_digest"] == promotion["source_lineage_digest"]
 
     # Duel-gate evidence: every terminal evaluation leaves an evaluation
     # workspace (materialized specs/loadouts + per-duel sqlite ledgers) even
@@ -581,9 +707,10 @@ def _run_live_fire(args: argparse.Namespace, state_root: Path, raw_path: Path) -
             "n_holdout_seeds": args.lf_holdout_seeds,
             "duel_max_ticks": args.lf_duel_max_ticks,
         },
-        "matches": _summarize(rows, learning_player=learning_player),
+        "matches": _summarize(rows, learning_player=learning_player, skipped=skipped),
         "promotion": promotion,
         "confirm_provenance": (confirm or {}).get("policy_provenance"),
+        "confirm_casualty": confirm_casualty,
         "chain": {
             "evaluation_workspaces": evaluation_dirs,
             "lineage_record_exists": lineage_path.is_file() if lineage_path else False,
@@ -591,11 +718,22 @@ def _run_live_fire(args: argparse.Namespace, state_root: Path, raw_path: Path) -
                 validity == 1 for row in rows for validity in row["replay_validity"].values()
             ),
         },
+        # OMN-15566: never silently folded into the match budget above.
+        "skipped_seeds": skipped,
     }
     summary_path = state_root / "live_fire_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
     print(f"raw: {raw_path}\nsummary: {summary_path}")
+    if skipped:
+        print(
+            f"LIVE-FIRE COMPLETED WITH CASUALTIES: {len(skipped)} seed(s) skipped, no row "
+            f"written (see {skipped_path}) -- force-failing exit code per the "
+            "contamination-safety contract (OMN-15566)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     if promotion is None:
         print(
             f"FINDING: the duel gate declined promotion in all {len(rows)} matches; "

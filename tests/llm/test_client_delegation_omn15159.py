@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -27,6 +28,7 @@ from steel_onslaught.llm.client_delegation import (
     ProtocolDelegationCliRunner,
     SubprocessDelegationCliRunner,
 )
+from steel_onslaught.llm.effect import LlmSemanticError
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
     LlmTransportError,
@@ -135,10 +137,11 @@ def _client(
     runner: ProtocolDelegationCliRunner,
     config: ModelSODelegationProviderBinding | None = None,
     tmp_path: Path,
+    new_correlation_id: Callable[[], UUID] = uuid4,
 ) -> LlmBusDelegationClient:
     return LlmBusDelegationClient(
         config=config or _config(tmp_path),
-        new_correlation_id=uuid4,
+        new_correlation_id=new_correlation_id,
         runner=runner,
     )
 
@@ -698,3 +701,376 @@ def test_nonzero_exit_with_empty_stdout_omits_the_stdout_message_suffix_omn15535
     assert exc.stdout == ""
     assert "| stdout:" not in str(exc)
     assert "plain stderr failure" in str(exc)
+
+
+# --- OMN-15566: quality-gate rejections are semantic, not transport ---
+#
+# The 2026-07-30 OMN-15488 battery crashed at baseline seed 4028: the
+# delegation node's platform-side quality gate rejected a completion as
+# syntactically malformed JSON after exhausting its own 3 internal retries,
+# `SubprocessDelegationCliRunner.run()` saw only "onex CLI exited 1" and
+# raised `LlmTransportError`, and that transport-classified exception is
+# INVISIBLE to card mode's bounded reprompt loop (`llm/programming.py`,
+# `except LlmSemanticError`) and the plain decide() path's equivalent
+# (`llm/pilot.py`, same catch, OMN-15239) -- so it propagated straight out
+# of the match and killed the whole battery process. `LlmBusDelegationClient
+# .complete()` must reclassify a quality-gate REJECTION (MALFORMED /
+# SCHEMA_VIOLATION response classes) as `LlmSemanticError` so the existing,
+# already-proven bounded reprompt recovers it -- exactly as the HTTP binding
+# already does for the same failure class (steel #128, 2026-07-22 battery:
+# 2 recovered via reprompt, 0 aborts).
+
+
+_QUALITY_GATE_FIXTURE_CORRELATION_ID = "738867fd-3db1-40b1-9854-4f269ae50fcd"
+
+
+def _receipt_stdout_with_quality_gate_failure(
+    *,
+    reasons: list[str],
+    correlation_id: str | None = _QUALITY_GATE_FIXTURE_CORRELATION_ID,
+    error: str = "",
+) -> str:
+    """A CLI stdout receipt shaped like ``ModelSkillResult[ModelReceiptRuntimeSummary]``
+    on a non-zero, quality-gate-rejected exit (``receipt_mode.py``'s failure
+    branch: ``result.terminal_payload`` mirrors the runtime's persisted
+    ``workflow_result.json`` verbatim, including ``quality_gates_failed`` --
+    this is the exact shape recovered from the real OMN-15488 crash's own
+    persisted receipt, correlation ``738867fd-3db1-40b1-9854-4f269ae50fcd``
+    by default).
+
+    ``correlation_id``/``error`` are overridable (OMN-15566 r5b) so callers
+    can build the STALE-receipt scenario the r5 adversarial verifier proved
+    reachable: a receipt whose top-level ``correlation_id`` does not match
+    THIS invocation's own id and/or whose ``result.error`` is non-empty (a
+    genuine crash) must never classify as semantic even when
+    ``quality_gates_failed`` is present. ``correlation_id=None`` serializes
+    the top-level field as JSON ``null`` (OMN-15566 r5c, verifier probe 1f)
+    -- a shape distinct from a mismatched-but-present string id.
+    """
+    return json.dumps(
+        {
+            "skill_name": "delegate",
+            "node_name": "node_delegate_skill_orchestrator",
+            "status": "error",
+            "correlation_id": correlation_id,
+            "run_id": correlation_id,
+            "exit_code": 1,
+            "duration_ms": 133380,
+            "result": {
+                "workflow_result": "failed",
+                "exit_code": 1,
+                "workflow": "/omnibase_infra/.venv/.../node_delegate_skill_orchestrator/"
+                "contract.yaml",
+                "terminal_payload": {
+                    "status": "failed",
+                    "correlation_id": correlation_id,
+                    "quality_gate_passed": False,
+                    "quality_gates_failed": reasons,
+                    "error_message": "",
+                },
+                "handler_result": None,
+                "error": error,
+                "capture_log": "17:36:43 INFO omnibase_core.runtime.runtime_local — result=failed",
+            },
+            "result_model": "omnibase_infra.cli.model_receipt_runtime_summary."
+            "ModelReceiptRuntimeSummary",
+        }
+    )
+
+
+class _RaisingRunner:
+    """Fake ``ProtocolDelegationCliRunner`` whose ``run()`` raises unconditionally."""
+
+    def __init__(self, error: LlmTransportError) -> None:
+        self._error = error
+
+    def run(self, argv: tuple[str, ...], *, timeout_seconds: float) -> str:
+        raise self._error
+
+
+def _fixture_correlation_client(
+    *, runner: ProtocolDelegationCliRunner, tmp_path: Path
+) -> LlmBusDelegationClient:
+    """A client pinned to mint ``_QUALITY_GATE_FIXTURE_CORRELATION_ID`` --
+    OMN-15566 r5b's invocation-binding fix requires the receipt's
+    top-level ``correlation_id`` to match THIS invocation's own id, so the
+    fixed-``_RaisingRunner`` tests (whose stdout is built BEFORE ``complete()``
+    mints a correlation id) must pin the client to the same fixed id the
+    fixture stdout already carries -- a real ``uuid4()`` mint would almost
+    never match it.
+    """
+    return _client(
+        runner=runner,
+        tmp_path=tmp_path,
+        new_correlation_id=lambda: UUID(_QUALITY_GATE_FIXTURE_CORRELATION_ID),
+    )
+
+
+def test_malformed_quality_gate_rejection_surfaces_as_semantic_malformed_json(
+    tmp_path: Path,
+) -> None:
+    """RED on pre-fix main: a delegation-node MALFORMED rejection must raise
+    ``LlmSemanticError(code="malformed_json")`` -- the type card mode's and
+    the plain decide() path's bounded reprompt loops both catch -- not the
+    ``LlmTransportError`` the runner itself raised. This is the exact class
+    that killed the OMN-15488 battery at seed 4028.
+    """
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["MALFORMED: response is not valid JSON: Expecting ':' delimiter"]
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _fixture_correlation_client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmSemanticError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    exc = excinfo.value
+    assert exc.code == "malformed_json"
+    assert exc.detail is not None
+    assert "MALFORMED" in exc.detail
+    assert "Expecting ':' delimiter" in exc.detail
+
+
+def test_schema_violation_quality_gate_rejection_surfaces_as_semantic_invalid_action_parameters(
+    tmp_path: Path,
+) -> None:
+    """RED on pre-fix main: a SCHEMA_VIOLATION rejection (valid JSON, wrong
+    shape -- the OMN-15488 attempt-3 canary's failure class) must also
+    reclassify as a semantic error, not a transport error."""
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["SCHEMA_VIOLATION: <root>: {...} is not valid under any of the given schemas"]
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _fixture_correlation_client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmSemanticError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    exc = excinfo.value
+    assert exc.code == "invalid_action_parameters"
+    assert exc.detail is not None
+    assert "SCHEMA_VIOLATION" in exc.detail
+
+
+def test_stale_receipt_with_mismatched_correlation_and_crash_error_stays_transport_error(
+    tmp_path: Path,
+) -> None:
+    """RED on pre-fix head (59ba1c17) -- the r5 adversarial verifier's exact
+    finding 1: ``workflow_result.json`` is a SHARED per-provider file,
+    rewritten by every completion against the same binding, including on
+    the CLI's own crash path. Without binding the classification to THIS
+    invocation, a STALE prior completion's ``quality_gates_failed`` payload
+    (a DIFFERENT ``correlation_id``) plus a genuine crash on THIS invocation
+    (non-empty ``result.error``) misclassified as
+    ``LlmSemanticError("malformed_json")`` instead of staying
+    ``LlmTransportError``. This receipt intentionally carries BOTH signals of
+    genuineness at once (mismatched correlation id AND a non-empty crash
+    error) so the fix's binding guard is proven on the exact adversarial
+    shape, not a simplified stand-in.
+
+    **This test alone cannot discriminate which guard is doing the work**
+    (r5c/OMN-15566 finding): the error guard (:464) rejects on the non-empty
+    ``result.error`` by itself, with or without the correlation mismatch, so
+    deleting the correlation guard (:459) alone leaves this test green. Per-
+    guard isolation is the job of
+    ``test_stale_receipt_with_mismatched_correlation_and_empty_error_stays_transport_error``
+    (correlation guard alone, via an EMPTY error) and
+    ``test_receipt_with_null_top_level_correlation_stays_transport_error``
+    (correlation guard alone, via a null top-level id) below, plus
+    ``test_stale_receipt_with_matching_correlation_but_crash_error_stays_transport_error``
+    (error guard alone, correlation matches).
+    """
+    this_invocation_id = UUID("11111111-1111-1111-1111-111111111111")
+    stale_correlation_id = "00000000-0000-0000-0000-0000000000aa"
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["MALFORMED: response is not valid JSON: Expecting ':' delimiter"],
+        correlation_id=stale_correlation_id,
+        error="Traceback (most recent call last):\n  ...\nRuntimeError: boom",
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (genuine crash)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _client(
+        runner=_RaisingRunner(transport_error),
+        tmp_path=tmp_path,
+        new_correlation_id=lambda: this_invocation_id,
+    )
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    assert excinfo.value is transport_error
+
+
+def test_stale_receipt_with_matching_correlation_but_crash_error_stays_transport_error(
+    tmp_path: Path,
+) -> None:
+    """Second half of finding 1's fix: even when the correlation id happens
+    to match THIS invocation, a non-empty ``result.error`` means the runtime
+    raised before producing a terminal result -- a genuine crash -- and must
+    never be reclassified as semantic."""
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["MALFORMED: response is not valid JSON: Expecting ':' delimiter"],
+        error="Traceback (most recent call last):\n  ...\nRuntimeError: boom",
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (genuine crash)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _fixture_correlation_client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    assert excinfo.value is transport_error
+
+
+def test_stale_receipt_with_mismatched_correlation_and_empty_error_stays_transport_error(
+    tmp_path: Path,
+) -> None:
+    """Per-guard discrimination (OMN-15566 r5c): isolates the correlation
+    guard (:459) from the error guard (:464). r5b's both-signals tests above
+    cannot tell which guard is load-bearing, because a non-empty
+    ``result.error`` alone already satisfies the error guard regardless of
+    correlation. This receipt carries ONLY the correlation mismatch -- a
+    stale prior completion's MALFORMED payload with an EMPTY ``result.error``
+    -- which is also the realistically reachable shape: a FAILED workflow
+    with a non-zero exit leaves ``receipt_mode.py``'s ``runtime_error``
+    local (persisted verbatim onto ``result.error``) as ``""`` while the
+    shared ``workflow_result.json`` still holds the PRIOR completion's
+    terminal payload, correlation id and all. With the error guard unable to
+    reject on its own (error is empty), only the correlation guard (:459)
+    keeps this ``LlmTransportError`` -- deleting :459 alone must RED this
+    test while the both-signals tests above stay green.
+    """
+    this_invocation_id = UUID("22222222-2222-2222-2222-222222222222")
+    stale_correlation_id = "00000000-0000-0000-0000-0000000000bb"
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["MALFORMED: response is not valid JSON: Expecting ':' delimiter"],
+        correlation_id=stale_correlation_id,
+        error="",
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _client(
+        runner=_RaisingRunner(transport_error),
+        tmp_path=tmp_path,
+        new_correlation_id=lambda: this_invocation_id,
+    )
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    assert excinfo.value is transport_error
+
+
+def test_receipt_with_null_top_level_correlation_stays_transport_error(
+    tmp_path: Path,
+) -> None:
+    """Per-guard discrimination (OMN-15566 r5c, verifier probe 1f): a
+    second, independent way to exercise the correlation guard (:459) alone,
+    distinct from the mismatched-string-id case above. The receipt's
+    top-level ``correlation_id`` is JSON ``null`` -- a shape the CLI can
+    genuinely emit (e.g. a crash before the receipt writer has a
+    correlation id available to persist) -- with a clean ``result.error``
+    and a MALFORMED ``quality_gates_failed`` payload, so the error guard
+    (:464) alone cannot reject it. ``envelope.get("correlation_id")``
+    returns ``None``, which compares unequal to
+    ``str(expected_correlation_id)`` at :459 and returns ``None`` to keep
+    the caller's ``LlmTransportError``. Deleting :459 alone must RED this
+    test too.
+    """
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["MALFORMED: response is not valid JSON: Expecting ':' delimiter"],
+        correlation_id=None,
+        error="",
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _client(
+        runner=_RaisingRunner(transport_error),
+        tmp_path=tmp_path,
+        new_correlation_id=lambda: UUID("33333333-3333-3333-3333-333333333333"),
+    )
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    assert excinfo.value is transport_error
+
+
+def test_genuine_transport_failure_still_raises_llm_transport_error(tmp_path: Path) -> None:
+    """Control case: a non-zero exit that is NOT a quality-gate rejection
+    (no ``quality_gates_failed`` content reachable in stdout -- a real CLI
+    crash/launch failure/environment error) must keep raising
+    ``LlmTransportError`` unchanged. This is the negative half of the fix:
+    reclassification must not swallow genuine transport failures."""
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: connection refused",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="ConnectionRefusedError: [Errno 61] Connection refused",
+        stdout="",
+    )
+    client = _client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request())
+
+    assert excinfo.value is transport_error
+
+
+def test_nonzero_exit_with_unparsable_stdout_still_raises_llm_transport_error(
+    tmp_path: Path,
+) -> None:
+    """A non-zero exit whose stdout is not the expected JSON receipt shape
+    (e.g. a launch failure that never reached receipt-mode output) must not
+    be silently swallowed by the classifier -- it re-raises the original
+    ``LlmTransportError`` unchanged rather than raising nothing or crashing
+    on the malformed stdout itself."""
+    transport_error = LlmTransportError(
+        "failed to launch onex delegation CLI: [Errno 2] No such file or directory",
+        retryable=False,
+    )
+    client = _client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request())
+
+    assert excinfo.value is transport_error

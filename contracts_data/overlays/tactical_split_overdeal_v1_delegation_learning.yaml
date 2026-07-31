@@ -350,6 +350,44 @@
 # diagnostic lands, on nonzero exit) is ticketed and fixed alongside.
 # A fresh canary under this configuration gates the launch exactly as the
 # original canary clause specifies.
+#
+# AMENDMENT 3 (2026-07-31, BEFORE any scored match of the battery as re-run;
+# execution-infrastructure only — every hypothesis, endpoint, band, escape,
+# and interpretation clause above is UNCHANGED).
+#
+# 1. ABANDONED ATTEMPT, DISPOSED. The first launched run (2026-07-30T20:29Z,
+#    state-root .../omn15488_learning_battery) completed 27 valid baseline
+#    rows and then CRASHED at baseline seed 4028: one completion returned
+#    syntactically malformed JSON on all 3 delegation-node internal retries
+#    (quality_gates_failed "MALFORMED: response is not valid JSON",
+#    correlation 738867fd), the client raised it as a TRANSPORT error, and
+#    the driver — which had no per-seed containment — died with the match.
+#    That lane is preserved untouched as an abandoned attempt (the
+#    display-salience program's precedent for abandoned attempts) and
+#    contributes NOTHING to scoring; no row from it is read. The battery
+#    re-runs --fresh in state-root .../omn15488_learning_battery_r2, which
+#    supersedes the Amendment-2 state-root for the executing command.
+#
+# 2. RETRY-SEMANTICS PARITY (the fix, ticketed; same class as the OMN-15239
+#    amendment on the display-salience pair). A delegation-node
+#    quality-gate rejection (MALFORMED / SCHEMA_VIOLATION classes) is a
+#    SEMANTIC response failure, not a transport failure: the client now
+#    raises it on the semantic-error path so card mode's existing bounded
+#    reprompt — which absorbed exactly this failure class on the HTTP
+#    binding in the 2026-07-22 battery with zero aborts — handles it with
+#    rejection feedback, and exhaustion surfaces as the pre-existing
+#    graceful provider_semantic_failure terminal instead of a process
+#    death. Genuine transport/process failures still raise
+#    LlmTransportError.
+#
+# 3. PER-SEED CONTAINMENT (driver). The battery driver now records a
+#    loud per-seed casualty (skip record preserved verbatim, no row
+#    written, force-failed exit code at completion) instead of dying with
+#    a failed seed, matching the display-salience driver's
+#    contamination-safety contract. The MAKEUP PROTOCOL above applies to
+#    such casualties exactly as written: post-match-forward failures are
+#    re-run once; a seed that fails DURING a match is a reported casualty
+#    and is NOT re-run.
 schema_version: "1"
 bus:
   kind: in_process
