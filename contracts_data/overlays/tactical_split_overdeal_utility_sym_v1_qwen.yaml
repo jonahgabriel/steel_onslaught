@@ -1,16 +1,25 @@
-# U-GATE + O-GATE combined battery overlay (design 2026-07-22 §5).
+# U-GATE utility battery on the SYMMETRIC arena — the scenario-axis control
+# (design 2026-07-22 §5; scenario variation evidence 2026-07-23).
 #
-# This overlay is the intersection of the two shipped battery overlays:
-#   - the ASYM objective arena of ``tactical_split_overdeal_asym_v1_qwen.yaml``
-#     (``foundry_60_asym_v1`` — asymmetric cover corridors + 3 objective cells +
-#     vp_threshold 15), so a match can end on VP as well as elimination; AND
-#   - the THIRD split-deck pile of ``tactical_split_overdeal_utility_v1_qwen.yaml``
-#     (each seat dealt an extra ``utility`` quota of smoke/chaff/flares counterplay
-#     cards + the ``utility_handler_pack``).
+# This overlay is the symmetric-arena twin of
+# ``tactical_split_overdeal_utility_asym_v1_qwen.yaml``.  It holds EVERYTHING the
+# match runtime consumes identical to that overlay — provider + retry block,
+# split-deck over-deal policy, utility handler pack — and swaps exactly one free
+# variable, the arena binding:
+#   - THIS file binds ``foundry_60`` (symmetric, NO objective cells, no
+#     ``vp_threshold``), so every match ends by elimination; whereas
+#   - the asym overlay binds ``foundry_60_asym_v1`` (asymmetric cover corridors +
+#     3 objective cells + vp_threshold 15), where a match can also end on VP.
+# It keeps the THIRD split-deck pile of ``tactical_split_overdeal_utility_v1_qwen.yaml``
+# (each seat dealt an extra ``utility`` quota of smoke/chaff/flares counterplay
+# cards + the ``utility_handler_pack``).
 #
-# The empirical question it lets the O-GATE battery answer (design §5 P1): with
-# utility counterplay in hand, does the red brawler survive the sniper's sightline
-# lane long enough to contest VP on ``foundry_60_asym_v1``?  Over-deal stays the
+# The empirical question it answers (design §5; measured in
+# ``docs/evidence/2026-07-23-scenario-variation-qwen35-symmetric.md``): is the
+# sub-chance utility deprioritization established on the ASYM arena
+# scenario-robust, or is it an artifact of that arena's objectives and geometry?
+# Because the arena is the only difference, any change in the utility keep-rate
+# is attributable to the arena axis and nothing else.  Over-deal stays the
 # mechanism: the deal grows to 10 (4 movement + 4 weapon + 2 utility) while the
 # program stays 5, so utility competes for the SAME 5 registers as movement and
 # attack.  No balance knob is touched (U-GATE requirement): the utility effect is
@@ -19,44 +28,58 @@
 #
 # Neither existing overlay nor either arena contract is modified — ``foundry_60``
 # and ``foundry_60_asym_v1`` stay byte-frozen so historical replays remain valid.
-# Ledger paths are isolated under a NEW state directory so this combined battery
-# does not collide with the asym-only or utility-only lanes.
+# Ledger paths are isolated under this overlay's OWN state lane,
+# ``.onex_state/steel_onslaught/tactical_split_overdeal_utility_sym_v1_qwen/``,
+# which no other overlay declares — so a ``so run`` of this file cannot write the
+# asym-only or utility-only lanes.  That property is asserted for the whole
+# overlay corpus by ``tests/contracts/test_overlay_state_lane_identity.py``, not
+# merely claimed here.  (OMN-15601: these seven state leaves previously named the
+# ``..._asym_v1_qwen`` lane verbatim, and this header previously described the
+# asym arena and named a different file in the example command below.  The lane
+# was never materialized and the 30-match battery ran under a driver-supplied
+# ``--state-root``, so no recorded evidence was contaminated and none was
+# migrated by the fix; the new lane starts empty.)
 #
 # The ``secret_resolver`` is ``none`` (not ``injected``): the sole provider is the
 # keyless local Qwen endpoint (``secret_ref: null``), so this overlay launches
 # directly from the CLI without a resolver capability:
 #
-#   so run --overlay contracts_data/overlays/tactical_split_overdeal_utility_asym_v1_qwen.yaml \
+#   so run --overlay contracts_data/overlays/tactical_split_overdeal_utility_sym_v1_qwen.yaml \
 #          --loadout-a contracts_data/loadouts/llm_qwen35_berserker.yaml \
 #          --loadout-b contracts_data/loadouts/qwen35/sniper_ironclad.yaml --seed 5001
 #
 # and the O-GATE battery driver selects it via
-# ``scripts/run_ogate_objectives_battery.py --overlay <this file>``.
+# ``scripts/run_ogate_objectives_battery.py --overlay <this file>
+# --expected-arena foundry_60`` — the ``--expected-arena`` flag is REQUIRED here
+# because that driver defaults to ``foundry_60_asym_v1`` and asserts the arena on
+# every MATCH_STARTED, so omitting it fails the battery closed rather than
+# silently running the wrong arena.  Battery runs also pass their own
+# ``--state-root``, which overrides the ledger paths above.
 schema_version: "1"
 bus:
   kind: in_process
 event_ledger:
   kind: sqlite
-  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_qwen/events.sqlite3
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_sym_v1_qwen/events.sqlite3
   journal_mode: WAL
   check_same_thread: false
   transaction_mode: autocommit
   event_schema: canonical_event_v1
 leaderboard:
   kind: sqlite
-  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_qwen/leaderboard.sqlite3
+  path: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_sym_v1_qwen/leaderboard.sqlite3
   journal_mode: WAL
   check_same_thread: false
   transaction_mode: autocommit
   storage_schema: leaderboard_v1
 learning_artifacts:
   kind: filesystem_yaml
-  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_qwen/evaluations
-  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_qwen/lineage
-  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_qwen/experiments
+  evaluation_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_sym_v1_qwen/evaluations
+  lineage_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_sym_v1_qwen/lineage
+  experiment_root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_sym_v1_qwen/experiments
 evaluation_storage:
   kind: sqlite
-  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_asym_v1_qwen/evaluation_storage
+  root: ../../.onex_state/steel_onslaught/tactical_split_overdeal_utility_sym_v1_qwen/evaluation_storage
   journal_mode: WAL
   check_same_thread: true
   transaction_mode: autocommit
