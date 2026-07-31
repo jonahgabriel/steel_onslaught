@@ -115,7 +115,7 @@ RUN B — spine predictions:
 | B1 | The lane composes and runs live (first time ever): every non-draw terminal produces a duel-gate evaluation workspace under `evaluations/` with materialized candidate/parent specs and per-duel sqlite ledgers. |
 | B2 | The gate reaches a real verdict (promote or decline) via the §18 rules with the declared threshold overrides; no crash, no silent skip. |
 | B3 | If promoted: the next admission (confirm match) flies the generation-1 policy — provenance equality asserted hard. |
-| B4 | Interpretive limit, stated in advance: in card mode both duel sides' register programming is qwen (same personas); candidate and parent differ only in deterministic pilot-spec parameters, so duel outcomes may be dominated by LLM variance → draws and declines are plausible and legitimate. |
+| B4 | Interpretive limit, stated in advance: in card mode both duel sides' register programming is qwen (same personas); candidate and parent differ only in deterministic pilot-spec parameters, so duel outcomes may be dominated by LLM variance → draws and declines are plausible and legitimate. | **SUPERSEDED 2026-07-31 — see the correction at the end of this document (OMN-15489): the effect was not "dominated by" LLM variance, it was a structural ZERO.**
 
 ## RUN A attempt 1 (red seat): structural finding, no promotion possible
 
@@ -240,7 +240,9 @@ bus publish → MatchRunner tick`, killing the live match and the process
   `evaluations/matches/`. Raw:
   `.onex_state/steel_onslaught/lgate2_live_fire/{live_fire_raw.jsonl,live_fire_summary.json}`.
 
-Scope note (pre-registered as B4): RUN B proves the SPINE of the real
+Scope note (pre-registered as B4; **this framing is SUPERSEDED — read the
+2026-07-31 correction at the end of this document before citing anything in
+this section**): RUN B proves the SPINE of the real
 judgment path — evidence-directed proposal, real duel gate, event-sourced
 promotion, durable rehydration, legitimate decline. It makes NO claim of
 policy quality: the thresholds were relaxed as declared, and the promoted
@@ -274,3 +276,84 @@ fire the win-gated `win_damage_differential_v1` lane (0/35 red wins —
 promotion requires a decisive learner win); `selection_outcome_v1` needs
 containment/async for its in-terminal duel battery (F1/F2) before it can
 be trusted unattended.
+
+---
+
+## CORRECTION — 2026-07-31 (OMN-15489): RUN B's duel gate was causally vacuous
+
+**Status of this correction:** it supersedes pre-registered limit **B4** and
+constrains every citation of RUN B. B1/B2/B3 are unaffected — the spine
+(workspaces, materialized specs, per-duel ledgers, real verdicts both ways,
+generation-1 provenance equality) really did run and really was observed.
+
+**The finding.** B4 said duel outcomes "may be dominated by LLM variance."
+That understates what was actually true. In card mode the duel gate had **no
+causal path at all** from the candidate/parent pilot spec to any decision:
+
+- `DuelEvaluator._materialize` wrote real candidate/parent `ModelSOPilotSpec`
+  YAMLs and `assemble_match_with_dependencies` resolved them into
+  `AggressivePilot` instances passed to `MatchRunner(pilots=...)`.
+- But in card mode `MatchRunner.run` branched to `_run_card_round`, which
+  never referenced `self._pilots`. `self._pilots` existed there only to
+  satisfy the `missing_pilots` check. `card_adapter.produce` resolved
+  programmers exclusively from the overlay's
+  `contracts.card_catalog.programmers` bindings.
+- Exhaustive grep at the time: `vent_at_heat_margin`,
+  `idle_vent_heat_threshold`, `mode_switch_pressure_floor`,
+  `mode_switch_heat_ceiling`, and `weapon_preference` were consumed ONLY in
+  `pilots/aggressive.py::decide()`, reachable only via the non-card
+  `ReducerPilotTick` branch.
+
+So the gate compared **two causally identical systems**. RUN B's promotion of
+`vent_at_heat_margin` 5 → 4 is **not evidence about that parameter** — it is a
+coin flip on provider variance between two seats running the same policy. Any
+future citation of RUN B must carry this sentence. The correct reading of B4
+is: **structural zero, not swamped signal.**
+
+**Provenance.** Raised by a parallel-stream external review; independently
+adversarially confirmed 4/4 on 2026-07-30 (session `fable-battery-0730`,
+workflow `wf_17d18656-f95`); filed as OMN-15489.
+
+**What has been fixed, and what has not.** OMN-15489 wires the seat's own
+pilot spec into card-mode programming through the existing pure rule seam
+(`pilots.programming.program_for_seat` / `CardProgrammingRuleHandler`):
+`cards/pilot_policy.py::PilotPolicyCategoryRule` runs the seat's deterministic
+pilot against the same `ModelSOPilotObservation` the non-card branch uses and
+requires the committed round to *lead with* a card expressing that decision.
+Proof is tests only — no battery was re-run for this correction:
+
+- `tests/cards/test_pilot_policy_rule.py` pins the decision differences
+  exactly at the threshold boundaries, with no provider anywhere.
+- `tests/learning/test_duel_card_mode_causality_omn15489.py` runs the REAL
+  duel executor in card mode and asserts that varying only the red seat's
+  materialized spec changes its committed rounds, with a same-spec control
+  proving the differential is the spec and not run-to-run variance. Both
+  differential cases fail against pre-fix `src/`; the control passes.
+
+**Residuals that a re-run must still confront — do not read the fix as
+retroactively validating RUN B:**
+
+1. **RUN B is not repaired, only correctly labelled.** Its numbers stand as
+   evidence of nothing about `vent_at_heat_margin`. A re-measurement is
+   required before any claim about that parameter (ticket AC4).
+2. **Causal ≠ discriminating.** Whether a *given* battery's duels actually
+   reach the state where a threshold flips is empirical. In the 6-tick
+   hermetic duel used by the regression test, heat never approaches the
+   rupture band, so `vent_at_heat_margin` / `idle_vent_heat_threshold` /
+   `mode_switch_heat_ceiling` do not change a decision *in that duel* even
+   though they are now wired. A re-run must report the fraction of duels that
+   entered each parameter's active band; a non-discriminating result is
+   recorded as a null, never used to justify moving a threshold.
+3. **Separate pre-existing defect, reproducible on unmodified `main`:** a
+   card-mode duel that ends DECISIVELY fails card-round replay validation —
+   the final partial round emits `HAND_DEALT`/`PLAN_COMMITTED`/
+   `REGISTER_RESOLVED` but no `CARDS_DISCARDED`, and
+   `validate_card_round_events` raises `CardRoundReplayError`. This bounds
+   what a live `selection_outcome_v1` battery can even collect and is NOT
+   fixed by OMN-15489.
+4. **Provenance of the seat rule is instance-scoped but not yet in
+   `MATCH_STARTED`.** The rule's `implementation_sha256` is content-addressed
+   against the exact spec parameters (candidate and parent are different rule
+   identities), but it is a per-seat handler and therefore does not appear in
+   the overlay-selected `card_rule_pack_provenance`. The specs themselves
+   remain durably recorded in the evaluation workspace.

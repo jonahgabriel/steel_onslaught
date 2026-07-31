@@ -80,6 +80,7 @@ from steel_onslaught.match.spatial_preview import (
     render_ascii_grid,
 )
 from steel_onslaught.pilots.programming import (
+    CardProgrammingRuleHandler,
     ModelSOCardRulePackProvenance,
     ModelSOProgrammingObservation,
     ProgrammingPilot,
@@ -319,6 +320,14 @@ class CardRunnerAdapter:
     programmers: Mapping[str, ProgrammingPilot] | None = None
     rule_registry: CardProgrammingRuleRegistry | None = None
     rule_handler_ids: tuple[str, ...] = ()
+    # OMN-15489: per-seat rules resolved from that seat's own pilot spec, not
+    # from the overlay's pack selection.  This is the ONLY path by which a
+    # seat's deterministic pilot parameters reach a card-mode decision; without
+    # it a duel battery flies two causally identical systems and its promotion
+    # verdict is a statement about provider variance.  Resolved seat-then-side,
+    # exactly like ``programmers``, and applied AFTER the pack rules so a
+    # policy guarantee is not undone by a pack rewrite.
+    seat_plan_rules: Mapping[str, CardProgrammingRuleHandler] | None = None
     # Structural in-register utility incentive (SO-UTIL-MECH).  Threaded onto
     # every programming observation this adapter builds so the pilot reads the
     # bounty as game state.  ``None`` (the default) is OFF and leaves the
@@ -341,6 +350,15 @@ class CardRunnerAdapter:
                 raise TypeError(f"{name} must be {expected.__name__} when supplied")
         if self.programmers is not None:
             object.__setattr__(self, "programmers", MappingProxyType(dict(self.programmers)))
+        if self.seat_plan_rules is not None:
+            for key, handler in self.seat_plan_rules.items():
+                if not isinstance(handler, CardProgrammingRuleHandler):
+                    raise CardRunnerAdapterError(
+                        f"seat_plan_rules[{key!r}] must expose typed metadata and callable apply"
+                    )
+            object.__setattr__(
+                self, "seat_plan_rules", MappingProxyType(dict(self.seat_plan_rules))
+            )
         if self.rule_registry is not None:
             if not isinstance(self.rule_registry, CardProgrammingRuleRegistry):
                 raise TypeError("rule_registry must be CardProgrammingRuleRegistry when supplied")
@@ -402,6 +420,21 @@ class CardRunnerAdapter:
         if programmer is None:
             return "none"
         return str(getattr(programmer, "spatial_representation", "none"))
+
+    def seat_plan_rule_for(self, seat: str, side: str | None) -> CardProgrammingRuleHandler | None:
+        """Return this seat's own pilot-spec rule, resolved seat-then-side.
+
+        Mirrors the exact resolution ``produce`` uses for programmers, so a
+        split-deck overlay whose seat ids are transport-local labels binds the
+        same way for both capabilities (OMN-15489).
+        """
+
+        if self.seat_plan_rules is None:
+            return None
+        handler = self.seat_plan_rules.get(seat)
+        if handler is None and side is not None:
+            handler = self.seat_plan_rules.get(side)
+        return handler
 
     def produce(
         self,
@@ -604,7 +637,9 @@ class CardRunnerAdapter:
                 programmer = self.programmers.get(request.seat)
                 if programmer is None and request.side is not None:
                     programmer = self.programmers.get(request.side)
-            plan = program_for_seat(programmer, observation, rule_handlers=rule_handlers)
+            seat_rule = self.seat_plan_rule_for(request.seat, request.side)
+            seat_rule_handlers = rule_handlers if seat_rule is None else (*rule_handlers, seat_rule)
+            plan = program_for_seat(programmer, observation, rule_handlers=seat_rule_handlers)
             plans[request.seat] = plan
             contexts.append(
                 ModelSOSeatResolutionContext(

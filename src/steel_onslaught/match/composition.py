@@ -24,6 +24,7 @@ from steel_onslaught.bus.kafka_forwarder import (
 )
 from steel_onslaught.bus.protocol import EventBus
 from steel_onslaught.cards.dealer import DealerCompute
+from steel_onslaught.cards.pilot_policy import seat_policy_rule_for_spec
 from steel_onslaught.cards.registers import RegisterExecutionReducer
 from steel_onslaught.cards.round import CardRoundRuntime
 from steel_onslaught.cards.rules import CardProgrammingRuleRegistry, default_rule_registry
@@ -180,6 +181,7 @@ from steel_onslaught.pilots.persona_prompts import (
 )
 from steel_onslaught.pilots.predictive import PredictivePilot
 from steel_onslaught.pilots.programming import (
+    CardProgrammingRuleHandler,
     ModelSOCardRulePackProvenance,
     ProgrammingPilot,
 )
@@ -2269,12 +2271,19 @@ def build_pilot_duel_executor_with_dependencies(
     return execute
 
 
-def _resolved_pilot(
+def _resolved_pilot_spec(
     loadout: ModelSOLoadout,
     *,
     loadout_path: Path | None,
     dependencies: RuntimeDependencies,
-) -> PilotProtocol:
+) -> ModelSOPilotSpec:
+    """Resolve the pilot spec a loadout binds, without constructing a pilot.
+
+    Card mode consumes the seat's SPEC — its tunable parameters are what a duel
+    gate perturbs — alongside the pilot the root builds from it (OMN-15489), so
+    resolution and construction are separate steps.
+    """
+
     if loadout.pilot_spec_path is None:
         spec = dependencies.pilot_registry.resolve(loadout)
     else:
@@ -2290,7 +2299,7 @@ def _resolved_pilot(
             raise PilotResolutionError(
                 f"invalid explicit pilot spec binding for loadout {loadout.id!r}: {spec_path}"
             )
-    return dependencies.pilot_factory.from_spec(spec)
+    return spec
 
 
 def assemble_match_with_dependencies(
@@ -2328,17 +2337,25 @@ def assemble_match_with_dependencies(
         event_factory=dependencies.event_factory,
         emit=dependencies.bus.publish,
     )
+    # OMN-15489: keep the resolved SPEC beside the resolved pilot. Card mode
+    # needs the spec (its tunable parameters are what a duel gate perturbs) and
+    # the pilot (the decide policy those parameters drive), and resolving once
+    # avoids both a second spec load and a second pilot construction.
+    seat_specs: dict[str, ModelSOPilotSpec] = {}
     if required - set(pilots):
         bound_pilot_factory = dependencies.pilot_factory.with_observer(match_observer)
         match_dependencies = replace(dependencies, pilot_factory=bound_pilot_factory)
-        if mech_a not in pilots:
-            pilots[mech_a] = _resolved_pilot(
-                red, loadout_path=red_loadout_path, dependencies=match_dependencies
+        for mech_id, seat_loadout, seat_loadout_path in (
+            (mech_a, red, red_loadout_path),
+            (mech_b, blue, blue_loadout_path),
+        ):
+            if mech_id in pilots:
+                continue
+            seat_spec = _resolved_pilot_spec(
+                seat_loadout, loadout_path=seat_loadout_path, dependencies=match_dependencies
             )
-        if mech_b not in pilots:
-            pilots[mech_b] = _resolved_pilot(
-                blue, loadout_path=blue_loadout_path, dependencies=match_dependencies
-            )
+            seat_specs[mech_id] = seat_spec
+            pilots[mech_id] = match_dependencies.pilot_factory.from_spec(seat_spec)
     # Live-learning admission half of the seam (learning-adaptation-03): the
     # SAME coordinator instance that will receive this match's terminal
     # evidence snapshots the policy BEFORE any per-match prompt or provenance
@@ -2389,6 +2406,26 @@ def assemble_match_with_dependencies(
         )
         if card_adapter is not None:
             card_adapter = replace(card_adapter, programmers=match_card_programmers)
+    # OMN-15489: bind each seat's OWN pilot spec to the card round.  Without
+    # this the card branch never references the resolved pilot at all, so a
+    # duel battery's materialized candidate/parent specs have no causal path to
+    # any decision and its promotion verdict is vacuous.  Provider-backed
+    # (``llm``) specs get no rule — their decision surface is the bound
+    # programmer — and an explicit ``pilots_override`` seat is left alone
+    # because that caller owns the seat's policy outright.
+    if card_adapter is not None and card_adapter.registers_enabled:
+        seat_plan_rules: dict[str, CardProgrammingRuleHandler] = {}
+        for side, mech_id in ((side_a, mech_a), (side_b, mech_b)):
+            policy_spec = seat_specs.get(mech_id)
+            if policy_spec is None:
+                # Only an explicit ``pilots_override`` seat has no resolved
+                # spec; that caller supplied the pilot and owns its policy.
+                continue
+            seat_rule = seat_policy_rule_for_spec(policy_spec, pilot=pilots[mech_id])
+            if seat_rule is not None:
+                seat_plan_rules[side] = seat_rule
+        if seat_plan_rules:
+            card_adapter = replace(card_adapter, seat_plan_rules=seat_plan_rules)
     # OMN-15490: every in-process ledger surface for this match goes through the
     # admission-scoped facade, which stages an event and only writes it through
     # once the fold (the admission subscriber, registered inside MatchRunner

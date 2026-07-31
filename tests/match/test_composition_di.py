@@ -182,9 +182,28 @@ class _Identities:
 
 
 class _Registry:
-    def resolve(self, loadout: ModelSOLoadout) -> object:
+    def resolve(self, loadout: ModelSOLoadout) -> ModelSOPilotSpec:
+        """Return a REAL spec, as ``PilotSpecRegistry.resolve`` is typed to.
+
+        OMN-15489: composition now reads the resolved spec (not just the built
+        pilot) so a card-mode seat can bind its own pilot policy, and it fails
+        closed on an untyped spec rather than silently dropping that policy —
+        a silently dropped seat policy is exactly the vacuous-duel-gate bug.
+        The ``llm`` archetype keeps this fake's original meaning for these
+        tests: a provider-backed seat binds no deterministic policy rule, so
+        the injected card adapter is still passed through by identity.
+        """
+
         del loadout
-        return object()
+        return ModelSOPilotSpec.model_validate(
+            {
+                "id": "pilot.fake.v1",
+                "display_name": "Fake",
+                "archetype": "llm",
+                "lineage": {"parent": "pilot.template.llm"},
+                "parameters": {"provider": "stub", "persona": "berserker"},
+            }
+        )
 
 
 class _Catalog:
