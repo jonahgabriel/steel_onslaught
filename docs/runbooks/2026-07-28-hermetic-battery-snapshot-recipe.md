@@ -197,6 +197,11 @@ env -u PYTHONPATH OMNI_HOME="$SNAP" \
     --state-root "$SNAP/battery_state/<run>/default"
 ```
 
+This fragment shows the env redirect **only**. Do not launch a real battery
+this way: the actual launch wraps the same driver invocation in the
+supervised entrypoint of §5, which is what makes a crash or a stall report
+itself.
+
 Because `OMNI_HOME=$SNAP`, `_drift_recheck`'s belt (this ticket) compares
 the frozen snapshot's OWN `omnimarket` install against the frozen
 snapshot's OWN `$OMNI_HOME/omnimarket` clone HEAD -- both sides of the
@@ -205,20 +210,34 @@ run, exactly as it should. Nothing about running inside a snapshot
 disables the belt; it simply never has anything to catch there, because
 nothing in the frozen tree can drift.
 
-## 5. Launch discipline: `nohup </dev/null`, `disown`, pgrep-before-relaunch
+## 5. Launch discipline: one supervised entrypoint (OMN-15588)
 
-Every launch is detached the same way, so a lost ssh/tmux/terminal session
-never kills a multi-hour battery, and no launcher accidentally double-runs
-a corner into the same `--state-root`:
+Every battery is launched through `so battery-watch`, which supervises the
+driver, watches its progress, sequences the next corner, and -- the part no
+earlier arrangement could do -- **actively reports how the run ended**:
 
 ```bash
-nohup env -u PYTHONPATH OMNI_HOME="$SNAP" uv run python \
-  scripts/run_display_salience_battery.py --corner default --n 30 \
-  --seed-base 5000 --max-ticks 1000 --fresh \
-  --state-root "$SNAP/battery_state/<run>/default" \
-  </dev/null > "$SNAP/battery_state/<run>/default.log" 2>&1 &
+export STEEL_BATTERY_NOTIFY_COMMAND="<argv that reaches you; outcome JSON on stdin>"
+# and/or: export STEEL_BATTERY_NOTIFY_WEBHOOK="<chat-compatible webhook URL>"
+
+nohup env -u PYTHONPATH OMNI_HOME="$SNAP" uv run so battery-watch \
+  --run-id "<run>-default" \
+  --raw-path "$SNAP/battery_state/<run>/default/battery_raw.jsonl" \
+  --log-path "$SNAP/battery_state/<run>/default.log" \
+  --expected-rows 30 \
+  --stall-deadline-seconds 3600 \
+  -- \
+  uv run python scripts/run_display_salience_battery.py --corner default --n 30 \
+    --seed-base 5000 --max-ticks 1000 --fresh \
+    --state-root "$SNAP/battery_state/<run>/default" \
+  </dev/null > "$SNAP/battery_state/<run>/watchdog.log" 2>&1 &
 disown
 ```
+
+At least one notification channel is **mandatory**: with neither env var set,
+`battery-watch` exits 4 and never launches the driver. That refusal is the
+mechanism -- a battery whose only failure signal is a file on disk cannot be
+started through this path at all.
 
 `</dev/null` on stdin -- an inherited terminal stdin has repeatedly caused
 double-launch races on this program (a background process that blocks on
@@ -233,54 +252,43 @@ A relaunch against a `--state-root` an existing process still owns is a
 silent data race on `battery_raw.jsonl`/`events.sqlite3` -- `pgrep` first,
 every time.
 
-## 6. The chain-watcher pattern (sequencing corners unattended)
+## 6. Terminal states, and sequencing corners unattended
 
-This arm runs two corners (`default`, `prominent`) back to back. A small
-detached watcher polls for the driver process rather than sleeping a fixed
-duration (the battery's wall-clock is not known in advance), and only
-advances to the next corner if the prior one finished FULLY clean --
-never blindly chains forward on a partial run:
+`battery-watch` reports exactly one terminal state per run and exits on it:
+
+| State | Meaning | Exit |
+|---|---|---|
+| `COMPLETED` | driver exited 0 with `--expected-rows` rows | 0 |
+| `INCOMPLETE` | driver exited 0 but **short** -- follow-on work withheld | 2 |
+| `CRASHED` | driver exited nonzero; the notification carries the log tail | 1 |
+| `STALLED` | no new row within `--stall-deadline-seconds`; driver terminated | 1 |
+| (any) | no channel accepted the outcome -- nobody was told | 3 |
+
+`STALLED` is the case the previous hand-rolled watcher could not detect at
+all: it polled for process *absence*, so a driver that hung while still
+resident was invisible to it for as long as it stayed alive. Progress is
+measured from `battery_raw.jsonl` (one row per completed seed), so a slow
+battery is never mistaken for a wedged one.
+
+To sequence corners, pass the next launch to `--on-complete-exec`. It fires
+**only** on `COMPLETED`, which is the same fail-closed gate the old
+`NEEDS_ATTENTION` sentinel implemented -- except an incomplete prior corner
+now pushes a notification instead of waiting to be noticed:
 
 ```bash
-#!/bin/bash
-LOG="$ROOT/chain.log"
-echo "$(date -u +%FT%TZ) chain watcher started" >> "$LOG"
-while pgrep -f "run_display_salience_battery.py --corner default" >/dev/null 2>&1; do
-  sleep 300
-done
-echo "$(date -u +%FT%TZ) default process exited" >> "$LOG"
-sleep 15  # let the final battery_summary.json/raw.jsonl writes settle
-lines=$(wc -l < "$ROOT/default/battery_raw.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
-if [ "$lines" = "30" ]; then
-  echo "$(date -u +%FT%TZ) default CLEAN - launching prominent corner" >> "$LOG"
-  cd "$SNAP/steel_onslaught" || { touch "$ROOT/NEEDS_ATTENTION"; exit 1; }
-  nohup env -u PYTHONPATH OMNI_HOME="$SNAP" uv run python \
-    scripts/run_display_salience_battery.py --corner prominent --n 30 \
-    --seed-base 5000 --max-ticks 1000 --fresh --state-root "$ROOT/prominent" \
-    </dev/null > "$ROOT/prominent.log" 2>&1 &
-  disown
-else
-  echo "$(date -u +%FT%TZ) default NOT clean (rows=$lines) - prominent WITHHELD" >> "$LOG"
-  touch "$ROOT/NEEDS_ATTENTION"
-fi
+  --on-complete-exec "env -u PYTHONPATH OMNI_HOME=$SNAP uv run so battery-watch \
+     --run-id <run>-prominent \
+     --raw-path $ROOT/prominent/battery_raw.jsonl \
+     --log-path $ROOT/prominent.log --expected-rows 30 \
+     -- uv run python scripts/run_display_salience_battery.py --corner prominent \
+        --n 30 --seed-base 5000 --max-ticks 1000 --fresh --state-root $ROOT/prominent"
 ```
 
-Launch the watcher itself detached the same way
-(`nohup ... </dev/null > chain.log 2>&1 & disown`). The `NEEDS_ATTENTION`
-sentinel is the fail-closed branch: an incomplete prior corner never
-silently triggers the next one; it stops and waits for a human/operator to
-look at `chain.log` and the incomplete corner's `battery_summary.json`
-(`skipped_seeds`) before deciding whether to re-run or proceed.
-
-Live-proven (OMN-15172 acceptance attempt #3, `chain.log`):
-
-```
-2026-07-27T21:54:41Z chain watcher started
-2026-07-28T05:34:45Z default process exited
-2026-07-28T05:35:00Z default battery_raw rows=30 (30 = fully clean)
-2026-07-28T05:35:00Z default CLEAN - launching prominent corner
-2026-07-28T05:35:00Z prominent launched
-```
+**Do not reintroduce a `BATTERY_DONE` / `NEEDS_ATTENTION` shell wrapper.** On
+the OMN-15488 run an attempt-1 crash sat undetected for roughly five hours
+behind a correctly-written sentinel that nobody read.
+`tests/battery/test_watchdog.py` reads this file and fails if the bash
+sentinel recipe returns to it.
 
 ## Lesson: in-process gate, never the fetch-based shell script
 

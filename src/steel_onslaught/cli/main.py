@@ -20,6 +20,7 @@ import click
 from steel_onslaught.cli.adaptation import adaptation_command
 from steel_onslaught.cli.application import CliApplicationFactory
 from steel_onslaught.cli.balance import balance_command
+from steel_onslaught.cli.battery_watch import battery_watch_command
 from steel_onslaught.cli.experiment import learn_experiment_command
 from steel_onslaught.cli.learn import learn_command
 from steel_onslaught.cli.play import play_command, play_live_command
@@ -39,6 +40,7 @@ def main() -> None:
 
 main.add_command(serve_command)
 main.add_command(balance_command)
+main.add_command(battery_watch_command)
 main.add_command(learn_command)
 main.add_command(learn_experiment_command)
 main.add_command(adaptation_command)
