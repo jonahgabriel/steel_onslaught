@@ -282,6 +282,58 @@ describe("ArenaView", () => {
     expect(screen.getByTestId("arena-wreck-mech.b.01")).toBeInTheDocument();
   });
 
+  /**
+   * OMN-15585 item 3 — a VERIFICATION, not a repair.
+   *
+   * The operator reported that the red mech "never moves" while the round recap
+   * logged per-tick coordinate deltas, which admits two readings: red genuinely
+   * moves rarely, or the arena sprite fails to track MOVEMENT_RESOLVED. The
+   * existing arena suite covered movement TRAILS but never asserted that the
+   * sprite itself relocates, so the second reading was uncovered. It is covered
+   * here: the sprite is driven tick by tick and its rendered cell must equal the
+   * resolved destination on every step, red included.
+   */
+  it("moves each mech sprite to the resolved cell on every MOVEMENT_RESOLVED", async () => {
+    const started = parseEnvelope(JSON.parse(fixtureText("match_started")));
+    if (started.event_type !== "match_started") throw new Error("wrong fixture event type");
+    const cells = started.payload.arena.size;
+    const red = started.payload.mechs.find((mech) => mech.side === "red");
+    if (red === undefined) throw new Error("fixture has no red mech");
+
+    const { socket, subscribe } = makeStubStream();
+    render(<ArenaView subscribe={subscribe} />);
+    await act(async () => {
+      socket.emit(JSON.stringify(started));
+    });
+
+    const cellCenterPct = (cell: number): string => `${((cell + 0.5) / cells) * 100}%`;
+    const sprite = (): HTMLElement => screen.getByTestId(`arena-mech-${red.mech_id}`);
+    expect(sprite().style.left).toBe(cellCenterPct(red.position.x));
+    expect(sprite().style.top).toBe(cellCenterPct(red.position.y));
+
+    // A closing walk, one resolution per tick, of the shape a berserker makes.
+    let from = { x: red.position.x, y: red.position.y };
+    for (let tick = 1; tick <= 4; tick += 1) {
+      const to = { x: from.x + 2, y: from.y + 1 };
+      const moved = makeEnvelope(
+        "movement_resolved",
+        { from, to, ticks_consumed: 1, pressure_consumed: 2 },
+        {
+          matchId: started.match_id,
+          tick,
+          mechId: red.mech_id,
+          playerId: red.player_id,
+        },
+      );
+      await act(async () => {
+        socket.emit(JSON.stringify(moved));
+      });
+      expect(sprite().style.left).toBe(cellCenterPct(to.x));
+      expect(sprite().style.top).toBe(cellCenterPct(to.y));
+      from = to;
+    }
+  });
+
   it("records a fading movement trail after MOVEMENT_RESOLVED", async () => {
     const { socket, subscribe } = makeStubStream();
     render(<ArenaView subscribe={subscribe} />);

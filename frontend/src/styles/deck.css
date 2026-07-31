@@ -910,6 +910,19 @@ body {
      suffix sharing the chip's line was the second reflow source. */
   display: block;
 }
+/* OMN-15585: a telegraphed switch is NOT the active stance. It gets the mode
+   chip's geometry but a dashed, dimmed, un-phosphored treatment so the two
+   cannot be read as the same kind of statement at a glance. */
+.pd-mode-telegraph {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  border: 1px dashed var(--seam);
+  padding: 0.05rem 0.4rem;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
 .pd-weapons {
   display: flex;
   flex-direction: column;
@@ -1732,4 +1745,35 @@ body {
   .pd-thread {
     stroke-dashoffset: 0;
   }
+}
+
+/* ---- deck vocabulary key (OMN-15585) ---- */
+.pd-deck-key {
+  border: 1px solid var(--seam);
+  background: var(--iron);
+  padding: 0.35rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  color: var(--ash);
+  line-height: 1.5;
+}
+.pd-deck-key > summary {
+  cursor: pointer;
+  color: var(--phosphor);
+  letter-spacing: 0.12em;
+}
+.pd-deck-key dl {
+  margin: 0.4rem 0 0;
+}
+.pd-deck-key dt {
+  color: var(--steam);
+  letter-spacing: 0.12em;
+  margin-top: 0.35rem;
+}
+.pd-deck-key dd {
+  margin: 0.1rem 0 0 0.5rem;
+}
+.pd-deck-key b {
+  color: var(--phosphor);
+  font-weight: 400;
 }

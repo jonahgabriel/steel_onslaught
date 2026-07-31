@@ -139,10 +139,32 @@ describe("SpecPanel — fixture replay", () => {
 
   it("shows current mode + transition countdown", () => {
     render(<SpecPanel gauges={foldedGauges()} />);
-    const mode = within(screen.getByTestId("spec-mech.a.01")).getByTestId("spec-mode-mech.a.01");
-    expect(mode.textContent).toContain("recon");
-    expect(mode.textContent).toContain("assault");
-    expect(mode.textContent).toContain("2t");
+    const spec = within(screen.getByTestId("spec-mech.a.01"));
+    expect(spec.getByTestId("spec-mode-mech.a.01").textContent).toContain("recon");
+    const telegraph = spec.getByTestId("spec-mode-telegraph-mech.a.01");
+    expect(telegraph.textContent).toContain("assault");
+    expect(telegraph.textContent).toContain("2t");
+  });
+
+  /**
+   * OMN-15585 item 2. The operator watched blue fire "during evasion" and read
+   * it as a contradiction. It is not one — modes are passive stances, firing is
+   * legal in all of them — but the deck fused the ACTIVE mode and a merely
+   * TELEGRAPHED switch into one chip, so a switch that had not taken effect yet
+   * read as the current mode. The two must be separable by a reader.
+   */
+  it("separates the active mode from a telegraphed switch that is not yet in effect", () => {
+    render(<SpecPanel gauges={foldedGauges()} />);
+    const spec = within(screen.getByTestId("spec-mech.a.01"));
+    const active = spec.getByTestId("spec-mode-mech.a.01");
+    // The active chip must carry the ACTIVE mode and nothing else: a reader who
+    // looks only at the chip must not be told the mech is already in assault.
+    expect(active).toHaveAttribute("data-active-mode", "recon");
+    expect(active.textContent).not.toContain("assault");
+
+    const telegraph = spec.getByTestId("spec-mode-telegraph-mech.a.01");
+    expect(telegraph).toHaveAttribute("data-telegraphed-mode", "assault");
+    expect(telegraph.textContent?.toUpperCase()).toContain("TELEGRAPH");
   });
 
   it("shows the LLM pilot line with persona + model", () => {
@@ -331,6 +353,96 @@ describe("SpecPanel — synthetic state", () => {
     render(<SpecPanel gauges={[]} />);
     expect(screen.getByTestId("spec-rail-left")).toHaveAttribute("data-rail-side", "left");
     expect(screen.getByText("awaiting match_started…")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Deck vocabulary (OMN-15585 items 1 and 2).
+ *
+ * NOMINAL and the mode chips were unexplained anywhere in the UI, and the mode
+ * chips read as behaviour locks when they are passive stances. The copy asserted
+ * here is deliberately tied to what the RUNTIME actually does — the only wired
+ * effect of `current_mode` is the movement speed delta in
+ * `reducers/movement.py::_MODE_SPEED_DELTA` — rather than to the contract YAML's
+ * `passive_modifiers`, which no reducer reads. A legend that documented the
+ * unwired modifiers would be worse than no legend.
+ */
+describe("SpecPanel — deck vocabulary key", () => {
+  function aliveGauge(overrides: Partial<GaugeState> = {}): GaugeState {
+    return {
+      mechId: "mech.x.01",
+      playerId: "player.x",
+      side: "red",
+      displayName: "X-01",
+      chassisClass: "heavy",
+      chassisId: "chassis.heavy.ironclad_mk1",
+      pilotId: "pilot.tactician",
+      seat: null,
+      isLlm: false,
+      persona: null,
+      model: null,
+      heat: 20,
+      redlineThreshold: 70,
+      ruptureThreshold: 100,
+      redlineConsecutiveTicks: 0,
+      overloaded: false,
+      pressureCurrent: 45,
+      pressureMaximum: 90,
+      hp: 40,
+      hpMax: 100,
+      armorValue: 8,
+      armorMax: 10,
+      mode: "evasion",
+      transitionToMode: null,
+      transitionTicksRemaining: 0,
+      weaponCooldowns: {},
+      damageDealt: 0,
+      damageTaken: 0,
+      shotsFired: 0,
+      decisions: 0,
+      status: "alive",
+      ...overrides,
+    };
+  }
+
+  it("says what NOMINAL means on the status lamp itself", () => {
+    render(<SpecPanel gauges={[aliveGauge()]} />);
+    const lamp = screen.getByTestId("spec-status-mech.x.01");
+    expect(lamp.textContent).toContain("NOMINAL");
+    expect(lamp.getAttribute("title")?.toLowerCase()).toContain("alive");
+  });
+
+  it("tells the reader a mode is a stance and does not gate firing", () => {
+    render(<SpecPanel gauges={[aliveGauge()]} />);
+    const title = screen.getByTestId("spec-mode-mech.x.01").getAttribute("title") ?? "";
+    expect(title.toLowerCase()).toContain("stance");
+    // The operator's exact confusion: firing while in evasion looked illegal.
+    expect(title.toLowerCase()).toContain("firing is legal in every mode");
+  });
+
+  it("carries a rail-level key covering the status and mode vocabulary", () => {
+    render(<SpecPanel gauges={[aliveGauge()]} />);
+    const key = screen.getByTestId("deck-key-left");
+    const text = key.textContent ?? "";
+    expect(text).toContain("NOMINAL");
+    expect(text).toContain("PILOT KILLED");
+    expect(text).toContain("DESTROYED");
+    expect(text.toUpperCase()).toContain("RECON");
+    expect(text.toUpperCase()).toContain("ASSAULT");
+    expect(text.toUpperCase()).toContain("EVASION");
+    // The one wired mode effect, stated as the runtime implements it.
+    expect(text).toContain("+1");
+  });
+
+  it("renders no key when there is nothing to key", () => {
+    render(<SpecPanel gauges={[]} />);
+    expect(screen.queryByTestId("deck-key-left")).not.toBeInTheDocument();
+  });
+
+  it("keys the deck once, not once per rail", () => {
+    // PressureDeck mounts this panel twice (red left, blue right).
+    render(<SpecPanel gauges={[aliveGauge({ side: "blue" })]} side="right" />);
+    expect(screen.queryByTestId("deck-key-right")).not.toBeInTheDocument();
   });
 });
 
