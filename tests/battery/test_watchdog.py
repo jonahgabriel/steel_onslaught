@@ -38,6 +38,7 @@ from steel_onslaught.battery.watchdog import (
     read_log_tail,
     resolve_notifiers,
 )
+from steel_onslaught.cli import battery_watch as battery_watch_module
 from steel_onslaught.cli.battery_watch import battery_watch_command
 
 _RUNBOOK = (
@@ -417,9 +418,39 @@ def test_row_counter_and_log_tail_tolerate_a_not_yet_created_run(tmp_path: Path)
 
 
 @pytest.mark.unit
-def test_cli_refuses_to_launch_a_battery_with_no_active_channel(tmp_path: Path) -> None:
-    """A disk-only battery cannot be started through the sanctioned path."""
-    marker = tmp_path / "battery_started"
+def test_cli_refuses_to_launch_a_battery_with_no_active_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disk-only battery cannot be started through the sanctioned path.
+
+    The property under test is an *ordering*: channel resolution must happen
+    strictly before the driver is spawned, so a run with no way to report its
+    own failure never starts. The assertion is therefore on the launch seam
+    itself -- ``battery_watch._launch``, the module's only ``Popen`` site --
+    and not on a filesystem side effect of the spawned child.
+
+    That distinction is load-bearing, not stylistic. The first version of this
+    test asserted ``not marker.exists()`` after ``CliRunner`` returned, and it
+    stayed green when the launch was moved *above* the channel resolution:
+    the child had been spawned, it simply had not written its marker yet
+    (verified directly -- exit 4, marker absent immediately, present 2s
+    later). It proved the exit code and nothing else. A spy on the seam has no
+    such race, so a refactor that reintroduces the "battery started with no
+    way to report its own failure" ordering now lands RED.
+
+    The complementary positive control -- that a properly configured run does
+    spawn and supervise a real driver -- is
+    ``test_cli_supervises_a_real_driver_and_delivers_a_crash_notification``
+    below, which drives real processes end to end.
+    """
+    launched: list[tuple[str, ...]] = []
+
+    def _spy_launch(argv: tuple[str, ...], log_path: Path) -> Any:
+        launched.append(tuple(argv))
+        return None
+
+    monkeypatch.setattr(battery_watch_module, "_launch", _spy_launch)
+
     result = CliRunner().invoke(
         battery_watch_command,
         [
@@ -432,14 +463,14 @@ def test_cli_refuses_to_launch_a_battery_with_no_active_channel(tmp_path: Path) 
             "--",
             sys.executable,
             "-c",
-            f"import pathlib; pathlib.Path({str(marker)!r}).write_text('ran')",
+            "raise SystemExit(0)",
         ],
         env={ENV_NOTIFY_COMMAND: "", ENV_NOTIFY_WEBHOOK: ""},
     )
 
     assert result.exit_code == 4
     assert "refused to launch" in result.output
-    assert not marker.exists()  # the battery itself was never started
+    assert launched == []  # the refusal preceded every launch attempt
 
 
 @pytest.mark.integration
