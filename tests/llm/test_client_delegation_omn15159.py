@@ -727,7 +727,7 @@ _QUALITY_GATE_FIXTURE_CORRELATION_ID = "738867fd-3db1-40b1-9854-4f269ae50fcd"
 def _receipt_stdout_with_quality_gate_failure(
     *,
     reasons: list[str],
-    correlation_id: str = _QUALITY_GATE_FIXTURE_CORRELATION_ID,
+    correlation_id: str | None = _QUALITY_GATE_FIXTURE_CORRELATION_ID,
     error: str = "",
 ) -> str:
     """A CLI stdout receipt shaped like ``ModelSkillResult[ModelReceiptRuntimeSummary]``
@@ -743,7 +743,9 @@ def _receipt_stdout_with_quality_gate_failure(
     reachable: a receipt whose top-level ``correlation_id`` does not match
     THIS invocation's own id and/or whose ``result.error`` is non-empty (a
     genuine crash) must never classify as semantic even when
-    ``quality_gates_failed`` is present.
+    ``quality_gates_failed`` is present. ``correlation_id=None`` serializes
+    the top-level field as JSON ``null`` (OMN-15566 r5c, verifier probe 1f)
+    -- a shape distinct from a mismatched-but-present string id.
     """
     return json.dumps(
         {
@@ -879,6 +881,18 @@ def test_stale_receipt_with_mismatched_correlation_and_crash_error_stays_transpo
     genuineness at once (mismatched correlation id AND a non-empty crash
     error) so the fix's binding guard is proven on the exact adversarial
     shape, not a simplified stand-in.
+
+    **This test alone cannot discriminate which guard is doing the work**
+    (r5c/OMN-15566 finding): the error guard (:464) rejects on the non-empty
+    ``result.error`` by itself, with or without the correlation mismatch, so
+    deleting the correlation guard (:459) alone leaves this test green. Per-
+    guard isolation is the job of
+    ``test_stale_receipt_with_mismatched_correlation_and_empty_error_stays_transport_error``
+    (correlation guard alone, via an EMPTY error) and
+    ``test_receipt_with_null_top_level_correlation_stays_transport_error``
+    (correlation guard alone, via a null top-level id) below, plus
+    ``test_stale_receipt_with_matching_correlation_but_crash_error_stays_transport_error``
+    (error guard alone, correlation matches).
     """
     this_invocation_id = UUID("11111111-1111-1111-1111-111111111111")
     stale_correlation_id = "00000000-0000-0000-0000-0000000000aa"
@@ -927,6 +941,92 @@ def test_stale_receipt_with_matching_correlation_but_crash_error_stays_transport
         stdout=stdout,
     )
     client = _fixture_correlation_client(runner=_RaisingRunner(transport_error), tmp_path=tmp_path)
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    assert excinfo.value is transport_error
+
+
+def test_stale_receipt_with_mismatched_correlation_and_empty_error_stays_transport_error(
+    tmp_path: Path,
+) -> None:
+    """Per-guard discrimination (OMN-15566 r5c): isolates the correlation
+    guard (:459) from the error guard (:464). r5b's both-signals tests above
+    cannot tell which guard is load-bearing, because a non-empty
+    ``result.error`` alone already satisfies the error guard regardless of
+    correlation. This receipt carries ONLY the correlation mismatch -- a
+    stale prior completion's MALFORMED payload with an EMPTY ``result.error``
+    -- which is also the realistically reachable shape: a FAILED workflow
+    with a non-zero exit leaves ``receipt_mode.py``'s ``runtime_error``
+    local (persisted verbatim onto ``result.error``) as ``""`` while the
+    shared ``workflow_result.json`` still holds the PRIOR completion's
+    terminal payload, correlation id and all. With the error guard unable to
+    reject on its own (error is empty), only the correlation guard (:459)
+    keeps this ``LlmTransportError`` -- deleting :459 alone must RED this
+    test while the both-signals tests above stay green.
+    """
+    this_invocation_id = UUID("22222222-2222-2222-2222-222222222222")
+    stale_correlation_id = "00000000-0000-0000-0000-0000000000bb"
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["MALFORMED: response is not valid JSON: Expecting ':' delimiter"],
+        correlation_id=stale_correlation_id,
+        error="",
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _client(
+        runner=_RaisingRunner(transport_error),
+        tmp_path=tmp_path,
+        new_correlation_id=lambda: this_invocation_id,
+    )
+
+    with pytest.raises(LlmTransportError) as excinfo:
+        client.complete(_request(wants_tactical_response_contract=False))
+
+    assert excinfo.value is transport_error
+
+
+def test_receipt_with_null_top_level_correlation_stays_transport_error(
+    tmp_path: Path,
+) -> None:
+    """Per-guard discrimination (OMN-15566 r5c, verifier probe 1f): a
+    second, independent way to exercise the correlation guard (:459) alone,
+    distinct from the mismatched-string-id case above. The receipt's
+    top-level ``correlation_id`` is JSON ``null`` -- a shape the CLI can
+    genuinely emit (e.g. a crash before the receipt writer has a
+    correlation id available to persist) -- with a clean ``result.error``
+    and a MALFORMED ``quality_gates_failed`` payload, so the error guard
+    (:464) alone cannot reject it. ``envelope.get("correlation_id")``
+    returns ``None``, which compares unequal to
+    ``str(expected_correlation_id)`` at :459 and returns ``None`` to keep
+    the caller's ``LlmTransportError``. Deleting :459 alone must RED this
+    test too.
+    """
+    stdout = _receipt_stdout_with_quality_gate_failure(
+        reasons=["MALFORMED: response is not valid JSON: Expecting ':' delimiter"],
+        correlation_id=None,
+        error="",
+    )
+    transport_error = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout=stdout,
+    )
+    client = _client(
+        runner=_RaisingRunner(transport_error),
+        tmp_path=tmp_path,
+        new_correlation_id=lambda: UUID("33333333-3333-3333-3333-333333333333"),
+    )
 
     with pytest.raises(LlmTransportError) as excinfo:
         client.complete(_request(wants_tactical_response_contract=False))
