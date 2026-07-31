@@ -40,7 +40,15 @@ const CLASS_CHIP: Record<GaugeState["chassisClass"], string> = {
 };
 
 /** SVG boiler-pressure dial: amber arc, red zone, needle at current psi. */
-function BoilerDial({ current, maximum }: { current: number; maximum: number }): React.JSX.Element {
+function BoilerDial({
+  mechId,
+  current,
+  maximum,
+}: {
+  mechId: string;
+  current: number;
+  maximum: number;
+}): React.JSX.Element {
   const frac = maximum > 0 ? Math.max(0, Math.min(1, current / maximum)) : 0;
   const start = 150;
   const sweep = 240;
@@ -56,23 +64,36 @@ function BoilerDial({ current, maximum }: { current: number; maximum: number }):
   const [nx, ny] = arcPoint(angle, r - 6);
   const [rzx1, rzy1] = arcPoint(start + sweep * 0.75, r);
   const [rzx2, rzy2] = arcPoint(start + sweep, r);
+  /**
+   * The arc command's large-arc-flag must be DERIVED from the swept angle, not
+   * fixed (OMN-15584). With `rx == ry` the flag pair does not merely choose the
+   * long or short way between two endpoints: it selects which of the two
+   * circles through those endpoints is used. A hardcoded `1` on a sub-180°
+   * sweep therefore draws the arc about a different center, off the dial face
+   * and clipped by the viewBox into the fragments the operator reported.
+   */
+  const arcCommand = (fromDeg: number, toDeg: number): string => {
+    const largeArc = Math.abs(toDeg - fromDeg) > 180 ? 1 : 0;
+    return `M ${arcPoint(fromDeg, r).join(" ")} A ${r} ${r} 0 ${largeArc} 1 ${arcPoint(toDeg, r).join(" ")}`;
+  };
 
   return (
     <svg className="pd-dial" width={80} height={68} viewBox="0 0 92 78" aria-hidden="true">
+      <path d={arcCommand(start, start + sweep)} fill="none" stroke="#0d0f13" strokeWidth={7} />
+      {/* A zero-length arc is dropped by the renderer, but its round line-cap
+          still paints a stray dot on the dial face — omit it outright. */}
+      {frac > 0 ? (
+        <path
+          data-testid={`spec-dial-value-${mechId}`}
+          d={arcCommand(start, angle)}
+          fill="none"
+          stroke="var(--phosphor)"
+          strokeWidth={5}
+          strokeLinecap="round"
+        />
+      ) : null}
       <path
-        d={`M ${arcPoint(start, r).join(" ")} A ${r} ${r} 0 1 1 ${arcPoint(start + sweep, r).join(" ")}`}
-        fill="none"
-        stroke="#0d0f13"
-        strokeWidth={7}
-      />
-      <path
-        d={`M ${arcPoint(start, r).join(" ")} A ${r} ${r} 0 1 1 ${arcPoint(angle, r).join(" ")}`}
-        fill="none"
-        stroke="var(--phosphor)"
-        strokeWidth={5}
-        strokeLinecap="round"
-      />
-      <path
+        data-testid={`spec-dial-redzone-${mechId}`}
         d={`M ${rzx1} ${rzy1} A ${r} ${r} 0 0 1 ${rzx2} ${rzy2}`}
         fill="none"
         stroke="var(--danger)"
@@ -250,7 +271,7 @@ function MechSpec({
         </div>
       </div>
       <div className="pd-spec-thermorow">
-        <BoilerDial current={g.pressureCurrent} maximum={g.pressureMaximum} />
+        <BoilerDial mechId={g.mechId} current={g.pressureCurrent} maximum={g.pressureMaximum} />
         <div className="pd-spec-lamps">
           {g.overloaded ? (
             <span className="pd-lamp pd-lamp-danger" data-testid={`spec-overloaded-${g.mechId}`}>

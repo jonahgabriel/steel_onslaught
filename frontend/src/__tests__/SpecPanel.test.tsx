@@ -333,3 +333,172 @@ describe("SpecPanel — synthetic state", () => {
     expect(screen.getByText("awaiting match_started…")).toBeInTheDocument();
   });
 });
+
+/**
+ * Boiler-dial arc geometry (OMN-15584).
+ *
+ * The operator saw amber fragments floating off the dial face at rest and while
+ * animating. The cause is geometric, not stylistic: an elliptical-arc command
+ * carries a large-arc-flag, and with `rx == ry` a WRONG flag does not merely
+ * pick the long way round — it selects the OTHER of the two circles that pass
+ * through the endpoints, so the arc is drawn about a different center and
+ * leaves the dial face entirely (the SVG viewBox then clips it into slivers).
+ *
+ * These tests therefore assert the invariant that actually matters — every arc
+ * on the dial is drawn about the dial's own center — rather than asserting a
+ * literal flag value, which would pass for the wrong reason if the geometry
+ * were ever re-parameterised.
+ */
+describe("SpecPanel — boiler dial arc geometry", () => {
+  /** The dial's center in viewBox units (SpecPanel `BoilerDial`: cx/cy). */
+  const DIAL_CENTER = { x: 46, y: 46 };
+
+  interface ParsedArc {
+    start: { x: number; y: number };
+    end: { x: number; y: number };
+    radius: number;
+    largeArc: 0 | 1;
+    sweep: 0 | 1;
+  }
+
+  /** Parse the single `M … A …` arc command the dial emits. */
+  function parseArc(d: string): ParsedArc {
+    const m =
+      /^M\s+(-?[\d.]+)\s+(-?[\d.]+)\s+A\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+([01])\s+([01])\s+(-?[\d.]+)\s+(-?[\d.]+)$/.exec(
+        d.trim(),
+      );
+    if (m === null) throw new Error(`unparseable arc path: ${d}`);
+    return {
+      start: { x: Number(m[1]), y: Number(m[2]) },
+      end: { x: Number(m[8]), y: Number(m[9]) },
+      radius: Number(m[3]),
+      largeArc: Number(m[6]) as 0 | 1,
+      sweep: Number(m[7]) as 0 | 1,
+    };
+  }
+
+  /**
+   * The center the SVG renderer will actually use for `arc`, via the spec's
+   * endpoint-to-center conversion (SVG 1.1 F.6.5) specialised to `rx == ry`
+   * and a zero x-axis rotation. This is what the browser draws — not what the
+   * author intended — which is exactly why the assertion is made against it.
+   */
+  function renderedCenter(arc: ParsedArc): { x: number; y: number } {
+    const r = arc.radius;
+    const hx = (arc.start.x - arc.end.x) / 2;
+    const hy = (arc.start.y - arc.end.y) / 2;
+    const denominator = hx * hx + hy * hy;
+    const factor = Math.sqrt(Math.max(0, (r * r - denominator) / denominator));
+    const sign = arc.largeArc !== arc.sweep ? 1 : -1;
+    return {
+      x: sign * factor * hy + (arc.start.x + arc.end.x) / 2,
+      y: sign * factor * -hx + (arc.start.y + arc.end.y) / 2,
+    };
+  }
+
+  function dialArcPath(current: number, maximum: number): string {
+    render(
+      <SpecPanel
+        gauges={[
+          {
+            mechId: "mech.x.01",
+            playerId: "player.x",
+            side: "red",
+            displayName: "X-01",
+            chassisClass: "heavy",
+            chassisId: "chassis.heavy.ironclad_mk1",
+            pilotId: "pilot.tactician",
+            seat: null,
+            isLlm: false,
+            persona: null,
+            model: null,
+            heat: 20,
+            redlineThreshold: 70,
+            ruptureThreshold: 100,
+            redlineConsecutiveTicks: 0,
+            overloaded: false,
+            pressureCurrent: current,
+            pressureMaximum: maximum,
+            hp: 40,
+            hpMax: 100,
+            armorValue: 8,
+            armorMax: 10,
+            mode: "assault",
+            transitionToMode: null,
+            transitionTicksRemaining: 0,
+            weaponCooldowns: {},
+            damageDealt: 0,
+            damageTaken: 0,
+            shotsFired: 0,
+            decisions: 0,
+            status: "alive",
+          },
+        ]}
+      />,
+    );
+    const path = screen.getByTestId("spec-dial-value-mech.x.01");
+    return path.getAttribute("d") ?? "";
+  }
+
+  // 44/90 is the operator's reported blue reading; 25/50 and 10/50 sit in the
+  // same sub-three-quarter band; 45/50 and 50/50 are above it (they rendered
+  // correctly before the fix, and must keep doing so).
+  it.each([
+    [10, 50],
+    [25, 50],
+    [44, 90],
+    [37.5, 50],
+    [45, 50],
+    [50, 50],
+  ])("draws the %s/%s value arc about the dial center", (current, maximum) => {
+    const arc = parseArc(dialArcPath(current, maximum));
+    const center = renderedCenter(arc);
+    expect(center.x).toBeCloseTo(DIAL_CENTER.x, 3);
+    expect(center.y).toBeCloseTo(DIAL_CENTER.y, 3);
+  });
+
+  it("emits no zero-length value arc at zero pressure", () => {
+    render(
+      <SpecPanel
+        gauges={[
+          {
+            mechId: "mech.x.01",
+            playerId: "player.x",
+            side: "red",
+            displayName: "X-01",
+            chassisClass: "heavy",
+            chassisId: "chassis.heavy.ironclad_mk1",
+            pilotId: "pilot.tactician",
+            seat: null,
+            isLlm: false,
+            persona: null,
+            model: null,
+            heat: 20,
+            redlineThreshold: 70,
+            ruptureThreshold: 100,
+            redlineConsecutiveTicks: 0,
+            overloaded: false,
+            pressureCurrent: 0,
+            pressureMaximum: 50,
+            hp: 40,
+            hpMax: 100,
+            armorValue: 8,
+            armorMax: 10,
+            mode: "assault",
+            transitionToMode: null,
+            transitionTicksRemaining: 0,
+            weaponCooldowns: {},
+            damageDealt: 0,
+            damageTaken: 0,
+            shotsFired: 0,
+            decisions: 0,
+            status: "alive",
+          },
+        ]}
+      />,
+    );
+    // A degenerate arc whose endpoints coincide is dropped by the SVG renderer,
+    // but its round line-cap still paints a stray dot on the dial face.
+    expect(screen.queryByTestId("spec-dial-value-mech.x.01")).not.toBeInTheDocument();
+  });
+});
