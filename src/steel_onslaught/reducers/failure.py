@@ -230,7 +230,7 @@ class ReducerFailureCascade:
                 continue  # destroyed mechs (incl. earlier in this tick) skip
             self._cascade_mech(event, state.seed, working, mech_id)
 
-        new_state = state.model_copy(update={"mech_states": working})
+        new_state = state.evolve(update={"mech_states": working})
         self._maybe_declare_terminal(event, survivors_before, new_state)
         return new_state
 
@@ -252,7 +252,7 @@ class ReducerFailureCascade:
                 or mech.overloaded
                 or mech.overloaded_consecutive_ticks
             ):
-                working[mech_id] = mech.model_copy(
+                working[mech_id] = mech.evolve(
                     update={
                         "redline_consecutive_ticks": 0,
                         "overloaded": False,
@@ -291,7 +291,7 @@ class ReducerFailureCascade:
                 },
             )
 
-        mech = mech.model_copy(update=updates)
+        mech = mech.evolve(update=updates)
         working[mech_id] = mech
 
         # --- Step 3: rupture. ---
@@ -372,14 +372,14 @@ class ReducerFailureCascade:
             )
 
         # Step 5: rupture is terminal — destroy the mech unconditionally.
-        ruptured_boiler = mech.boiler.model_copy(
+        ruptured_boiler = mech.boiler.evolve(
             update={
                 "tick": event.tick,
                 "status_ruptured": True,
                 "status_disabled": True,
             }
         )
-        working[mech_id] = mech.model_copy(
+        working[mech_id] = mech.evolve(
             update={
                 "hp": hp_after,
                 "alive": False,
@@ -418,7 +418,7 @@ class ReducerFailureCascade:
                     "hp_after": other_hp,
                 },
             )
-            working[other_id] = other.model_copy(update={"hp": other_hp, "alive": not destroyed})
+            working[other_id] = other.evolve(update={"hp": other_hp, "alive": not destroyed})
             if destroyed:
                 self._emit_event(
                     event.tick,
@@ -453,8 +453,8 @@ class ReducerFailureCascade:
             return state  # unknown mech or already folded — no-op
 
         survivors_before = state.surviving_player_ids()
-        new_mech = mech.model_copy(update={field: False})
-        new_state = state.model_copy(
+        new_mech = mech.evolve(update={field: False})
+        new_state = state.evolve(
             update={"mech_states": {**state.mech_states, mech.mech_id: new_mech}}
         )
         self._maybe_declare_terminal(event, survivors_before, new_state)

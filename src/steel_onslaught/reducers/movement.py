@@ -71,6 +71,89 @@ def chebyshev(a: ModelSOPosition, b: ModelSOPosition) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Canonical MOVEMENT_RESOLVED admissibility
+# ---------------------------------------------------------------------------
+
+
+def validate_movement_resolved(
+    *,
+    mech: ModelSOMechRuntimeState,
+    from_pos: ModelSOPosition,
+    to_pos: ModelSOPosition,
+    ticks_consumed: int,
+    pressure_consumed: int,
+    arena_size: int,
+    obstacles: frozenset[tuple[int, int]],
+) -> None:
+    """Raise ``ReducerError`` unless this movement is canonically admissible.
+
+    THE single definition of MOVEMENT_RESOLVED admissibility (OMN-15490 AC3).
+    Both callers use this function, so pre-publish and fold-admission checks
+    cannot drift apart:
+
+    - ``MatchRunner._resolve_move`` calls it BEFORE publishing, the same way
+      ``_resolve_weapon_fire`` calls ``validate_weapon_fire_intent`` before
+      publishing WEAPON_FIRED.  Without it a resolver bug published an event
+      the fold would refuse, and the ledger had already committed it.
+    - ``ReducerMovement._apply_movement_resolved`` calls it on admission, which
+      keeps the guarantee for replay and for any other producer.
+
+    The rejection reason is the first token of the message (``arena_bounds``,
+    ``obstacle_blocked``, ``position_mismatch``, ``pressure_cost_mismatch``,
+    ``speed_exceeded``, ``insufficient_pressure``).
+    """
+    mech_id = mech.mech_id
+
+    # 1. "from" must match the mech's current position.
+    if from_pos != mech.position:
+        raise ReducerError(
+            f"position_mismatch: mech {mech_id!r} is at {mech.position}, "
+            f"but MOVEMENT_RESOLVED payload declares from={from_pos}"
+        )
+
+    # 2. The authoritative arena rejects shaped canonical movement at ingress.
+    if not (0 <= to_pos.x < arena_size and 0 <= to_pos.y < arena_size):
+        raise ReducerError(
+            f"arena_bounds: mech {mech_id!r} destination "
+            f"{(to_pos.x, to_pos.y)} is outside [0, {arena_size})"
+        )
+    blocked_cell = next(
+        (cell for cell in chebyshev_line(from_pos, to_pos) if cell in obstacles),
+        None,
+    )
+    if blocked_cell is not None:
+        raise ReducerError(
+            f"obstacle_blocked: mech {mech_id!r} movement path crosses {blocked_cell}"
+        )
+
+    # 3. Pressure cost must equal Chebyshev distance (1 per cell).
+    distance = chebyshev(from_pos, to_pos)
+    if pressure_consumed != distance:
+        raise ReducerError(
+            f"pressure_cost_mismatch: Chebyshev distance is {distance}, "
+            f"but pressure_consumed={pressure_consumed}"
+        )
+
+    # 4. Speed limit: distance <= effective_speed * ticks_consumed.
+    speed = effective_speed(mech)
+    max_cells = speed * ticks_consumed
+    if distance > max_cells:
+        raise ReducerError(
+            f"speed_exceeded: mech {mech_id!r} has effective_speed={speed}, "
+            f"ticks_consumed={ticks_consumed} (max {max_cells} cells), "
+            f"but move covers {distance} cells"
+        )
+
+    # 5. Pressure availability.
+    if mech.boiler.pressure_current < pressure_consumed:
+        raise ReducerError(
+            f"insufficient_pressure: mech {mech_id!r} has "
+            f"pressure_current={mech.boiler.pressure_current}, "
+            f"but move costs {pressure_consumed}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Reducer
 # ---------------------------------------------------------------------------
 
@@ -133,7 +216,7 @@ class ReducerMovement:
         if facing < 0 or facing >= 360:
             raise ReducerError(f"invalid_facing: facing must be in [0, 360), got {facing}")
 
-        updated_mech = mech.model_copy(
+        updated_mech = mech.evolve(
             update={
                 "position": payload.position,
                 "facing": facing,
@@ -148,65 +231,25 @@ class ReducerMovement:
         payload = ModelSOMovementResolvedPayload.model_validate(event.payload)
         from_pos = payload.from_pos
         to_pos = payload.to_pos
-        ticks_consumed = payload.ticks_consumed
         pressure_consumed = payload.pressure_consumed
 
-        # 1. "from" must match the mech's current position.
-        if from_pos != mech.position:
-            raise ReducerError(
-                f"position_mismatch: mech {mech_id!r} is at {mech.position}, "
-                f"but MOVEMENT_RESOLVED payload declares from={from_pos}"
-            )
-
-        # 2. The authoritative arena rejects shaped canonical movement at ingress.
-        if not (0 <= to_pos.x < self._arena.size and 0 <= to_pos.y < self._arena.size):
-            raise ReducerError(
-                f"arena_bounds: mech {mech_id!r} destination "
-                f"{(to_pos.x, to_pos.y)} is outside [0, {self._arena.size})"
-            )
-        obstacles = self._arena.obstacle_cells
-        blocked_cell = next(
-            (cell for cell in chebyshev_line(from_pos, to_pos) if cell in obstacles),
-            None,
+        validate_movement_resolved(
+            mech=mech,
+            from_pos=from_pos,
+            to_pos=to_pos,
+            ticks_consumed=payload.ticks_consumed,
+            pressure_consumed=pressure_consumed,
+            arena_size=self._arena.size,
+            obstacles=self._arena.obstacle_cells,
         )
-        if blocked_cell is not None:
-            raise ReducerError(
-                f"obstacle_blocked: mech {mech_id!r} movement path crosses {blocked_cell}"
-            )
 
-        # 3. Pressure cost must equal Chebyshev distance (1 per cell).
-        distance = chebyshev(from_pos, to_pos)
-        if pressure_consumed != distance:
-            raise ReducerError(
-                f"pressure_cost_mismatch: Chebyshev distance is {distance}, "
-                f"but pressure_consumed={pressure_consumed}"
-            )
-
-        # 4. Speed limit: distance <= effective_speed * ticks_consumed.
-        speed = effective_speed(mech)
-        max_cells = speed * ticks_consumed
-        if distance > max_cells:
-            raise ReducerError(
-                f"speed_exceeded: mech {mech_id!r} has effective_speed={speed}, "
-                f"ticks_consumed={ticks_consumed} (max {max_cells} cells), "
-                f"but move covers {distance} cells"
-            )
-
-        # 5. Pressure availability.
-        if mech.boiler.pressure_current < pressure_consumed:
-            raise ReducerError(
-                f"insufficient_pressure: mech {mech_id!r} has "
-                f"pressure_current={mech.boiler.pressure_current}, "
-                f"but move costs {pressure_consumed}"
-            )
-
-        # 6. Apply: update position + deduct pressure.
-        new_boiler = mech.boiler.model_copy(
+        # Apply: update position + deduct pressure.
+        new_boiler = mech.boiler.evolve(
             update={
                 "pressure_current": mech.boiler.pressure_current - pressure_consumed,
             }
         )
-        updated_mech = mech.model_copy(
+        updated_mech = mech.evolve(
             update={
                 "position": to_pos,
                 "boiler": new_boiler,
@@ -225,4 +268,4 @@ class ReducerMovement:
     def _replace_mech(self, mech: ModelSOMechRuntimeState) -> None:
         new_mechs = dict(self._state.mech_states)
         new_mechs[mech.mech_id] = mech
-        self._state = self._state.model_copy(update={"mech_states": new_mechs})
+        self._state = self._state.evolve(update={"mech_states": new_mechs})

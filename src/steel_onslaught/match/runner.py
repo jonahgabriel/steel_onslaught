@@ -117,7 +117,12 @@ from steel_onslaught.reducers.mode import (
     build_mode_transition_started_event,
     validate_mode_switch,
 )
-from steel_onslaught.reducers.movement import chebyshev, effective_speed, mode_effective_speed
+from steel_onslaught.reducers.movement import (
+    chebyshev,
+    effective_speed,
+    mode_effective_speed,
+    validate_movement_resolved,
+)
 from steel_onslaught.reducers.pilot_tick import ReducerPilotTick, build_pilot_observation
 from steel_onslaught.reducers.sensors import ReducerSensors
 from steel_onslaught.reducers.weapons import (
@@ -405,7 +410,10 @@ class MatchRunner:
             catalog=self._catalog,
             before_emit=self._before_fold_emit,
         )
-        bus.subscribe(self.fold.handle)
+        # The fold is the canonical-admission authority (OMN-15490): if it
+        # refuses an event, the publish tree's durable unit of work is rolled
+        # back, so a rejected event never reaches the append-only ledger.
+        bus.subscribe_admission(self.fold.handle)
 
         # Per-tick buffers + MATCH_ENDED bookkeeping.
         self._sensor_buffer: list[ModelSOEventEnvelope] = []
@@ -1318,6 +1326,30 @@ class MatchRunner:
         moved = chebyshev(from_pos, to_pos)
         if moved == 0:
             return  # pinned against the arena edge, terrain, or already adjacent
+
+        # Pre-publish admissibility, in parity with ``_resolve_weapon_fire``
+        # (OMN-15490 AC3).  This is the SAME function the fold applies on
+        # admission, so the resolver cannot emit a MOVEMENT_RESOLVED the fold
+        # would refuse.  It fires only on a resolver defect — the destination
+        # above comes from the shared pure resolver — and failing here keeps the
+        # bad event out of the append-only ledger, which has no retract.
+        try:
+            validate_movement_resolved(
+                mech=mech,
+                from_pos=from_pos,
+                to_pos=to_pos,
+                ticks_consumed=1,
+                pressure_consumed=moved,
+                arena_size=self._arena_size,
+                obstacles=self._obstacles,
+            )
+        except ReducerError as exc:
+            raise ReducerError(
+                f"movement_resolution_invalid: the move resolver produced an inadmissible "
+                f"MOVEMENT_RESOLVED for mech {mech.mech_id!r} "
+                f"({from_pos} -> {to_pos}, direction={direction!r}); refused before publish "
+                f"so it cannot contaminate the ledger. underlying: {exc}"
+            ) from exc
 
         self._bus.publish(
             self._make_subject_event(

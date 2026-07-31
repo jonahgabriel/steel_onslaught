@@ -264,7 +264,7 @@ class MatchStateFold:
     @property
     def state(self) -> ModelSOMatchState:
         """Composite canonical state: lifecycle authority + mech detail."""
-        return self._lifecycle.state.model_copy(
+        return self._lifecycle.state.evolve(
             update={
                 "mech_states": dict(self._mech_states),
                 "vp_totals": dict(self._vp_totals),
@@ -700,7 +700,7 @@ class MatchStateFold:
             spec = self._catalog.weapons.get(weapon_id)
             if spec is None:
                 raise UnknownWeaponError(weapon_id, owner_id=mech_id)
-            mech = mech.model_copy(
+            mech = mech.evolve(
                 update={
                     "weapon_cooldowns": freeze_mapping(
                         {
@@ -712,9 +712,7 @@ class MatchStateFold:
                     "accuracy_penalty_next_fire": 0.0,
                 }
             )
-            working = working.model_copy(
-                update={"mech_states": {**working.mech_states, mech_id: mech}}
-            )
+            working = working.evolve(update={"mech_states": {**working.mech_states, mech_id: mech}})
         self._mech_states = dict(working.mech_states)
 
     def _on_mode_transition_started(self, event: ModelSOEventEnvelope) -> None:
@@ -754,7 +752,7 @@ class MatchStateFold:
         if boiler is not None:
             working = boiler.apply(event, working)  # deduct costs (Task 22 fold)
             mech = working.mech_states[mech_id]
-        mech = mech.model_copy(
+        mech = mech.evolve(
             update={
                 "transition_ticks_remaining": payload.costs.transition_ticks,
                 "transition_to_mode": payload.to_mode,
@@ -762,7 +760,7 @@ class MatchStateFold:
                 "evasion": payload.evasion_penalty,
             }
         )
-        working = working.model_copy(update={"mech_states": {**working.mech_states, mech_id: mech}})
+        working = working.evolve(update={"mech_states": {**working.mech_states, mech_id: mech}})
         self._mech_states = dict(working.mech_states)
 
     def _on_damage_applied(self, event: ModelSOEventEnvelope) -> None:
@@ -775,7 +773,7 @@ class MatchStateFold:
             return  # idempotent re-statement (e.g. rupture loop-back)
         self._mech_states = {
             **self._mech_states,
-            mech.mech_id: mech.model_copy(update={"hp": hp_after}),
+            mech.mech_id: mech.evolve(update={"hp": hp_after}),
         }
 
     def _on_armor_absorbed(self, event: ModelSOEventEnvelope) -> None:
@@ -794,7 +792,7 @@ class MatchStateFold:
             return  # idempotent re-statement
         self._mech_states = {
             **self._mech_states,
-            mech.mech_id: mech.model_copy(update={"armor_value": armor_after}),
+            mech.mech_id: mech.evolve(update={"armor_value": armor_after}),
         }
 
     def _on_flag_drop(
@@ -843,7 +841,7 @@ class MatchStateFold:
         survivors_before = self.state.surviving_player_ids()
         self._mech_states = {
             **self._mech_states,
-            mech.mech_id: mech.model_copy(update={field: False}),
+            mech.mech_id: mech.evolve(update={field: False}),
         }
         composite = self.state
         survivors_after = composite.surviving_player_ids()
@@ -909,14 +907,14 @@ class MatchStateFold:
                 new_cooldowns != mech.weapon_cooldowns
                 or new_dropout != mech.sensor_dropout_ticks_remaining
             ):
-                mech = mech.model_copy(
+                mech = mech.evolve(
                     update={
                         "weapon_cooldowns": freeze_mapping(new_cooldowns),
                         "sensor_dropout_ticks_remaining": new_dropout,
                     }
                 )
             new_states[mech_id] = mech
-        return working.model_copy(update={"mech_states": new_states})
+        return working.evolve(update={"mech_states": new_states})
 
     def _regenerate_armor(self, working: ModelSOMatchState) -> ModelSOMatchState:
         """Regenerate each mech's armor_value toward armor_max (degrading-armor model).
@@ -942,8 +940,8 @@ class MatchStateFold:
                 new_states[mech_id] = mech
                 continue
             changed = True
-            new_states[mech_id] = mech.model_copy(update={"armor_value": new_armor})
-        return working.model_copy(update={"mech_states": new_states}) if changed else working
+            new_states[mech_id] = mech.evolve(update={"armor_value": new_armor})
+        return working.evolve(update={"mech_states": new_states}) if changed else working
 
     def _advance_mode_transitions(
         self, event: ModelSOEventEnvelope, working: ModelSOMatchState
@@ -960,14 +958,12 @@ class MatchStateFold:
                 continue
             remaining = mech.transition_ticks_remaining - 1
             if remaining > 0:
-                new_states[mech_id] = mech.model_copy(
-                    update={"transition_ticks_remaining": remaining}
-                )
+                new_states[mech_id] = mech.evolve(update={"transition_ticks_remaining": remaining})
                 continue
 
             to_mode = mech.transition_to_mode
             if to_mode is None:  # unreachable per the paired-fields invariant
-                new_states[mech_id] = mech.model_copy(update={"transition_ticks_remaining": 0})
+                new_states[mech_id] = mech.evolve(update={"transition_ticks_remaining": 0})
                 continue
 
             transition = self._require_transition(
@@ -983,7 +979,7 @@ class MatchStateFold:
             )
             lock_ticks = transition.restrictions.minimum_lock_ticks_after_switch
             lock_until = event.tick + lock_ticks
-            new_states[mech_id] = mech.model_copy(
+            new_states[mech_id] = mech.evolve(
                 update={
                     "current_mode": to_mode,
                     "transition_ticks_remaining": 0,
@@ -1006,4 +1002,4 @@ class MatchStateFold:
                     mode_lock_until=lock_until,
                 )
             )
-        return working.model_copy(update={"mech_states": new_states})
+        return working.evolve(update={"mech_states": new_states})

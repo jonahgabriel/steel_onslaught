@@ -281,13 +281,13 @@ class ReducerModeTransition:
             return  # one or more checks failed — drop silently
 
         # Accept: deduct costs, set transition state, emit STARTED.
-        new_boiler = mech.boiler.model_copy(
+        new_boiler = mech.boiler.evolve(
             update={
                 "pressure_current": mech.boiler.pressure_current - transition.costs.pressure,
                 "heat_current": mech.boiler.heat_current + transition.costs.heat,
             }
         )
-        new_mech = mech.model_copy(
+        new_mech = mech.evolve(
             update={
                 "boiler": new_boiler,
                 "transition_ticks_remaining": transition.costs.transition_ticks,
@@ -338,7 +338,7 @@ class ReducerModeTransition:
             new_ticks = mech.transition_ticks_remaining - 1
             if new_ticks > 0:
                 # Still in transition — just decrement.
-                self._mech_states[mech_id] = mech.model_copy(
+                self._mech_states[mech_id] = mech.evolve(
                     update={"transition_ticks_remaining": new_ticks}
                 )
                 continue
@@ -348,9 +348,7 @@ class ReducerModeTransition:
             if to_mode is None:
                 # Should never happen (paired fields invariant on ModelSOMechRuntimeState),
                 # but guard defensively.
-                self._mech_states[mech_id] = mech.model_copy(
-                    update={"transition_ticks_remaining": 0}
-                )
+                self._mech_states[mech_id] = mech.evolve(update={"transition_ticks_remaining": 0})
                 continue
 
             # Look up the minimum_lock_ticks_after_switch for this transition.
@@ -364,7 +362,7 @@ class ReducerModeTransition:
                 owner_id=mech_id,
             )
 
-            completed_mech = mech.model_copy(
+            completed_mech = mech.evolve(
                 update={
                     "current_mode": to_mode,
                     "transition_ticks_remaining": 0,

@@ -140,7 +140,7 @@ class ReducerMatchLifecycle:
             )
 
         if state.max_ticks is None or expected < state.max_ticks:
-            self._state = state.model_copy(update={"tick": expected})
+            self._state = state.evolve(update={"tick": expected})
             return
 
         # Bound reached: terminate. Single surviving player -> victory;

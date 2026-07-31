@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from steel_onslaught.immutable import ModelFrozenValidated
+
 
 class ModelSOBoilerCompatibility(BaseModel):
     """Closed chassis-class compatibility block loaded by the catalog parser."""
@@ -72,7 +74,7 @@ class ModelSOBoilerSpec(BaseModel):
         return self
 
 
-class ModelSOBoilerState(BaseModel):
+class ModelSOBoilerState(ModelFrozenValidated):
     """Boiler runtime state — design §10.3.
 
     Mirrors the YAML contract example:
