@@ -78,6 +78,18 @@ def _launch(argv: tuple[str, ...], log_path: Path) -> subprocess.Popen[bytes]:
     help="Row count of a fully clean run. A short clean exit is INCOMPLETE, not COMPLETED.",
 )
 @click.option(
+    "--expected-rows-max",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Upper bound of an INCLUSIVE clean-row range whose floor is "
+        "--expected-rows. Omit for the exact-count contract. Required when a "
+        "driver's clean row count is data-dependent — the L-GATE-2 battery's "
+        "promote phase stops at the first promotion, so a clean run writes "
+        "n + k + n rows for k in 1..promote-attempts (61-75 at n=30/15)."
+    ),
+)
+@click.option(
     "--stall-deadline-seconds",
     type=click.FloatRange(min=1.0),
     default=3600.0,
@@ -126,6 +138,7 @@ def battery_watch_command(
     raw_path: Path,
     log_path: Path,
     expected_rows: int | None,
+    expected_rows_max: int | None,
     stall_deadline_seconds: float,
     poll_seconds: float,
     settle_seconds: float,
@@ -151,6 +164,22 @@ def battery_watch_command(
         click.echo(f"battery-watch refused to launch: {exc}", err=True)
         raise SystemExit(_CONFIG_ERROR_EXIT) from exc
 
+    # Validated BEFORE the driver is launched, for the same reason the
+    # notifiers are: BatteryWatchdog's own __post_init__ would reject an
+    # incoherent row contract too, but by then _launch has already started a
+    # multi-hour battery that would be left running with no supervisor — the
+    # precise unsupervised-run failure mode this module exists to remove.
+    if expected_rows_max is not None and (
+        expected_rows is None or expected_rows_max < expected_rows
+    ):
+        click.echo(
+            "battery-watch refused to launch: --expected-rows-max requires "
+            "--expected-rows and must be >= it "
+            f"(got max={expected_rows_max}, min={expected_rows})",
+            err=True,
+        )
+        raise SystemExit(_CONFIG_ERROR_EXIT)
+
     chain_argv = tuple(shlex.split(on_complete_exec)) if on_complete_exec else ()
     chain_log = log_path.with_suffix(".chain.log")
 
@@ -166,6 +195,7 @@ def battery_watch_command(
         stall_deadline_seconds=stall_deadline_seconds,
         poll_seconds=poll_seconds,
         expected_rows=expected_rows,
+        expected_rows_max=expected_rows_max,
         read_tail=functools.partial(read_log_tail, log_path),
         settle_seconds=settle_seconds,
         on_complete=_launch_chain if chain_argv else None,

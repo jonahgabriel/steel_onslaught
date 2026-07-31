@@ -1,0 +1,47 @@
+# OMN-15488 leg (a) -- LEARNING-SEAT loadout (player.blue).
+#
+# Byte-identical to contracts_data/loadouts/qwen35/sniper_ironclad.yaml -- the
+# sniper-ironclad loadout #126/#128 flew on this seat -- on every field EXCEPT
+# ``id``. ``pilot_id`` still resolves to ``pilot.llm.qwen35_sniper``, but in
+# leg (a)'s OWN dedicated pilot registry
+# (contracts_data/pilots/tactical_split_overdeal_v1_delegation_learning_blue/),
+# not the shared ``fire_dense_qwen/`` one; see that spec's header for why the
+# registry is dedicated.
+#
+# Why a separate ``id`` at all rather than reusing sniper_ironclad.yaml
+# directly: prereg §2.3 item 3 pre-registers TWO loadouts for this leg,
+# learning-seat and mirror, "differing only in ``id`` and ``pilot_id``". A
+# named leg-(a) pair keeps the two seats symmetric and makes the executed
+# pairing legible in the run's own artifacts instead of one seat pointing at a
+# shared file and the other at a leg-specific one.
+#
+# The chassis/weapon content is what FD2 changes relative to the red battery:
+# chassis.heavy.ironclad_mk1 with an artillery mortar and a harpoon gun,
+# against the red leg's light scout/berserker chassis.
+schema_version: "0.1.0"
+kind: steel_onslaught.loadout
+id: loadout.llm.qwen35_sniper_ironclad_lega_blue
+chassis_id: chassis.heavy.ironclad_mk1
+boiler_id: boiler.industrial.bessemer_90
+pilot_id: pilot.llm.qwen35_sniper
+modules:
+  weapons:
+    - weapon.siege.artillery_mortar
+    - weapon.heavy.harpoon_gun
+  sensors:
+    - sensor.long_range_radar
+    - sensor.short_range_scanner
+  cooling: []
+  armor: []
+  gizmos:
+    - gizmo.cooling.emergency_condenser
+    - gizmo.efficiency.efficient_regulator
+budgets:
+  points_used: 96
+  points_max: 100
+  mass_used: 112
+  mass_max: 160
+  slots_used: 6
+  slots_max: 8
+  expected_heat_peak: 22
+  expected_signature: 92

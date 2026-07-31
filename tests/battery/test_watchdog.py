@@ -544,3 +544,169 @@ def test_runbook_no_longer_documents_the_disk_sentinel_bash_watcher() -> None:
     assert 'touch "$ROOT/NEEDS_ATTENTION"' not in text
     assert "while pgrep -f" not in text
     assert "chain watcher started" not in text
+
+
+# ---------------------------------------------------------------------------
+# OMN-15488 leg (a): a data-dependent clean row count
+# ---------------------------------------------------------------------------
+
+
+class TestRangeRowContract:
+    """A battery's clean row count is not always a constant.
+
+    ``scripts/run_lgate2_adaptation_battery.py``'s promote phase stops at the
+    FIRST promotion, so a clean run writes ``n + k + n`` rows for an unknown
+    ``k`` in ``1..promote_attempts`` -- 61 through 75 at leg (a)'s n=30/15
+    configuration. Under the exact-match contract the only expressible value
+    was a single literal, and the literal to hand was 61 (the red battery
+    promoted on its first attempt), so 14 of the 15 clean outcomes would have
+    been declared INCOMPLETE and had their chain withheld.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("rows", [61, 62, 68, 75])
+    def test_every_clean_outcome_in_range_completes_and_chains(self, rows: int) -> None:
+        chained: list[str] = []
+        watchdog = BatteryWatchdog(
+            run_id="omn15488_legA_range",
+            process=FakeProcess(exit_code=0, exit_after_polls=1),
+            read_rows=_rows(0, rows),
+            notifiers=[RecordingNotifier()],
+            stall_deadline_seconds=600.0,
+            poll_seconds=60.0,
+            clock=FakeClock(),
+            expected_rows=61,
+            expected_rows_max=75,
+            on_complete=lambda: chained.append("launched"),
+        )
+
+        result = watchdog.run()
+
+        assert result.outcome.state is BatteryTerminalState.COMPLETED
+        assert result.chained is True
+        assert chained == ["launched"]
+
+    @pytest.mark.unit
+    def test_the_old_exact_contract_would_have_misreported_a_clean_run(self) -> None:
+        """RED-before proof: the same 62-row run, under the literal 61."""
+        chained: list[str] = []
+        watchdog = BatteryWatchdog(
+            run_id="omn15488_legA_exact",
+            process=FakeProcess(exit_code=0, exit_after_polls=1),
+            read_rows=_rows(0, 62),
+            notifiers=[RecordingNotifier()],
+            stall_deadline_seconds=600.0,
+            poll_seconds=60.0,
+            clock=FakeClock(),
+            expected_rows=61,  # no upper bound -> equality, the prior behaviour
+            on_complete=lambda: chained.append("launched"),
+        )
+
+        result = watchdog.run()
+
+        assert result.outcome.state is BatteryTerminalState.INCOMPLETE
+        assert result.chained is False
+        assert chained == []
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("rows", [0, 27, 60, 76])
+    def test_the_range_still_fails_closed_outside_its_bounds(self, rows: int) -> None:
+        """The floor is the whole point of --expected-rows; a range keeps it.
+
+        Dropping the flag entirely was the other way to accept 61-75, and it
+        would have let a 27-row clean exit -- the exact shape of the abandoned
+        OMN-15488 attempt -- read as COMPLETED.
+        """
+        watchdog = BatteryWatchdog(
+            run_id="omn15488_legA_outside",
+            process=FakeProcess(exit_code=0, exit_after_polls=1),
+            read_rows=_rows(0, rows),
+            notifiers=[RecordingNotifier()],
+            stall_deadline_seconds=600.0,
+            poll_seconds=60.0,
+            clock=FakeClock(),
+            expected_rows=61,
+            expected_rows_max=75,
+        )
+
+        result = watchdog.run()
+
+        assert result.outcome.state is BatteryTerminalState.INCOMPLETE
+        assert "expected 61-75" in result.outcome.detail
+        assert exit_code_for(result) == 2
+
+    @pytest.mark.unit
+    def test_summary_line_renders_the_range(self) -> None:
+        outcome = ModelBatteryOutcome(
+            run_id="omn15488_legA_blue",
+            state=BatteryTerminalState.COMPLETED,
+            rows_observed=68,
+            elapsed_seconds=1.0,
+            stall_deadline_seconds=3600.0,
+            detail="ok",
+            exit_code=0,
+            expected_rows=61,
+            expected_rows_max=75,
+        )
+        assert "rows=68/61-75" in outcome.summary_line()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("minimum", "maximum"),
+        [(None, 75), (75, 61)],
+    )
+    def test_an_incoherent_contract_is_rejected(self, minimum: int | None, maximum: int) -> None:
+        """An upper bound with no lower bound is not a range, and an inverted
+        range accepts nothing. Fail closed rather than ignoring half of it."""
+        with pytest.raises(ValueError):
+            BatteryWatchdog(
+                run_id="omn15488_legA_bad",
+                process=FakeProcess(),
+                read_rows=_rows(0),
+                notifiers=[RecordingNotifier()],
+                stall_deadline_seconds=600.0,
+                poll_seconds=60.0,
+                clock=FakeClock(),
+                expected_rows=minimum,
+                expected_rows_max=maximum,
+            )
+
+    @pytest.mark.unit
+    def test_cli_refuses_an_incoherent_contract_without_launching_the_driver(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal must happen BEFORE _launch.
+
+        BatteryWatchdog's own guard fires too late in the CLI's order of
+        operations: by then a multi-hour battery is already running and would
+        be left with no supervisor -- the precise unsupervised-run failure
+        mode this module exists to remove.
+        """
+        launched: list[tuple[str, ...]] = []
+
+        def _never(argv: tuple[str, ...], log: Path) -> Any:
+            launched.append(argv)
+            raise AssertionError("the driver must not be launched on a bad row contract")
+
+        monkeypatch.setattr(battery_watch_module, "_launch", _never)
+        result = CliRunner().invoke(
+            battery_watch_command,
+            [
+                "--run-id",
+                "omn15488_legA_cli",
+                "--raw-path",
+                str(tmp_path / "battery_raw.jsonl"),
+                "--log-path",
+                str(tmp_path / "driver.log"),
+                "--expected-rows-max",
+                "75",
+                "--notify-command",
+                "true",
+                "--",
+                "true",
+            ],
+        )
+
+        assert result.exit_code == 4
+        assert "refused to launch" in result.output
+        assert launched == []

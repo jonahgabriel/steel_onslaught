@@ -66,6 +66,45 @@ class NoActiveNotifierError(RuntimeError):
     """No active notification channel is configured, so a run must not start."""
 
 
+def expected_rows_label(minimum: int | None, maximum: int | None) -> str:
+    """How a row contract renders in a human-facing summary line."""
+    if minimum is None:
+        return "?"
+    if maximum is None or maximum == minimum:
+        return str(minimum)
+    return f"{minimum}-{maximum}"
+
+
+def rows_satisfy_contract(rows: int, minimum: int | None, maximum: int | None) -> bool:
+    """Whether an observed row count honours the declared row contract.
+
+    ``minimum is None`` — no contract, any clean exit is COMPLETED (unchanged).
+    ``maximum is None`` — exact equality, the pre-OMN-15488-leg-(a) behaviour.
+    both set       — inclusive range ``minimum <= rows <= maximum``.
+
+    The range form exists because a battery's clean row count is not always a
+    constant. ``scripts/run_lgate2_adaptation_battery.py``'s promote phase
+    stops at the FIRST promotion, so a clean run writes ``n + k + n`` rows for
+    an unknown ``k`` in ``1..promote_attempts`` — 61 through 75 at the
+    OMN-15488 leg (a) configuration. Under the previous strict ``!=`` the only
+    expressible contract was a single literal, and the literal to hand was 61
+    (the red battery promoted on its first attempt), which would have declared
+    every ``k > 1`` run INCOMPLETE and withheld its ``--on-complete-exec``
+    chain despite the battery being perfectly clean.
+
+    Dropping ``--expected-rows`` entirely was the other available answer and is
+    strictly worse: it also disarms the short-clean-exit check this watchdog
+    was built for (OMN-15588 — "a short clean exit is INCOMPLETE, not
+    COMPLETED"), so a battery that quietly wrote 27 rows and exited 0 would
+    read as COMPLETED. A bounded range keeps the floor.
+    """
+    if minimum is None:
+        return True
+    if maximum is None:
+        return rows == minimum
+    return minimum <= rows <= maximum
+
+
 class ModelBatteryOutcome(BaseModel):
     """The single terminal fact about a supervised battery run."""
 
@@ -79,6 +118,7 @@ class ModelBatteryOutcome(BaseModel):
     detail: str
     exit_code: int | None = None
     expected_rows: int | None = Field(default=None, ge=0)
+    expected_rows_max: int | None = Field(default=None, ge=0)
     log_tail: str = ""
 
     @property
@@ -87,7 +127,7 @@ class ModelBatteryOutcome(BaseModel):
 
     def summary_line(self) -> str:
         """One-line human summary — the subject line of any notification."""
-        expected = "?" if self.expected_rows is None else str(self.expected_rows)
+        expected = expected_rows_label(self.expected_rows, self.expected_rows_max)
         return (
             f"[steel battery {self.run_id}] {self.state.value.upper()} "
             f"rows={self.rows_observed}/{expected} "
@@ -303,6 +343,7 @@ class BatteryWatchdog:
     poll_seconds: float
     clock: ProtocolClock = field(default_factory=MonotonicClock)
     expected_rows: int | None = None
+    expected_rows_max: int | None = None
     read_tail: Callable[[], str] = str
     settle_seconds: float = 0.0
     terminate_grace_seconds: float = _DEFAULT_TERMINATE_GRACE_SECONDS
@@ -315,6 +356,17 @@ class BatteryWatchdog:
             raise ValueError("poll_seconds must be positive")
         if not self.notifiers:
             raise NoActiveNotifierError("BatteryWatchdog requires at least one notifier")
+        # Fail closed on an incoherent row contract rather than silently
+        # ignoring half of it: an upper bound with no lower bound is not a
+        # range, and an inverted range accepts nothing.
+        if self.expected_rows_max is not None:
+            if self.expected_rows is None:
+                raise ValueError("expected_rows_max requires expected_rows (the lower bound)")
+            if self.expected_rows_max < self.expected_rows:
+                raise ValueError(
+                    "expected_rows_max must be >= expected_rows "
+                    f"(got {self.expected_rows_max} < {self.expected_rows})"
+                )
 
     def run(self) -> ModelWatchdogResult:
         outcome = self._supervise()
@@ -374,14 +426,15 @@ class BatteryWatchdog:
                 exit_code=exit_code,
                 detail=f"driver exited {exit_code}",
             )
-        if self.expected_rows is not None and rows != self.expected_rows:
+        if not rows_satisfy_contract(rows, self.expected_rows, self.expected_rows_max):
+            expected = expected_rows_label(self.expected_rows, self.expected_rows_max)
             return self._outcome(
                 state=BatteryTerminalState.INCOMPLETE,
                 rows=rows,
                 elapsed=elapsed,
                 exit_code=exit_code,
                 detail=(
-                    f"driver exited 0 with {rows} rows, expected {self.expected_rows} — "
+                    f"driver exited 0 with {rows} rows, expected {expected} — "
                     "follow-on work withheld"
                 ),
             )
@@ -412,6 +465,7 @@ class BatteryWatchdog:
             detail=detail,
             exit_code=exit_code,
             expected_rows=self.expected_rows,
+            expected_rows_max=self.expected_rows_max,
             log_tail=tail,
         )
 

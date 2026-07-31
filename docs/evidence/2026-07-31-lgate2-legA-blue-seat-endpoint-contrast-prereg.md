@@ -695,3 +695,77 @@ a reportable defect.
 *No figure in this document is asserted from an agent self-report: every number is either quoted from a
 merged evidence document with its section named, or read from source at a named path and line at
 `origin/main` `d78094a`. This document authorizes no run.*
+
+---
+
+## Amendments
+
+Amendments are appended, dated, and numbered, per §12 clause 2. They are landed on the executing
+overlay's header (the pre-registration of record) and mirrored here so the two surfaces agree —
+§12 makes a header/document disagreement a reportable defect. **The §2–§7 text above is unchanged
+by any amendment**; an amendment that needed to edit a criterion region would not be an amendment.
+
+### Amendment 1 (2026-07-31, before any match of this battery exists) — §7.1 INTERPRETATION-MAP ROW PRECEDENCE
+
+**The defect.** §7.1 is a five-row table whose rows OVERLAP, and it states no rule for which row
+governs when two match. A run with primary SUPPORTED and vent DIRECTIONAL-ONLY matches both row 1
+(`SUPPORTED | any`) and row 4 (`any | DIRECTIONAL-ONLY`), and those rows give opposite readings —
+row 1 says the L-GATE-2 behavioral half PASSES at this operating point, row 4 says the result is
+unresolved and no terminal/non-terminal call may be made from it. Left as written, the scoring
+session picks one after seeing the data, which is exactly the discretion a pre-registration exists
+to remove.
+
+**Why this is a restoration, not a new rule.** The red battery's pre-registration (quoted verbatim
+in `docs/evidence/2026-07-31-lgate2-decisive-battery-scoring.md`, §"PRE-DECLARED INTERPRETATION
+MAP") had no such ambiguity because it was not a table: it was three NAMED rows followed by a
+CLOSING clause — *"DIRECTIONAL-ONLY outcomes -> reported as unresolved; the terminal/non-terminal
+call is NOT made from an unresolved band."* The red scoring document applied precisely that
+structure to its own NOT-SUPPORTED / DIRECTIONAL-ONLY result: *"none of the three named rows apply
+and the closing clause governs."* Reformatting into a flat table silently dropped the ordering that
+made the map decidable.
+
+**The clause, restored.** Read §7.1's rows **in table order; the FIRST row whose bands both match
+the scored result governs, and no later row is consulted.** Rows 4 and 5 are therefore residual
+clauses, exactly as the red pre-registration's closing clause was.
+
+**All nine cells, resolved:**
+
+| primary | vent | governing row | reading |
+|---|---|---|---|
+| SUPPORTED | CONFIRMED | 1 | behavioral half PASSES at this operating point |
+| SUPPORTED | DIRECTIONAL-ONLY | 1 | behavioral half PASSES at this operating point |
+| SUPPORTED | NOT-CONFIRMED | 1 | behavioral half PASSES at this operating point |
+| NOT-SUPPORTED | CONFIRMED | 2 | semantics are the defect, not the learning chain |
+| NOT-SUPPORTED | NOT-CONFIRMED | 3 | H_POLICY_INERT; with the red leg, the symmetric null |
+| NOT-SUPPORTED | DIRECTIONAL-ONLY | 4 | unresolved |
+| DIRECTIONAL-ONLY | CONFIRMED | 5 | unresolved |
+| DIRECTIONAL-ONLY | DIRECTIONAL-ONLY | 4 | unresolved |
+| DIRECTIONAL-ONLY | NOT-CONFIRMED | 5 | unresolved |
+
+Row 1 covering all three vent bands is not an artefact of ordering — it is what `SUPPORTED | any`
+already says, and it matches the red pre-registration's own first row (*"primary SUPPORTED (any
+vent outcome)"*). The red leg's actual scored cell (NOT-SUPPORTED / DIRECTIONAL-ONLY) resolves to
+row 4 = unresolved, which is verbatim the call its scoring document made. The clause changes no
+band, no endpoint, no direction, no alpha, no escape, and no cell's reading; it removes only the
+discretion to choose between two rows after seeing which is more convenient.
+
+### Amendment 2 (2026-07-31, before any match exists) — the executing command, completed
+
+Execution-infrastructure only; no criterion region is touched. Full text in the overlay header;
+the procedure it pins is `docs/runbooks/2026-07-31-lgate2-legA-blue-seat-launch.md`. Summary:
+
+1. **§2.1 FD3 / §3's seed blocks were unreachable.** `scripts/run_lgate2_adaptation_battery.py`
+   hardcoded base `4000` three times inline. It now takes `--seed-base` (default 4000, byte-identical
+   to every prior invocation); leg (a) passes `--seed-base 6000`, yielding exactly 6001–6030 /
+   6101–6115 / 6201–6230, and the executed base is published into `battery_summary.json`.
+2. **§10.1's `--expected-rows 61` was wrong for 14 of the 15 possible clean outcomes.** The promote
+   phase stops at the first promotion, so a clean run writes `30 + k + 30` rows for `k` in 1..15;
+   the watchdog compared with a strict `!=`. `so battery-watch` now takes `--expected-rows-max`, and
+   leg (a) launches with the derived `61`–`75`. The §6.1 NO-PROMOTION escape does not hide inside
+   that range: a no-promotion run exits nonzero and surfaces as CRASHED.
+3. **§6.3's canary decisiveness clause had no checker.** `scripts/check_canary_decisiveness.py` now
+   decides all three clauses and fails closed on missing evidence. The canary flies `--seed-base 9100
+   --n 2 --promote-attempts 0` — exactly the pre-registered canary seeds 9101/9102, and exactly two
+   matches, creating no policy lineage.
+
+**Landing these amendments authorizes no run.** Leg (a) starts only when an operator says so.
