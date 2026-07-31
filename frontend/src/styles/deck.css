@@ -871,9 +871,20 @@ body {
   background: var(--danger);
   transform: translateX(-1px);
 }
+/* OMN-15584: the thermal row is a GRID with a fixed dial column, not a flex
+   row. As a flex row the dial was a shrinkable item next to an intrinsically
+   sized lamp stack, so the lamp stack's width — i.e. the mode-chip TEXT —
+   decided both the dial's x position (via `.pd-dial { margin: 0 auto }`
+   absorbing the row's free space) and its rendered width. Measured on the
+   packaged 220px rail before this change: the dial's left edge moved
+   42.22px → 35.86px → 22.59px for RECON / EVASION / a telegraphed switch,
+   and its box shrank 80px → 56.55px on the longest label. A fixed track plus
+   `align-items: start` makes the dial's geometry independent of every label
+   in the column. */
 .pd-spec-thermorow {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  align-items: start;
   gap: 0.5rem;
 }
 .pd-spec-lamps {
@@ -881,6 +892,9 @@ body {
   flex-direction: column;
   gap: 0.25rem;
   align-items: flex-start;
+  /* A grid item's automatic minimum size is its content; without this an
+     over-long lamp label would push the track wider and re-open the shift. */
+  min-width: 0;
 }
 .pd-lamp-danger {
   color: var(--danger);
@@ -892,6 +906,9 @@ body {
 }
 .pd-mode-transition {
   color: var(--ash);
+  /* OMN-15584: kept on its own line — a variable-length "▸ ASSAULT (3t)"
+     suffix sharing the chip's line was the second reflow source. */
+  display: block;
 }
 .pd-weapons {
   display: flex;
@@ -963,7 +980,13 @@ body {
 }
 .pd-dial {
   display: block;
-  margin: 0 auto 0.3rem;
+  /* OMN-15584: `margin: 0 auto` inside the old flex thermal row absorbed the
+     row's free space, so the dial slid horizontally whenever a neighbouring
+     label changed width. Its column is fixed now, so the auto margins are
+     both unnecessary and harmful. */
+  margin: 0 0 0.3rem;
+  width: 80px;
+  height: 68px;
 }
 .pd-gauge-row {
   display: grid;
@@ -995,7 +1018,11 @@ body {
   transition: width 220ms ease-out;
 }
 .pd-mode-chip {
-  display: inline-block;
+  /* OMN-15584: a block chip that fills its (fixed) column has a width that no
+     longer depends on the mode label, so a RECON → EVASION switch — or a
+     telegraphed-transition suffix — cannot reflow the panel. */
+  display: block;
+  width: 100%;
   font-family: var(--font-mono);
   font-size: 0.6rem;
   letter-spacing: 0.06em;
