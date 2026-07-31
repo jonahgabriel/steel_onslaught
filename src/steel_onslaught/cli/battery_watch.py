@@ -112,7 +112,21 @@ def _launch(argv: tuple[str, ...], log_path: Path) -> subprocess.Popen[bytes]:
 @click.option(
     "--on-complete-exec",
     default=None,
-    help="Command launched ONLY on a clean COMPLETED run (the chain-forward gate).",
+    help=(
+        "Command launched ONLY on a clean COMPLETED run whose terminal "
+        "notification reached at least one channel (the chain-forward gate)."
+    ),
+)
+@click.option(
+    "--chain-on-delivery-failure",
+    is_flag=True,
+    default=False,
+    help=(
+        "Run --on-complete-exec even when every notification channel failed. "
+        "OFF by default: a chain that advances with nobody told is the "
+        "OMN-15595 defect. Use is recorded on the printed result "
+        "(chain_forced_on_undelivered) and on stderr."
+    ),
 )
 @click.option(
     "--notify-command",
@@ -143,6 +157,7 @@ def battery_watch_command(
     poll_seconds: float,
     settle_seconds: float,
     on_complete_exec: str | None,
+    chain_on_delivery_failure: bool,
     notify_command: str | None,
     notify_webhook: str | None,
     battery_command: tuple[str, ...],
@@ -199,6 +214,7 @@ def battery_watch_command(
         read_tail=functools.partial(read_log_tail, log_path),
         settle_seconds=settle_seconds,
         on_complete=_launch_chain if chain_argv else None,
+        chain_on_delivery_failure=chain_on_delivery_failure,
     )
     result = watchdog.run()
     _report(result)
@@ -213,6 +229,15 @@ def _report(result: ModelWatchdogResult) -> None:
     if not result.delivered:
         click.echo(
             "no channel accepted this outcome — nobody has been told; treat as unreported",
+            err=True,
+        )
+    if result.chain_withheld_reason is not None:
+        click.echo(f"CHAIN WITHHELD — {result.chain_withheld_reason}", err=True)
+    if result.chain_forced_on_undelivered:
+        click.echo(
+            "CHAIN FORWARDED ON AN UNDELIVERED NOTIFICATION — "
+            "--chain-on-delivery-failure was set, so the next battery was started "
+            "although nobody was told this one finished",
             err=True,
         )
     if result.outcome.state is not BatteryTerminalState.COMPLETED:
