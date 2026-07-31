@@ -20,6 +20,10 @@ signalling non-optional rather than merely available:
 * A notification that fails to deliver is carried on the result and mapped to
   a distinct nonzero exit code, so a dead channel can never present itself as
   a clean run.
+* The chain-forward hook is gated on that same delivery fact (OMN-15595), so a
+  battery chain cannot advance run after run with nobody told. Chaining anyway
+  is reachable only through the explicit ``chain_on_delivery_failure`` opt-in,
+  which is recorded on the result the watchdog prints.
 
 Everything that observes the outside world — the clock, the supervised
 process, the row counter, the log tail, the follow-on launcher — is injected,
@@ -150,6 +154,8 @@ class ModelWatchdogResult(BaseModel):
     delivered_channels: tuple[str, ...] = ()
     notification_failures: tuple[str, ...] = ()
     chained: bool = False
+    chain_withheld_reason: str | None = None
+    chain_forced_on_undelivered: bool = False
 
     @property
     def delivered(self) -> bool:
@@ -320,7 +326,10 @@ def exit_code_for(result: ModelWatchdogResult) -> int:
     """Map a terminal result onto a process exit code.
 
     An undelivered notification outranks a clean battery: the run may have been
-    fine, but the mechanism that was supposed to tell someone was not.
+    fine, but the mechanism that was supposed to tell someone was not. The
+    chain-forward gate in :meth:`BatteryWatchdog._chain_decision` keys on the
+    same predicate, so exit 3 and ``chained=True`` cannot co-occur unless the
+    operator explicitly opted in (OMN-15595).
     """
     if result.notification_failures and not result.delivered:
         return 3
@@ -348,6 +357,7 @@ class BatteryWatchdog:
     settle_seconds: float = 0.0
     terminate_grace_seconds: float = _DEFAULT_TERMINATE_GRACE_SECONDS
     on_complete: Callable[[], None] | None = None
+    chain_on_delivery_failure: bool = False
 
     def __post_init__(self) -> None:
         if self.stall_deadline_seconds <= 0:
@@ -371,16 +381,58 @@ class BatteryWatchdog:
     def run(self) -> ModelWatchdogResult:
         outcome = self._supervise()
         delivered, failures = self._notify(outcome)
-        chained = False
-        if outcome.state is BatteryTerminalState.COMPLETED and self.on_complete is not None:
+        should_chain, withheld_reason, forced = self._chain_decision(outcome, delivered, failures)
+        if should_chain and self.on_complete is not None:
             self.on_complete()
-            chained = True
         return ModelWatchdogResult(
             outcome=outcome,
             delivered_channels=delivered,
             notification_failures=failures,
-            chained=chained,
+            chained=should_chain,
+            chain_withheld_reason=withheld_reason,
+            chain_forced_on_undelivered=forced,
         )
+
+    def _chain_decision(
+        self,
+        outcome: ModelBatteryOutcome,
+        delivered: tuple[str, ...],
+        failures: tuple[str, ...],
+    ) -> tuple[bool, str | None, bool]:
+        """Decide whether the follow-on battery may start — OMN-15595.
+
+        A clean terminal state is necessary but NOT sufficient. Delivery is the
+        second condition: a chain that advances while every channel was dead
+        reproduces one layer up the exact failure OMN-15588 removed, because
+        the next battery starts and the operator still learns nothing until
+        they inspect disk. :func:`exit_code_for` already ranks an undelivered
+        notification above a clean run (exit 3); before this the side effect
+        and the exit code disagreed — the process reported "nobody was told"
+        having already launched the successor.
+
+        Partial delivery (at least one channel accepted, others failed) chains.
+        That is a decision, not a fallthrough: the gate is "did anyone hear
+        this", and it is deliberately the same predicate ``exit_code_for``
+        uses for exit 3, so the two can never disagree.
+
+        ``chain_on_delivery_failure`` is the only way past a total delivery
+        failure, and it is opt-in precisely so it appears verbatim in the
+        launch command and in this result — the default withholds.
+        """
+        if self.on_complete is None:
+            return False, None, False
+        if outcome.state is not BatteryTerminalState.COMPLETED:
+            return False, f"terminal state is {outcome.state.value}, not completed", False
+        if delivered:
+            return True, None, False
+        reason = (
+            f"battery completed cleanly but no channel accepted the notification "
+            f"({len(failures)} channel(s) failed) — nobody was told, so the chain "
+            "is withheld; override with chain_on_delivery_failure"
+        )
+        if not self.chain_on_delivery_failure:
+            return False, reason, False
+        return True, None, True
 
     def _supervise(self) -> ModelBatteryOutcome:
         started = self.clock.now()

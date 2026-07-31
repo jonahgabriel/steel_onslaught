@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -544,6 +545,249 @@ def test_runbook_no_longer_documents_the_disk_sentinel_bash_watcher() -> None:
     assert 'touch "$ROOT/NEEDS_ATTENTION"' not in text
     assert "while pgrep -f" not in text
     assert "chain watcher started" not in text
+
+
+# ---------------------------------------------------------------------------
+# OMN-15595: chain-forward is gated on delivery, not on the terminal state alone
+# ---------------------------------------------------------------------------
+
+
+class TestChainForwardRequiresDelivery:
+    """A chain must not advance while every channel was dead.
+
+    Before this gate the chain-forward condition was ``state is COMPLETED and
+    on_complete is not None``: ``delivered`` was computed on the line above and
+    then ignored. A battery chain could therefore run through leg after leg,
+    each exiting 3 ("nobody was told"), while the successor was already
+    running -- the OMN-15588 failure reproduced one layer up, with the exit
+    code and the side effect flatly disagreeing.
+    """
+
+    @staticmethod
+    def _watchdog(
+        *,
+        notifiers: list[Any],
+        chained: list[str],
+        rows: int = 61,
+        exit_code: int = 0,
+        chain_on_delivery_failure: bool = False,
+    ) -> BatteryWatchdog:
+        return BatteryWatchdog(
+            run_id="omn15595_chain_gate",
+            process=FakeProcess(exit_code=exit_code, exit_after_polls=1),
+            read_rows=_rows(0, rows),
+            notifiers=notifiers,
+            stall_deadline_seconds=600.0,
+            poll_seconds=60.0,
+            clock=FakeClock(),
+            expected_rows=61,
+            on_complete=lambda: chained.append("launched"),
+            chain_on_delivery_failure=chain_on_delivery_failure,
+        )
+
+    @pytest.mark.unit
+    def test_completed_with_every_channel_failed_withholds_the_chain(self) -> None:
+        """RED before the fix: this run chained forward with nobody told."""
+        chained: list[str] = []
+        watchdog = self._watchdog(notifiers=[DeadNotifier()], chained=chained)
+
+        result = watchdog.run()
+
+        assert result.outcome.state is BatteryTerminalState.COMPLETED
+        assert result.delivered is False
+        assert result.notification_failures == ("dead: channel unreachable",)
+        assert result.chained is False
+        assert chained == []  # the successor battery was never started
+        assert result.chain_forced_on_undelivered is False
+        assert result.chain_withheld_reason is not None
+        assert "nobody was told" in result.chain_withheld_reason
+        assert exit_code_for(result) == 3
+
+    @pytest.mark.unit
+    def test_completed_and_delivered_still_chains(self) -> None:
+        """The positive path is unchanged: a reported clean run chains."""
+        chained: list[str] = []
+        watchdog = self._watchdog(notifiers=[RecordingNotifier()], chained=chained)
+
+        result = watchdog.run()
+
+        assert result.outcome.state is BatteryTerminalState.COMPLETED
+        assert result.chained is True
+        assert chained == ["launched"]
+        assert result.chain_withheld_reason is None
+        assert result.chain_forced_on_undelivered is False
+        assert exit_code_for(result) == 0
+
+    @pytest.mark.unit
+    def test_partial_delivery_chains_because_someone_was_told(self) -> None:
+        """The stated partial-delivery behaviour, not a coin flip.
+
+        The gate asks "did anyone hear this", which is deliberately the same
+        predicate ``exit_code_for`` uses for exit 3 -- so one live channel
+        alongside a dead one both chains and exits 0, and the two surfaces
+        cannot drift apart.
+        """
+        chained: list[str] = []
+        live = RecordingNotifier("live")
+        watchdog = self._watchdog(notifiers=[DeadNotifier(), live], chained=chained)
+
+        result = watchdog.run()
+
+        assert result.delivered_channels == ("live",)
+        assert result.notification_failures == ("dead: channel unreachable",)
+        assert result.chained is True
+        assert chained == ["launched"]
+        assert exit_code_for(result) == 0
+
+    @pytest.mark.unit
+    def test_the_opt_in_flag_is_the_only_way_past_a_total_delivery_failure(self) -> None:
+        """The old behaviour survives, but only when asked for by name."""
+        chained: list[str] = []
+        watchdog = self._watchdog(
+            notifiers=[DeadNotifier()],
+            chained=chained,
+            chain_on_delivery_failure=True,
+        )
+
+        result = watchdog.run()
+
+        assert result.outcome.state is BatteryTerminalState.COMPLETED
+        assert result.delivered is False
+        assert result.chained is True
+        assert chained == ["launched"]
+        assert result.chain_forced_on_undelivered is True  # recorded, never silent
+        assert exit_code_for(result) == 3  # the override does not launder the exit code
+
+    @pytest.mark.unit
+    def test_a_dirty_terminal_state_never_chains_even_with_the_opt_in(self) -> None:
+        """The opt-in waives the delivery condition only, not the clean-run one."""
+        chained: list[str] = []
+        watchdog = self._watchdog(
+            notifiers=[DeadNotifier()],
+            chained=chained,
+            exit_code=1,
+            chain_on_delivery_failure=True,
+        )
+
+        result = watchdog.run()
+
+        assert result.outcome.state is BatteryTerminalState.CRASHED
+        assert result.chained is False
+        assert chained == []
+        assert result.chain_withheld_reason == "terminal state is crashed, not completed"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("opt_in", [False, True])
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    @pytest.mark.parametrize("rows", [27, 61])
+    @pytest.mark.parametrize("channels", ["all_dead", "partial", "all_live"])
+    def test_exit_code_three_and_chained_are_consistent_across_the_matrix(
+        self, opt_in: bool, exit_code: int, rows: int, channels: str
+    ) -> None:
+        """AC4: no combination yields ``exit 3 and chained`` without the opt-in."""
+        by_name: dict[str, list[Any]] = {
+            "all_dead": [DeadNotifier()],
+            "partial": [DeadNotifier(), RecordingNotifier("live")],
+            "all_live": [RecordingNotifier("live")],
+        }
+        notifiers = by_name[channels]
+        chained: list[str] = []
+        result = self._watchdog(
+            notifiers=notifiers,
+            chained=chained,
+            rows=rows,
+            exit_code=exit_code,
+            chain_on_delivery_failure=opt_in,
+        ).run()
+
+        assert result.chained == (chained == ["launched"])
+        if exit_code_for(result) == 3 and result.chained:
+            assert opt_in is True
+            assert result.chain_forced_on_undelivered is True
+
+    @pytest.mark.unit
+    def test_cli_withholds_the_chain_launch_when_no_channel_delivered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The seam that runs: the CLI must not spawn the follow-on command.
+
+        Asserted on ``battery_watch._launch`` -- the module's only spawn site,
+        used for both the driver and the chain -- so a chain that starts is
+        visible here regardless of what the spawned command would have done.
+        """
+        launched = self._invoke_cli(tmp_path, monkeypatch, opt_in=False)
+
+        assert launched.exit_code == 3
+        assert launched.chain_launched is False
+        assert "CHAIN WITHHELD" in launched.stderr
+
+    @pytest.mark.unit
+    def test_cli_opt_in_flag_launches_the_chain_and_records_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launched = self._invoke_cli(tmp_path, monkeypatch, opt_in=True)
+
+        assert launched.exit_code == 3  # still unreported; the flag is not a whitewash
+        assert launched.chain_launched is True
+        assert "CHAIN FORWARDED ON AN UNDELIVERED NOTIFICATION" in launched.stderr
+        assert '"chain_forced_on_undelivered": true' in launched.stdout
+
+    @staticmethod
+    def _invoke_cli(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, opt_in: bool
+    ) -> _CliChainRun:
+        raw_path = tmp_path / "battery_raw.jsonl"
+        raw_path.write_text("".join(f'{{"seed": {index}}}\n' for index in range(61)))
+        chain_marker = "steel-omn15595-chain-marker"
+        spawned: list[tuple[str, ...]] = []
+
+        def _spy_launch(argv: tuple[str, ...], log_path: Path) -> Any:
+            spawned.append(tuple(argv))
+            return FakeProcess(exit_code=0)
+
+        monkeypatch.setattr(battery_watch_module, "_launch", _spy_launch)
+
+        argv = [
+            "--run-id",
+            "omn15595_cli_chain",
+            "--raw-path",
+            str(raw_path),
+            "--log-path",
+            str(tmp_path / "driver.log"),
+            "--expected-rows",
+            "61",
+            "--poll-seconds",
+            "1",
+            "--settle-seconds",
+            "0",
+            "--on-complete-exec",
+            f"echo {chain_marker}",
+            # every configured channel fails, so nothing is delivered
+            "--notify-command",
+            f"{sys.executable} -c 'raise SystemExit(9)'",
+        ]
+        if opt_in:
+            argv.append("--chain-on-delivery-failure")
+        argv += ["--", sys.executable, "-c", "raise SystemExit(0)"]
+
+        result = CliRunner().invoke(battery_watch_command, argv)
+
+        return _CliChainRun(
+            exit_code=result.exit_code,
+            chain_launched=any(chain_marker in " ".join(call) for call in spawned),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+
+@dataclass(frozen=True)
+class _CliChainRun:
+    """What one supervised CLI invocation actually spawned and reported."""
+
+    exit_code: int
+    chain_launched: bool
+    stdout: str
+    stderr: str
 
 
 # ---------------------------------------------------------------------------
