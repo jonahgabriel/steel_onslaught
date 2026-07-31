@@ -163,7 +163,7 @@ from steel_onslaught.match.fold import MatchContractCatalog
 from steel_onslaught.match.runner import (
     MatchIdentity,
     MatchRunner,
-    _require_valid_budgets,
+    _require_legal_loadout,
 )
 from steel_onslaught.match.runtime import (
     ConditionProgressGate,
@@ -2320,8 +2320,8 @@ def assemble_match_with_dependencies(
     runtime_owner_id: str = "runtime_owner.local",
 ) -> LiveMatchStack:
     """Pure DI seam used by production root and hermetic tests."""
-    _require_valid_budgets(red, dependencies.catalog)
-    _require_valid_budgets(blue, dependencies.catalog)
+    _require_legal_loadout(red, dependencies.catalog)
+    _require_legal_loadout(blue, dependencies.catalog)
     mech_a = f"mech.{side_a}.01"
     mech_b = f"mech.{side_b}.01"
     required = {mech_a, mech_b}

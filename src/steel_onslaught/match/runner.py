@@ -42,6 +42,10 @@ from steel_onslaught.contracts.arena import ModelSOArenaSpec, arena_contract_has
 from steel_onslaught.contracts.boiler import ModelSOBoilerState
 from steel_onslaught.contracts.budget import ModelSOModuleBudget, validate_loadout_budgets
 from steel_onslaught.contracts.card_runtime import ModelSOCardRuntimeSnapshot
+from steel_onslaught.contracts.compatibility import (
+    LoadoutCompatibilityError,
+    validate_loadout_compatibility,
+)
 from steel_onslaught.contracts.gizmo import ModelSOGizmoConstraints
 from steel_onslaught.contracts.incentive import ModelSOUtilityIncentive
 from steel_onslaught.contracts.live_learning import ModelSOSeatPolicyProvenance
@@ -1867,3 +1871,35 @@ def _require_valid_budgets(loadout: ModelSOLoadout, catalog: MatchContractCatalo
             for violation in violations
         )
         raise ValueError(f"loadout {loadout.id!r} violates budgets: {details}")
+
+
+def _require_compatible_loadout(loadout: ModelSOLoadout, catalog: MatchContractCatalog) -> None:
+    """Raise ``LoadoutCompatibilityError`` listing every violated pairing (fail fast).
+
+    Consumes the three declared compatibility fields (OMN-15594) that had no
+    consumer before: ``weapon.compatibility.compatible_chassis_classes``,
+    ``chassis.compatibility.weapon_classes``, and
+    ``boiler.compatibility.compatible_chassis_classes``.
+    """
+    violations = validate_loadout_compatibility(
+        loadout,
+        catalog.chassis[loadout.chassis_id],
+        catalog.boilers[loadout.boiler_id],
+        [
+            _require_weapon_spec(catalog, weapon_id, owner_id=loadout.id)
+            for weapon_id in loadout.modules.weapons
+        ],
+    )
+    if violations:
+        raise LoadoutCompatibilityError(loadout.id, violations)
+
+
+def _require_legal_loadout(loadout: ModelSOLoadout, catalog: MatchContractCatalog) -> None:
+    """The single fail-closed legality gate every match-assembly path must call.
+
+    Budgets and part compatibility are both hard rejections, so they live
+    behind one entry point: a future assembly site cannot pick up the budget
+    half and silently omit the compatibility half.
+    """
+    _require_valid_budgets(loadout, catalog)
+    _require_compatible_loadout(loadout, catalog)
