@@ -38,6 +38,7 @@ import jsonschema  # type: ignore[import-untyped]
 import pytest
 from pydantic import ValidationError
 
+from steel_onslaught.llm import client_delegation
 from steel_onslaught.llm.client_delegation import _PROGRAMMING_RESPONSE_CONTRACT
 from steel_onslaught.llm.programming import _ModelSOLlmProgrammingResponse
 
@@ -230,3 +231,210 @@ def test_schema_is_the_closed_registers_confidence_rationale_shape() -> None:
     properties = _PROGRAMMING_RESPONSE_CONTRACT["properties"]
     assert isinstance(properties, dict)
     assert set(properties) == {"registers", "confidence", "rationale", "spatial_read"}
+
+
+# --- Residual sweep: the two latent divergences the PR #239 post-merge
+# verifier recorded on OMN-15522 (comment ``43af2956``) --------------------
+#
+# The fixture-bridge tests above are scoped, by their own docstring, to the
+# structural fixture shapes ``tests/llm/test_llm_programming.py`` already
+# exercises. Two divergence classes escape that scope entirely because no
+# fixture in those sets carries an explicit JSON ``null`` or a non-integral
+# JSON number:
+#
+# 1. ``spatial_read: null`` -- schema TIGHTER than parser. The dangerous
+#    direction: a value the parser accepts that the wire schema rejects is
+#    a ``SCHEMA_VIOLATION`` at the platform's delegation quality gate, i.e.
+#    the exact abort class OMN-15522 exists to close. Latent only because
+#    no shipped ``onex_delegation`` overlay sets ``spatial_representation``
+#    today (so ``spatial_read_required`` is always False); an R2 /
+#    ``grid_scaffold`` seat migrating to the delegation transport makes it
+#    live.
+# 2. ``register_index: 1.0`` -- schema LOOSER than parser. Benign
+#    direction (steel's own parser + bounded reprompt absorb it, which is
+#    the pre-OMN-15522 behavior), but it falsifies the "never looser"
+#    claim the constant's own comment block made, and JSON Schema has no
+#    keyword that can express it away. It is therefore DECLARED in source
+#    rather than silently tolerated -- see
+#    ``client_delegation._PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES``.
+#
+# ``_EDGE_FIXTURES`` below is the mechanism, not the two named regressions:
+# it sweeps every field of the contract against null / wrong-type /
+# boundary / non-integral-number inputs and asserts the ONLY parser-vs-
+# schema disagreements are the ones source explicitly declares. Adding a
+# new divergence (by editing either the schema or the parser) fails this
+# test until someone names it in the source constant.
+
+
+def _register(**overrides: object) -> dict[str, object]:
+    return _base_fixture(
+        registers=[{"register_index": 0, "card_id": "card.test.advance", **overrides}]
+    )
+
+
+_EDGE_FIXTURES: dict[str, dict[str, object]] = {
+    # spatial_read (optional R2 scaffold field)
+    "spatial_read_explicit_null": _base_fixture(spatial_read=None),
+    "spatial_read_empty_string": _base_fixture(spatial_read=""),
+    "spatial_read_wrong_type": _base_fixture(spatial_read=123),
+    # registers[].register_index
+    "register_index_integral_float": _register(register_index=1.0),
+    "register_index_fractional_float": _register(register_index=1.5),
+    "register_index_bool": _register(register_index=True),
+    "register_index_negative": _register(register_index=-1),
+    "register_index_string": _register(register_index="0"),
+    "register_index_null": _register(register_index=None),
+    # registers[].card_id
+    "card_id_empty_string": _register(card_id=""),
+    "card_id_null": _register(card_id=None),
+    # registers[] closedness
+    "register_extra_field": _register(weight=1),
+    # confidence
+    "confidence_integer": _base_fixture(confidence=1),
+    "confidence_bool": _base_fixture(confidence=True),
+    "confidence_string": _base_fixture(confidence="0.8"),
+    "confidence_above_range": _base_fixture(confidence=1.5),
+    "confidence_null": _base_fixture(confidence=None),
+    # rationale
+    "rationale_empty_string": _base_fixture(rationale=""),
+    "rationale_null": _base_fixture(rationale=None),
+    # registers container
+    "registers_empty_array": _base_fixture(registers=[]),
+    "registers_null": _base_fixture(registers=None),
+    "registers_object": _base_fixture(
+        registers={"register_index": 0, "card_id": "card.test.advance"}
+    ),
+}
+
+
+def test_edge_matrix_has_no_undeclared_parser_schema_divergence() -> None:
+    """Sweep every contract field for null / wrong-type / boundary /
+    non-integral-number inputs and assert the parser and the wire schema
+    agree everywhere EXCEPT the divergences source explicitly declares.
+
+    This is the standing mechanism for both OMN-15522 residuals: a future
+    edit to either ``_PROGRAMMING_RESPONSE_CONTRACT`` or
+    ``_ModelSOLlmProgrammingResponse`` that opens a new gap fails here
+    until it is named in
+    ``client_delegation._PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES``.
+    """
+    # Read the allowlist off the source module (not a test-local copy) so
+    # the declaration lives with the schema it qualifies.
+    declared = sorted(client_delegation._PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES)
+
+    observed = sorted(
+        name
+        for name, payload in _EDGE_FIXTURES.items()
+        if _parser_accepts(payload) != _schema_accepts(payload)
+    )
+
+    assert observed == declared, (
+        "parser-vs-wire-schema divergence set changed: observed "
+        f"{observed!r}, source declares {declared!r}. A divergence in the "
+        "schema-TIGHTER-than-parser direction is a SCHEMA_VIOLATION abort "
+        "source at the platform quality gate and must be FIXED, not "
+        "declared."
+    )
+
+
+def test_explicit_null_spatial_read_is_accepted_by_both_seams() -> None:
+    """OMN-15522 residual 1 (RED before the fix).
+
+    ``_ModelSOLlmProgrammingResponse.spatial_read`` is ``StrictStr | None``,
+    and ``programming.py`` deliberately logs-never-raises when a
+    ``grid_scaffold`` seat omits it -- "a scaffold field must never become
+    a new abort source". A model that answers the R2 scaffold prompt with
+    an explicit ``"spatial_read": null`` must therefore survive the wire
+    schema too; before the fix the schema declared a bare
+    ``{"type": "string", "minLength": 1}`` and rejected it, which the
+    platform gate reports as ``SCHEMA_VIOLATION`` through all 3 retries.
+    """
+    payload = _base_fixture(spatial_read=None)
+
+    assert _parser_accepts(payload), "parser must accept an explicit null spatial_read"
+    assert _schema_accepts(payload), (
+        "wire schema rejected an explicit null spatial_read the parser "
+        "accepts -- schema is TIGHTER than the parser, which is a live "
+        "SCHEMA_VIOLATION abort source for an R2/grid_scaffold seat"
+    )
+
+
+def test_spatial_read_schema_still_rejects_empty_and_wrong_typed_values() -> None:
+    """The residual-1 fix widens ``spatial_read`` to accept null ONLY --
+    an empty string (parser: ``min_length=1``) and a non-string, non-null
+    value must still be rejected by both seams."""
+    for payload in (_base_fixture(spatial_read=""), _base_fixture(spatial_read=123)):
+        assert not _parser_accepts(payload)
+        assert not _schema_accepts(payload)
+
+
+def test_known_divergence_register_index_integral_float_is_declared_in_source() -> None:
+    """OMN-15522 residual 2 (RED before the fix).
+
+    JSON Schema's ``"type": "integer"`` matches any number with a zero
+    fractional part, so ``register_index: 1.0`` validates on the wire while
+    the parser's ``StrictInt`` rejects it. ``multipleOf: 1`` does NOT close
+    this (``1.0 % 1 == 0``), and no other keyword expresses "integer token,
+    not integral float" -- so the looseness is unfixable on the wire and is
+    DECLARED in source instead of being contradicted by a "never looser"
+    docstring claim.
+    """
+    payload = _register(register_index=1.0)
+
+    assert not _parser_accepts(payload), "parser StrictInt must reject 1.0"
+    assert _schema_accepts(payload), (
+        "wire schema unexpectedly rejects register_index 1.0 -- if this "
+        "became fixable, drop it from _PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES"
+    )
+    assert (
+        "register_index_integral_float" in client_delegation._PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES
+    )
+
+
+def test_declared_divergences_are_real_and_named_after_edge_fixtures() -> None:
+    """Guard the declaration itself: every name in the source constant must
+    correspond to a real ``_EDGE_FIXTURES`` case that actually diverges, so
+    the allowlist cannot rot into a blanket suppression."""
+    for name in client_delegation._PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES:
+        assert name in _EDGE_FIXTURES, f"declared divergence {name!r} has no edge fixture"
+        payload = _EDGE_FIXTURES[name]
+        assert _parser_accepts(payload) != _schema_accepts(payload), (
+            f"declared divergence {name!r} no longer diverges -- remove it "
+            "from _PROGRAMMING_CONTRACT_KNOWN_DIVERGENCES"
+        )
+
+
+def test_contracts_are_valid_schemas_under_the_gate_s_own_validator_resolution() -> None:
+    """Seam check against the CONSUMER's actual validation path.
+
+    ``handler_quality_gate._schema_violation_reasons`` (omnimarket,
+    ``node_delegation_quality_gate_reducer``) does not use
+    ``jsonschema.validate``: it resolves ``jsonschema.validators.
+    validator_for(response_contract)`` (latest supported draft when the
+    contract declares no ``$schema`` -- neither of ours does), calls
+    ``validator_cls.check_schema(...)``, and iterates errors. Its own
+    docstring states that an invalid caller-authored schema raises
+    ``SchemaError`` and "must surface loudly" -- i.e. a malformed contract
+    is a hard failure on the platform side, not a silent pass.
+
+    Residual 1's fix introduces the first ``anyOf`` in either contract, so
+    this pins that (a) both contracts still ``check_schema`` clean under
+    the validator class the gate itself would pick, and (b) the null
+    ``spatial_read`` case produces ZERO errors through that exact
+    ``iter_errors`` path -- not merely through this module's
+    ``jsonschema.validate`` helper.
+    """
+    for contract in (
+        client_delegation._TACTICAL_RESPONSE_CONTRACT,
+        _PROGRAMMING_RESPONSE_CONTRACT,
+    ):
+        validator_cls = jsonschema.validators.validator_for(contract)
+        validator_cls.check_schema(contract)
+
+    validator_cls = jsonschema.validators.validator_for(_PROGRAMMING_RESPONSE_CONTRACT)
+    validator = validator_cls(_PROGRAMMING_RESPONSE_CONTRACT)
+
+    assert list(validator.iter_errors(_base_fixture(spatial_read=None))) == []
+    assert list(validator.iter_errors(_base_fixture(spatial_read="clear sightline"))) == []
+    assert list(validator.iter_errors(_base_fixture())) == []
+    assert list(validator.iter_errors(_base_fixture(spatial_read=""))) != []
