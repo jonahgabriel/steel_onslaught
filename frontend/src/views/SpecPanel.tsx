@@ -33,6 +33,37 @@ const STATUS_LABEL: Record<MechStatus, string> = {
   destroyed: "DESTROYED",
 };
 
+/**
+ * What each status word means, on the chip itself (OMN-15585 item 1).
+ *
+ * NOMINAL is nothing more than the `alive` flag rendered as a word, and no
+ * surface in the deck said so — an operator reasonably read it as a health or
+ * systems grade. These are the definitions, not a paraphrase of them.
+ */
+const STATUS_TITLE: Record<MechStatus, string> = {
+  alive:
+    "STATUS NOMINAL — the mech is alive. It is the alive flag, not a health grade: a mech at 1 HP still reads NOMINAL.",
+  pilot_killed: "STATUS PILOT KILLED — the pilot is dead. The chassis may still be standing.",
+  destroyed: "STATUS DESTROYED — the chassis is out of the match.",
+};
+
+/**
+ * What a mode chip means (OMN-15585 item 2).
+ *
+ * Modes are passive stances with a switching cost, NOT weapon locks — firing
+ * in evasion is legal, which is what the operator watched happen and read as a
+ * contradiction. The effect stated here is the one the runtime actually
+ * applies: `reducers/movement.py::_MODE_SPEED_DELTA` is the only place
+ * `current_mode` changes an outcome. The mode contracts in
+ * `contracts_data/modes/` additionally declare `passive_modifiers` (damage,
+ * accuracy, sensor range, signature), but no reducer reads them, so naming
+ * them here would document behaviour the match does not have.
+ */
+const MODE_TITLE =
+  "MODE — a passive stance, not a weapon lock: firing is legal in every mode. " +
+  "The wired effect is movement speed: EVASION +1, RECON and ASSAULT unchanged. " +
+  "Switching costs pressure and heat and takes several ticks, during which the switch is only telegraphed.";
+
 const CLASS_CHIP: Record<GaugeState["chassisClass"], string> = {
   light: "LIGHT",
   medium: "MEDIUM",
@@ -234,7 +265,12 @@ function MechSpec({
             </div>
           ) : null}
         </div>
-        <span className="pd-lamp" data-status={g.status} data-testid={`spec-status-${g.mechId}`}>
+        <span
+          className="pd-lamp"
+          data-status={g.status}
+          data-testid={`spec-status-${g.mechId}`}
+          title={STATUS_TITLE[g.status]}
+        >
           {STATUS_LABEL[g.status]}
         </span>
       </div>
@@ -283,15 +319,28 @@ function MechSpec({
               REDLINE {g.redlineConsecutiveTicks}t
             </span>
           ) : null}
-          <span className="pd-mode-chip" data-testid={`spec-mode-${g.mechId}`}>
+          {/* The ACTIVE stance, and only that. A telegraphed switch renders as
+              its own chip below: fusing the two into one line was what made a
+              not-yet-effective switch read as the current mode. */}
+          <span
+            className="pd-mode-chip"
+            data-testid={`spec-mode-${g.mechId}`}
+            data-active-mode={g.mode}
+            title={MODE_TITLE}
+          >
             {g.mode || "—"}
-            {g.transitionToMode !== null ? (
-              <span className="pd-mode-transition">
-                {" ▸ "}
-                {g.transitionToMode} ({g.transitionTicksRemaining}t)
-              </span>
-            ) : null}
           </span>
+          {g.transitionToMode !== null ? (
+            <span
+              className="pd-mode-transition pd-mode-telegraph"
+              data-testid={`spec-mode-telegraph-${g.mechId}`}
+              data-telegraphed-mode={g.transitionToMode}
+              title="A telegraphed mode switch. It is NOT in effect yet — the mech is still in the mode shown above until the countdown reaches zero."
+            >
+              {"TELEGRAPHED ▸ "}
+              {g.transitionToMode} ({g.transitionTicksRemaining}t)
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -333,6 +382,49 @@ export interface SpecPanelProps {
 
 const SIDE_ORDER: Record<Side, number> = { red: 0, blue: 1, neutral: 2 };
 
+/**
+ * Rail-level vocabulary key (OMN-15585 items 1 and 2).
+ *
+ * Collapsed by default so it costs no rail height until asked for, and native
+ * `<details>` so it needs no state, no JS and no focus management. Every claim
+ * below is read off the runtime, not off the mode contracts: the speed delta is
+ * `reducers/movement.py::_MODE_SPEED_DELTA` and the absence of a firing gate is
+ * the absence of any `active_systems` consumer in `src/`.
+ */
+function DeckKey({ side }: { side: "left" | "right" }): React.JSX.Element {
+  return (
+    <details className="pd-deck-key" data-testid={`deck-key-${side}`}>
+      <summary>DECK KEY</summary>
+      <dl>
+        <dt>STATUS</dt>
+        <dd>
+          <b>NOMINAL</b> — alive. It is the alive flag, not a health grade.
+        </dd>
+        <dd>
+          <b>PILOT KILLED</b> — the pilot is dead; the chassis may still stand.
+        </dd>
+        <dd>
+          <b>DESTROYED</b> — the chassis is out of the match.
+        </dd>
+        <dt>MODE</dt>
+        <dd>
+          A passive stance, not a weapon lock — <b>firing is legal in every mode</b>.
+        </dd>
+        <dd>
+          <b>RECON</b> / <b>ASSAULT</b> — base movement speed.
+        </dd>
+        <dd>
+          <b>EVASION</b> — movement speed <b>+1</b>.
+        </dd>
+        <dd>
+          Switching costs pressure and heat and takes several ticks. Until the countdown ends the
+          switch is only <b>TELEGRAPHED</b> and the stance above it is still the active one.
+        </dd>
+      </dl>
+    </details>
+  );
+}
+
 export default function SpecPanel({
   gauges,
   hands = {},
@@ -349,9 +441,14 @@ export default function SpecPanel({
           <div className="pd-earlier">awaiting match_started…</div>
         ) : null
       ) : (
-        ordered.map((g) => (
-          <MechSpec key={g.mechId} g={g} hands={hands} priorities={priorities} played={played} />
-        ))
+        <>
+          {ordered.map((g) => (
+            <MechSpec key={g.mechId} g={g} hands={hands} priorities={priorities} played={played} />
+          ))}
+          {/* One key per deck, not one per rail: PressureDeck mounts this panel
+              twice (red left, blue right) and a second copy would be noise. */}
+          {side === "left" ? <DeckKey side={side} /> : null}
+        </>
       )}
     </div>
   );
