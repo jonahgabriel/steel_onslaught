@@ -480,6 +480,18 @@ def _run_battery(args: argparse.Namespace, state_root: Path, raw_path: Path) -> 
                 )
             except KeyboardInterrupt:
                 raise
+            except AssertionError:
+                # OMN-15566 r5b (adversarial-verifier finding 3): the
+                # in-match integrity asserts inside ``_measure_match``
+                # ("learning lane must record provenance", "match did not
+                # score") are invariant violations, not the recoverable
+                # provider/quality-gate failures this containment exists
+                # for -- swallowing them here would silently hide a broken
+                # instrumentation/harness bug behind a routine "casualty"
+                # entry. Excluded from containment BEFORE the generic
+                # ``except Exception`` arm below so they abort the process
+                # hard, exactly as they did before containment existed.
+                raise
             except Exception as exc:  # one dead seed must not kill the whole battery (OMN-15566)
                 skipped.append(
                     _record_casualty(phase=phase, seed=seed, exc=exc, skipped_path=skipped_path)
@@ -616,6 +628,11 @@ def _run_live_fire(args: argparse.Namespace, state_root: Path, raw_path: Path) -
                 learning_mech=learning_mech,
             )
         except KeyboardInterrupt:
+            raise
+        except AssertionError:
+            # OMN-15566 r5b: see the matching ``_run_phase`` exclusion above
+            # -- an in-match integrity assert is a hard invariant violation,
+            # never a contained casualty.
             raise
         except Exception as exc:  # one dead seed must not kill live-fire either (OMN-15566)
             skipped.append(

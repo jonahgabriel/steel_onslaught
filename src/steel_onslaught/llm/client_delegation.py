@@ -391,7 +391,9 @@ _MALFORMED_PREFIX = "MALFORMED"
 _SCHEMA_VIOLATION_PREFIX = "SCHEMA_VIOLATION"
 
 
-def _classify_quality_gate_rejection(stdout: str | None) -> LlmSemanticError | None:
+def _classify_quality_gate_rejection(
+    stdout: str | None, *, expected_correlation_id: UUID
+) -> LlmSemanticError | None:
     """Distinguish a delegation quality-gate REJECTION from a genuine
     transport failure, using the CLI's own captured stdout.
 
@@ -414,11 +416,37 @@ def _classify_quality_gate_rejection(stdout: str | None) -> LlmSemanticError | N
     (stdout receipt vs. the on-disk state file) precisely because it never
     leaves the exception boundary already established by OMN-15535.
 
+    **Invocation binding (OMN-15566 r5b, adversarial-verifier finding 1).**
+    ``workflow_result.json`` is a SHARED per-provider file
+    (``config.state_root``), rewritten by every completion against the same
+    binding -- including on the CLI's own crash path, where
+    ``receipt_mode.py`` loads whatever is currently on disk BEFORE this
+    run's own caught exception is folded in
+    (``_load_workflow_data``/``_extract_correlation_id``). Without binding
+    the classification to THIS invocation, a STALE prior completion's
+    ``quality_gates_failed`` payload can relabel a LATER completion's
+    genuine crash as semantic. Two guards, both required, mirror the
+    correlation check ``_parse_skill_result`` already enforces on the
+    success path (~:496):
+
+    1. The receipt's top-level ``correlation_id`` (the one correlation id
+       guaranteed present on every receipt shape -- the crash receipt's
+       nested ``result`` is a ``ModelReceiptRuntimeSummary`` with no
+       ``correlation_id`` field of its own) must equal
+       ``expected_correlation_id``.
+    2. ``result.error`` (``receipt_mode.py``'s ``runtime_error`` local,
+       persisted verbatim onto ``ModelReceiptRuntimeSummary.error``) must be
+       empty/absent -- a non-empty value means the runtime raised before
+       producing a terminal result, i.e. a genuine crash, which must never
+       be reclassified as semantic even when the correlation id happens to
+       match.
+
     Returns ``None`` (a genuine transport/process failure -- CLI crash,
-    launch failure, timeout, or a non-zero exit unrelated to the quality
-    gate) whenever stdout is empty, unparsable, or names no MALFORMED/
-    SCHEMA_VIOLATION quality-gate rejection, in which case the caller
-    re-raises the original ``LlmTransportError`` unchanged.
+    launch failure, timeout, a non-zero exit unrelated to the quality gate,
+    or a receipt that fails either binding guard above) whenever stdout is
+    empty, unparsable, or names no MALFORMED/SCHEMA_VIOLATION quality-gate
+    rejection, in which case the caller re-raises the original
+    ``LlmTransportError`` unchanged.
     """
     if not stdout:
         return None
@@ -428,8 +456,12 @@ def _classify_quality_gate_rejection(stdout: str | None) -> LlmSemanticError | N
         return None
     if not isinstance(envelope, dict):
         return None
+    if envelope.get("correlation_id") != str(expected_correlation_id):
+        return None
     result = envelope.get("result")
     if not isinstance(result, dict):
+        return None
+    if result.get("error"):
         return None
     terminal_payload = result.get("terminal_payload")
     if not isinstance(terminal_payload, dict):
@@ -676,7 +708,9 @@ class LlmBusDelegationClient:
             # part in) are unaffected: ``_classify_quality_gate_rejection``
             # returns ``None`` and the original exception is re-raised
             # unchanged.
-            semantic = _classify_quality_gate_rejection(exc.stdout)
+            semantic = _classify_quality_gate_rejection(
+                exc.stdout, expected_correlation_id=correlation_id
+            )
             if semantic is not None:
                 raise semantic from exc
             raise

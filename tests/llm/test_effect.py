@@ -15,7 +15,9 @@ from steel_onslaught.llm.effect import (
 )
 from steel_onslaught.llm.schemas import (
     LlmCompletionBoundaryError,
+    LlmCompletionFailureReason,
     LlmResponse,
+    LlmSemanticFailureCode,
     LlmUsage,
     ModelSOLlmCompletionRequest,
     ModelSOLlmEvidenceContext,
@@ -381,3 +383,86 @@ def test_abandoned_attempt_emits_failed_and_rejects_double_finalization() -> Non
         attempt.resolve()
         with pytest.raises(RuntimeError, match="terminal outcome"):
             attempt.resolve()
+
+
+class _StubLlmCompletionObserver:
+    """Minimal ``ProtocolLlmCompletionObserver`` stub -- captures ``failed()``
+    call args directly, independent of ``LedgerLlmCompletionObserver``'s own
+    event-payload mapping (already covered by the other tests in this file).
+    Isolates ``_ObservedLlmAttempt.__enter__()``'s own dispatch logic, the
+    exact seam the r5 adversarial verifier used to prove finding 2 (OMN-15566
+    r5b).
+    """
+
+    def __init__(self) -> None:
+        self.failed_calls: list[dict[str, object]] = []
+
+    def requested(self, provider_id: str, request: ModelSOLlmCompletionRequest) -> object:
+        # Any non-None sentinel satisfies `_ObservedLlmAttempt`'s pending
+        # check -- it never inspects the concrete envelope shape.
+        return object()
+
+    def resolved(
+        self,
+        provider_id: str,
+        request: ModelSOLlmCompletionRequest,
+        response: LlmResponse,
+        requested: object,
+    ) -> None:
+        raise AssertionError("resolved() must not be called on a failing attempt")
+
+    def failed(
+        self,
+        provider_id: str,
+        request: ModelSOLlmCompletionRequest,
+        reason_code: LlmCompletionFailureReason,
+        response: LlmResponse | None,
+        requested: object,
+        *,
+        semantic_failure_code: LlmSemanticFailureCode | None = None,
+        semantic_failure_detail: str | None = None,
+    ) -> None:
+        self.failed_calls.append(
+            {
+                "reason_code": reason_code,
+                "semantic_failure_code": semantic_failure_code,
+                "semantic_failure_detail": semantic_failure_detail,
+            }
+        )
+
+
+@pytest.mark.unit
+def test_complete_raised_semantic_error_persists_code_and_detail_via_observer() -> None:
+    """RED on pre-fix main (OMN-15566 r5b, adversarial-verifier finding 2): a
+    ``LlmSemanticError`` raised directly from ``complete()`` -- e.g.
+    ``LlmBusDelegationClient`` reclassifying a delegation quality-gate
+    rejection (``client_delegation.py``'s ``_classify_quality_gate_rejection``)
+    -- fell through ``_ObservedLlmAttempt.__enter__()``'s generic ``except
+    BaseException`` arm and was recorded as a bare ``"provider_error"`` with
+    ``semantic_failure_code``/``semantic_failure_detail`` BOTH null, unlike
+    the HTTP binding's consumer-side semantic failures (``consume_llm_completion``'s
+    own ``except LlmSemanticError`` arm), which already persist both fields.
+    """
+
+    class _SemanticRaisingClient:
+        def complete(self, request: ModelSOLlmCompletionRequest) -> LlmResponse:
+            raise LlmSemanticError(
+                "invalid_action_parameters", detail="stale quality-gate rejection"
+            )
+
+    observer = _StubLlmCompletionObserver()
+    client = ObservedLlmClient(
+        base=_SemanticRaisingClient(),
+        provider_id="provider.fixture",
+        observer=observer,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(LlmSemanticError) as excinfo:
+        consume_llm_completion(client=client, request=_request(), consumer=lambda response: None)
+
+    assert excinfo.value.code == "invalid_action_parameters"
+    assert len(observer.failed_calls) == 1
+    call = observer.failed_calls[0]
+    assert call["reason_code"] == "invalid_response"
+    assert call["semantic_failure_code"] == "invalid_action_parameters"
+    assert call["semantic_failure_detail"] == "stale quality-gate rejection"

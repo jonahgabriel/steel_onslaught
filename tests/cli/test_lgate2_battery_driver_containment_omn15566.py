@@ -100,6 +100,10 @@ def _install_fakes(
         "scripts.run_lgate2_adaptation_battery._lane_overlay",
         lambda state_root, *, overlay_path, max_value, learning_player, step, genesis=1.0: object(),
     )
+    monkeypatch.setattr(
+        "scripts.run_lgate2_adaptation_battery._live_fire_overlay",
+        lambda state_root, *, learning_player, args: object(),
+    )
 
 
 def _argv(*, n: int, promote_attempts: int, state_root: Path) -> list[str]:
@@ -213,3 +217,106 @@ def test_clean_battery_has_no_casualties_and_exits_zero(
     assert summary["skipped_seeds"] == []
     assert summary["baseline"]["skipped_seeds"] == []
     assert not (tmp_path / "skipped_seeds.jsonl").exists()
+
+
+# --- OMN-15566 r5b: AssertionError is excluded from containment ---
+#
+# The r5 adversarial verifier's finding 3: the per-seed ``except Exception``
+# in both ``_run_phase`` (battery mode) and ``_one`` (live-fire mode) also
+# swallowed ``_measure_match``'s own in-match integrity asserts ("learning
+# lane must record provenance", "match did not score") -- a broken
+# instrumentation/harness bug silently relabeled as a routine "casualty"
+# instead of aborting hard. ``except AssertionError: raise`` now runs BEFORE
+# the generic containment arm at both call sites.
+
+
+def _live_fire_argv(*, lf_matches: int, state_root: Path) -> list[str]:
+    return [
+        "run_lgate2_adaptation_battery.py",
+        "--mode",
+        "live-fire",
+        "--seat",
+        "red",
+        "--lf-matches",
+        str(lf_matches),
+        "--state-root",
+        str(state_root),
+        "--fresh",
+    ]
+
+
+def test_assertion_error_in_battery_phase_is_fatal_not_contained(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """RED on pre-fix main: an ``AssertionError`` from ``_measure_match``
+    (e.g. "learning lane must record provenance") would previously be
+    silently contained as a casualty and the battery would complete
+    normally. Post-fix it must propagate out of ``main()`` uncaught -- an
+    invariant violation is a hard failure, not a recoverable per-seed
+    casualty."""
+    dead_seed = 4002
+    _install_fakes(
+        monkeypatch,
+        dead_seed=dead_seed,
+        dead_seed_exc=AssertionError("learning lane must record provenance"),
+    )
+    monkeypatch.setattr(sys, "argv", _argv(n=3, promote_attempts=2, state_root=tmp_path))
+
+    with pytest.raises(AssertionError, match="learning lane must record provenance"):
+        main()
+
+    # The process aborted before ever reaching the summary write -- no
+    # casualty record, no completed run.
+    assert not (tmp_path / "battery_summary.json").exists()
+    assert not (tmp_path / "skipped_seeds.jsonl").exists()
+
+
+def test_assertion_error_in_live_fire_is_fatal_not_contained(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Live-fire mode's ``_one`` carries the identical exclusion -- an
+    ``AssertionError`` from ``_measure_match`` must abort ``main()``
+    uncaught, not be recorded as a contained casualty."""
+    dead_seed = 4302  # second live-fire match (4300 + index, index=2)
+    _install_fakes(
+        monkeypatch,
+        dead_seed=dead_seed,
+        dead_seed_exc=AssertionError("match did not score"),
+        promote_on_seed=None,
+    )
+    monkeypatch.setattr(sys, "argv", _live_fire_argv(lf_matches=4, state_root=tmp_path))
+
+    with pytest.raises(AssertionError, match="match did not score"):
+        main()
+
+    assert not (tmp_path / "live_fire_summary.json").exists()
+    assert not (tmp_path / "skipped_seeds.jsonl").exists()
+
+
+def test_dead_seed_still_contained_alongside_the_assertion_error_exclusion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Negative control for the exclusion above: a NON-assertion casualty
+    (``LlmTransportError``, the real OMN-15488 failure class) must still be
+    contained exactly as before -- the exclusion narrows containment to one
+    exception type, it does not remove containment."""
+    from steel_onslaught.llm.schemas import LlmTransportError
+
+    dead_seed = 4002
+    dead_seed_exc = LlmTransportError(
+        "onex delegation CLI exited 1: (quality gate rejection)",
+        retryable=False,
+        argv=("uv", "run", "onex", "node", "node_delegate_skill_orchestrator"),
+        exit_code=1,
+        stderr="",
+        stdout="",
+    )
+    _install_fakes(monkeypatch, dead_seed=dead_seed, dead_seed_exc=dead_seed_exc)
+    monkeypatch.setattr(sys, "argv", _argv(n=3, promote_attempts=2, state_root=tmp_path))
+
+    exit_code = main()
+
+    assert exit_code != 0
+    summary = json.loads((tmp_path / "battery_summary.json").read_text(encoding="utf-8"))
+    (record,) = summary["skipped_seeds"]
+    assert record["seed"] == dead_seed
