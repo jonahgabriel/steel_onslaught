@@ -551,6 +551,104 @@
 # THIS FILE AUTHORIZES NO RUN: leg (a) starts only when an operator says so,
 # in a session that does the launch as its own named, visible act.
 #
+# AMENDMENT 3 (2026-07-31, BEFORE any match of this battery exists).
+# Numbered and appended per prereg §12 clause 2. Execution-infrastructure and
+# comparability bookkeeping only: no hypothesis, endpoint, band, escape,
+# multiplicity note, or interpretation-map row is touched.
+#
+# TITLE: FD5 LAUNCH-TIME PIN RE-ASSESSMENT -- the executing pin moves past
+# d78094a, so §2.2 FD5's re-verification is discharged here rather than
+# assumed.
+#
+# WHY THIS AMENDMENT IS MANDATORY, NOT HYGIENE. §2.2 FD5 assessed every commit
+# between a3b0d8a and d78094a and then states: "A launch-time re-verification
+# is required, not optional: if the executing pin is later than d78094a, the
+# launch session must re-run this same assessment over the intervening commits
+# and record it, before launch, in the overlay header as a dated amendment. A
+# pin that carries an unassessed behavioral change to the card path is a
+# comparability defect, not a detail." The launch runbook §1 repeats it as a
+# precondition checkbox. This overlay FILE DID NOT EXIST at d78094a -- it was
+# created by b6812e7 -- so the executing pin is necessarily later and the
+# re-assessment is unconditionally owed by the launch session.
+#
+# THE INTERVENING COMMITS, EACH ASSESSED AGAINST "does this change what a
+# leg-(a) match DOES, relative to the OMN-15488 red battery it must stay
+# comparable to?"
+#
+#   ea20e676e1d7f18c953cfef9495953138216c865 (#249, 2026-07-31T16:21:56-04:00)
+#     The leg-(a) pre-registration document itself. ONE file, +697 lines, all
+#     under docs/evidence/. No source, no contract data, no test. Behavioral
+#     no-op by construction.
+#
+#   fb6664cbe3082198df5290365ee6e8c588bb5db1 (#250, 2026-07-31T18:00:32-04:00)
+#     The SO-REDMID pre-registration document (OMN-15586). ONE file, +813
+#     lines, all under docs/evidence/. No source, no contract data, no test.
+#     Behavioral no-op by construction. SO-REDMID's own launch is serialized
+#     AFTER leg (a) by operator ruling and is NOT launched by this session, so
+#     it contends for neither the endpoint nor the seed space (SO-REDMID
+#     pre-registers its own disjoint blocks; leg (a) holds 6xxx).
+#
+#   b6812e7bcdfe3551872eb9c808398dd85d5a56c8 (#251, 2026-07-31T18:31:39-04:00)
+#     This overlay, its loadouts/pilot specs, the launch runbook, and the
+#     three launch capabilities Amendment 2 records. The only executable
+#     changes are:
+#       - scripts/run_lgate2_adaptation_battery.py: --seed-base plumbing.
+#         The three inline literals 4000/4100/4200 become phase_seeds(base,
+#         phase, count) with _DEFAULT_SEED_BASE = 4000, so the DEFAULT
+#         invocation is byte-identical to every prior battery including
+#         OMN-15488's; plus seed_base/expected_row_bounds published into
+#         battery_summary.json, which §4.4 excludes from every scored figure.
+#       - src/steel_onslaught/battery/watchdog.py and cli/battery_watch.py:
+#         --expected-rows-max. Supervision only; the watchdog observes the
+#         driver and cannot alter a match.
+#       - scripts/check_canary_decisiveness.py: NEW, read-only over canary
+#         artifacts, never invoked by the driver.
+#     Verified NOT from the commit message but from the tree, which is the
+#     standard §2.2 FD5 set for the OMN-15489 entry:
+#         git diff --stat d78094a..b6812e7 -- \
+#           src/steel_onslaught/match/ src/steel_onslaught/cards/
+#     returns EMPTY. No card-selection, match-runner, evaluator, provider, or
+#     duel-gate file changed anywhere between the assessed pin and the
+#     executing pin. The card path leg (a) flies is byte-identical to the one
+#     §2.2 FD5 and §9 were written against.
+#
+#   THIS AMENDMENT'S OWN COMMIT. Appends this comment block to the header and
+#   mirrors it into the pre-registration document. No executable file, no
+#   contract value, no criterion region. It is the commit the AC1 timing gate
+#   will read as the executing overlay's latest author timestamp, and it lands
+#   before the first match_started, which is the ordering AC1 asserts.
+#
+# §9 CADENCE RE-VERIFICATION, RUN FROM THE EXECUTING TREE (runbook §1's other
+# precondition, discharged here rather than asserted). The OMN-15591
+# disposition is cadence-conditional and VOID on atomic cadence:
+#   1. This overlay declares `card_cadence: paced` (arena block below).
+#   2. Every terminal CARDS_DISCARDED close path in
+#      src/steel_onslaught/match/runner.py still routes through
+#      _cancel_active_card_round, and every caller of it is gated on
+#      self._card_cadence == "paced" -- the max-ticks bound (the
+#      next_tick >= _max_ticks guard and the post-publish terminal-tick
+#      branch), _terminate_for_runaway, _terminate_for_llm_boundary, and the
+#      _before_fold_emit boundary for VICTORY_DECLARED / MATCH_ENDED. The
+#      atomic branch clears _card_active_round without emitting, which is the
+#      path the defect lives on and the path leg (a) does not take.
+#   3. Corroborated structurally by the empty diff above: match/ is unchanged
+#      between the pin §9 was written against and the executing pin.
+#
+# CONCLUSION. No intervening commit carries a behavioral change to the card
+# path, the match runner, the evaluator binding, or the provider path.
+# Comparability with the OMN-15488 red battery is preserved and FD5's
+# launch-time obligation is discharged. The executing pin for leg (a) is this
+# amendment's own commit on main.
+#
+# ALSO RECORDED IN THE DOCUMENT, per §12 clause 2 and for the same reason
+# Amendments 1 and 2 are: a header/document disagreement is itself a
+# reportable defect, so this amendment is appended to
+# docs/evidence/2026-07-31-lgate2-legA-blue-seat-endpoint-contrast-prereg.md
+# as its Amendment 3.
+#
+# LANDING THIS AMENDMENT AUTHORIZES NO RUN. It discharges a precondition of a
+# launch an operator has separately authorized; it does not itself start one.
+#
 schema_version: "1"
 bus:
   kind: in_process
