@@ -7,7 +7,8 @@ Invariants covered
 2. A MODE_SWITCH_INTENT with heat == cannot_switch_if_heat_above is rejected
    (no MODE_TRANSITION_STARTED emitted, boiler unchanged).
 3. A rejected intent leaves the boiler unchanged (no pressure/heat consumed).
-4. During transition_ticks, mech has evasion_penalty_during_transition applied.
+4. During transition_ticks, the mech exposes evasion_penalty_during_transition as a
+   vulnerability window (derived from the contract, never stored in ``evasion``).
 5. MODE_TRANSITION_COMPLETED follows MODE_TRANSITION_STARTED for every accepted
    transition (no orphan completions, no stuck transitions).
 6. A valid MODE_SWITCH_INTENT produces MODE_TRANSITION_STARTED and sets
@@ -45,7 +46,11 @@ from steel_onslaught.events.envelope import (
 from steel_onslaught.events.factory import EventFactory
 from steel_onslaught.match.state import ModelSOMatchState, ModelSOMechRuntimeState, SOMatchStatus
 from steel_onslaught.pilots.schemas import ModelSOPosition
-from steel_onslaught.reducers.mode import MissingModeTransitionError, ReducerModeTransition
+from steel_onslaught.reducers.mode import (
+    MissingModeTransitionError,
+    ReducerModeTransition,
+    transition_vulnerability,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -452,10 +457,20 @@ def test_valid_intent_starts_transition() -> None:
 
 
 @pytest.mark.unit
-def test_evasion_penalty_applied_during_transition() -> None:
-    """While transition_ticks_remaining > 0 the mech has the evasion penalty."""
+def test_transition_vulnerability_exposed_during_transition() -> None:
+    """While transition_ticks_remaining > 0 the mech exposes the vulnerability window.
+
+    OMN-15592: the penalty is DERIVED from the in-flight transition contract and
+    consumed against the target at hit resolution.  It is never written into
+    ``mech.evasion``, which is a defensive bonus (``1 - target_evasion``) — doing
+    that inverted the mechanic into a defensive buff of up to 50%.
+    """
+    recon_to_assault = _transition(evasion_penalty=0.2, transition_ticks=2)
     transitions: dict[tuple[str, str], ModelSOModeTransition] = {
-        ("recon", "assault"): _transition(evasion_penalty=0.2, transition_ticks=2)
+        ("recon", "assault"): recon_to_assault
+    }
+    typed_transitions: dict[tuple[ModeId, ModeId], ModelSOModeTransition] = {
+        (ModeId.RECON, ModeId.ASSAULT): recon_to_assault
     }
     match_state = _match(
         tick=5,
@@ -467,9 +482,22 @@ def test_evasion_penalty_applied_during_transition() -> None:
     reducer.apply(_intent_env("recon", "assault", tick=5))
 
     mech = reducer.get_mech_state(_MECH_ID)
-    # The evasion field on the mech should reflect the transition penalty
     assert mech.transition_ticks_remaining > 0
-    assert mech.evasion == pytest.approx(0.2)
+    assert transition_vulnerability(mech, typed_transitions) == pytest.approx(0.2)
+    # The defensive evasion field stays at its baseline — the penalty is not a bonus.
+    assert mech.evasion == 0.0
+
+
+@pytest.mark.unit
+def test_transition_vulnerability_is_zero_outside_a_transition() -> None:
+    """A mech with no transition in flight exposes no vulnerability window."""
+    typed_transitions: dict[tuple[ModeId, ModeId], ModelSOModeTransition] = {
+        (ModeId.RECON, ModeId.ASSAULT): _transition(evasion_penalty=0.2, transition_ticks=2)
+    }
+    mech = _mech(boiler=_boiler_state())
+
+    assert mech.transition_ticks_remaining == 0
+    assert transition_vulnerability(mech, typed_transitions) == 0.0
 
 
 @pytest.mark.unit

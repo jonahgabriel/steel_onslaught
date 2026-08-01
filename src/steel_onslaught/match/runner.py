@@ -119,6 +119,7 @@ from steel_onslaught.reducers.defense_handlers import (
 from steel_onslaught.reducers.errors import ReducerError
 from steel_onslaught.reducers.mode import (
     build_mode_transition_started_event,
+    transition_vulnerability,
     validate_mode_switch,
 )
 from steel_onslaught.reducers.movement import (
@@ -1485,12 +1486,19 @@ class MatchRunner:
         chaff_debuff = chaff_targeting_debuff(
             state.active_utility_effects, target.mech_id, state.tick
         )
+        # Transition vulnerability consult (OMN-15592): a target mid-mode-switch is
+        # inside its documented vulnerability window, so the contract's
+        # ``evasion_penalty_during_transition`` is applied AGAINST the target —
+        # easier to hit by exactly that penalty.  0.0 when no transition is in
+        # flight => existing curve unchanged.
+        target_vulnerability = transition_vulnerability(target, self._catalog.transitions)
         hit_probability = resolve_hit_probability(
             base_accuracy,
             lock_confidence,
             target.evasion,
             mech.accuracy_penalty_next_fire,
             chaff_debuff,
+            target_vulnerability,
         )
         hit = roll_hit(
             rng=self._rng,

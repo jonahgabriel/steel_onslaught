@@ -67,6 +67,34 @@ class MissingModeTransitionError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+def transition_vulnerability(
+    mech: ModelSOMechRuntimeState,
+    transitions: Mapping[tuple[ModeId, ModeId], ModelSOModeTransition],
+) -> float:
+    """Return the vulnerability *mech* exposes while a mode transition is in flight.
+
+    ``evasion_penalty_during_transition`` is a PENALTY paid by the transitioning
+    mech — the documented "vulnerability window".  It is therefore derived here,
+    at the one seam that consumes it (hit resolution), and never written into
+    ``mech.evasion``: that field is a defensive bonus consumed as
+    ``(1.0 - target_evasion)``, so storing a penalty in it inverted the mechanic
+    and made a transitioning mech up to 50% HARDER to hit (OMN-15592).
+
+    Deriving instead of storing keeps a single source of truth — the transition
+    contract — so the live reducer path and the fold/replay path cannot drift.
+
+    Returns 0.0 when no transition is in flight, or when the in-flight directed
+    pair has no injected contract (the missing-contract failure is raised by the
+    reducer/fold that owns transition bookkeeping, not by hit resolution).
+    """
+    if mech.transition_ticks_remaining <= 0 or mech.transition_to_mode is None:
+        return 0.0
+    transition = transitions.get((mech.current_mode, mech.transition_to_mode))
+    if transition is None:
+        return 0.0
+    return transition.vulnerability.evasion_penalty_during_transition
+
+
 def validate_mode_switch(
     mech: ModelSOMechRuntimeState,
     transition: ModelSOModeTransition,
@@ -293,8 +321,9 @@ class ReducerModeTransition:
                 "transition_ticks_remaining": transition.costs.transition_ticks,
                 "transition_to_mode": to_mode,
                 "sensor_dropout_ticks_remaining": transition.vulnerability.sensor_dropout_ticks,
-                # Apply evasion penalty for the duration of the transition.
-                "evasion": transition.vulnerability.evasion_penalty_during_transition,
+                # The transition vulnerability is NOT written into ``evasion``
+                # (a defensive bonus).  It is derived at hit resolution from the
+                # in-flight transition contract — see ``transition_vulnerability``.
             }
         )
         self._mech_states[mech_id] = new_mech
@@ -368,7 +397,9 @@ class ReducerModeTransition:
                     "transition_ticks_remaining": 0,
                     "transition_to_mode": None,
                     "mode_lock_until": self._current_tick + lock_ticks,
-                    # Remove the evasion penalty imposed at transition start.
+                    # Vulnerability window closes with ``transition_ticks_remaining``
+                    # (see ``transition_vulnerability``); ``evasion`` is pinned to
+                    # its defensive baseline here as a defence-in-depth reset.
                     "evasion": 0.0,
                 }
             )

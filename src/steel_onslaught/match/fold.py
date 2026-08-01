@@ -757,7 +757,10 @@ class MatchStateFold:
                 "transition_ticks_remaining": payload.costs.transition_ticks,
                 "transition_to_mode": payload.to_mode,
                 "sensor_dropout_ticks_remaining": payload.sensor_dropout_ticks,
-                "evasion": payload.evasion_penalty,
+                # ``payload.evasion_penalty`` is the transition VULNERABILITY and is
+                # deliberately not written into ``evasion`` (a defensive bonus): it is
+                # derived at hit resolution from the in-flight transition contract via
+                # ``reducers.mode.transition_vulnerability`` (OMN-15592).
             }
         )
         working = working.evolve(update={"mech_states": {**working.mech_states, mech_id: mech}})
@@ -985,7 +988,9 @@ class MatchStateFold:
                     "transition_ticks_remaining": 0,
                     "transition_to_mode": None,
                     "mode_lock_until": lock_until,
-                    "evasion": 0.0,  # transition vulnerability window closes
+                    # Vulnerability window closes with ``transition_ticks_remaining``;
+                    # ``evasion`` is pinned to its defensive baseline (OMN-15592).
+                    "evasion": 0.0,
                     "speed": mode_effective_speed(chassis.constraints.base_speed, to_mode),
                 }
             )

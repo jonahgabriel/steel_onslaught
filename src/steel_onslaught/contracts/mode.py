@@ -99,7 +99,10 @@ class ModelSOModeTransitionVulnerability(BaseModel):
     evasion_penalty_during_transition: StrictFloat = Field(
         ge=0.0,
         description=(
-            "Multiplicative evasion penalty applied while in transition (0 = no penalty added)"
+            "Vulnerability window: multiplicative evasion PENALTY paid by the transitioning "
+            "mech. Applied AGAINST the target at hit resolution (it decrements the target's "
+            "effective evasion), so a mech mid-transition is easier to hit by exactly this "
+            "amount. 0 = no window."
         ),
     )
     sensor_dropout_ticks: StrictInt = Field(
