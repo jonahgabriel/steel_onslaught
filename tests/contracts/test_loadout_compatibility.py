@@ -11,7 +11,9 @@ executable rather than a claim in a commit message.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import sys
 from pathlib import Path
 
 import pytest
@@ -332,11 +334,42 @@ def test_every_packaged_loadout_is_compatible(
 # --------------------------------------------------------------------------
 
 
+_KNOWN_COMPATIBILITY_MODELS: frozenset[str] = frozenset(
+    {
+        "ModelSOWeaponCompatibility",
+        "ModelSOBoilerCompatibility",
+        "ModelSOChassisCompatibility",
+    }
+)
+
+
+def _discovery_import_failed(module_name: str) -> None:
+    """``walk_packages`` error hook — OMN-15608.
+
+    ``pkgutil.walk_packages`` swallows ImportError when ``onerror`` is None.
+    A discovery walk that silently skips the module it could not import is the
+    same vacuous-pass failure this guard exists to prevent, so it fails loudly.
+    """
+    raise AssertionError(
+        f"compatibility-model discovery could not import {module_name!r}; "
+        "a skipped module would let an unclassified field pass unseen"
+    ) from sys.exc_info()[1]
+
+
 def _compatibility_models() -> dict[str, type[BaseModel]]:
     """Every contract model whose name ends in 'Compatibility', discovered live.
 
     Discovered rather than listed so a compatibility block added to a *new*
     contract module is caught too.
+
+    OMN-15608: the walk is **recursive**.  ``pkgutil.iter_modules`` does not
+    descend into subpackages, so a ``*Compatibility`` model added under a
+    future ``contracts/<subpkg>/`` would silently vanish from discovery and
+    ``test_every_declared_compatibility_field_is_classified`` would pass
+    vacuously over an unclassified field — reintroducing the OMN-15594 defect
+    (a compatibility field nobody reads) through the guard's own blind spot.
+    ``contracts/`` is flat today, so this is a latent hole being closed before
+    it opens, not a live miss.
     """
     import importlib
     import pkgutil
@@ -344,8 +377,12 @@ def _compatibility_models() -> dict[str, type[BaseModel]]:
     import steel_onslaught.contracts as contracts_pkg
 
     found: dict[str, type[BaseModel]] = {}
-    for module_info in pkgutil.iter_modules(contracts_pkg.__path__):
-        module = importlib.import_module(f"{contracts_pkg.__name__}.{module_info.name}")
+    for module_info in pkgutil.walk_packages(
+        contracts_pkg.__path__,
+        prefix=f"{contracts_pkg.__name__}.",
+        onerror=_discovery_import_failed,
+    ):
+        module = importlib.import_module(module_info.name)
         for name, obj in vars(module).items():
             if (
                 isinstance(obj, type)
@@ -354,6 +391,21 @@ def _compatibility_models() -> dict[str, type[BaseModel]]:
             ):
                 found[name] = obj
     return found
+
+
+def test_compatibility_model_discovery_cannot_silently_cover_zero() -> None:
+    """A broken or over-narrowed walk must fail loudly, not pass trivially.
+
+    Same floor as ``test_packaged_loadout_corpus_is_non_empty``: without it, a
+    discovery bug that returns ``{}`` makes every classification assertion below
+    vacuously true.
+    """
+    discovered = set(_compatibility_models())
+    missing = _KNOWN_COMPATIBILITY_MODELS - discovered
+    assert missing == set(), (
+        f"compatibility-model discovery lost {sorted(missing)}; "
+        "the classification guards below would now pass over nothing"
+    )
 
 
 def test_every_declared_compatibility_field_is_classified() -> None:
@@ -378,14 +430,130 @@ def test_every_declared_compatibility_field_is_classified() -> None:
     assert classified - declared == set(), "classification names a field that no longer exists"
 
 
-def test_binding_compatibility_fields_have_a_named_consumer() -> None:
-    """Each binding field is read by the compatibility validator, by source inspection."""
-    source = inspect.getsource(compatibility_module)
+def _functions_reachable_from(tree: ast.Module, entrypoint: str) -> list[ast.FunctionDef]:
+    """Module-level functions reachable from ``entrypoint`` through direct calls.
+
+    Deliberately intra-module and name-based: the claim under test is that the
+    designated consumer module reads the field, so a helper that no caller in
+    that module reaches does not count as a consumer.
+    """
+    defined = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+    assert entrypoint in defined, f"{entrypoint!r} is not defined in the module under test"
+
+    reachable: dict[str, ast.FunctionDef] = {}
+    queue = [entrypoint]
+    while queue:
+        name = queue.pop()
+        if name in reachable:
+            continue
+        node = defined[name]
+        reachable[name] = node
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call):
+                callee = call.func
+                if isinstance(callee, ast.Name) and callee.id in defined:
+                    queue.append(callee.id)
+                elif isinstance(callee, ast.Attribute) and callee.attr in defined:
+                    queue.append(callee.attr)
+    return list(reachable.values())
+
+
+def _compatibility_reads_in(node: ast.AST) -> set[str]:
+    """Field names read as ``<something>.compatibility.<field>`` inside ``node``.
+
+    An ``ast.Attribute`` node, so a docstring, comment, or string literal
+    naming the field cannot satisfy it — that was the OMN-15608 defect.
+    """
+    return {
+        child.attr
+        for child in ast.walk(node)
+        if isinstance(child, ast.Attribute)
+        and isinstance(child.value, ast.Attribute)
+        and child.value.attr == "compatibility"
+    }
+
+
+def test_binding_compatibility_fields_are_read_in_code_reachable_from_the_entrypoint() -> None:
+    """Each binding field is READ as an attribute on a path reachable from the gate.
+
+    OMN-15608 replaced a ``f".{field_name}" in source`` substring assertion that a
+    docstring, comment, dead branch, or unreachable helper satisfied — it proved
+    the string was present in a file, not that the field is consumed.  This walks
+    the AST of ``contracts.compatibility`` for a genuine attribute access on a
+    ``.compatibility`` block, inside a function reachable from
+    ``validate_loadout_compatibility``.
+
+    Per-model attribution (weapon vs boiler both declare
+    ``compatible_chassis_classes``) is proven by the execution test below; this
+    one proves the read is code, and lives in the designated consumer.
+    """
+    tree = ast.parse(inspect.getsource(compatibility_module))
+    reachable = _functions_reachable_from(tree, "validate_loadout_compatibility")
+    read_fields: set[str] = set()
+    for function in reachable:
+        read_fields |= _compatibility_reads_in(function)
+
     for model_name, field_name in sorted(_BINDING_FIELDS):
-        assert f".{field_name}" in source, (
-            f"{model_name}.{field_name} is classified BINDING but "
-            "steel_onslaught.contracts.compatibility never reads it"
+        assert field_name in read_fields, (
+            f"{model_name}.{field_name} is classified BINDING but no attribute access "
+            "on a .compatibility block reads it inside any function reachable from "
+            "validate_loadout_compatibility (a docstring or comment mention does not "
+            "count, which is the whole point of OMN-15608)"
         )
+
+
+def test_binding_compatibility_fields_are_actually_read_during_validation(
+    monkeypatch: pytest.MonkeyPatch, light_loadout: ModelSOLoadout
+) -> None:
+    """Every binding field is read at RUNTIME by a real ``validate_loadout_compatibility`` call.
+
+    The strongest form of the AC5 consumer claim: each ``*Compatibility`` model
+    class is instrumented to record which of its own declared fields are read,
+    then the validator is driven over a loadout that exercises all three declared
+    directions.  A field that is only mentioned in prose, or read on a branch that
+    never executes, records nothing and fails here.  Attribution is exact per
+    (model, field) because the recorder is installed on the declaring class.
+    """
+    reads: set[tuple[str, str]] = set()
+
+    for model_name, model in _compatibility_models().items():
+        field_names = frozenset(model.model_fields)
+
+        def _recording_getattribute(
+            self: BaseModel,
+            name: str,
+            _model_name: str = model_name,
+            _field_names: frozenset[str] = field_names,
+        ) -> object:
+            if name in _field_names:
+                reads.add((_model_name, name))
+            return object.__getattribute__(self, name)
+
+        monkeypatch.setattr(model, "__getattribute__", _recording_getattribute)
+
+    chassis = _load_yaml_spec("chassis", "light_scout_mk1.yaml", ModelSOChassisSpec)
+    boiler = _load_yaml_spec("boilers", "industrial_bessemer_90.yaml", ModelSOBoilerSpec)
+    mortar = _load_yaml_spec("weapons", "artillery_mortar.yaml", ModelSOWeaponSpec)
+    assert isinstance(chassis, ModelSOChassisSpec)
+    assert isinstance(boiler, ModelSOBoilerSpec)
+    assert isinstance(mortar, ModelSOWeaponSpec)
+
+    exercised = _rebound(
+        light_loadout,
+        id="loadout.test.consumer_probe",
+        boiler_id=boiler.id,
+        modules={**light_loadout.modules.model_dump(), "weapons": (mortar.id,)},
+    )
+    # Drives all three declared directions.  No assertion on the returned
+    # violations: the unread-field assertion below IS the coverage claim, and
+    # keeping it first would mask a dropped consumer behind a count mismatch.
+    validate_loadout_compatibility(exercised, chassis, boiler, [mortar])
+
+    unread = set(_BINDING_FIELDS) - reads
+    assert unread == set(), (
+        f"classified BINDING but never read during validation: {sorted(unread)} — "
+        "the field has no executing consumer, which is the OMN-15594 defect"
+    )
 
 
 def test_non_binding_compatibility_fields_say_so_at_the_declaration_site() -> None:
