@@ -270,10 +270,25 @@ resident was invisible to it for as long as it stayed alive. Progress is
 measured from `battery_raw.jsonl` (one row per completed seed), so a slow
 battery is never mistaken for a wedged one.
 
-To sequence corners, pass the next launch to `--on-complete-exec`. It fires
-**only** on `COMPLETED`, which is the same fail-closed gate the old
-`NEEDS_ATTENTION` sentinel implemented -- except an incomplete prior corner
-now pushes a notification instead of waiting to be noticed:
+To sequence corners, pass the next launch to `--on-complete-exec`. Since
+OMN-15595 (#253) **two** conditions are jointly necessary for it to fire, not
+one: the run must reach `COMPLETED`, **and** the terminal notification must
+have been **delivered** -- accepted by at least one channel. A clean run
+whose channels all failed does not chain: the watchdog prints
+`CHAIN WITHHELD -- <reason>` to
+stderr, carries the same text on `ModelWatchdogResult.chain_withheld_reason`,
+and still exits 3 (the `(any)` row of the table above). Partial delivery -- one
+channel accepted, another failed -- does chain; the gate is "did anyone hear
+this", deliberately the same predicate the exit-3 rank uses, so the side effect
+and the exit code can never disagree.
+
+A completed battery that did not chain is therefore designed behaviour, not a
+hang: check stderr for `CHAIN WITHHELD` before suspecting the watchdog. This is
+the same fail-closed intent the old `NEEDS_ATTENTION` sentinel had, plus the
+condition that sentinel could never express -- a chain advancing while nobody
+was told reproduces one layer up the failure OMN-15588 removed. An incomplete
+or crashed prior corner now pushes a notification instead of waiting to be
+noticed:
 
 ```bash
   --on-complete-exec "env -u PYTHONPATH OMNI_HOME=$SNAP uv run so battery-watch \
@@ -283,6 +298,15 @@ now pushes a notification instead of waiting to be noticed:
      -- uv run python scripts/run_display_salience_battery.py --corner prominent \
         --n 30 --seed-base 5000 --max-ticks 1000 --fresh --state-root $ROOT/prominent"
 ```
+
+`--chain-on-delivery-failure` is the single override past a total delivery
+failure, for an unattended chain that must proceed even with its outcome
+unreported. It is off by default; it does **not** launder the exit code (still
+3); it does **not** waive the `COMPLETED` condition, so a short or crashed
+corner still withholds. Its use is echoed to stderr and recorded on the result
+as `chain_forced_on_undelivered`, so a forced chain is never silent. Note that
+delivery can and does fail in practice -- see OMN-15600, where the Slack
+webhook was dead for a live run.
 
 **Do not reintroduce a `BATTERY_DONE` / `NEEDS_ATTENTION` shell wrapper.** On
 the OMN-15488 run an attempt-1 crash sat undetected for roughly five hours
