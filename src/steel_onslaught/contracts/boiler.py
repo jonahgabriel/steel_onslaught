@@ -18,7 +18,15 @@ class ModelSOBoilerCompatibility(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    compatible_chassis_classes: tuple[str, ...] = Field(min_length=1)
+    compatible_chassis_classes: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "BINDING (OMN-15594) — consumed by "
+            "steel_onslaught.contracts.compatibility.validate_loadout_compatibility, "
+            "which rejects a loadout whose chassis_class is absent from this list "
+            "with EnumCompatibilityViolationKind.BOILER_CHASSIS_CLASS."
+        ),
+    )
 
 
 class ModelSOBoilerSpec(BaseModel):

@@ -525,7 +525,7 @@ def _option_sha256(
 def test_assembly_accepts_all_fake_ports_without_filesystem_or_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(composition, "_require_valid_budgets", lambda *_: None)
+    monkeypatch.setattr(composition, "_require_legal_loadout", lambda *_: None)
     bus = _Bus()
     ledger = _Ledger()
     clock = _Clock()
@@ -650,7 +650,7 @@ def test_passive_card_snapshot_does_not_activate_card_mode() -> None:
 def test_active_card_adapter_is_passed_through_match_composition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(composition, "_require_valid_budgets", lambda *_: None)
+    monkeypatch.setattr(composition, "_require_legal_loadout", lambda *_: None)
     snapshot = _card_runtime_snapshot(selected=True)
     adapter = build_card_runner_adapter(snapshot=snapshot)
     bus = _Bus()
@@ -853,7 +853,7 @@ def test_selected_human_and_stub_match_admits_before_runtime_factory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    monkeypatch.setattr(composition, "_require_valid_budgets", lambda *_: None)
+    monkeypatch.setattr(composition, "_require_legal_loadout", lambda *_: None)
     overlay = _selection_overlay(tmp_path)
     roster = _selection_roster("model_identity.stub")
     command = _selection_command(overlay, roster)
@@ -1041,7 +1041,7 @@ def test_selected_live_provider_admits_before_only_exact_live_runtime_factory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    monkeypatch.setattr(composition, "_require_valid_budgets", lambda *_: None)
+    monkeypatch.setattr(composition, "_require_legal_loadout", lambda *_: None)
     overlay = _selection_overlay(tmp_path)
     roster = _selection_roster("model_identity.local")
     command = _selection_command(overlay, roster)

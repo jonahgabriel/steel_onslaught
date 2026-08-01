@@ -30,13 +30,48 @@ class ModelSOChassisConstraints(BaseModel):
 
 
 class ModelSOChassisCompatibility(BaseModel):
-    """Lists of module/boiler/mobility class strings this chassis supports."""
+    """Lists of module/boiler/mobility class strings this chassis supports.
+
+    Only ``weapon_classes`` is binding today.  The other two lists have no
+    counterpart to compare against — nothing in the contract set declares a
+    boiler class or a mobility class — so they are marked NON-BINDING at the
+    declaration site rather than left to read as if they were enforced
+    (OMN-15594 acceptance criterion 1).  ``tests/contracts/
+    test_loadout_compatibility.py`` fails if a compatibility field is added
+    without being classified either way.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    weapon_classes: tuple[str, ...] = Field(min_length=1)
-    boiler_classes: tuple[str, ...] = Field(min_length=1)
-    mobility_classes: tuple[str, ...] = Field(min_length=1)
+    weapon_classes: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "BINDING (OMN-15594) — consumed by "
+            "steel_onslaught.contracts.compatibility.validate_loadout_compatibility, "
+            "which rejects a loadout fielding a weapon whose weapon_class is absent "
+            "from this list with EnumCompatibilityViolationKind.CHASSIS_WEAPON_CLASS."
+        ),
+    )
+    boiler_classes: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "NON-BINDING (OMN-15594) — declarative only. ModelSOBoilerSpec declares no "
+            "boiler_class field, so there is no un-brittle value to test membership "
+            "against (inferring the class from the boiler id is the substring "
+            "inference WeaponDamageType's docstring rejects). The enforced "
+            "boiler<->chassis direction is boiler.compatibility."
+            "compatible_chassis_classes. Making this list binding requires first "
+            "adding a declared class to the boiler contract."
+        ),
+    )
+    mobility_classes: tuple[str, ...] = Field(
+        min_length=1,
+        description=(
+            "NON-BINDING (OMN-15594) — declarative only. No mobility module contract "
+            "exists under contracts_data/ and no loadout can field one, so there is "
+            "nothing for this list to accept or reject."
+        ),
+    )
 
 
 class ModelSOChassisPenalties(BaseModel):
