@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -48,6 +49,28 @@ _RUNBOOK = (
     / "runbooks"
     / "2026-07-28-hermetic-battery-snapshot-recipe.md"
 )
+
+# OMN-15607: the superseded chain-forward claim — "fires **only** on `COMPLETED`".
+# Since OMN-15595 (#253) a clean terminal state is one of TWO necessary conditions,
+# so any prose pairing "only" with `COMPLETED` inside one sentence is stale.
+_SUPERSEDED_CHAIN_GATE_CLAIM = re.compile(r"only\b[^.]{0,80}?COMPLETED", re.IGNORECASE)
+
+
+def _runbook_section(text: str, heading: str) -> str:
+    """Return one ``## `` section of the runbook, heading through next heading.
+
+    Section-scoped rather than whole-file so an assertion cannot be satisfied by
+    an unrelated mention elsewhere in the document — the same reason the guard
+    below checks the sequencing section rather than ``in text``.
+    """
+    lines = text.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith("## ")]
+    for index, start in enumerate(starts):
+        if heading not in lines[start]:
+            continue
+        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
+        return "\n".join(lines[start:end])
+    raise AssertionError(f"runbook has no '## ' section matching {heading!r}")
 
 
 class FakeClock:
@@ -545,6 +568,29 @@ def test_runbook_no_longer_documents_the_disk_sentinel_bash_watcher() -> None:
     assert 'touch "$ROOT/NEEDS_ATTENTION"' not in text
     assert "while pgrep -f" not in text
     assert "chain watcher started" not in text
+
+    # OMN-15607: chain-forward has had TWO necessary conditions since OMN-15595
+    # (#253) — a COMPLETED terminal state AND at least one delivered channel. An
+    # operator told the gate is COMPLETED alone reads a correctly-withheld chain
+    # as a hang, so the sequencing section must name the delivery condition, the
+    # observable it surfaces on, and the opt-in override.
+    sequencing = _runbook_section(text, "sequencing corners unattended")
+    assert "--on-complete-exec" in sequencing, "wrong section resolved"
+    assert "deliver" in sequencing, (
+        "the sequencing section must state that delivery is a second necessary "
+        "condition for chain-forward (OMN-15595)"
+    )
+    assert "CHAIN WITHHELD" in sequencing, (
+        "the sequencing section must name the observable an operator will actually "
+        "see when the chain is withheld"
+    )
+    assert "--chain-on-delivery-failure" in sequencing, (
+        "the sequencing section must document the only override past a total delivery failure"
+    )
+    stale = _SUPERSEDED_CHAIN_GATE_CLAIM.search(text)
+    assert stale is None, (
+        f"the runbook still states COMPLETED alone as the chain-forward gate: {stale.group(0)!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
