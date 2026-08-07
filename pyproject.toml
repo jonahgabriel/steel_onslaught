@@ -22,7 +22,7 @@ dependencies = [
     # vision-pilot arm (2026-07-24). Pinned range: newer Pillow versions can
     # change default PNG compression behavior, which would break the
     # byte-identity determinism guarantee this renderer depends on.
-    "pillow>=10.4,<11",
+    "pillow>=12.3.0,<13",
 ]
 
 [project.optional-dependencies]
