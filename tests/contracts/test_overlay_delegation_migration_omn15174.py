@@ -45,6 +45,7 @@ one, fails these tests until the pins are updated deliberately. That turns
 
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import Path
 
 import pytest
@@ -85,6 +86,9 @@ _PREREGISTERED_DELEGATION = frozenset(
 # provably identity-preserving (same model string, same host, zero published
 # battery evidence, binding-proof lane rather than a measured battery lane).
 _MIGRATED_BATCH_1 = frozenset({"local_200_v1.yaml"})
+
+# Historical identity is independent of which backends later become proven.
+_BATCH_1_PRE_MIGRATION_MODELS = {"local_200_v1.yaml": "mlx-community/Qwen3.6-35B-A3B-8bit"}
 
 # OMN-15488's L-GATE-2 decisive battery overlay. NET-NEW on the delegation
 # shape -- authored directly with ``kind: onex_delegation`` providers, never
@@ -133,9 +137,11 @@ _EXPECTED_TOTAL_OVERLAYS = 61
 _EXPECTED_MIGRATED_COUNT = 5  # 2 preregistered + 1 batch-1 + 2 OMN-15488 net-new (red + leg (a))
 _EXPECTED_UNMIGRATED_COUNT = 56
 
-# Typed blocking reasons.
-_REASON_IMAGE = "image_attachment unsupported by LlmBusDelegationClient"
-_REASON_NO_PROVEN_BACKEND = "no live-proven delegation backend serves this model string"
+
+class _BlockingReason(StrEnum):
+    IMAGE = "image_attachment unsupported by LlmBusDelegationClient"
+    NO_PROVEN_BACKEND = "no live-proven delegation backend serves this model string"
+    UNCLASSIFIED = "unclassified"
 
 
 def _overlay_paths() -> list[Path]:
@@ -164,16 +170,16 @@ def _has_image_attachment(path: Path) -> bool:
     return any(entry.get("image_attachment") is not None for entry in raw["llm"]["providers"])
 
 
-def _classify(path: Path) -> tuple[str, str]:
+def _classify(path: Path) -> tuple[str, _BlockingReason | None]:
     """Return ``(state, reason)`` for one overlay. ``state`` in {migrated, blocked}."""
     kinds = set(_provider_kinds(path))
     if kinds == {"onex_delegation"}:
-        return ("migrated", "")
+        return ("migrated", None)
     if _has_image_attachment(path):
-        return ("blocked", _REASON_IMAGE)
+        return ("blocked", _BlockingReason.IMAGE)
     if not set(_provider_models(path)) <= _PROVEN_DELEGATION_MODELS:
-        return ("blocked", _REASON_NO_PROVEN_BACKEND)
-    return ("blocked", "unclassified")
+        return ("blocked", _BlockingReason.NO_PROVEN_BACKEND)
+    return ("blocked", _BlockingReason.UNCLASSIFIED)
 
 
 # ---------------------------------------------------------------------------
@@ -194,19 +200,20 @@ def test_corpus_size_is_pinned() -> None:
 @pytest.mark.unit
 def test_every_overlay_is_classified_and_the_unmigrated_count_is_pinned() -> None:
     migrated: list[str] = []
-    blocked: dict[str, str] = {}
+    blocked: dict[str, _BlockingReason] = {}
 
     for path in _overlay_paths():
         state, reason = _classify(path)
         if state == "migrated":
             migrated.append(path.name)
         else:
+            assert isinstance(reason, _BlockingReason)
             blocked[path.name] = reason
 
     # No overlay may fall through classification.
-    assert "unclassified" not in blocked.values(), (
+    assert _BlockingReason.UNCLASSIFIED not in blocked.values(), (
         "every unmigrated overlay must carry a typed blocking reason: "
-        f"{sorted(name for name, r in blocked.items() if r == 'unclassified')}"
+        f"{sorted(name for name, r in blocked.items() if r == _BlockingReason.UNCLASSIFIED)}"
     )
 
     assert len(migrated) == _EXPECTED_MIGRATED_COUNT
@@ -239,9 +246,8 @@ def test_batch_1_binding_shape(overlay_name: str) -> None:
         )
         assert provider.backend_id == "local-coder-mlx"
         assert provider.source == "external-client"
-        # Identity preservation: the pinned backend must serve the very model
-        # string this overlay names. This is the assertion that distinguishes
-        # a real migration from a silent model swap.
+        # Proving another backend must never permit this batch to swap models.
+        assert provider.model == _BATCH_1_PRE_MIGRATION_MODELS[overlay_name]
         assert provider.model in _PROVEN_DELEGATION_MODELS
 
 
@@ -316,7 +322,9 @@ def test_preregistered_overlays_are_not_in_any_migration_batch() -> None:
 
 @pytest.mark.unit
 def test_image_bearing_overlays_are_blocked_for_the_image_reason() -> None:
-    image_blocked = {p.name for p in _overlay_paths() if _classify(p) == ("blocked", _REASON_IMAGE)}
+    image_blocked = {
+        p.name for p in _overlay_paths() if _classify(p) == ("blocked", _BlockingReason.IMAGE)
+    }
     assert image_blocked == _IMAGE_BLOCKED
 
 
