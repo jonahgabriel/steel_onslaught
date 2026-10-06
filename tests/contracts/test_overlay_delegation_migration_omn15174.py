@@ -86,6 +86,9 @@ _PREREGISTERED_DELEGATION = frozenset(
 # battery evidence, binding-proof lane rather than a measured battery lane).
 _MIGRATED_BATCH_1 = frozenset({"local_200_v1.yaml"})
 
+# Historical identity is independent of which models later gain a proven backend.
+_BATCH_1_PRE_MIGRATION_MODELS = {"local_200_v1.yaml": "mlx-community/Qwen3.6-35B-A3B-8bit"}
+
 # OMN-15488's L-GATE-2 decisive battery overlay. NET-NEW on the delegation
 # shape -- authored directly with ``kind: onex_delegation`` providers, never
 # had an ``openai_compatible`` ancestor, so it is not a "migration" in this
@@ -243,6 +246,26 @@ def test_batch_1_binding_shape(overlay_name: str) -> None:
         # string this overlay names. This is the assertion that distinguishes
         # a real migration from a silent model swap.
         assert provider.model in _PROVEN_DELEGATION_MODELS
+        assert provider.model == _BATCH_1_PRE_MIGRATION_MODELS[overlay_name]
+
+
+@pytest.mark.unit
+def test_batch_1_rejects_a_different_proven_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expanding backend coverage must not permit a historical model swap."""
+    overlay_name = "local_200_v1.yaml"
+    raw = yaml.safe_load((_OVERLAY_DIR / overlay_name).read_text(encoding="utf-8"))
+    swapped_model = "another-live-proven-model"
+    raw["llm"]["providers"][0]["model"] = swapped_model
+    (tmp_path / overlay_name).write_text(yaml.safe_dump(raw), encoding="utf-8")
+    monkeypatch.setitem(globals(), "_OVERLAY_DIR", tmp_path)
+    monkeypatch.setitem(
+        globals(), "_PROVEN_DELEGATION_MODELS", _PROVEN_DELEGATION_MODELS | {swapped_model}
+    )
+
+    with pytest.raises(AssertionError):
+        test_batch_1_binding_shape(overlay_name)
 
 
 @pytest.mark.unit
