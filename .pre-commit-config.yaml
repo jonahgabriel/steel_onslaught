@@ -20,6 +20,12 @@ repos:
   # and CI cannot disagree.
   - repo: local
     hooks:
+      - id: overlay-delegation-migration
+        name: overlay delegation migration acceptance
+        entry: uv run pytest tests/contracts/test_overlay_delegation_migration_omn15174.py -q --strict-markers
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: mypy
         name: mypy (project env, matches CI)
         entry: uv run mypy src/ tests/
